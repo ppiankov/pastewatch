@@ -58,11 +58,14 @@ False negatives are preferred over false positives.
 
 ## How Pastewatch Works
 
-Pastewatch transforms clipboard text locally before it is pasted.
-Sensitive values are deterministically replaced with placeholders.
+Pastewatch modifies clipboard text locally before it is pasted.
 
-It does not hide clipboard contents from the operating system,
-applications, or paste targets.
+It scans plain text for sensitive patterns and replaces them with
+non-sensitive placeholders.
+
+Pastewatch does not hide clipboard contents from the operating system
+or applications, and it does not provide a way to restore original values
+after paste.
 
 ---
 
