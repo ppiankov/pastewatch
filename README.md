@@ -173,10 +173,11 @@ If a feature increases complexity without reducing risk, it is rejected.
 
 ---
 
-## Requirements
+## Platform Support
 
-- macOS 14.0 (Sonoma) or later
-- Apple Silicon or Intel Mac
+macOS 14+ on Apple Silicon (M1 and newer).
+
+Intel-based Macs are not supported.
 
 ---
 
