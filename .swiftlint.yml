@@ -1,0 +1,39 @@
+disabled_rules:
+  - trailing_comma
+  - identifier_name
+  - line_length
+  - type_body_length
+  - file_length
+  - function_body_length
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - closure_spacing
+  - overridden_super_call
+  - redundant_nil_coalescing
+  - nimble_operator
+
+excluded:
+  - .build
+  - DerivedData
+
+line_length:
+  warning: 120
+  error: 200
+
+type_body_length:
+  warning: 300
+  error: 500
+
+file_length:
+  warning: 500
+  error: 1000
+
+function_body_length:
+  warning: 50
+  error: 100
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25

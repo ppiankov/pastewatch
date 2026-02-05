@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+
+      - name: Build Release Binary
+        run: |
+          swift build -c release
+          mkdir -p release
+          cp .build/release/pastewatch release/
+
+      - name: Create App Bundle
+        run: |
+          mkdir -p "release/Pastewatch.app/Contents/MacOS"
+          mkdir -p "release/Pastewatch.app/Contents/Resources"
+          cp .build/release/pastewatch "release/Pastewatch.app/Contents/MacOS/Pastewatch"
+          cp Sources/Pastewatch/Resources/AppIcon.icns "release/Pastewatch.app/Contents/Resources/AppIcon.icns"
+          cat > "release/Pastewatch.app/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>Pastewatch</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.ppiankov.pastewatch</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>Pastewatch</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${GITHUB_REF_NAME#v}</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>14.0</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSUserNotificationAlertStyle</key>
+              <string>banner</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "Pastewatch" -srcfolder release/Pastewatch.app -ov -format UDZO release/Pastewatch-${{ github.ref_name }}.dmg
+
+      - name: Create ZIP
+        run: |
+          cd release
+          zip -r Pastewatch-${{ github.ref_name }}.zip Pastewatch.app
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd release
+          shasum -a 256 Pastewatch-${{ github.ref_name }}.dmg > Pastewatch-${{ github.ref_name }}.dmg.sha256
+          shasum -a 256 Pastewatch-${{ github.ref_name }}.zip > Pastewatch-${{ github.ref_name }}.zip.sha256
+          shasum -a 256 pastewatch > pastewatch.sha256
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release/Pastewatch-${{ github.ref_name }}.dmg
+            release/Pastewatch-${{ github.ref_name }}.dmg.sha256
+            release/Pastewatch-${{ github.ref_name }}.zip
+            release/Pastewatch-${{ github.ref_name }}.zip.sha256
+            release/pastewatch
+            release/pastewatch.sha256
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

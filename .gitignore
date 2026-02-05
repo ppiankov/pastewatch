@@ -1,0 +1,34 @@
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+*.dSYM.zip
+*.dSYM
+
+# Build artifacts
+release/
+*.dmg
+*.zip
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Config (user-specific)
+.config/
