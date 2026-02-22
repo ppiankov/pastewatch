@@ -6,6 +6,6 @@ struct Version: ParsableCommand {
     )
 
     func run() {
-        print("pastewatch-cli 0.2.0")
+        print("pastewatch-cli 0.3.0")
     }
 }

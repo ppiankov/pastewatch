@@ -155,6 +155,18 @@ echo "password=hunter2" | pastewatch-cli scan
 # Scan a file
 pastewatch-cli scan --file config.yml
 
+# Scan a directory recursively
+pastewatch-cli scan --dir ./project --check
+
+# SARIF output for GitHub code scanning
+pastewatch-cli scan --dir . --format sarif > results.sarif
+
+# Suppress known-safe values
+pastewatch-cli scan --file app.yml --allowlist .pastewatch-allow
+
+# Custom detection rules
+pastewatch-cli scan --file data.txt --rules custom-rules.json
+
 # Check mode (exit code only, for CI)
 git diff --cached | pastewatch-cli scan --check
 
@@ -176,6 +188,31 @@ pastewatch-cli scan --format json --check < input.txt
 ```bash
 #!/bin/sh
 git diff --cached --diff-filter=d | pastewatch-cli scan --check
+```
+
+### Format-Aware Scanning
+
+When scanning `.env`, `.json`, `.yml`/`.yaml`, or `.properties`/`.cfg`/`.ini` files, pastewatch parses the file structure and scans values only. This reduces false positives from keys, comments, and structural elements.
+
+### Allowlist
+
+Create a file with one value per line to suppress known-safe findings:
+
+```
+test@example.com
+192.168.1.1
+# Comments start with #
+```
+
+### Custom Rules
+
+Define additional patterns in a JSON file:
+
+```json
+[
+  {"name": "Internal ID", "pattern": "MYCO-[0-9]{6}"},
+  {"name": "Internal URL", "pattern": "https://internal\\.corp\\.net/\\S+"}
+]
 ```
 
 ---
@@ -285,15 +322,19 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.2.0** · Active development
+**Status: Stable** · **v0.3.0** · Active development
 
 | Milestone | Status |
 |-----------|--------|
-| Core detection (10 types) | Complete |
+| Core detection (13 types) | Complete |
 | Clipboard obfuscation | Complete |
 | CLI scan mode | Complete |
-| Extended detection (+3 types) | Complete |
 | macOS menubar app | Complete |
 | CI pipeline (test/lint) | Complete |
 | SKILL.md agent integration | Complete |
 | Homebrew distribution | Complete |
+| SARIF 2.1.0 output | Complete |
+| Directory scanning | Complete |
+| Format-aware parsing | Complete |
+| Allowlist / baseline | Complete |
+| Custom detection rules | Complete |
