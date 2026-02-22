@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PastewatchCore
 
 /// Monitors the macOS clipboard for changes.
 ///

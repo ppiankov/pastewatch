@@ -1,3 +1,4 @@
+import PastewatchCore
 import SwiftUI
 
 /// Main menubar view for Pastewatch.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Pastewatch
+@testable import PastewatchCore
 
 final class ObfuscatorTests: XCTestCase {
     let config = PastewatchConfig.defaultConfig

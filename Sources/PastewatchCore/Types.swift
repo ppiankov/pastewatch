@@ -2,7 +2,7 @@ import Foundation
 
 /// Detected sensitive data types.
 /// Each type has deterministic detection rules — no ML, no guessing.
-enum SensitiveDataType: String, CaseIterable {
+public enum SensitiveDataType: String, CaseIterable, Codable {
     case email = "Email"
     case phone = "Phone"
     case ipAddress = "IP"
@@ -16,28 +16,41 @@ enum SensitiveDataType: String, CaseIterable {
 }
 
 /// A single detected match in the clipboard content.
-struct DetectedMatch: Identifiable, Equatable {
-    let id = UUID()
-    let type: SensitiveDataType
-    let value: String
-    let range: Range<String.Index>
+public struct DetectedMatch: Identifiable, Equatable {
+    public let id = UUID()
+    public let type: SensitiveDataType
+    public let value: String
+    public let range: Range<String.Index>
 
-    static func == (lhs: DetectedMatch, rhs: DetectedMatch) -> Bool {
+    public init(type: SensitiveDataType, value: String, range: Range<String.Index>) {
+        self.type = type
+        self.value = value
+        self.range = range
+    }
+
+    public static func == (lhs: DetectedMatch, rhs: DetectedMatch) -> Bool {
         lhs.id == rhs.id
     }
 }
 
 /// Result of scanning clipboard content.
-struct ScanResult {
-    let originalContent: String
-    let matches: [DetectedMatch]
-    let obfuscatedContent: String
-    let timestamp: Date
+public struct ScanResult {
+    public let originalContent: String
+    public let matches: [DetectedMatch]
+    public let obfuscatedContent: String
+    public let timestamp: Date
 
-    var hasMatches: Bool { !matches.isEmpty }
+    public init(originalContent: String, matches: [DetectedMatch], obfuscatedContent: String, timestamp: Date) {
+        self.originalContent = originalContent
+        self.matches = matches
+        self.obfuscatedContent = obfuscatedContent
+        self.timestamp = timestamp
+    }
+
+    public var hasMatches: Bool { !matches.isEmpty }
 
     /// Summary for notification display.
-    var summary: String {
+    public var summary: String {
         guard hasMatches else { return "" }
 
         let grouped = Dictionary(grouping: matches, by: { $0.type })
@@ -49,7 +62,7 @@ struct ScanResult {
 }
 
 /// Application state.
-enum AppState: Equatable {
+public enum AppState: Equatable {
     case idle
     case monitoring
     case paused
@@ -57,25 +70,32 @@ enum AppState: Equatable {
 
 /// Configuration for Pastewatch.
 /// Loaded from ~/.config/pastewatch/config.json if present.
-struct PastewatchConfig: Codable {
-    var enabled: Bool
-    var enabledTypes: [String]
-    var showNotifications: Bool
-    var soundEnabled: Bool
+public struct PastewatchConfig: Codable {
+    public var enabled: Bool
+    public var enabledTypes: [String]
+    public var showNotifications: Bool
+    public var soundEnabled: Bool
 
-    static let defaultConfig = PastewatchConfig(
+    public init(enabled: Bool, enabledTypes: [String], showNotifications: Bool, soundEnabled: Bool) {
+        self.enabled = enabled
+        self.enabledTypes = enabledTypes
+        self.showNotifications = showNotifications
+        self.soundEnabled = soundEnabled
+    }
+
+    public static let defaultConfig = PastewatchConfig(
         enabled: true,
         enabledTypes: SensitiveDataType.allCases.map { $0.rawValue },
         showNotifications: true,
         soundEnabled: false
     )
 
-    static let configPath: URL = {
+    public static let configPath: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".config/pastewatch/config.json")
     }()
 
-    static func load() -> PastewatchConfig {
+    public static func load() -> PastewatchConfig {
         guard FileManager.default.fileExists(atPath: configPath.path) else {
             return defaultConfig
         }
@@ -88,14 +108,14 @@ struct PastewatchConfig: Codable {
         }
     }
 
-    func save() throws {
+    public func save() throws {
         let directory = PastewatchConfig.configPath.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(self)
         try data.write(to: PastewatchConfig.configPath)
     }
 
-    func isTypeEnabled(_ type: SensitiveDataType) -> Bool {
+    public func isTypeEnabled(_ type: SensitiveDataType) -> Bool {
         enabledTypes.contains(type.rawValue)
     }
 }

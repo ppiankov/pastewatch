@@ -1,4 +1,5 @@
 import Foundation
+import PastewatchCore
 import UserNotifications
 
 /// Manages system notifications for Pastewatch.

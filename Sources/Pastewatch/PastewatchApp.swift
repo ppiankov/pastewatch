@@ -1,3 +1,4 @@
+import PastewatchCore
 import SwiftUI
 
 /// Pastewatch — Local macOS utility that obfuscates sensitive data before paste.

@@ -5,10 +5,10 @@ import Foundation
 ///
 /// Each rule is a regex pattern that matches high-confidence patterns only.
 /// False negatives are preferred over false positives.
-struct DetectionRules {
+public struct DetectionRules {
 
     /// All detection rules, ordered by specificity (most specific first).
-    static let rules: [(SensitiveDataType, NSRegularExpression)] = {
+    public static let rules: [(SensitiveDataType, NSRegularExpression)] = {
         var result: [(SensitiveDataType, NSRegularExpression)] = []
 
         // SSH Private Key - very high confidence
@@ -199,7 +199,7 @@ struct DetectionRules {
 
     /// Scan content for sensitive data.
     /// Returns all matches found.
-    static func scan(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {
+    public static func scan(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {
         var matches: [DetectedMatch] = []
         var matchedRanges: [Range<String.Index>] = []
 

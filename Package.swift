@@ -7,20 +7,33 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
-    products: [
-        .executable(name: "pastewatch", targets: ["Pastewatch"])
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0")
     ],
     targets: [
+        .target(
+            name: "PastewatchCore",
+            path: "Sources/PastewatchCore"
+        ),
         .executableTarget(
             name: "Pastewatch",
+            dependencies: ["PastewatchCore"],
             path: "Sources/Pastewatch",
             resources: [
                 .copy("Resources/AppIcon.icns")
             ]
         ),
+        .executableTarget(
+            name: "PastewatchCLI",
+            dependencies: [
+                "PastewatchCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ],
+            path: "Sources/PastewatchCLI"
+        ),
         .testTarget(
             name: "PastewatchTests",
-            dependencies: ["Pastewatch"],
+            dependencies: ["PastewatchCore"],
             path: "Tests/PastewatchTests"
         )
     ]
