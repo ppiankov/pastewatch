@@ -10,7 +10,7 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "File to scan (reads from stdin if omitted)")
     var file: String?
 
-    @Option(name: .long, help: "Output format: text, json")
+    @Option(name: .long, help: "Output format: text, json, sarif")
     var format: OutputFormat = .text
 
     @Flag(name: .long, help: "Check mode: exit code only, no output modification")
@@ -64,6 +64,11 @@ struct Scan: ParsableCommand {
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 let data = try encoder.encode(output)
                 print(String(data: data, encoding: .utf8)!)
+            case .sarif:
+                let data = SarifFormatter.format(
+                    matches: matches, filePath: file, version: "0.3.0"
+                )
+                print(String(data: data, encoding: .utf8)!)
             }
             Darwin.exit(6)
         }
@@ -84,6 +89,11 @@ struct Scan: ParsableCommand {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(output)
             print(String(data: data, encoding: .utf8)!)
+        case .sarif:
+            let data = SarifFormatter.format(
+                matches: matches, filePath: file, version: "0.3.0"
+            )
+            print(String(data: data, encoding: .utf8)!)
         }
         Darwin.exit(6)
     }
@@ -92,6 +102,7 @@ struct Scan: ParsableCommand {
 enum OutputFormat: String, ExpressibleByArgument {
     case text
     case json
+    case sarif
 }
 
 struct Finding: Codable {
