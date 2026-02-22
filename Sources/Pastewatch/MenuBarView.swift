@@ -92,24 +92,24 @@ struct MenuBarView: View {
 
     private var actionsSection: some View {
         VStack(spacing: 0) {
-            Button(action: { monitor.toggle() }) {
+            Button(action: { monitor.toggle() }, label: {
                 HStack {
                     Image(systemName: toggleIcon)
                     Text(toggleText)
                     Spacer()
                 }
-            }
+            })
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
 
-            Button(action: { showingSettings.toggle() }) {
+            Button(action: { showingSettings.toggle() }, label: {
                 HStack {
                     Image(systemName: "gear")
                     Text("Settings...")
                     Spacer()
                 }
-            }
+            })
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -120,13 +120,13 @@ struct MenuBarView: View {
     }
 
     private var footerSection: some View {
-        Button(action: { NSApplication.shared.terminate(nil) }) {
+        Button(action: { NSApplication.shared.terminate(nil) }, label: {
             HStack {
                 Image(systemName: "power")
                 Text("Quit Pastewatch")
                 Spacer()
             }
-        }
+        })
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
