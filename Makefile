@@ -59,5 +59,13 @@ dmg: app ## Build DMG installer
 	hdiutil create -volname "Pastewatch" -srcfolder release/Pastewatch.app -ov -format UDZO release/Pastewatch.dmg
 	@echo "DMG created at release/Pastewatch.dmg"
 
+.PHONY: build-cli
+build-cli: ## Build CLI debug binary
+	swift build --target PastewatchCLI
+
+.PHONY: release-cli
+release-cli: ## Build CLI release binary
+	swift build -c release --target PastewatchCLI
+
 .PHONY: all
-all: lint test release ## Run lint, tests, and build release
+all: lint test release release-cli ## Run lint, tests, and build all releases
