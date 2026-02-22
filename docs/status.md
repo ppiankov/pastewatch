@@ -2,15 +2,15 @@
 
 ## Current State
 
-**MVP — Experimental Prototype**
+**Stable — v0.3.0**
 
-The core functionality works:
-- Clipboard monitoring active
-- Detection rules implemented
-- Obfuscation functional
-- macOS menubar app running
-
-Edge cases exist. Feedback welcome.
+Core and CLI functionality complete:
+- Clipboard monitoring and obfuscation (GUI)
+- 13 detection types with deterministic regex matching
+- CLI: file, directory, and stdin scanning
+- SARIF 2.1.0 output for CI integration
+- Format-aware parsing (.env, JSON, YAML, properties)
+- Allowlist and custom detection rules
 
 ---
 
@@ -30,9 +30,18 @@ Edge cases exist. Feedback welcome.
 | DB connection string detection | ✓ Stable |
 | SSH private key detection | ✓ Stable |
 | Credit card detection (Luhn) | ✓ Stable |
+| File path detection | ✓ Stable |
+| Hostname detection | ✓ Stable |
+| Credential detection | ✓ Stable |
 | Menubar UI | ✓ Functional |
 | System notifications | ✓ Functional |
 | Configuration persistence | ✓ Functional |
+| CLI scan (file/stdin) | ✓ Stable |
+| CLI directory scanning | ✓ Stable |
+| SARIF 2.1.0 output | ✓ Stable |
+| Format-aware parsing | ✓ Stable |
+| Allowlist | ✓ Stable |
+| Custom detection rules | ✓ Stable |
 
 ---
 
@@ -53,13 +62,12 @@ Edge cases exist. Feedback welcome.
 **Considered for future versions:**
 
 - Additional regional phone formats
-- Custom pattern definitions
 - Keyboard shortcut for pause/resume
 - Launch at login option
+- Inline allowlist comments (`# pastewatch:allow`)
 
 **Will evaluate carefully:**
 
-- Pattern import/export
 - Detection statistics (local only)
 
 ---
