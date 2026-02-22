@@ -7,6 +7,21 @@ import Foundation
 /// False negatives are preferred over false positives.
 public struct DetectionRules {
 
+    /// Safe hosts that should not trigger hostname detection.
+    /// Matches chainwatch's safeHosts for consistency across tools.
+    static let safeHosts: Set<String> = [
+        "example.com", "example.org", "example.net",
+        "localhost",
+        "github.com", "google.com",
+        "cloudflare.com", "amazonaws.com",
+        "ubuntu.com", "debian.org", "kernel.org",
+        "wikipedia.org",
+        "stackexchange.com", "stackoverflow.com",
+        "apple.com", "microsoft.com",
+        "npmjs.com", "pypi.org", "swift.org",
+        "golang.org"
+    ]
+
     /// All detection rules, ordered by specificity (most specific first).
     public static let rules: [(SensitiveDataType, NSRegularExpression)] = {
         var result: [(SensitiveDataType, NSRegularExpression)] = []
@@ -81,6 +96,27 @@ public struct DetectionRules {
             result.append((.genericApiKey, regex))
         }
 
+        // Credential key=value pairs - high confidence
+        // Matches password=, secret:, api_key=, etc.
+        // Placed after API key patterns so specific tokens match first.
+        // Ported from chainwatch internal/redact/scanner.go
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?i)(?:password|passwd|secret|token|api_key|apikey|auth|credentials?)[ \t]*[=:][ \t]*\S+"#,
+            options: []
+        ) {
+            result.append((.credential, regex))
+        }
+
+        // File paths revealing infrastructure - high confidence
+        // Matches /home/..., /var/..., /etc/..., etc.
+        // Ported from chainwatch internal/redact/scanner.go
+        if let regex = try? NSRegularExpression(
+            pattern: #"(/(?:home|var|etc|root|usr|tmp|opt)/\S+)"#,
+            options: []
+        ) {
+            result.append((.filePath, regex))
+        }
+
         // UUID - high confidence
         // Standard UUID v4 format
         if let regex = try? NSRegularExpression(
@@ -106,6 +142,16 @@ public struct DetectionRules {
             options: []
         ) {
             result.append((.ipAddress, regex))
+        }
+
+        // Internal hostnames (FQDN) - with safe list filtering
+        // Matches fully qualified domain names
+        // Ported from chainwatch internal/redact/scanner.go
+        if let regex = try? NSRegularExpression(
+            pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[-a-zA-Z0-9]+\.[a-zA-Z]{2,}\b"#,
+            options: []
+        ) {
+            result.append((.hostname, regex))
         }
 
         // Email Address - high confidence
@@ -270,6 +316,23 @@ public struct DetectionRules {
         case .email:
             // Basic validation — regex already handles most
             return value.contains("@") && value.contains(".")
+
+        case .hostname:
+            // Exclude safe/public hosts
+            let lower = value.lowercased()
+            if safeHosts.contains(lower) { return false }
+            // Exclude strings that look like IP addresses (all digits and dots)
+            if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
+            return true
+
+        case .filePath:
+            // Require minimum path depth to avoid false positives
+            let components = value.split(separator: "/").filter { !$0.isEmpty }
+            return components.count >= 3
+
+        case .credential:
+            // Regex is already high-confidence (keyword + separator + value)
+            return true
 
         default:
             return true

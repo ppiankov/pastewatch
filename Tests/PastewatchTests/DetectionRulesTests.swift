@@ -187,6 +187,85 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertEqual(matches.count, 0)
     }
 
+    // MARK: - File Path Detection
+
+    func testDetectsLinuxFilePath() {
+        let content = "Config at /etc/nginx/nginx.conf"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let pathMatches = matches.filter { $0.type == .filePath }
+        XCTAssertEqual(pathMatches.count, 1)
+    }
+
+    func testDetectsHomePath() {
+        let content = "SSH key at /home/deploy/.ssh/id_rsa"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let pathMatches = matches.filter { $0.type == .filePath }
+        XCTAssertGreaterThanOrEqual(pathMatches.count, 1)
+    }
+
+    func testIgnoresShortPath() {
+        let content = "Found in /tmp/x"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let pathMatches = matches.filter { $0.type == .filePath }
+        // Too short — only 2 components (tmp, x)
+        XCTAssertEqual(pathMatches.count, 0)
+    }
+
+    // MARK: - Hostname Detection
+
+    func testDetectsInternalHostname() {
+        let content = "Connect to db-primary.internal.corp.net"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertGreaterThanOrEqual(hostMatches.count, 1)
+    }
+
+    func testIgnoresSafeHosts() {
+        let content = "Visit github.com for source"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0)
+    }
+
+    func testIgnoresExampleDotCom() {
+        let content = "See example.com for docs"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0)
+    }
+
+    // MARK: - Credential Detection
+
+    func testDetectsPasswordKeyValue() {
+        let content = "password=s3cret_value"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let credMatches = matches.filter { $0.type == .credential }
+        XCTAssertEqual(credMatches.count, 1)
+    }
+
+    func testDetectsSecretColonValue() {
+        let content = "secret: my_api_secret_123"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let credMatches = matches.filter { $0.type == .credential }
+        XCTAssertGreaterThanOrEqual(credMatches.count, 1)
+    }
+
+    func testDetectsTokenAssignment() {
+        let content = "auth=bearer_token_xyz123"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let credMatches = matches.filter { $0.type == .credential }
+        XCTAssertGreaterThanOrEqual(credMatches.count, 1)
+    }
+
     // MARK: - Config Filtering
 
     func testRespectsDisabledTypes() {
