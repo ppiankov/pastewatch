@@ -24,11 +24,29 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let type: SensitiveDataType
     public let value: String
     public let range: Range<String.Index>
+    public let line: Int
+    public let filePath: String?
+    public let customRuleName: String?
 
-    public init(type: SensitiveDataType, value: String, range: Range<String.Index>) {
+    public init(
+        type: SensitiveDataType,
+        value: String,
+        range: Range<String.Index>,
+        line: Int = 1,
+        filePath: String? = nil,
+        customRuleName: String? = nil
+    ) {
         self.type = type
         self.value = value
         self.range = range
+        self.line = line
+        self.filePath = filePath
+        self.customRuleName = customRuleName
+    }
+
+    /// Display name for output (custom rule name or type rawValue).
+    public var displayName: String {
+        customRuleName ?? type.rawValue
     }
 
     public static func == (lhs: DetectedMatch, rhs: DetectedMatch) -> Bool {
@@ -71,6 +89,17 @@ public enum AppState: Equatable {
     case paused
 }
 
+/// Custom rule definition for user-defined patterns.
+public struct CustomRuleConfig: Codable {
+    public let name: String
+    public let pattern: String
+
+    public init(name: String, pattern: String) {
+        self.name = name
+        self.pattern = pattern
+    }
+}
+
 /// Configuration for Pastewatch.
 /// Loaded from ~/.config/pastewatch/config.json if present.
 public struct PastewatchConfig: Codable {
@@ -78,12 +107,34 @@ public struct PastewatchConfig: Codable {
     public var enabledTypes: [String]
     public var showNotifications: Bool
     public var soundEnabled: Bool
+    public var allowedValues: [String]
+    public var customRules: [CustomRuleConfig]
 
-    public init(enabled: Bool, enabledTypes: [String], showNotifications: Bool, soundEnabled: Bool) {
+    public init(
+        enabled: Bool,
+        enabledTypes: [String],
+        showNotifications: Bool,
+        soundEnabled: Bool,
+        allowedValues: [String] = [],
+        customRules: [CustomRuleConfig] = []
+    ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
         self.showNotifications = showNotifications
         self.soundEnabled = soundEnabled
+        self.allowedValues = allowedValues
+        self.customRules = customRules
+    }
+
+    // Backward-compatible decoding: missing fields get defaults
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        enabledTypes = try container.decode([String].self, forKey: .enabledTypes)
+        showNotifications = try container.decode(Bool.self, forKey: .showNotifications)
+        soundEnabled = try container.decode(Bool.self, forKey: .soundEnabled)
+        allowedValues = try container.decodeIfPresent([String].self, forKey: .allowedValues) ?? []
+        customRules = try container.decodeIfPresent([CustomRuleConfig].self, forKey: .customRules) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(

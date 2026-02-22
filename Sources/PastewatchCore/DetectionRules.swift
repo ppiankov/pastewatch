@@ -273,7 +273,8 @@ public struct DetectionRules {
                 // Additional validation per type
                 if !isValidMatch(value, type: type) { continue }
 
-                matches.append(DetectedMatch(type: type, value: value, range: range))
+                let line = lineNumber(of: range.lowerBound, in: content)
+                matches.append(DetectedMatch(type: type, value: value, range: range, line: line))
                 matchedRanges.append(range)
             }
         }
@@ -337,6 +338,19 @@ public struct DetectionRules {
         default:
             return true
         }
+    }
+
+    /// Compute 1-based line number for a string index.
+    static func lineNumber(of index: String.Index, in content: String) -> Int {
+        var line = 1
+        var current = content.startIndex
+        while current < index {
+            if content[current] == "\n" {
+                line += 1
+            }
+            current = content.index(after: current)
+        }
+        return line
     }
 
     /// Luhn algorithm for credit card validation.
