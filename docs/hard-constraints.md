@@ -102,14 +102,16 @@ The user's intent is sacred. Modify the data, not the action.
 
 ## 8. Scope Limitation
 
-**Only guard clipboard → external system boundary.**
+**Guard boundaries where data crosses to external systems.**
 
+- GUI: clipboard → AI chat boundary (before paste)
+- CLI: file/stdin → stdout boundary (scan and report)
 - Not a general DLP tool
 - Not a compliance product
-- Not a file scanner
 - Not a network monitor
+- Not a replacement for Loki, ELK, or full SAST
 
-Narrow scope = strong guarantees. Broader scope = weaker everything.
+The CLI extends scanning to files and directories for CI/pre-commit use, but the principle holds: detect at the boundary, report findings, let the user decide.
 
 ---
 

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-23
+
+### Added
+
+- SARIF 2.1.0 output format (`--format sarif`) for GitHub code scanning integration
+- Directory scanning (`--dir path`) with recursive file discovery
+  - Extension whitelist for config, source, and key files
+  - Skips .git, node_modules, vendor, build directories
+  - Binary file detection
+- Format-aware scanning for structured files
+  - .env: KEY=VALUE with quote stripping
+  - .json: recursive string value extraction
+  - .yml/.yaml: line-by-line key: value parsing
+  - .properties/.cfg/.ini: key=value with comment handling
+- Allowlist for false positive suppression (`--allowlist path`)
+  - File-based (one value per line, # comments)
+  - Config-based (allowedValues array)
+  - Merged from all sources into O(1) lookup
+- Custom detection rules (`--rules path`)
+  - JSON array of {name, pattern} objects
+  - Regex validated at load time
+  - Runs after built-in rules with same overlap logic
+  - SARIF integration: `pastewatch/CUSTOM_<NAME>` rule IDs
+- Line number tracking in DetectedMatch for precise location reporting
+
 ## [0.2.0] - 2026-02-22
 
 ### Added
