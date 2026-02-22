@@ -13,6 +13,9 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case sshPrivateKey = "SSH Key"
     case jwtToken = "JWT"
     case creditCard = "Card"
+    case filePath = "File Path"
+    case hostname = "Hostname"
+    case credential = "Credential"
 }
 
 /// A single detected match in the clipboard content.
