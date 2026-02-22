@@ -5,9 +5,9 @@ user-invocable: false
 metadata: {"requires":{"bins":["pastewatch-cli"]}}
 ---
 
-# pastewatch-cli — Sensitive Data Scanner
+# pastewatch-cli
 
-You have access to `pastewatch-cli`, a tool that scans text for sensitive data patterns and either reports findings or outputs obfuscated text. All detection is deterministic regex-based pattern matching with no ML or network calls.
+Sensitive data scanner. Deterministic regex-based detection and obfuscation for text content. No ML, no network calls.
 
 ## Install
 
@@ -15,30 +15,56 @@ You have access to `pastewatch-cli`, a tool that scans text for sensitive data p
 brew install ppiankov/tap/pastewatch
 ```
 
-Or download binary:
-
-```bash
-curl -LO https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz
-tar -xzf pastewatch-cli_*.tar.gz
-sudo mv pastewatch-cli /usr/local/bin/
-```
-
 ## Commands
 
-| Command | What it does |
-|---------|-------------|
-| `pastewatch-cli scan` | Scan text for sensitive data (default subcommand) |
-| `pastewatch-cli version` | Print version |
+### pastewatch-cli scan
 
-## Key Flags
+Scan text for sensitive data patterns. Reports findings or outputs obfuscated text.
 
-| Flag | Description |
-|------|-------------|
-| `--file` | File to scan (reads from stdin if omitted) |
-| `--format` | Output format: text (default), json |
-| `--check` | Check mode: exit code only, no output modification |
+**Flags:**
+- `--format json` — output as JSON (default: text). Also supports `sarif` for OASIS SARIF 2.1.0
+- `--file path` — file to scan (reads from stdin if omitted)
+- `--dir path` — directory to scan recursively (mutually exclusive with --file)
+- `--check` — check mode: exit code only, no output modification
+- `--allowlist path` — path to allowlist file (one value per line, # comments)
+- `--rules path` — path to custom rules JSON file
 
-## Detection Types
+**JSON output:**
+```json
+{
+  "count": 2,
+  "findings": [
+    {"type": "Email", "value": "admin@internal.corp.net"},
+    {"type": "AWS Key", "value": "AKIA****************"}
+  ],
+  "obfuscated": "contact ****@**** about key ****"
+}
+```
+
+In check mode (`--check`), the `obfuscated` field is null.
+
+**Exit codes:**
+- 0: clean — no sensitive data found
+- 1: internal error
+- 2: invalid arguments (file not found, conflicting flags)
+- 6: findings detected
+
+### pastewatch-cli version
+
+Print version information.
+
+**Flags:**
+
+No flags.
+
+**Exit codes:**
+- 0: success
+
+### pastewatch-cli init
+
+Not implemented. Pastewatch is stateless and requires no config file. Pass all options via flags.
+
+## Detection types
 
 | Type | What it matches |
 |------|----------------|
@@ -56,60 +82,30 @@ sudo mv pastewatch-cli /usr/local/bin/
 | Hostname | Fully qualified domain names (excludes safe public hosts) |
 | Credential | Key-value pairs with password, secret, token, api_key keywords |
 
-## Exit Codes
+## What this does NOT do
 
-| Code | Meaning |
-|------|---------|
-| `0` | Clean — no sensitive data found |
-| `1` | Internal error |
-| `2` | Invalid arguments (e.g. file not found) |
-| `6` | Findings detected |
+- Does not use ML or probabilistic scoring — deterministic regex matching only
+- Does not make network calls — all detection is local, offline
+- Does not modify the clipboard in CLI mode — reads input, writes output
+- Does not maintain persistent state — every invocation is stateless
+- Does not block or intercept — reports findings, does not prevent actions
+- Does not execute or evaluate scanned content
 
-## Agent Usage Patterns
-
-### Pre-commit hook
+## Parsing examples
 
 ```bash
-git diff --cached --diff-filter=d | pastewatch-cli scan --check
+# Check if text is clean
+echo "hello world" | pastewatch-cli scan --check && echo "clean" || echo "found sensitive data"
+
+# Get finding count
+pastewatch-cli scan --file config.yml --format json | jq '.count'
+
+# List finding types
+pastewatch-cli scan --file .env --format json | jq -r '.findings[].type'
+
+# Get obfuscated output
+cat debug.log | pastewatch-cli scan --format json | jq -r '.obfuscated'
+
+# Scan directory, check mode
+pastewatch-cli scan --dir . --check --format json | jq '.count'
 ```
-
-### CI pipeline scan
-
-```bash
-pastewatch-cli scan --file config.yml --check --format json
-```
-
-### Obfuscate before sharing
-
-```bash
-cat debug.log | pastewatch-cli scan > sanitized.log
-```
-
-### JSON output example
-
-```json
-{
-  "count": 2,
-  "findings": [
-    {
-      "type": "Email",
-      "value": "admin@internal.corp.net"
-    },
-    {
-      "type": "AWS Key",
-      "value": "AKIA****************"
-    }
-  ],
-  "obfuscated": "contact ****@**** about key ****"
-}
-```
-
-In check mode (`--check --format json`), the `obfuscated` field is null and the tool writes to stdout then exits with code 6 if findings exist.
-
-## What pastewatch Does NOT Do
-
-- No ML or probabilistic scoring — deterministic regex matching only
-- No network calls — all detection is local, offline
-- No clipboard modification in CLI mode — reads input, writes output
-- No persistent state — every invocation is stateless
-- No blocking or interception — reports findings, does not prevent actions
