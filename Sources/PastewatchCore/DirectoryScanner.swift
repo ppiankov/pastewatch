@@ -86,18 +86,37 @@ public struct DirectoryScanner {
                 ? String(filePath.dropFirst(dirPath.count + 1))
                 : fileURL.lastPathComponent
 
-            let matches = DetectionRules.scan(content, config: config)
-
-            // Set filePath on matches
-            let fileMatches = matches.map { match in
-                DetectedMatch(
-                    type: match.type,
-                    value: match.value,
-                    range: match.range,
-                    line: match.line,
-                    filePath: relativePath,
-                    customRuleName: match.customRuleName
-                )
+            // Format-aware scanning
+            let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
+            var fileMatches: [DetectedMatch]
+            if let parser = parserForExtension(parsedExt) {
+                let parsedValues = parser.parseValues(from: content)
+                fileMatches = []
+                for pv in parsedValues {
+                    let valueMatches = DetectionRules.scan(pv.value, config: config)
+                    for vm in valueMatches {
+                        fileMatches.append(DetectedMatch(
+                            type: vm.type,
+                            value: vm.value,
+                            range: vm.range,
+                            line: pv.line,
+                            filePath: relativePath,
+                            customRuleName: vm.customRuleName
+                        ))
+                    }
+                }
+            } else {
+                let matches = DetectionRules.scan(content, config: config)
+                fileMatches = matches.map { match in
+                    DetectedMatch(
+                        type: match.type,
+                        value: match.value,
+                        range: match.range,
+                        line: match.line,
+                        filePath: relativePath,
+                        customRuleName: match.customRuleName
+                    )
+                }
             }
 
             if !fileMatches.isEmpty {
