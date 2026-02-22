@@ -21,7 +21,7 @@ struct Scan: ParsableCommand {
 
         if let filePath = file {
             guard FileManager.default.fileExists(atPath: filePath) else {
-                FileHandle.standardError.write("error: file not found: \(filePath)\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("error: file not found: \(filePath)\n".utf8))
                 throw ExitCode(rawValue: 2)
             }
             input = try String(contentsOfFile: filePath, encoding: .utf8)
@@ -53,7 +53,7 @@ struct Scan: ParsableCommand {
                     .sorted { $0.value.count > $1.value.count }
                     .map { "\($0.key.rawValue): \($0.value.count)" }
                     .joined(separator: ", ")
-                FileHandle.standardError.write("findings: \(summary)\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("findings: \(summary)\n".utf8))
             case .json:
                 let output = ScanOutput(
                     findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value) },
