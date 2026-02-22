@@ -4,13 +4,18 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.2.0)'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Release
+  test:
+    name: Test
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -18,19 +23,44 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.2.app
 
-      - name: Build Release Binary
+      - name: Run Tests
+        run: swift test
+
+  build:
+    name: Build Release
+    runs-on: macos-14
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Release Binaries
         run: |
           swift build -c release
           mkdir -p release
-          cp .build/release/pastewatch release/
+          cp .build/release/Pastewatch release/pastewatch
+          cp .build/release/PastewatchCLI release/pastewatch-cli
 
       - name: Create App Bundle
         run: |
+          VERSION="${{ steps.tag.outputs.tag }}"
+          VERSION="${VERSION#v}"
           mkdir -p "release/Pastewatch.app/Contents/MacOS"
           mkdir -p "release/Pastewatch.app/Contents/Resources"
-          cp .build/release/pastewatch "release/Pastewatch.app/Contents/MacOS/Pastewatch"
+          cp .build/release/Pastewatch "release/Pastewatch.app/Contents/MacOS/Pastewatch"
           cp Sources/Pastewatch/Resources/AppIcon.icns "release/Pastewatch.app/Contents/Resources/AppIcon.icns"
-          cat > "release/Pastewatch.app/Contents/Info.plist" << 'EOF'
+          cat > "release/Pastewatch.app/Contents/Info.plist" << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -50,7 +80,7 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>${GITHUB_REF_NAME#v}</string>
+              <string>${VERSION}</string>
               <key>CFBundleVersion</key>
               <string>1</string>
               <key>LSMinimumSystemVersion</key>
@@ -67,30 +97,37 @@ jobs:
 
       - name: Create DMG
         run: |
-          hdiutil create -volname "Pastewatch" -srcfolder release/Pastewatch.app -ov -format UDZO release/Pastewatch-${{ github.ref_name }}.dmg
+          TAG="${{ steps.tag.outputs.tag }}"
+          hdiutil create -volname "Pastewatch" -srcfolder release/Pastewatch.app -ov -format UDZO "release/Pastewatch-${TAG}.dmg"
 
       - name: Create ZIP
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           cd release
-          zip -r Pastewatch-${{ github.ref_name }}.zip Pastewatch.app
+          zip -r "Pastewatch-${TAG}.zip" Pastewatch.app
 
       - name: Generate SHA256 checksums
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           cd release
-          shasum -a 256 Pastewatch-${{ github.ref_name }}.dmg > Pastewatch-${{ github.ref_name }}.dmg.sha256
-          shasum -a 256 Pastewatch-${{ github.ref_name }}.zip > Pastewatch-${{ github.ref_name }}.zip.sha256
+          shasum -a 256 "Pastewatch-${TAG}.dmg" > "Pastewatch-${TAG}.dmg.sha256"
+          shasum -a 256 "Pastewatch-${TAG}.zip" > "Pastewatch-${TAG}.zip.sha256"
           shasum -a 256 pastewatch > pastewatch.sha256
+          shasum -a 256 pastewatch-cli > pastewatch-cli.sha256
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: |
-            release/Pastewatch-${{ github.ref_name }}.dmg
-            release/Pastewatch-${{ github.ref_name }}.dmg.sha256
-            release/Pastewatch-${{ github.ref_name }}.zip
-            release/Pastewatch-${{ github.ref_name }}.zip.sha256
+            release/Pastewatch-${{ steps.tag.outputs.tag }}.dmg
+            release/Pastewatch-${{ steps.tag.outputs.tag }}.dmg.sha256
+            release/Pastewatch-${{ steps.tag.outputs.tag }}.zip
+            release/Pastewatch-${{ steps.tag.outputs.tag }}.zip.sha256
             release/pastewatch
             release/pastewatch.sha256
+            release/pastewatch-cli
+            release/pastewatch-cli.sha256
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
