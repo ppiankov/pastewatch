@@ -266,6 +266,26 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
     }
 
+    // MARK: - Line Number Tracking
+
+    func testLineNumbersOnMultilineContent() {
+        let content = "First line is clean\nSecond has test@corp.com\nThird line\nFourth has 192.168.1.50"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let emailMatch = matches.first { $0.type == .email }
+        XCTAssertEqual(emailMatch?.line, 2)
+
+        let ipMatch = matches.first { $0.type == .ipAddress }
+        XCTAssertEqual(ipMatch?.line, 4)
+    }
+
+    func testLineNumberSingleLine() {
+        let content = "Server at 10.0.0.1"
+        let matches = DetectionRules.scan(content, config: config)
+
+        XCTAssertEqual(matches.first?.line, 1)
+    }
+
     // MARK: - Config Filtering
 
     func testRespectsDisabledTypes() {
