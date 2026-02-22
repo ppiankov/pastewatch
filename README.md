@@ -144,6 +144,62 @@ Silence is success.
 
 ---
 
+## CLI Mode
+
+Pastewatch includes a CLI tool for scanning text without the GUI:
+
+```bash
+# Scan from stdin
+echo "password=hunter2" | pastewatch-cli scan
+
+# Scan a file
+pastewatch-cli scan --file config.yml
+
+# Check mode (exit code only, for CI)
+git diff --cached | pastewatch-cli scan --check
+
+# JSON output
+pastewatch-cli scan --format json --check < input.txt
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean |
+| 1 | Internal error |
+| 2 | Invalid args |
+| 6 | Findings detected |
+
+### Pre-commit Hook
+
+```bash
+#!/bin/sh
+git diff --cached --diff-filter=d | pastewatch-cli scan --check
+```
+
+---
+
+## Agent Integration
+
+Install the CLI binary:
+
+```bash
+curl -LO https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli
+chmod +x pastewatch-cli
+sudo mv pastewatch-cli /usr/local/bin/
+```
+
+Or via Homebrew:
+
+```bash
+brew install ppiankov/tap/pastewatch
+```
+
+Agents: read [`SKILL.md`](SKILL.md) for commands, flags, detection types, and exit codes.
+
+---
+
 ## Configuration
 
 Optional configuration file: `~/.config/pastewatch/config.json`
@@ -227,8 +283,17 @@ Do not pretend it guarantees compliance or safety.
 
 ---
 
-## Status
+## Project Status
 
-**MVP** — Experimental prototype.
+**Status: Stable** · **v0.2.0** · Active development
 
-The core detection and obfuscation work. Edge cases exist. Feedback welcome.
+| Milestone | Status |
+|-----------|--------|
+| Core detection (10 types) | Complete |
+| Clipboard obfuscation | Complete |
+| CLI scan mode | Complete |
+| Extended detection (+3 types) | Complete |
+| macOS menubar app | Complete |
+| CI pipeline (test/lint) | Complete |
+| SKILL.md agent integration | Complete |
+| Homebrew distribution | Complete |
