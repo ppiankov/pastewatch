@@ -282,6 +282,49 @@ public struct DetectionRules {
         return matches
     }
 
+    /// Scan with allowlist filtering and custom rules.
+    public static func scan(
+        _ content: String,
+        config: PastewatchConfig,
+        allowlist: Allowlist = Allowlist(),
+        customRules: [CustomRule] = []
+    ) -> [DetectedMatch] {
+        // Run built-in rules
+        var matches = scan(content, config: config)
+        var matchedRanges = matches.map { $0.range }
+
+        // Run custom rules (after built-in, same overlap logic)
+        for rule in customRules {
+            let nsRange = NSRange(content.startIndex..., in: content)
+            let regexMatches = rule.regex.matches(in: content, options: [], range: nsRange)
+
+            for match in regexMatches {
+                guard let range = Range(match.range, in: content) else { continue }
+
+                let overlaps = matchedRanges.contains { $0.overlaps(range) }
+                if overlaps { continue }
+
+                let value = String(content[range])
+                let line = lineNumber(of: range.lowerBound, in: content)
+                matches.append(DetectedMatch(
+                    type: .credential,
+                    value: value,
+                    range: range,
+                    line: line,
+                    customRuleName: rule.name
+                ))
+                matchedRanges.append(range)
+            }
+        }
+
+        // Apply allowlist filtering
+        if !allowlist.values.isEmpty {
+            matches = allowlist.filter(matches)
+        }
+
+        return matches
+    }
+
     /// Check if a value should be excluded from detection.
     private static func shouldExclude(_ value: String) -> Bool {
         for pattern in exclusionPatterns {
