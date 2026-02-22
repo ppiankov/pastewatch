@@ -7,11 +7,11 @@ import Foundation
 /// - Mapping exists only in memory
 /// - No persistence, no recovery mechanism
 /// - After paste, the system returns to rest
-struct Obfuscator {
+public struct Obfuscator {
 
     /// Obfuscate all matches in the content.
     /// Returns the obfuscated content with matches replaced by placeholders.
-    static func obfuscate(_ content: String, matches: [DetectedMatch]) -> String {
+    public static func obfuscate(_ content: String, matches: [DetectedMatch]) -> String {
         guard !matches.isEmpty else { return content }
 
         // Sort matches by range start position (descending) to replace from end
