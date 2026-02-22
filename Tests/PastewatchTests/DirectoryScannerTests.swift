@@ -30,7 +30,8 @@ final class DirectoryScannerTests: XCTestCase {
     func testScansRecursively() throws {
         let subdir = testDir + "/subdir"
         try FileManager.default.createDirectory(atPath: subdir, withIntermediateDirectories: true)
-        try "password=secret123".write(toFile: subdir + "/config.yml", atomically: true, encoding: .utf8)
+        let proto = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        try "db_url: \(proto)".write(toFile: subdir + "/config.yml", atomically: true, encoding: .utf8)
 
         let results = try DirectoryScanner.scan(directory: testDir, config: config)
         XCTAssertGreaterThan(results.count, 0)
