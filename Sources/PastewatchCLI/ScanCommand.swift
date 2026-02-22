@@ -33,31 +33,8 @@ struct Scan: ParsableCommand {
 
     func run() throws {
         let config = PastewatchConfig.defaultConfig
-
-        // Load allowlist
-        var mergedAllowlist = Allowlist.fromConfig(config)
-        if let allowlistPath = allowlist {
-            guard FileManager.default.fileExists(atPath: allowlistPath) else {
-                FileHandle.standardError.write(Data("error: allowlist file not found: \(allowlistPath)\n".utf8))
-                throw ExitCode(rawValue: 2)
-            }
-            let fileAllowlist = try Allowlist.load(from: allowlistPath)
-            mergedAllowlist = mergedAllowlist.merged(with: fileAllowlist)
-        }
-
-        // Load custom rules
-        var customRulesList: [CustomRule] = []
-        if !config.customRules.isEmpty {
-            customRulesList = try CustomRule.compile(config.customRules)
-        }
-        if let rulesPath = rules {
-            guard FileManager.default.fileExists(atPath: rulesPath) else {
-                FileHandle.standardError.write(Data("error: rules file not found: \(rulesPath)\n".utf8))
-                throw ExitCode(rawValue: 2)
-            }
-            let fileRules = try CustomRule.load(from: rulesPath)
-            customRulesList.append(contentsOf: fileRules)
-        }
+        let mergedAllowlist = try loadAllowlist(config: config)
+        let customRulesList = try loadCustomRules(config: config)
 
         // Directory scanning mode
         if let dirPath = dir {
@@ -71,73 +48,17 @@ struct Scan: ParsableCommand {
         }
 
         // Single file or stdin mode
-        let input: String
-        if let filePath = file {
-            guard FileManager.default.fileExists(atPath: filePath) else {
-                FileHandle.standardError.write(Data("error: file not found: \(filePath)\n".utf8))
-                throw ExitCode(rawValue: 2)
-            }
-            input = try String(contentsOfFile: filePath, encoding: .utf8)
-        } else {
-            var lines: [String] = []
-            while let line = readLine(strippingNewline: false) {
-                lines.append(line)
-            }
-            input = lines.joined()
-        }
-
+        let input = try readInput()
         guard !input.isEmpty else { return }
 
-        let matches: [DetectedMatch]
-        if let filePath = file {
-            let ext: String
-            if filePath.hasSuffix(".env") || URL(fileURLWithPath: filePath).lastPathComponent == ".env" {
-                ext = "env"
-            } else {
-                ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
-            }
-
-            if let parser = parserForExtension(ext) {
-                let parsedValues = parser.parseValues(from: input)
-                var collected: [DetectedMatch] = []
-                for pv in parsedValues {
-                    let valueMatches = DetectionRules.scan(
-                        pv.value, config: config,
-                        allowlist: mergedAllowlist, customRules: customRulesList
-                    )
-                    for vm in valueMatches {
-                        collected.append(DetectedMatch(
-                            type: vm.type,
-                            value: vm.value,
-                            range: vm.range,
-                            line: pv.line,
-                            filePath: filePath,
-                            customRuleName: vm.customRuleName
-                        ))
-                    }
-                }
-                matches = collected
-            } else {
-                matches = DetectionRules.scan(
-                    input, config: config,
-                    allowlist: mergedAllowlist, customRules: customRulesList
-                )
-            }
-        } else {
-            matches = DetectionRules.scan(
-                input, config: config,
-                allowlist: mergedAllowlist, customRules: customRulesList
-            )
-        }
+        let matches = scanInput(input, config: config,
+                                allowlist: mergedAllowlist, customRules: customRulesList)
 
         if matches.isEmpty {
-            if !check {
-                print(input, terminator: "")
-            }
+            if !check { print(input, terminator: "") }
             return
         }
 
-        // Findings detected
         if check {
             outputCheckMode(matches: matches, filePath: file)
         } else {
@@ -145,6 +66,90 @@ struct Scan: ParsableCommand {
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
         Darwin.exit(6)
+    }
+
+    // MARK: - Input loading
+
+    private func loadAllowlist(config: PastewatchConfig) throws -> Allowlist {
+        var merged = Allowlist.fromConfig(config)
+        if let allowlistPath = allowlist {
+            guard FileManager.default.fileExists(atPath: allowlistPath) else {
+                FileHandle.standardError.write(Data("error: allowlist file not found: \(allowlistPath)\n".utf8))
+                throw ExitCode(rawValue: 2)
+            }
+            merged = merged.merged(with: try Allowlist.load(from: allowlistPath))
+        }
+        return merged
+    }
+
+    private func loadCustomRules(config: PastewatchConfig) throws -> [CustomRule] {
+        var list: [CustomRule] = []
+        if !config.customRules.isEmpty {
+            list = try CustomRule.compile(config.customRules)
+        }
+        if let rulesPath = rules {
+            guard FileManager.default.fileExists(atPath: rulesPath) else {
+                FileHandle.standardError.write(Data("error: rules file not found: \(rulesPath)\n".utf8))
+                throw ExitCode(rawValue: 2)
+            }
+            list.append(contentsOf: try CustomRule.load(from: rulesPath))
+        }
+        return list
+    }
+
+    private func readInput() throws -> String {
+        if let filePath = file {
+            guard FileManager.default.fileExists(atPath: filePath) else {
+                FileHandle.standardError.write(Data("error: file not found: \(filePath)\n".utf8))
+                throw ExitCode(rawValue: 2)
+            }
+            return try String(contentsOfFile: filePath, encoding: .utf8)
+        }
+        var lines: [String] = []
+        while let line = readLine(strippingNewline: false) {
+            lines.append(line)
+        }
+        return lines.joined()
+    }
+
+    private func scanInput(
+        _ input: String,
+        config: PastewatchConfig,
+        allowlist: Allowlist,
+        customRules: [CustomRule]
+    ) -> [DetectedMatch] {
+        guard let filePath = file else {
+            return DetectionRules.scan(input, config: config,
+                                       allowlist: allowlist, customRules: customRules)
+        }
+
+        let ext: String
+        if filePath.hasSuffix(".env") || URL(fileURLWithPath: filePath).lastPathComponent == ".env" {
+            ext = "env"
+        } else {
+            ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
+        }
+
+        guard let parser = parserForExtension(ext) else {
+            return DetectionRules.scan(input, config: config,
+                                       allowlist: allowlist, customRules: customRules)
+        }
+
+        let parsedValues = parser.parseValues(from: input)
+        var collected: [DetectedMatch] = []
+        for pv in parsedValues {
+            let valueMatches = DetectionRules.scan(
+                pv.value, config: config,
+                allowlist: allowlist, customRules: customRules
+            )
+            for vm in valueMatches {
+                collected.append(DetectedMatch(
+                    type: vm.type, value: vm.value, range: vm.range,
+                    line: pv.line, filePath: filePath, customRuleName: vm.customRuleName
+                ))
+            }
+        }
+        return collected
     }
 
     // MARK: - Directory scanning

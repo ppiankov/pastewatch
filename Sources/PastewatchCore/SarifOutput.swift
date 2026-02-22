@@ -177,7 +177,7 @@ public struct SarifFormatter {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        // Safe to force-try: all values are simple strings/ints, encoding cannot fail
+        // swiftlint:disable:next force_try
         return try! encoder.encode(log)
     }
 }
