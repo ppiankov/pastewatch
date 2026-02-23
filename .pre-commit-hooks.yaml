@@ -1,0 +1,6 @@
+- id: pastewatch
+  name: pastewatch - detect sensitive data
+  entry: pastewatch-cli scan --check --file
+  language: system
+  types: [text]
+  stages: [pre-commit]
