@@ -54,7 +54,6 @@ In check mode (`--check`), the `obfuscated` field is null.
 Print version information.
 
 **Flags:**
-
 No flags.
 
 **Exit codes:**
