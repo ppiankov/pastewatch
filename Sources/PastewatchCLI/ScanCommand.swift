@@ -31,6 +31,9 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Filename hint for stdin format-aware parsing")
     var stdinFilename: String?
 
+    @Option(name: .long, help: "Minimum severity for non-zero exit: critical, high, medium, low")
+    var failOnSeverity: Severity?
+
     func validate() throws {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
@@ -82,7 +85,15 @@ struct Scan: ParsableCommand {
             let obfuscated = Obfuscator.obfuscate(input, matches: matches)
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
-        throw ExitCode(rawValue: 6)
+        if shouldFail(matches: matches) {
+            throw ExitCode(rawValue: 6)
+        }
+    }
+
+    private func shouldFail(matches: [DetectedMatch]) -> Bool {
+        guard !matches.isEmpty else { return false }
+        guard let threshold = failOnSeverity else { return true }
+        return matches.contains { $0.type.severity >= threshold }
     }
 
     // MARK: - Input loading
@@ -222,7 +233,10 @@ struct Scan: ParsableCommand {
         } else {
             outputDirFindings(results: filteredResults)
         }
-        throw ExitCode(rawValue: 6)
+        let allMatches = filteredResults.flatMap { $0.matches }
+        if shouldFail(matches: allMatches) {
+            throw ExitCode(rawValue: 6)
+        }
     }
 
     private func outputDirCheckMode(results: [FileScanResult]) {
@@ -336,6 +350,8 @@ struct Scan: ParsableCommand {
         }
     }
 }
+
+extension Severity: ExpressibleByArgument {}
 
 enum OutputFormat: String, ExpressibleByArgument {
     case text
