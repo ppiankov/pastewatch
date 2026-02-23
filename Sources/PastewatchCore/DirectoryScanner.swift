@@ -32,11 +32,26 @@ public struct DirectoryScanner {
     /// Scan all files in a directory recursively.
     public static func scan(
         directory: String,
-        config: PastewatchConfig
+        config: PastewatchConfig,
+        ignoreFile: IgnoreFile? = nil,
+        extraIgnorePatterns: [String] = []
     ) throws -> [FileScanResult] {
         let dirURL = URL(fileURLWithPath: directory).standardizedFileURL
         let dirPath = dirURL.path
         var results: [FileScanResult] = []
+
+        let mergedIgnore: IgnoreFile?
+        if let ig = ignoreFile {
+            if extraIgnorePatterns.isEmpty {
+                mergedIgnore = ig
+            } else {
+                mergedIgnore = IgnoreFile(patterns: ig.patterns + extraIgnorePatterns)
+            }
+        } else if !extraIgnorePatterns.isEmpty {
+            mergedIgnore = IgnoreFile(patterns: extraIgnorePatterns)
+        } else {
+            mergedIgnore = nil
+        }
 
         guard let enumerator = FileManager.default.enumerator(
             at: dirURL,
@@ -69,6 +84,17 @@ public struct DirectoryScanner {
                 continue
             }
 
+            // Compute relative path from the directory root
+            let filePath = fileURL.standardizedFileURL.path
+            let relativePath = filePath.hasPrefix(dirPath + "/")
+                ? String(filePath.dropFirst(dirPath.count + 1))
+                : fileURL.lastPathComponent
+
+            // Skip files matching ignore patterns
+            if let ignore = mergedIgnore, ignore.shouldIgnore(relativePath) {
+                continue
+            }
+
             // Skip binary files (check first 8192 bytes for null bytes)
             guard !isBinaryFile(at: fileURL) else {
                 continue
@@ -79,12 +105,6 @@ public struct DirectoryScanner {
                   !content.isEmpty else {
                 continue
             }
-
-            // Compute relative path from the directory root
-            let filePath = fileURL.standardizedFileURL.path
-            let relativePath = filePath.hasPrefix(dirPath + "/")
-                ? String(filePath.dropFirst(dirPath.count + 1))
-                : fileURL.lastPathComponent
 
             // Format-aware scanning
             let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
@@ -101,7 +121,8 @@ public struct DirectoryScanner {
                             range: vm.range,
                             line: pv.line,
                             filePath: relativePath,
-                            customRuleName: vm.customRuleName
+                            customRuleName: vm.customRuleName,
+                            customSeverity: vm.customSeverity
                         ))
                     }
                 }
@@ -114,7 +135,8 @@ public struct DirectoryScanner {
                         range: match.range,
                         line: match.line,
                         filePath: relativePath,
-                        customRuleName: match.customRuleName
+                        customRuleName: match.customRuleName,
+                        customSeverity: match.customSeverity
                     )
                 }
             }
