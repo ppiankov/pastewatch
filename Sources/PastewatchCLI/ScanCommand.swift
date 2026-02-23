@@ -82,7 +82,7 @@ struct Scan: ParsableCommand {
             let obfuscated = Obfuscator.obfuscate(input, matches: matches)
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
-        Darwin.exit(6)
+        throw ExitCode(rawValue: 6)
     }
 
     // MARK: - Input loading
@@ -222,7 +222,7 @@ struct Scan: ParsableCommand {
         } else {
             outputDirFindings(results: filteredResults)
         }
-        Darwin.exit(6)
+        throw ExitCode(rawValue: 6)
     }
 
     private func outputDirCheckMode(results: [FileScanResult]) {
