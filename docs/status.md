@@ -2,19 +2,21 @@
 
 ## Current State
 
-**Stable — v0.4.0**
+**Stable — v0.5.0**
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
-- 13 detection types with deterministic regex matching
+- 13 detection types with severity levels (critical/high/medium/low)
 - CLI: file, directory, and stdin scanning
-- SARIF 2.1.0 output for CI integration
+- Linux binary for CI runners
+- SARIF 2.1.0 output with severity-appropriate levels
 - Format-aware parsing (.env, JSON, YAML, properties)
-- Allowlist and custom detection rules
+- Allowlist, custom detection rules, inline allowlist comments
 - MCP server for AI agent integration
 - Baseline diff mode for existing projects
-- Pre-commit hook installer
+- Pre-commit hook installer + pre-commit.com framework integration
 - Project-level config init and resolution
+- --stdin-filename for format-aware stdin parsing
 
 ---
 
@@ -50,6 +52,11 @@ Core and CLI functionality complete:
 | Baseline diff mode | ✓ Stable |
 | Pre-commit hook installer | ✓ Stable |
 | Config init / resolution | ✓ Stable |
+| Linux CLI binary | ✓ Stable |
+| Severity levels | ✓ Stable |
+| Inline allowlist comments | ✓ Stable |
+| Pre-commit framework | ✓ Stable |
+| Stdin filename hint | ✓ Stable |
 
 ---
 
@@ -57,7 +64,7 @@ Core and CLI functionality complete:
 
 | Limitation | Notes |
 |------------|-------|
-| macOS 14+ only | Uses modern SwiftUI APIs |
+| GUI macOS 14+ only | Uses modern SwiftUI APIs (CLI works on Linux) |
 | Polling-based | 500ms interval, not event-driven |
 | String content only | Images, files not scanned |
 | English-centric patterns | Phone formats may miss some regions |
@@ -72,7 +79,6 @@ Core and CLI functionality complete:
 - Additional regional phone formats
 - Keyboard shortcut for pause/resume
 - Launch at login option
-- Inline allowlist comments (`# pastewatch:allow`)
 
 **Will evaluate carefully:**
 
@@ -89,7 +95,7 @@ Core and CLI functionality complete:
 | Cloud sync | Violates local-only constraint |
 | ML detection | Violates deterministic constraint |
 | Clipboard history | Violates memory-only constraint |
-| Cross-platform | macOS-native by design |
+| Cross-platform GUI | macOS-native by design (CLI is cross-platform) |
 | Browser extension | Different tool, different boundary |
 | Compliance certification | Not a compliance product |
 | Enterprise features | Not an enterprise tool |

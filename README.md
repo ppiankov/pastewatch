@@ -107,6 +107,8 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | SSH Keys | `-----BEGIN RSA PRIVATE KEY-----` |
 | Credit Cards | `4111111111111111` (Luhn validated) |
 
+Each type has a severity level (critical, high, medium, low) used in SARIF and JSON output.
+
 No ML. No probabilistic scoring. No confidence levels.
 
 If detection is ambiguous, Pastewatch does nothing.
@@ -241,7 +243,39 @@ Config resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config
 | 2 | Invalid args |
 | 6 | Findings detected |
 
-### Pre-commit Hook
+### Stdin Filename Hint
+
+When piping content via stdin, use `--stdin-filename` to enable format-aware parsing:
+
+```bash
+cat .env | pastewatch-cli scan --stdin-filename .env --check
+git show HEAD:config.yml | pastewatch-cli scan --stdin-filename config.yml
+```
+
+### Inline Allowlist
+
+Suppress findings on a specific line by adding a `pastewatch:allow` comment:
+
+```env
+SAFE_API_KEY=test_key_123  # pastewatch:allow
+```
+
+Works with any comment style (`#`, `//`, `/* */`).
+
+### Pre-commit Framework (pre-commit.com)
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/ppiankov/pastewatch
+    rev: v0.5.0
+    hooks:
+      - id: pastewatch
+```
+
+Requires `pastewatch-cli` installed via Homebrew.
+
+### Pre-commit Hook (manual)
 
 ```bash
 #!/bin/sh
@@ -339,9 +373,12 @@ If a feature increases complexity without reducing risk, it is rejected.
 
 ## Platform Support
 
-macOS 14+ on Apple Silicon (M1 and newer).
+| Platform | Component | Status |
+|----------|-----------|--------|
+| macOS 14+ (Apple Silicon) | GUI + CLI | Supported |
+| Linux x86_64 | CLI only | Supported |
 
-Intel-based Macs are not supported.
+Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only.
 
 ---
 
@@ -380,7 +417,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.4.0** · Active development
+**Status: Stable** · **v0.5.0** · Active development
 
 | Milestone | Status |
 |-----------|--------|
@@ -399,3 +436,8 @@ Do not pretend it guarantees compliance or safety.
 | Baseline diff mode | Complete |
 | Pre-commit hook installer | Complete |
 | Config init / resolution | Complete |
+| Linux CLI binary | Complete |
+| Severity levels | Complete |
+| Inline allowlist comments | Complete |
+| Pre-commit framework | Complete |
+| Stdin filename hint | Complete |
