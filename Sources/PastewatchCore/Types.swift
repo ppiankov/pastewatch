@@ -66,6 +66,52 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
             return .low
         }
     }
+
+    /// Human-readable explanation of what this type detects.
+    public var explanation: String {
+        switch self {
+        case .email: return "Email addresses (user@domain.tld)"
+        case .phone: return "Phone numbers in international or US format"
+        case .ipAddress: return "Private and public IPv4 addresses (excludes localhost)"
+        case .awsKey: return "AWS access key IDs starting with AKIA"
+        case .genericApiKey: return "API keys and tokens (GitHub, Stripe, generic secret_ prefixes)"
+        case .uuid: return "UUIDs (version 1-5 format)"
+        case .dbConnectionString: return "Database connection strings (postgres://, mysql://, mongodb://)"
+        case .sshPrivateKey: return "SSH/PGP private key headers (BEGIN RSA/DSA/EC/OPENSSH PRIVATE KEY)"
+        case .jwtToken: return "JSON Web Tokens (three base64url-encoded segments)"
+        case .creditCard: return "Credit card numbers (Visa, Mastercard, Amex) with Luhn validation"
+        case .filePath: return "Sensitive file paths (/etc/*, /home/*/.ssh/*, etc.)"
+        case .hostname: return "Internal hostnames and non-public domains"
+        case .credential: return "Key-value credential patterns (password=, secret:, auth=)"
+        case .slackWebhook: return "Slack incoming webhook URLs"
+        case .discordWebhook: return "Discord webhook URLs"
+        case .azureConnectionString: return "Azure Storage connection strings with AccountKey"
+        case .gcpServiceAccount: return "GCP service account JSON key files"
+        }
+    }
+
+    /// Example strings that would be detected by this type.
+    public var examples: [String] {
+        switch self {
+        case .email: return ["user@company.com", "admin@internal.corp.net"]
+        case .phone: return ["+14155551234", "(555) 123-4567"]
+        case .ipAddress: return ["192.168.1.100", "10.0.0.50"]
+        case .awsKey: return ["AKIA<20-character key ID>"]
+        case .genericApiKey: return ["ghp_<36-character token>", "sk_live_<key>"]
+        case .uuid: return ["550e8400-e29b-41d4-a716-446655440000"]
+        case .dbConnectionString: return ["postgres://... (connection URI)", "mongodb://... (connection URI)"]
+        case .sshPrivateKey: return ["-----BEGIN <type> PRIVATE KEY-----"]
+        case .jwtToken: return ["<header>.<payload>.<signature> (base64url)"]
+        case .creditCard: return ["4111 1111 1111 1111", "5500 0000 0000 0004"]
+        case .filePath: return ["/etc/nginx/nginx.conf", "/home/deploy/.ssh/id_rsa"]
+        case .hostname: return ["db-primary.internal.corp.net", "api.staging.company.io"]
+        case .credential: return ["password=<value>", "secret: <value>"]
+        case .slackWebhook: return ["https://hooks.slack.com/services/T.../B.../xxx"]
+        case .discordWebhook: return ["https://discord.com/api/webhooks/<id>/<token>"]
+        case .azureConnectionString: return ["DefaultEndpointsProtocol=https;AccountName=<name>;AccountKey=<key>"]
+        case .gcpServiceAccount: return ["{\"type\": \"service_account\", \"project_id\": \"<id>\"}"]
+        }
+    }
 }
 
 /// A single detected match in the clipboard content.
