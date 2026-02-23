@@ -1,5 +1,22 @@
 import Foundation
 
+/// Severity level for detected findings.
+public enum Severity: String, Codable, CaseIterable {
+    case critical
+    case high
+    case medium
+    case low
+
+    /// Map to SARIF result level.
+    public var sarifLevel: String {
+        switch self {
+        case .critical, .high: return "error"
+        case .medium: return "warning"
+        case .low: return "note"
+        }
+    }
+}
+
 /// Detected sensitive data types.
 /// Each type has deterministic detection rules — no ML, no guessing.
 public enum SensitiveDataType: String, CaseIterable, Codable {
@@ -16,6 +33,21 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case filePath = "File Path"
     case hostname = "Hostname"
     case credential = "Credential"
+
+    /// Severity of this detection type.
+    public var severity: Severity {
+        switch self {
+        case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
+             .jwtToken, .creditCard, .credential:
+            return .critical
+        case .email, .phone:
+            return .high
+        case .ipAddress, .filePath, .hostname:
+            return .medium
+        case .uuid:
+            return .low
+        }
+    }
 }
 
 /// A single detected match in the clipboard content.
