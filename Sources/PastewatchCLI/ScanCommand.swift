@@ -28,9 +28,15 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Path to baseline file (only report new findings)")
     var baseline: String?
 
+    @Option(name: .long, help: "Filename hint for stdin format-aware parsing")
+    var stdinFilename: String?
+
     func validate() throws {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
+        }
+        if stdinFilename != nil && (file != nil || dir != nil) {
+            throw ValidationError("--stdin-filename is only valid when reading from stdin")
         }
     }
 
@@ -58,6 +64,7 @@ struct Scan: ParsableCommand {
 
         var matches = scanInput(input, config: config,
                                 allowlist: mergedAllowlist, customRules: customRulesList)
+        matches = Allowlist.filterInlineAllow(matches: matches, content: input)
 
         // Apply baseline filtering
         if let bl = baselineFile {
@@ -137,7 +144,9 @@ struct Scan: ParsableCommand {
         allowlist: Allowlist,
         customRules: [CustomRule]
     ) -> [DetectedMatch] {
-        guard let filePath = file else {
+        let sourcePath = file ?? stdinFilename
+
+        guard let filePath = sourcePath else {
             return DetectionRules.scan(input, config: config,
                                        allowlist: allowlist, customRules: customRules)
         }
@@ -164,7 +173,7 @@ struct Scan: ParsableCommand {
             for vm in valueMatches {
                 collected.append(DetectedMatch(
                     type: vm.type, value: vm.value, range: vm.range,
-                    line: pv.line, filePath: filePath, customRuleName: vm.customRuleName
+                    line: pv.line, filePath: file, customRuleName: vm.customRuleName
                 ))
             }
         }
@@ -230,7 +239,7 @@ struct Scan: ParsableCommand {
             let output = results.map { fr in
                 DirScanFileOutput(
                     file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value) },
+                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.type.severity.rawValue) },
                     count: fr.matches.count
                 )
             }
@@ -259,7 +268,7 @@ struct Scan: ParsableCommand {
             let output = results.map { fr in
                 DirScanFileOutput(
                     file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value) },
+                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.type.severity.rawValue) },
                     count: fr.matches.count
                 )
             }
@@ -287,7 +296,7 @@ struct Scan: ParsableCommand {
             FileHandle.standardError.write(Data("findings: \(summary)\n".utf8))
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value) },
+                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.type.severity.rawValue) },
                 count: matches.count,
                 obfuscated: nil
             )
@@ -310,7 +319,7 @@ struct Scan: ParsableCommand {
             print(obfuscated, terminator: "")
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value) },
+                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.type.severity.rawValue) },
                 count: matches.count,
                 obfuscated: obfuscated
             )
@@ -337,6 +346,7 @@ enum OutputFormat: String, ExpressibleByArgument {
 struct Finding: Codable {
     let type: String
     let value: String
+    let severity: String?
 }
 
 struct ScanOutput: Codable {
