@@ -39,13 +39,42 @@ public struct IgnoreFile {
 
         // Pattern with path separator — match against full relative path
         if pattern.contains("/") {
-            let predicate = NSPredicate(format: "SELF LIKE %@", pattern)
-            return predicate.evaluate(with: path)
+            return globMatch(path, pattern: pattern)
         }
 
         // Simple filename pattern — match against last component and full path
-        let filename = (path as NSString).lastPathComponent
-        let predicate = NSPredicate(format: "SELF LIKE %@", pattern)
-        return predicate.evaluate(with: filename) || predicate.evaluate(with: path)
+        let filename = URL(fileURLWithPath: path).lastPathComponent
+        return globMatch(filename, pattern: pattern) || globMatch(path, pattern: pattern)
+    }
+
+    /// Simple glob matching: * matches any sequence, ? matches single character.
+    private func globMatch(_ string: String, pattern: String) -> Bool {
+        var si = string.startIndex
+        var pi = pattern.startIndex
+        var starSi = string.endIndex
+        var starPi = pattern.endIndex
+
+        while si < string.endIndex {
+            if pi < pattern.endIndex && (pattern[pi] == "?" || pattern[pi] == string[si]) {
+                si = string.index(after: si)
+                pi = pattern.index(after: pi)
+            } else if pi < pattern.endIndex && pattern[pi] == "*" {
+                starPi = pi
+                starSi = si
+                pi = pattern.index(after: pi)
+            } else if starPi < pattern.endIndex {
+                pi = pattern.index(after: starPi)
+                starSi = string.index(after: starSi)
+                si = starSi
+            } else {
+                return false
+            }
+        }
+
+        while pi < pattern.endIndex && pattern[pi] == "*" {
+            pi = pattern.index(after: pi)
+        }
+
+        return pi == pattern.endIndex
     }
 }
