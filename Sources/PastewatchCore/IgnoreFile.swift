@@ -21,12 +21,7 @@ public struct IgnoreFile {
     }
 
     public func shouldIgnore(_ relativePath: String) -> Bool {
-        for pattern in patterns {
-            if matchesPattern(relativePath, pattern: pattern) {
-                return true
-            }
-        }
-        return false
+        patterns.contains { matchesPattern(relativePath, pattern: $0) }
     }
 
     private func matchesPattern(_ path: String, pattern: String) -> Bool {
