@@ -37,4 +37,15 @@ public struct Allowlist {
     public func contains(_ value: String) -> Bool {
         values.contains(value)
     }
+
+    /// Filter out matches on lines that contain a pastewatch:allow comment.
+    public static func filterInlineAllow(matches: [DetectedMatch], content: String) -> [DetectedMatch] {
+        guard !matches.isEmpty else { return [] }
+        let lines = content.components(separatedBy: "\n")
+        return matches.filter { match in
+            let lineIndex = match.line - 1
+            guard lineIndex >= 0, lineIndex < lines.count else { return true }
+            return !lines[lineIndex].contains("pastewatch:allow")
+        }
+    }
 }

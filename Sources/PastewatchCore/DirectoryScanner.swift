@@ -119,6 +119,8 @@ public struct DirectoryScanner {
                 }
             }
 
+            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+
             if !fileMatches.isEmpty {
                 results.append(FileScanResult(
                     filePath: relativePath,
