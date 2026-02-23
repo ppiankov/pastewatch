@@ -405,21 +405,6 @@ Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only
 
 ---
 
-## Project Family
-
-Pastewatch applies **Principiis obsta** at the clipboard boundary. It is part of a family of tools applying the same principle at different surfaces:
-
-| Project | Boundary | Intervention Point |
-|---------|----------|-------------------|
-| [Chainwatch](https://github.com/ppiankov/chainwatch) | AI agent execution | Before tool calls |
-| **Pastewatch** | Data transmission | Before paste |
-| [VaultSpectre](https://github.com/ppiankov/vaultspectre) | Secrets lifecycle | Before exposure |
-| [Relay](https://github.com/ppiankov/relay) | Human connection | Before isolation compounds |
-
-Same principle. Different surfaces. Consistent philosophy.
-
----
-
 ## Documentation
 
 - [docs/design-baseline.md](docs/design-baseline.md) — Core philosophy and design priorities
