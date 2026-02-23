@@ -128,6 +128,5 @@ See [CHANGELOG.md](../CHANGELOG.md) for detailed version history.
 ## Contributing
 
 Before proposing changes, read:
-- [docs/design-baseline.md](design-baseline.md) — Core philosophy
-- [docs/hard-constraints.md](hard-constraints.md) — Non-negotiable rules
+- [docs/hard-constraints.md](hard-constraints.md) — Design philosophy and non-negotiable rules
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — Development workflow
