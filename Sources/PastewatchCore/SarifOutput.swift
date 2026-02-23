@@ -138,7 +138,7 @@ public struct SarifFormatter {
 
             return SarifResult(
                 ruleId: id,
-                level: match.type.severity.sarifLevel,
+                level: match.effectiveSeverity.sarifLevel,
                 message: SarifMessage(text: "\(match.displayName) detected"),
                 locations: [
                     SarifLocation(

@@ -195,7 +195,8 @@ struct MCP: ParsableCommand {
                 for vm in valueMatches {
                     matches.append(DetectedMatch(
                         type: vm.type, value: vm.value, range: vm.range,
-                        line: pv.line, filePath: path, customRuleName: vm.customRuleName
+                        line: pv.line, filePath: path, customRuleName: vm.customRuleName,
+                        customSeverity: vm.customSeverity
                     ))
                 }
             }

@@ -343,7 +343,8 @@ public struct DetectionRules {
                     value: value,
                     range: range,
                     line: line,
-                    customRuleName: rule.name
+                    customRuleName: rule.name,
+                    customSeverity: rule.severity
                 ))
                 matchedRanges.append(range)
             }
