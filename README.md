@@ -106,8 +106,12 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | DB Connections | `postgres://user:pass@host/db` |
 | SSH Keys | `-----BEGIN RSA PRIVATE KEY-----` |
 | Credit Cards | `4111111111111111` (Luhn validated) |
+| Slack Webhooks | `https://hooks.slack.com/services/...` |
+| Discord Webhooks | `https://discord.com/api/webhooks/...` |
+| Azure Connections | `DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...` |
+| GCP Service Accounts | `{"type": "service_account", ...}` |
 
-Each type has a severity level (critical, high, medium, low) used in SARIF and JSON output.
+Each type has a severity level (critical, high, medium, low) used in SARIF, JSON, and markdown output.
 
 No ML. No probabilistic scoring. No confidence levels.
 
@@ -179,6 +183,25 @@ git diff --cached | pastewatch-cli scan --check
 
 # JSON output
 pastewatch-cli scan --format json --check < input.txt
+
+# Markdown output (for PR comments)
+pastewatch-cli scan --dir . --format markdown --output report.md
+
+# Only fail on critical severity findings
+pastewatch-cli scan --dir . --check --fail-on-severity critical
+
+# Write report to file
+pastewatch-cli scan --dir . --format sarif --output results.sarif
+
+# Ignore paths
+pastewatch-cli scan --dir . --ignore "*.log" --ignore "fixtures/"
+
+# Explain detection types
+pastewatch-cli explain
+pastewatch-cli explain email
+
+# Validate config
+pastewatch-cli config check
 ```
 
 ### MCP Server
@@ -268,7 +291,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.5.0
+    rev: v0.6.0
     hooks:
       - id: pastewatch
 ```
@@ -417,11 +440,11 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.5.0** · Active development
+**Status: Stable** · **v0.6.0** · Active development
 
 | Milestone | Status |
 |-----------|--------|
-| Core detection (13 types) | Complete |
+| Core detection (17 types) | Complete |
 | Clipboard obfuscation | Complete |
 | CLI scan mode | Complete |
 | macOS menubar app | Complete |
@@ -441,3 +464,11 @@ Do not pretend it guarantees compliance or safety.
 | Inline allowlist comments | Complete |
 | Pre-commit framework | Complete |
 | Stdin filename hint | Complete |
+| Severity threshold (--fail-on-severity) | Complete |
+| File output (--output) | Complete |
+| Markdown output format | Complete |
+| Cloud credentials (Slack, Discord, Azure, GCP) | Complete |
+| Custom rule severity | Complete |
+| .pastewatchignore | Complete |
+| Explain subcommand | Complete |
+| Config check subcommand | Complete |
