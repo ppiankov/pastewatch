@@ -1,11 +1,24 @@
 import Foundation
 
 /// Severity level for detected findings.
-public enum Severity: String, Codable, CaseIterable {
+public enum Severity: String, Codable, CaseIterable, Comparable {
     case critical
     case high
     case medium
     case low
+
+    private var rank: Int {
+        switch self {
+        case .critical: return 4
+        case .high: return 3
+        case .medium: return 2
+        case .low: return 1
+        }
+    }
+
+    public static func < (lhs: Severity, rhs: Severity) -> Bool {
+        lhs.rank < rhs.rank
+    }
 
     /// Map to SARIF result level.
     public var sarifLevel: String {
@@ -33,12 +46,17 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case filePath = "File Path"
     case hostname = "Hostname"
     case credential = "Credential"
+    case slackWebhook = "Slack Webhook"
+    case discordWebhook = "Discord Webhook"
+    case azureConnectionString = "Azure Connection"
+    case gcpServiceAccount = "GCP Service Account"
 
     /// Severity of this detection type.
     public var severity: Severity {
         switch self {
         case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
-             .jwtToken, .creditCard, .credential:
+             .jwtToken, .creditCard, .credential,
+             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount:
             return .critical
         case .email, .phone:
             return .high
