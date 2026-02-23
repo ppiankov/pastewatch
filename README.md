@@ -407,8 +407,7 @@ Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only
 
 ## Documentation
 
-- [docs/design-baseline.md](docs/design-baseline.md) — Core philosophy and design priorities
-- [docs/hard-constraints.md](docs/hard-constraints.md) — Non-negotiable rules
+- [docs/hard-constraints.md](docs/hard-constraints.md) — Design philosophy and non-negotiable rules
 - [docs/status.md](docs/status.md) — Current scope and non-goals
 
 ---
