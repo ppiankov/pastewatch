@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-23
+
+### Added
+
+- `--fail-on-severity` flag: only exit 6 when findings meet or exceed a severity threshold
+- `--output` flag: write report to file instead of stdout
+- `--format markdown` output for PR comments via `gh pr comment --body-file`
+- `--ignore` flag and `.pastewatchignore` file for glob-based path exclusion
+- 4 new credential detection types: Slack Webhook, Discord Webhook, Azure Connection String, GCP Service Account (all critical severity)
+- Custom severity on custom rules: `{"name": "...", "pattern": "...", "severity": "low"}`
+- `explain` subcommand: show detection type details, severity, and examples
+- `config check` subcommand: validate config, custom rules, and severity strings
+
 ## [0.5.0] - 2026-02-23
 
 ### Added

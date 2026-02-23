@@ -2,21 +2,23 @@
 
 ## Current State
 
-**Stable — v0.5.0**
+**Stable — v0.6.0**
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
-- 13 detection types with severity levels (critical/high/medium/low)
+- 17 detection types with severity levels (critical/high/medium/low)
 - CLI: file, directory, and stdin scanning
 - Linux binary for CI runners
-- SARIF 2.1.0 output with severity-appropriate levels
+- SARIF 2.1.0 and markdown output with severity-appropriate levels
 - Format-aware parsing (.env, JSON, YAML, properties)
-- Allowlist, custom detection rules, inline allowlist comments
+- Allowlist, custom detection rules with custom severity, inline allowlist comments
 - MCP server for AI agent integration
 - Baseline diff mode for existing projects
 - Pre-commit hook installer + pre-commit.com framework integration
-- Project-level config init and resolution
-- --stdin-filename for format-aware stdin parsing
+- Project-level config init, resolution, and validation
+- --stdin-filename, --fail-on-severity, --output, --ignore flags
+- .pastewatchignore for glob-based path exclusion
+- explain and config check subcommands
 
 ---
 
@@ -57,6 +59,17 @@ Core and CLI functionality complete:
 | Inline allowlist comments | ✓ Stable |
 | Pre-commit framework | ✓ Stable |
 | Stdin filename hint | ✓ Stable |
+| Slack Webhook detection | ✓ Stable |
+| Discord Webhook detection | ✓ Stable |
+| Azure Connection String detection | ✓ Stable |
+| GCP Service Account detection | ✓ Stable |
+| --fail-on-severity threshold | ✓ Stable |
+| --output file reporting | ✓ Stable |
+| Markdown output format | ✓ Stable |
+| Custom rule severity | ✓ Stable |
+| .pastewatchignore | ✓ Stable |
+| explain subcommand | ✓ Stable |
+| config check subcommand | ✓ Stable |
 
 ---
 
