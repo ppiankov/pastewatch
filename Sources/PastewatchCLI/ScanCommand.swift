@@ -34,6 +34,12 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Minimum severity for non-zero exit: critical, high, medium, low")
     var failOnSeverity: Severity?
 
+    @Option(name: .long, parsing: .singleValue, help: "Glob pattern to ignore (can be repeated)")
+    var ignore: [String] = []
+
+    @Option(name: .long, help: "Write report to file instead of stdout")
+    var output: String?
+
     func validate() throws {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
@@ -79,6 +85,8 @@ struct Scan: ParsableCommand {
             return
         }
 
+        try redirectStdoutIfNeeded()
+
         if check {
             outputCheckMode(matches: matches, filePath: file)
         } else {
@@ -93,7 +101,18 @@ struct Scan: ParsableCommand {
     private func shouldFail(matches: [DetectedMatch]) -> Bool {
         guard !matches.isEmpty else { return false }
         guard let threshold = failOnSeverity else { return true }
-        return matches.contains { $0.type.severity >= threshold }
+        return matches.contains { $0.effectiveSeverity >= threshold }
+    }
+
+    private func redirectStdoutIfNeeded() throws {
+        guard let outputPath = output else { return }
+        FileManager.default.createFile(atPath: outputPath, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: outputPath) else {
+            FileHandle.standardError.write(Data("error: could not write to \(outputPath)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+        dup2(handle.fileDescriptor, STDOUT_FILENO)
+        handle.closeFile()
     }
 
     // MARK: - Input loading
@@ -184,7 +203,8 @@ struct Scan: ParsableCommand {
             for vm in valueMatches {
                 collected.append(DetectedMatch(
                     type: vm.type, value: vm.value, range: vm.range,
-                    line: pv.line, filePath: file, customRuleName: vm.customRuleName
+                    line: pv.line, filePath: file, customRuleName: vm.customRuleName,
+                    customSeverity: vm.customSeverity
                 ))
             }
         }
@@ -200,7 +220,11 @@ struct Scan: ParsableCommand {
         customRules: [CustomRule],
         baseline: BaselineFile? = nil
     ) throws {
-        let fileResults = try DirectoryScanner.scan(directory: dirPath, config: config)
+        let ignoreFile = IgnoreFile.load(from: dirPath)
+        let fileResults = try DirectoryScanner.scan(
+            directory: dirPath, config: config,
+            ignoreFile: ignoreFile, extraIgnorePatterns: ignore
+        )
 
         // Apply allowlist and custom rules to each file's matches
         var filteredResults: [FileScanResult] = []
@@ -228,6 +252,8 @@ struct Scan: ParsableCommand {
             return
         }
 
+        try redirectStdoutIfNeeded()
+
         if check {
             outputDirCheckMode(results: filteredResults)
         } else {
@@ -253,7 +279,7 @@ struct Scan: ParsableCommand {
             let output = results.map { fr in
                 DirScanFileOutput(
                     file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.type.severity.rawValue) },
+                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
                     count: fr.matches.count
                 )
             }
@@ -282,7 +308,7 @@ struct Scan: ParsableCommand {
             let output = results.map { fr in
                 DirScanFileOutput(
                     file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.type.severity.rawValue) },
+                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
                     count: fr.matches.count
                 )
             }
@@ -310,7 +336,7 @@ struct Scan: ParsableCommand {
             FileHandle.standardError.write(Data("findings: \(summary)\n".utf8))
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.type.severity.rawValue) },
+                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
                 count: matches.count,
                 obfuscated: nil
             )
@@ -333,7 +359,7 @@ struct Scan: ParsableCommand {
             print(obfuscated, terminator: "")
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.type.severity.rawValue) },
+                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
                 count: matches.count,
                 obfuscated: obfuscated
             )
