@@ -25,6 +25,9 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Path to custom rules JSON file")
     var rules: String?
 
+    @Option(name: .long, help: "Path to baseline file (only report new findings)")
+    var baseline: String?
+
     func validate() throws {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
@@ -35,6 +38,7 @@ struct Scan: ParsableCommand {
         let config = PastewatchConfig.resolve()
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)
+        let baselineFile = try loadBaseline()
 
         // Directory scanning mode
         if let dirPath = dir {
@@ -43,7 +47,8 @@ struct Scan: ParsableCommand {
                 throw ExitCode(rawValue: 2)
             }
             try runDirectoryScan(dirPath: dirPath, config: config,
-                                 allowlist: mergedAllowlist, customRules: customRulesList)
+                                 allowlist: mergedAllowlist, customRules: customRulesList,
+                                 baseline: baselineFile)
             return
         }
 
@@ -51,8 +56,13 @@ struct Scan: ParsableCommand {
         let input = try readInput()
         guard !input.isEmpty else { return }
 
-        let matches = scanInput(input, config: config,
+        var matches = scanInput(input, config: config,
                                 allowlist: mergedAllowlist, customRules: customRulesList)
+
+        // Apply baseline filtering
+        if let bl = baselineFile {
+            matches = bl.filterNew(matches: matches, filePath: file ?? "stdin")
+        }
 
         if matches.isEmpty {
             if !check { print(input, terminator: "") }
@@ -95,6 +105,15 @@ struct Scan: ParsableCommand {
             list.append(contentsOf: try CustomRule.load(from: rulesPath))
         }
         return list
+    }
+
+    private func loadBaseline() throws -> BaselineFile? {
+        guard let baselinePath = baseline else { return nil }
+        guard FileManager.default.fileExists(atPath: baselinePath) else {
+            FileHandle.standardError.write(Data("error: baseline file not found: \(baselinePath)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+        return try BaselineFile.load(from: baselinePath)
     }
 
     private func readInput() throws -> String {
@@ -158,7 +177,8 @@ struct Scan: ParsableCommand {
         dirPath: String,
         config: PastewatchConfig,
         allowlist: Allowlist,
-        customRules: [CustomRule]
+        customRules: [CustomRule],
+        baseline: BaselineFile? = nil
     ) throws {
         let fileResults = try DirectoryScanner.scan(directory: dirPath, config: config)
 
@@ -177,6 +197,11 @@ struct Scan: ParsableCommand {
                     filePath: fr.filePath, matches: allMatches, content: fr.content
                 ))
             }
+        }
+
+        // Apply baseline filtering
+        if let bl = baseline {
+            filteredResults = bl.filterNewResults(results: filteredResults)
         }
 
         if filteredResults.isEmpty {
