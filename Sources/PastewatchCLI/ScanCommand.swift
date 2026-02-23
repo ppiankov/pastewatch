@@ -32,7 +32,7 @@ struct Scan: ParsableCommand {
     }
 
     func run() throws {
-        let config = PastewatchConfig.defaultConfig
+        let config = PastewatchConfig.resolve()
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)
 

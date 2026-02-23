@@ -162,6 +162,18 @@ public struct PastewatchConfig: Codable {
         }
     }
 
+    /// Resolve config with cascade: CWD .pastewatch.json -> ~/.config/pastewatch/config.json -> defaults.
+    public static func resolve() -> PastewatchConfig {
+        let cwd = FileManager.default.currentDirectoryPath
+        let projectPath = cwd + "/.pastewatch.json"
+        if FileManager.default.fileExists(atPath: projectPath),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: projectPath)),
+           let config = try? JSONDecoder().decode(PastewatchConfig.self, from: data) {
+            return config
+        }
+        return load()
+    }
+
     public func save() throws {
         let directory = PastewatchConfig.configPath.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
