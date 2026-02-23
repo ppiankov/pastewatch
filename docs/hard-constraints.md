@@ -6,6 +6,21 @@ Violating any constraint means building a different tool.
 
 ---
 
+## Why Before Paste
+
+Downstream controls fail because they operate too late:
+
+| Approach | Problem |
+|----------|---------|
+| Browser extension | Only sees web apps, blind to native |
+| LLM proxy | Data already transmitted |
+| DLP system | Blocks after detection, user already exposed intent |
+| Prompt sanitizer | Runs after submission |
+
+The clipboard is the last moment of user control. After paste, the data belongs to someone else. Pastewatch intervenes at the only point that matters: before the irreversible action.
+
+---
+
 ## 1. Local-Only Operation
 
 **No network calls. No exceptions.**
