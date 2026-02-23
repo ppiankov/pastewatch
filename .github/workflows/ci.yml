@@ -22,6 +22,22 @@ jobs:
       - name: Run Tests
         run: swift test
 
+  build-linux:
+    name: Build and Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Build CLI
+        run: swift build --product PastewatchCLI
+
+      - name: Run Tests
+        run: swift test
+
   lint:
     name: Lint
     runs-on: macos-14

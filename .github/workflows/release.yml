@@ -26,10 +26,38 @@ jobs:
       - name: Run Tests
         run: swift test
 
+  build-linux:
+    name: Build Linux Release
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Build CLI
+        run: |
+          swift build -c release --product PastewatchCLI
+          mkdir -p release
+          cp .build/release/PastewatchCLI release/pastewatch-cli-linux-amd64
+
+      - name: Generate SHA256
+        run: |
+          cd release
+          sha256sum pastewatch-cli-linux-amd64 > pastewatch-cli-linux-amd64.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: release/
+
   build:
     name: Build Release
     runs-on: macos-14
-    needs: test
+    needs: [test, build-linux]
     steps:
       - uses: actions/checkout@v4
 
@@ -115,6 +143,12 @@ jobs:
           shasum -a 256 pastewatch > pastewatch.sha256
           shasum -a 256 pastewatch-cli > pastewatch-cli.sha256
 
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: release/
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -128,6 +162,8 @@ jobs:
             release/pastewatch.sha256
             release/pastewatch-cli
             release/pastewatch-cli.sha256
+            release/pastewatch-cli-linux-amd64
+            release/pastewatch-cli-linux-amd64.sha256
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
