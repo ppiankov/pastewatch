@@ -71,6 +71,38 @@ public struct DetectionRules {
             result.append((.dbConnectionString, regex))
         }
 
+        // Slack Webhook URL - high confidence
+        if let regex = try? NSRegularExpression(
+            pattern: #"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+"#,
+            options: []
+        ) {
+            result.append((.slackWebhook, regex))
+        }
+
+        // Discord Webhook URL - high confidence
+        if let regex = try? NSRegularExpression(
+            pattern: #"https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+"#,
+            options: []
+        ) {
+            result.append((.discordWebhook, regex))
+        }
+
+        // Azure Storage Connection String - high confidence
+        if let regex = try? NSRegularExpression(
+            pattern: #"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[^;]+"#,
+            options: []
+        ) {
+            result.append((.azureConnectionString, regex))
+        }
+
+        // GCP Service Account JSON - high confidence
+        if let regex = try? NSRegularExpression(
+            pattern: #""type"\s*:\s*"service_account""#,
+            options: []
+        ) {
+            result.append((.gcpServiceAccount, regex))
+        }
+
         // Generic API Key patterns - high confidence
         // Common prefixes: sk-, pk-, api_, key_, token_
         if let regex = try? NSRegularExpression(
