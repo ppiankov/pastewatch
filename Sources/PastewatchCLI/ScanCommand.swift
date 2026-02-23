@@ -13,7 +13,7 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Directory to scan recursively")
     var dir: String?
 
-    @Option(name: .long, help: "Output format: text, json, sarif")
+    @Option(name: .long, help: "Output format: text, json, sarif, markdown")
     var format: OutputFormat = .text
 
     @Flag(name: .long, help: "Check mode: exit code only, no output modification")
@@ -292,6 +292,8 @@ struct Scan: ParsableCommand {
             let pairs = results.map { ($0.filePath, $0.matches) }
             let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.5.0")
             print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
         }
     }
 
@@ -321,6 +323,8 @@ struct Scan: ParsableCommand {
             let pairs = results.map { ($0.filePath, $0.matches) }
             let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.5.0")
             print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
         }
     }
 
@@ -350,6 +354,8 @@ struct Scan: ParsableCommand {
                 matches: matches, filePath: filePath, version: "0.5.0"
             )
             print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            print(MarkdownFormatter.formatSingle(matches: matches, filePath: filePath, obfuscated: nil), terminator: "")
         }
     }
 
@@ -373,6 +379,8 @@ struct Scan: ParsableCommand {
                 matches: matches, filePath: filePath, version: "0.5.0"
             )
             print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            print(MarkdownFormatter.formatSingle(matches: matches, filePath: filePath, obfuscated: obfuscated), terminator: "")
         }
     }
 }
@@ -383,6 +391,7 @@ enum OutputFormat: String, ExpressibleByArgument {
     case text
     case json
     case sarif
+    case markdown
 }
 
 struct Finding: Codable {
