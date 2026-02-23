@@ -77,6 +77,7 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let line: Int
     public let filePath: String?
     public let customRuleName: String?
+    public let customSeverity: Severity?
 
     public init(
         type: SensitiveDataType,
@@ -84,7 +85,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         range: Range<String.Index>,
         line: Int = 1,
         filePath: String? = nil,
-        customRuleName: String? = nil
+        customRuleName: String? = nil,
+        customSeverity: Severity? = nil
     ) {
         self.type = type
         self.value = value
@@ -92,6 +94,12 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.line = line
         self.filePath = filePath
         self.customRuleName = customRuleName
+        self.customSeverity = customSeverity
+    }
+
+    /// Effective severity: custom override if set, otherwise type default.
+    public var effectiveSeverity: Severity {
+        customSeverity ?? type.severity
     }
 
     /// Display name for output (custom rule name or type rawValue).
@@ -143,10 +151,12 @@ public enum AppState: Equatable {
 public struct CustomRuleConfig: Codable {
     public let name: String
     public let pattern: String
+    public let severity: String?
 
-    public init(name: String, pattern: String) {
+    public init(name: String, pattern: String, severity: String? = nil) {
         self.name = name
         self.pattern = pattern
+        self.severity = severity
     }
 }
 
