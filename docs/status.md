@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Stable — v0.3.0**
+**Stable — v0.4.0**
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
@@ -11,6 +11,10 @@ Core and CLI functionality complete:
 - SARIF 2.1.0 output for CI integration
 - Format-aware parsing (.env, JSON, YAML, properties)
 - Allowlist and custom detection rules
+- MCP server for AI agent integration
+- Baseline diff mode for existing projects
+- Pre-commit hook installer
+- Project-level config init and resolution
 
 ---
 
@@ -42,6 +46,10 @@ Core and CLI functionality complete:
 | Format-aware parsing | ✓ Stable |
 | Allowlist | ✓ Stable |
 | Custom detection rules | ✓ Stable |
+| MCP server | ✓ Stable |
+| Baseline diff mode | ✓ Stable |
+| Pre-commit hook installer | ✓ Stable |
+| Config init / resolution | ✓ Stable |
 
 ---
 
