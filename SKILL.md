@@ -22,7 +22,7 @@ brew install ppiankov/tap/pastewatch
 Scan text for sensitive data patterns. Reports findings or outputs obfuscated text.
 
 **Flags:**
-- `--format json` — output as JSON (default: text). Also supports `sarif` for OASIS SARIF 2.1.0
+- `--format json` — output as JSON (default: text). Also supports `sarif`, `markdown`
 - `--file path` — file to scan (reads from stdin if omitted)
 - `--dir path` — directory to scan recursively (mutually exclusive with --file)
 - `--check` — check mode: exit code only, no output modification
@@ -30,6 +30,9 @@ Scan text for sensitive data patterns. Reports findings or outputs obfuscated te
 - `--rules path` — path to custom rules JSON file
 - `--baseline path` — path to baseline file (only report new findings)
 - `--stdin-filename name` — filename hint for format-aware stdin parsing (e.g., `.env`, `config.yml`)
+- `--fail-on-severity level` — minimum severity for non-zero exit (critical, high, medium, low)
+- `--output path` — write report to file instead of stdout
+- `--ignore pattern` — glob pattern to ignore (can be repeated)
 
 **JSON output:**
 ```json
@@ -102,6 +105,28 @@ Remove pastewatch section from pre-commit hook.
 **Exit codes:**
 - 0: success
 - 2: no hook found, or hook has no pastewatch section
+
+### pastewatch-cli explain
+
+Show detection type details with severity and examples.
+
+**Arguments:**
+- `[type-name]` — type name to explain (omit to list all). Case-insensitive.
+
+**Exit codes:**
+- 0: success
+- 2: unknown type name
+
+### pastewatch-cli config check
+
+Validate configuration files (JSON syntax, type names, regex patterns, severity strings).
+
+**Flags:**
+- `--file path` — path to config file (uses resolved config if omitted)
+
+**Exit codes:**
+- 0: valid
+- 2: validation errors
 
 ### pastewatch-cli mcp
 
@@ -202,12 +227,16 @@ Errors are returned with `isError: true` in the result object.
 | File Path | Infrastructure paths (/home, /var, /etc, /root, /usr, /tmp, /opt) |
 | Hostname | Fully qualified domain names (excludes safe public hosts) |
 | Credential | Key-value pairs with password, secret, token, api_key keywords |
+| Slack Webhook | Slack incoming webhook URLs |
+| Discord Webhook | Discord webhook URLs |
+| Azure Connection | Azure Storage connection strings with AccountKey |
+| GCP Service Account | GCP service account JSON key files |
 
 ## Severity levels
 
 | Severity | Types |
 |----------|-------|
-| critical | AWS Key, API Key, SSH Key, DB Connection, JWT, Card, Credential |
+| critical | AWS Key, API Key, SSH Key, DB Connection, JWT, Card, Credential, Slack Webhook, Discord Webhook, Azure Connection, GCP Service Account |
 | high | Email, Phone |
 | medium | IP, File Path, Hostname |
 | low | UUID |
