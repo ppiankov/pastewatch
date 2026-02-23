@@ -168,12 +168,66 @@ pastewatch-cli scan --file app.yml --allowlist .pastewatch-allow
 # Custom detection rules
 pastewatch-cli scan --file data.txt --rules custom-rules.json
 
+# Baseline: suppress known findings
+pastewatch-cli baseline create --dir . --output .pastewatch-baseline.json
+pastewatch-cli scan --dir . --baseline .pastewatch-baseline.json --check
+
 # Check mode (exit code only, for CI)
 git diff --cached | pastewatch-cli scan --check
 
 # JSON output
 pastewatch-cli scan --format json --check < input.txt
 ```
+
+### MCP Server
+
+Run pastewatch as an MCP server for AI agent integration:
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Tools: `pastewatch_scan`, `pastewatch_scan_file`, `pastewatch_scan_dir`.
+
+### Pre-commit Hook
+
+```bash
+# Install hook
+pastewatch-cli hook install
+
+# Append to existing hook
+pastewatch-cli hook install --append
+
+# Remove hook
+pastewatch-cli hook uninstall
+```
+
+### Baseline Diff
+
+Create a baseline of known findings, then only report new ones:
+
+```bash
+pastewatch-cli baseline create --dir . --output .pastewatch-baseline.json
+pastewatch-cli scan --dir . --baseline .pastewatch-baseline.json --check
+```
+
+### Config Init
+
+Generate project configuration files:
+
+```bash
+pastewatch-cli init          # creates .pastewatch.json and .pastewatch-allow
+pastewatch-cli init --force  # overwrite existing files
+```
+
+Config resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults.
 
 ### Exit Codes
 
@@ -323,7 +377,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.3.0** · Active development
+**Status: Stable** · **v0.4.0** · Active development
 
 | Milestone | Status |
 |-----------|--------|
@@ -337,5 +391,8 @@ Do not pretend it guarantees compliance or safety.
 | SARIF 2.1.0 output | Complete |
 | Directory scanning | Complete |
 | Format-aware parsing | Complete |
-| Allowlist / baseline | Complete |
-| Custom detection rules | Complete |
+| Allowlist / custom rules | Complete |
+| MCP server | Complete |
+| Baseline diff mode | Complete |
+| Pre-commit hook installer | Complete |
+| Config init / resolution | Complete |

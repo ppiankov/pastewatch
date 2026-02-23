@@ -241,7 +241,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.3.0")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.4.0")
             print(String(data: data, encoding: .utf8)!)
         }
     }
@@ -270,7 +270,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.3.0")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.4.0")
             print(String(data: data, encoding: .utf8)!)
         }
     }
@@ -298,7 +298,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.3.0"
+                matches: matches, filePath: filePath, version: "0.4.0"
             )
             print(String(data: data, encoding: .utf8)!)
         }
@@ -321,7 +321,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.3.0"
+                matches: matches, filePath: filePath, version: "0.4.0"
             )
             print(String(data: data, encoding: .utf8)!)
         }

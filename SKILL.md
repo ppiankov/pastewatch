@@ -28,6 +28,7 @@ Scan text for sensitive data patterns. Reports findings or outputs obfuscated te
 - `--check` — check mode: exit code only, no output modification
 - `--allowlist path` — path to allowlist file (one value per line, # comments)
 - `--rules path` — path to custom rules JSON file
+- `--baseline path` — path to baseline file (only report new findings)
 
 **JSON output:**
 ```json
@@ -61,7 +62,64 @@ No flags.
 
 ### pastewatch-cli init
 
-Not implemented. Pastewatch is stateless and requires no config file. Pass all options via flags.
+Generate project configuration files (`.pastewatch.json` and `.pastewatch-allow`).
+
+**Flags:**
+- `--force` — overwrite existing files
+
+**Exit codes:**
+- 0: success
+- 2: files already exist (without --force)
+
+### pastewatch-cli baseline create
+
+Create a baseline of known findings from a directory scan.
+
+**Flags:**
+- `--dir path` — directory to scan (required)
+- `--output path` / `-o path` — output file path (default: `.pastewatch-baseline.json`)
+
+**Exit codes:**
+- 0: success
+- 2: directory not found
+
+### pastewatch-cli hook install
+
+Install a pre-commit hook that scans staged changes.
+
+**Flags:**
+- `--append` — append to existing hook instead of failing
+
+**Exit codes:**
+- 0: success
+- 2: hook already exists, or not a git repository
+
+### pastewatch-cli hook uninstall
+
+Remove pastewatch section from pre-commit hook.
+
+**Exit codes:**
+- 0: success
+- 2: no hook found, or hook has no pastewatch section
+
+### pastewatch-cli mcp
+
+Run as MCP server (JSON-RPC 2.0 over stdio). Provides three tools:
+- `pastewatch_scan` — scan text for sensitive data
+- `pastewatch_scan_file` — scan a file
+- `pastewatch_scan_dir` — scan a directory recursively
+
+**MCP config:**
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## Detection types
 
