@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-23
+
+### Added
+
+- Linux binary support (`pastewatch-cli-linux-amd64`) for CI runners
+  - 10x cheaper GitHub Actions via `ubuntu` runners instead of `macos`
+  - `swift-crypto` for cross-platform SHA256 hashing
+- Severity levels on all detection types (critical, high, medium, low)
+  - SARIF output uses severity-appropriate levels (error, warning, note)
+  - JSON output includes `severity` field on each finding
+- Pre-commit framework integration (`.pre-commit-hooks.yaml`)
+  - `language: system` hook for pre-commit.com users
+- `--stdin-filename` flag for format-aware stdin parsing
+  - Enables structured parsing (.env, .json, .yml) when piping via stdin
+- Inline allowlist comments (`pastewatch:allow` on any line)
+  - Works with `#`, `//`, and `/* */` comment styles
+- GitHub Action test workflow for `pastewatch-action`
+
+### Fixed
+
+- CI: pin Linux jobs to `ubuntu-22.04` for Swift 5.9 compatibility
+
 ## [0.4.0] - 2026-02-23
 
 ### Added

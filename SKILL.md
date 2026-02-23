@@ -29,14 +29,15 @@ Scan text for sensitive data patterns. Reports findings or outputs obfuscated te
 - `--allowlist path` — path to allowlist file (one value per line, # comments)
 - `--rules path` — path to custom rules JSON file
 - `--baseline path` — path to baseline file (only report new findings)
+- `--stdin-filename name` — filename hint for format-aware stdin parsing (e.g., `.env`, `config.yml`)
 
 **JSON output:**
 ```json
 {
   "count": 2,
   "findings": [
-    {"type": "Email", "value": "admin@internal.corp.net"},
-    {"type": "AWS Key", "value": "AKIA****************"}
+    {"type": "Email", "value": "admin@internal.corp.net", "severity": "high"},
+    {"type": "AWS Key", "value": "AKIA****************", "severity": "critical"}
   ],
   "obfuscated": "contact ****@**** about key ****"
 }
@@ -201,6 +202,26 @@ Errors are returned with `isError: true` in the result object.
 | File Path | Infrastructure paths (/home, /var, /etc, /root, /usr, /tmp, /opt) |
 | Hostname | Fully qualified domain names (excludes safe public hosts) |
 | Credential | Key-value pairs with password, secret, token, api_key keywords |
+
+## Severity levels
+
+| Severity | Types |
+|----------|-------|
+| critical | AWS Key, API Key, SSH Key, DB Connection, JWT, Card, Credential |
+| high | Email, Phone |
+| medium | IP, File Path, Hostname |
+| low | UUID |
+
+SARIF maps: critical/high → `error`, medium → `warning`, low → `note`.
+
+## Inline allowlist
+
+Add `pastewatch:allow` anywhere on a line to suppress findings on that line:
+
+```
+API_KEY=test_12345  # pastewatch:allow
+password = "dev"    // pastewatch:allow
+```
 
 ## What this does NOT do
 
