@@ -266,6 +266,64 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
     }
 
+    // MARK: - Slack Webhook Detection
+
+    func testDetectsSlackWebhook() {
+        let content = "WEBHOOK=https://hooks.slack.com/services/T1234ABCD/B5678EFGH/abcdefghijklmnop"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .slackWebhook })
+    }
+
+    func testSlackWebhookRequiresFullURL() {
+        let content = "https://hooks.slack.com/services/"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .slackWebhook })
+    }
+
+    // MARK: - Discord Webhook Detection
+
+    func testDetectsDiscordWebhook() {
+        let content = "url: https://discord.com/api/webhooks/123456789012345678/abcDEF_ghi-jklMNO123"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .discordWebhook })
+    }
+
+    func testDiscordWebhookRequiresToken() {
+        let content = "https://discord.com/api/webhooks/"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .discordWebhook })
+    }
+
+    // MARK: - Azure Connection String Detection
+
+    func testDetectsAzureConnectionString() {
+        let content = "ConnectionString=DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=abc123def456+ghi789=="
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .azureConnectionString })
+    }
+
+    func testAzureConnectionStringRequiresAccountKey() {
+        let content = "DefaultEndpointsProtocol=https;AccountName=myaccount"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .azureConnectionString })
+    }
+
+    // MARK: - GCP Service Account Detection
+
+    func testDetectsGCPServiceAccount() {
+        let content = """
+        {"type": "service_account", "project_id": "my-project"}
+        """
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .gcpServiceAccount })
+    }
+
+    func testDetectsGCPServiceAccountWithSpacing() {
+        let content = #""type" :  "service_account""#
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .gcpServiceAccount })
+    }
+
     // MARK: - Line Number Tracking
 
     func testLineNumbersOnMultilineContent() {
