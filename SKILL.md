@@ -104,12 +104,14 @@ Remove pastewatch section from pre-commit hook.
 
 ### pastewatch-cli mcp
 
-Run as MCP server (JSON-RPC 2.0 over stdio). Provides three tools:
-- `pastewatch_scan` — scan text for sensitive data
-- `pastewatch_scan_file` — scan a file
-- `pastewatch_scan_dir` — scan a directory recursively
+Run as MCP server (JSON-RPC 2.0 over stdio). macOS ARM only.
 
-**MCP config:**
+**Install:**
+```bash
+brew install ppiankov/tap/pastewatch
+```
+
+**MCP config (Claude Desktop, Cursor, etc.):**
 ```json
 {
   "mcpServers": {
@@ -120,6 +122,67 @@ Run as MCP server (JSON-RPC 2.0 over stdio). Provides three tools:
   }
 }
 ```
+
+If installed to a non-PATH location, use the full path:
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "/opt/homebrew/bin/pastewatch-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Tools provided:**
+
+#### pastewatch_scan
+Scan a text string for sensitive data.
+
+Input:
+```json
+{"text": "string (required) — text content to scan"}
+```
+
+Response: content array with summary text and JSON findings array. Each finding has `type`, `value`, `line`.
+
+#### pastewatch_scan_file
+Scan a single file. Supports format-aware parsing for .env, .json, .yml, .yaml, .properties, .cfg, .ini.
+
+Input:
+```json
+{"path": "string (required) — absolute file path to scan"}
+```
+
+Response: same as pastewatch_scan, with `file` field on each finding.
+
+#### pastewatch_scan_dir
+Scan a directory recursively. Skips .git, node_modules, vendor, build directories. Only scans known file extensions (config, source, key files).
+
+Input:
+```json
+{"path": "string (required) — absolute directory path to scan"}
+```
+
+Response: summary of files scanned and findings count, plus JSON findings array with `type`, `value`, `file`, `line`.
+
+**Example responses:**
+
+No findings:
+```json
+{"content": [{"type": "text", "text": "No sensitive data found."}]}
+```
+
+With findings:
+```json
+{"content": [
+  {"type": "text", "text": "Found 2 finding(s)."},
+  {"type": "text", "text": "[{\"line\":3,\"type\":\"Email\",\"value\":\"admin@corp.net\"},{\"line\":7,\"type\":\"Credential\",\"value\":\"db_pass=hunter2\"}]"}
+]}
+```
+
+Errors are returned with `isError: true` in the result object.
 
 ## Detection types
 

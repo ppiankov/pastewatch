@@ -181,7 +181,7 @@ pastewatch-cli scan --format json --check < input.txt
 
 ### MCP Server
 
-Run pastewatch as an MCP server for AI agent integration:
+Run pastewatch as an MCP server for AI agent integration (Claude Desktop, Cursor, etc.):
 
 ```json
 {
@@ -194,7 +194,10 @@ Run pastewatch as an MCP server for AI agent integration:
 }
 ```
 
-Tools: `pastewatch_scan`, `pastewatch_scan_file`, `pastewatch_scan_dir`.
+Tools:
+- `pastewatch_scan` — scan text (`{"text": "..."}`)
+- `pastewatch_scan_file` — scan a file (`{"path": "/absolute/path"}`)
+- `pastewatch_scan_dir` — scan a directory recursively (`{"path": "/absolute/path"}`)
 
 ### Pre-commit Hook
 
