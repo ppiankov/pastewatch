@@ -116,7 +116,7 @@ public struct SarifFormatter {
             SarifRule(
                 id: ruleId(for: type),
                 shortDescription: SarifMessage(text: "\(type.rawValue) detected"),
-                defaultConfiguration: SarifRuleConfig(level: "error"),
+                defaultConfiguration: SarifRuleConfig(level: type.severity.sarifLevel),
                 properties: SarifRuleProps(tags: ["security", "sensitive-data"])
             )
         }
@@ -138,7 +138,7 @@ public struct SarifFormatter {
 
             return SarifResult(
                 ruleId: id,
-                level: "error",
+                level: match.type.severity.sarifLevel,
                 message: SarifMessage(text: "\(match.displayName) detected"),
                 locations: [
                     SarifLocation(
