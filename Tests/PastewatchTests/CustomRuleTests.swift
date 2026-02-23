@@ -62,4 +62,40 @@ final class CustomRuleTests: XCTestCase {
         let matches = DetectionRules.scan(content, config: config, customRules: [])
         XCTAssertGreaterThan(matches.count, 0)
     }
+
+    func testCustomRuleWithSeverity() throws {
+        let json = #"[{"name": "Ticket", "pattern": "MYCO-[0-9]{6}", "severity": "low"}]"#
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("test-rules-sev.json")
+        try json.write(to: url, atomically: true, encoding: .utf8)
+        let rules = try CustomRule.load(from: url.path)
+        XCTAssertEqual(rules[0].severity, .low)
+    }
+
+    func testCustomRuleDefaultSeverity() throws {
+        let json = #"[{"name": "Ticket", "pattern": "MYCO-[0-9]{6}"}]"#
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("test-rules-def.json")
+        try json.write(to: url, atomically: true, encoding: .utf8)
+        let rules = try CustomRule.load(from: url.path)
+        XCTAssertEqual(rules[0].severity, .high)
+    }
+
+    func testCustomRuleInvalidSeverityUsesDefault() throws {
+        let json = #"[{"name": "Ticket", "pattern": "MYCO-[0-9]{6}", "severity": "extreme"}]"#
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("test-rules-inv.json")
+        try json.write(to: url, atomically: true, encoding: .utf8)
+        let rules = try CustomRule.load(from: url.path)
+        XCTAssertEqual(rules[0].severity, .high)
+    }
+
+    func testEffectiveSeverityOverridesType() {
+        let match = DetectedMatch(
+            type: .credential,
+            value: "test",
+            range: "test".startIndex..<"test".endIndex,
+            customRuleName: "MyRule",
+            customSeverity: .low
+        )
+        XCTAssertEqual(match.type.severity, .critical)
+        XCTAssertEqual(match.effectiveSeverity, .low)
+    }
 }

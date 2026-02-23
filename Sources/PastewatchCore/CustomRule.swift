@@ -4,10 +4,12 @@ import Foundation
 public struct CustomRule {
     public let name: String
     public let regex: NSRegularExpression
+    public let severity: Severity
 
-    public init(name: String, regex: NSRegularExpression) {
+    public init(name: String, regex: NSRegularExpression, severity: Severity = .high) {
         self.name = name
         self.regex = regex
+        self.severity = severity
     }
 
     /// Load custom rules from a JSON file.
@@ -22,7 +24,13 @@ public struct CustomRule {
         try configs.map { config in
             do {
                 let regex = try NSRegularExpression(pattern: config.pattern)
-                return CustomRule(name: config.name, regex: regex)
+                let severity: Severity
+                if let sevStr = config.severity, let sev = Severity(rawValue: sevStr) {
+                    severity = sev
+                } else {
+                    severity = .high
+                }
+                return CustomRule(name: config.name, regex: regex, severity: severity)
             } catch {
                 throw CustomRuleError.invalidPattern(name: config.name, pattern: config.pattern)
             }
