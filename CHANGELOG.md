@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-23
+
+### Added
+
+- MCP server (`pastewatch-cli mcp`) — JSON-RPC 2.0 over stdio for AI agent integration
+  - Three tools: `pastewatch_scan`, `pastewatch_scan_file`, `pastewatch_scan_dir`
+  - Compatible with Claude Desktop, Cursor, and other MCP clients
+- Baseline diff mode (`--baseline path` and `baseline create` subcommand)
+  - SHA256 fingerprints for suppressing known findings
+  - Only new findings are reported when a baseline is provided
+- Pre-commit hook installer (`hook install` and `hook uninstall`)
+  - Marker-based sections (`# BEGIN PASTEWATCH` / `# END PASTEWATCH`)
+  - `--append` flag for existing hooks
+  - Worktree-safe via `git rev-parse --git-path hooks`
+- Config init (`pastewatch-cli init`) generates `.pastewatch.json` and `.pastewatch-allow`
+- Project-level config resolution: CWD `.pastewatch.json` → `~/.config/pastewatch/config.json` → defaults
+
 ## [0.3.0] - 2026-02-23
 
 ### Added
