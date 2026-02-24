@@ -8,6 +8,9 @@ import Foundation
 /// - Deobfuscation happens locally on-device — secrets never leave the machine
 /// - Uses __PW{TYPE_N}__ format — never collides with real content
 public final class RedactionStore {
+    // swiftlint:disable:next force_try
+    private static let placeholderRegex = try! NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern)
+
     /// Forward mapping: placeholder → original value, per file.
     private var mappings: [String: [String: String]] = [:]
 
@@ -114,9 +117,8 @@ public final class RedactionStore {
         var unresolvedPlaceholders: [String] = []
 
         // Find all MCP placeholder patterns: __PW{TYPE_N}__
-        let placeholderPattern = try! NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern)
         let nsContent = result as NSString
-        let allMatches = placeholderPattern.matches(in: result, range: NSRange(location: 0, length: nsContent.length))
+        let allMatches = Self.placeholderRegex.matches(in: result, range: NSRange(location: 0, length: nsContent.length))
 
         // Process in reverse order to preserve indices
         for match in allMatches.reversed() {
