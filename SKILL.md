@@ -9,6 +9,8 @@ metadata: {"requires":{"bins":["pastewatch-cli"]}}
 
 Sensitive data scanner. Deterministic regex-based detection and obfuscation for text content. No ML, no network calls.
 
+**For AI agent setup with secret redaction**, see [docs/agent-safety.md](docs/agent-safety.md).
+
 ## Install
 
 ```bash
