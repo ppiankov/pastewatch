@@ -41,8 +41,20 @@ public struct Obfuscator {
     }
 
     /// Create a placeholder string for a given type and occurrence number.
-    private static func makePlaceholder(type: SensitiveDataType, number: Int) -> String {
+    /// Used by GUI clipboard obfuscation and CLI output.
+    public static func makePlaceholder(type: SensitiveDataType, number: Int) -> String {
         let typeName = type.rawValue.uppercased().replacingOccurrences(of: " ", with: "_")
         return "<\(typeName)_\(number)>"
     }
+
+    /// Create an MCP-safe placeholder that never collides with real content.
+    /// Format: __PW{TYPE_N}__ — ASCII-safe, grep-friendly, impossible in nature.
+    /// Used by MCP redacted read/write tools.
+    public static func makeMCPPlaceholder(type: SensitiveDataType, number: Int) -> String {
+        let typeName = type.rawValue.uppercased().replacingOccurrences(of: " ", with: "_")
+        return "__PW{\(typeName)_\(number)}__"
+    }
+
+    /// Regex pattern matching MCP placeholders for resolution.
+    public static let mcpPlaceholderPattern = "__PW\\{[A-Z][A-Z0-9_]*_\\d+\\}__"
 }

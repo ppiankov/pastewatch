@@ -210,6 +210,42 @@ With findings:
 
 Errors are returned with `isError: true` in the result object.
 
+#### pastewatch_read_file
+Read a file with sensitive values replaced by `__PW{TYPE_N}__` placeholders. Secrets stay local — only placeholders reach the AI. The MCP server stores the mapping in memory for resolution on write.
+
+Input:
+```json
+{"path": "string (required) — absolute file path to read"}
+```
+
+Response: JSON object with `content` (redacted text), `redactions` (manifest of type/severity/line/placeholder), `clean` (boolean).
+
+#### pastewatch_write_file
+Write file contents, resolving `__PW{TYPE_N}__` placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing.
+
+Input:
+```json
+{"path": "string (required) — file path to write", "content": "string (required) — file content with placeholders"}
+```
+
+Response: JSON object with `written`, `path`, `resolved` (count), `unresolved` (count), and `unresolvedPlaceholders` (if any).
+
+#### pastewatch_check_output
+Check if text contains raw sensitive data. Use before writing or returning code to verify no secrets leak.
+
+Input:
+```json
+{"text": "string (required) — text to check"}
+```
+
+Response: JSON object with `clean` (boolean) and `findings` array (type/severity/line).
+
+**Redacted read/write workflow:**
+
+1. Agent calls `pastewatch_read_file` → gets content with `__PW{EMAIL_1}__` style placeholders
+2. Agent processes code with placeholders (secrets never reach the API)
+3. Agent calls `pastewatch_write_file` → MCP server resolves placeholders locally, writes real values to disk
+
 ## Detection types
 
 | Type | What it matches |
