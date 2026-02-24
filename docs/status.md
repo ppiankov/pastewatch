@@ -70,6 +70,8 @@ Core and CLI functionality complete:
 | .pastewatchignore | ✓ Stable |
 | explain subcommand | ✓ Stable |
 | config check subcommand | ✓ Stable |
+| MCP redacted read/write | ✓ Stable |
+| Agent safety guide | ✓ Stable |
 
 ---
 
