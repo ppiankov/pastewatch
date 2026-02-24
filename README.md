@@ -219,10 +219,17 @@ Run pastewatch as an MCP server for AI agent integration (Claude Desktop, Cursor
 }
 ```
 
-Tools:
+**Scan tools:**
 - `pastewatch_scan` — scan text (`{"text": "..."}`)
 - `pastewatch_scan_file` — scan a file (`{"path": "/absolute/path"}`)
 - `pastewatch_scan_dir` — scan a directory recursively (`{"path": "/absolute/path"}`)
+
+**Redacted read/write** — secrets never leave your machine:
+- `pastewatch_read_file` — read file with secrets replaced by `__PW{TYPE_N}__` placeholders
+- `pastewatch_write_file` — write file, resolving placeholders back to originals locally
+- `pastewatch_check_output` — verify text contains no raw secrets before returning
+
+The MCP server holds placeholder↔original mappings in memory for the session. The AI API only sees placeholders. On write, the server resolves them on-device.
 
 ### Pre-commit Hook
 

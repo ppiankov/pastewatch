@@ -8,6 +8,16 @@ struct MCP: ParsableCommand {
     )
 
     func run() throws {
+        let server = MCPServer()
+        server.start()
+    }
+}
+
+/// Stateful MCP server that holds redaction mappings for the session.
+final class MCPServer {
+    private let store = RedactionStore()
+
+    func start() {
         FileHandle.standardError.write(Data("pastewatch-cli: MCP server started\n".utf8))
 
         while let line = readLine(strippingNewline: true) {
@@ -66,7 +76,7 @@ struct MCP: ParsableCommand {
             ]),
             "serverInfo": .object([
                 "name": .string("pastewatch-cli"),
-                "version": .string("0.4.0")
+                "version": .string("0.6.0")
             ])
         ])
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: result, error: nil)
@@ -116,6 +126,52 @@ struct MCP: ParsableCommand {
                         ]),
                         "required": .array([.string("path")])
                     ])
+                ]),
+                .object([
+                    "name": .string("pastewatch_read_file"),
+                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored."),
+                    "inputSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object([
+                                "type": .string("string"),
+                                "description": .string("File path to read")
+                            ])
+                        ]),
+                        "required": .array([.string("path")])
+                    ])
+                ]),
+                .object([
+                    "name": .string("pastewatch_write_file"),
+                    "description": .string("Write file contents, resolving any placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing."),
+                    "inputSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object([
+                                "type": .string("string"),
+                                "description": .string("File path to write")
+                            ]),
+                            "content": .object([
+                                "type": .string("string"),
+                                "description": .string("File content (may contain placeholders from pastewatch_read_file)")
+                            ])
+                        ]),
+                        "required": .array([.string("path"), .string("content")])
+                    ])
+                ]),
+                .object([
+                    "name": .string("pastewatch_check_output"),
+                    "description": .string("Check if text contains raw sensitive data. Use before writing or returning code to verify no secrets leak."),
+                    "inputSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "text": .object([
+                                "type": .string("string"),
+                                "description": .string("Text to check for sensitive data")
+                            ])
+                        ]),
+                        "required": .array([.string("text")])
+                    ])
                 ])
             ])
         ])
@@ -147,6 +203,12 @@ struct MCP: ParsableCommand {
             return handleScanFile(id: id, arguments: arguments, config: config)
         case "pastewatch_scan_dir":
             return handleScanDir(id: id, arguments: arguments, config: config)
+        case "pastewatch_read_file":
+            return handleReadFile(id: id, arguments: arguments, config: config)
+        case "pastewatch_write_file":
+            return handleWriteFile(id: id, arguments: arguments)
+        case "pastewatch_check_output":
+            return handleCheckOutput(id: id, arguments: arguments, config: config)
         default:
             return JSONRPCResponse(
                 jsonrpc: "2.0", id: id, result: nil,
@@ -155,7 +217,7 @@ struct MCP: ParsableCommand {
         }
     }
 
-    // MARK: - Tool implementations
+    // MARK: - Scan tools (existing)
 
     private func handleScanText(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let text) = arguments["text"] else {
@@ -255,6 +317,131 @@ struct MCP: ParsableCommand {
         } catch {
             return errorResult(id: id, text: "Scan error: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Redacted read/write tools
+
+    private func handleReadFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
+        guard case .string(let path) = arguments["path"] else {
+            return errorResult(id: id, text: "Missing required parameter: path")
+        }
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            return errorResult(id: id, text: "File not found: \(path)")
+        }
+
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return errorResult(id: id, text: "Could not read file: \(path)")
+        }
+
+        let matches = DetectionRules.scan(content, config: config)
+
+        if matches.isEmpty {
+            let result: JSONValue = .array([
+                .object([
+                    "type": .string("text"),
+                    "text": .string(encodeJSON(.object([
+                        "content": .string(content),
+                        "redactions": .array([]),
+                        "clean": .bool(true)
+                    ])))
+                ])
+            ])
+            return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+        }
+
+        let (redacted, entries) = store.redact(content: content, matches: matches, filePath: path)
+
+        var redactionsArray: [JSONValue] = []
+        for entry in entries {
+            redactionsArray.append(.object([
+                "type": .string(entry.type),
+                "severity": .string(entry.severity),
+                "line": .number(Double(entry.line)),
+                "placeholder": .string(entry.placeholder)
+            ]))
+        }
+
+        let result: JSONValue = .array([
+            .object([
+                "type": .string("text"),
+                "text": .string(encodeJSON(.object([
+                    "content": .string(redacted),
+                    "redactions": .array(redactionsArray),
+                    "clean": .bool(false)
+                ])))
+            ])
+        ])
+
+        return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+    }
+
+    private func handleWriteFile(id: JSONRPCId?, arguments: [String: JSONValue]) -> JSONRPCResponse {
+        guard case .string(let path) = arguments["path"] else {
+            return errorResult(id: id, text: "Missing required parameter: path")
+        }
+
+        guard case .string(let content) = arguments["content"] else {
+            return errorResult(id: id, text: "Missing required parameter: content")
+        }
+
+        // Resolve placeholders using all file mappings (agent may move values between files)
+        let resolved = store.resolveAll(content: content)
+
+        do {
+            try resolved.content.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            return errorResult(id: id, text: "Could not write file: \(error.localizedDescription)")
+        }
+
+        var responseObj: [String: JSONValue] = [
+            "written": .bool(true),
+            "path": .string(path),
+            "resolved": .number(Double(resolved.resolved)),
+            "unresolved": .number(Double(resolved.unresolved))
+        ]
+
+        if !resolved.unresolvedPlaceholders.isEmpty {
+            responseObj["unresolvedPlaceholders"] = .array(resolved.unresolvedPlaceholders.map { .string($0) })
+        }
+
+        let result: JSONValue = .array([
+            .object([
+                "type": .string("text"),
+                "text": .string(encodeJSON(.object(responseObj)))
+            ])
+        ])
+
+        return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+    }
+
+    private func handleCheckOutput(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
+        guard case .string(let text) = arguments["text"] else {
+            return errorResult(id: id, text: "Missing required parameter: text")
+        }
+
+        let matches = DetectionRules.scan(text, config: config)
+
+        var findingsArray: [JSONValue] = []
+        for match in matches {
+            findingsArray.append(.object([
+                "type": .string(match.displayName),
+                "severity": .string(match.effectiveSeverity.rawValue),
+                "line": .number(Double(match.line))
+            ]))
+        }
+
+        let result: JSONValue = .array([
+            .object([
+                "type": .string("text"),
+                "text": .string(encodeJSON(.object([
+                    "clean": .bool(matches.isEmpty),
+                    "findings": .array(findingsArray)
+                ])))
+            ])
+        ])
+
+        return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
     }
 
     // MARK: - Result helpers
