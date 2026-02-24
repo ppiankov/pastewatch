@@ -204,9 +204,23 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
-### MCP Server
+### MCP Server — Redacted Read/Write
 
-Run pastewatch as an MCP server for AI agent integration (Claude Desktop, Cursor, etc.):
+AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**
+
+```
+  Your machine (local only)              Cloud API
+  ┌────────────────────────┐
+  │  pastewatch MCP server │
+  │                        │   __PW{AWS_KEY_1}__
+  │  read: scan + redact ──┼──────────────────────► Agent sees placeholders
+  │  write: resolve local ◄┼────────────────────── Agent returns placeholders
+  │                        │
+  │  secrets stay in RAM   │   Secrets never leave.
+  └────────────────────────┘
+```
+
+**Setup** (Claude Code, Cline, Cursor — any MCP-compatible agent):
 
 ```json
 {
@@ -219,17 +233,20 @@ Run pastewatch as an MCP server for AI agent integration (Claude Desktop, Cursor
 }
 ```
 
-**Scan tools:**
-- `pastewatch_scan` — scan text (`{"text": "..."}`)
-- `pastewatch_scan_file` — scan a file (`{"path": "/absolute/path"}`)
-- `pastewatch_scan_dir` — scan a directory recursively (`{"path": "/absolute/path"}`)
+**Tools:**
 
-**Redacted read/write** — secrets never leave your machine:
-- `pastewatch_read_file` — read file with secrets replaced by `__PW{TYPE_N}__` placeholders
-- `pastewatch_write_file` — write file, resolving placeholders back to originals locally
-- `pastewatch_check_output` — verify text contains no raw secrets before returning
+| Tool | Purpose |
+|------|---------|
+| `pastewatch_read_file` | Read file with secrets replaced by `__PW{TYPE_N}__` placeholders |
+| `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
+| `pastewatch_check_output` | Verify text contains no raw secrets before returning |
+| `pastewatch_scan` | Scan text for sensitive data |
+| `pastewatch_scan_file` | Scan a file for sensitive data |
+| `pastewatch_scan_dir` | Scan a directory recursively |
 
-The MCP server holds placeholder↔original mappings in memory for the session. The AI API only sees placeholders. On write, the server resolves them on-device.
+The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops.
+
+See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
 ### Pre-commit Hook
 
@@ -341,7 +358,13 @@ Define additional patterns in a JSON file:
 
 ## Agent Integration
 
-Install the CLI binary:
+Install via Homebrew:
+
+```bash
+brew install ppiankov/tap/pastewatch
+```
+
+Or download the binary:
 
 ```bash
 curl -LO https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli
@@ -349,11 +372,9 @@ chmod +x pastewatch-cli
 sudo mv pastewatch-cli /usr/local/bin/
 ```
 
-Or via Homebrew:
+**For AI coding agents**: Use MCP redacted read/write to prevent secret leakage — see [docs/agent-safety.md](docs/agent-safety.md) for setup.
 
-```bash
-brew install ppiankov/tap/pastewatch
-```
+**For CI/CD**: Use the CLI scan command or [GitHub Action](https://github.com/ppiankov/pastewatch-action).
 
 Agents: read [`SKILL.md`](SKILL.md) for commands, flags, detection types, and exit codes.
 
@@ -414,6 +435,7 @@ Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only
 
 ## Documentation
 
+- [docs/agent-safety.md](docs/agent-safety.md) — Agent safety guide (Claude Code, Cline, Cursor setup)
 - [docs/hard-constraints.md](docs/hard-constraints.md) — Design philosophy and non-negotiable rules
 - [docs/status.md](docs/status.md) — Current scope and non-goals
 
@@ -463,3 +485,4 @@ Do not pretend it guarantees compliance or safety.
 | .pastewatchignore | Complete |
 | Explain subcommand | Complete |
 | Config check subcommand | Complete |
+| MCP redacted read/write | Complete |
