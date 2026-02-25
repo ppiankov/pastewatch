@@ -65,7 +65,7 @@ public struct DetectionRules {
         // Database Connection String - high confidence
         // PostgreSQL, MySQL, MongoDB connection strings
         if let regex = try? NSRegularExpression(
-            pattern: #"(postgres|postgresql|mysql|mongodb|redis)://[^\s]+"#,
+            pattern: #"(postgres|postgresql|mysql|mongodb|redis|clickhouse)://[^\s]+"#,
             options: [.caseInsensitive]
         ) {
             result.append((.dbConnectionString, regex))
@@ -103,8 +103,117 @@ public struct DetectionRules {
             result.append((.gcpServiceAccount, regex))
         }
 
+        // OpenAI API Key - high confidence
+        // sk-proj- (project keys), sk-svcacct- (service account keys)
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.openaiKey, regex))
+        }
+
+        // Anthropic API Key - high confidence
+        // sk-ant-api03-, sk-ant-admin01-, sk-ant-oat01-
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bsk-ant-(?:api03|admin01|oat01)-[A-Za-z0-9_-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.anthropicKey, regex))
+        }
+
+        // Groq API Key - high confidence
+        // gsk_ prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bgsk_[A-Za-z0-9]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.groqKey, regex))
+        }
+
+        // Hugging Face Token - high confidence
+        // hf_ prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bhf_[A-Za-z0-9]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.huggingfaceToken, regex))
+        }
+
+        // npm Token - high confidence
+        // npm_ prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bnpm_[A-Za-z0-9]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.npmToken, regex))
+        }
+
+        // PyPI Token - high confidence
+        // pypi- prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bpypi-[A-Za-z0-9_-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.pypiToken, regex))
+        }
+
+        // RubyGems Token - high confidence
+        // rubygems_ prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\brubygems_[A-Za-z0-9]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.rubygemsToken, regex))
+        }
+
+        // GitLab Personal Access Token - high confidence
+        // glpat- prefix
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bglpat-[A-Za-z0-9_-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.gitlabToken, regex))
+        }
+
+        // Telegram Bot Token - high confidence
+        // Numeric bot ID (8-10 digits) : AA followed by 33 chars
+        if let regex = try? NSRegularExpression(
+            pattern: #"\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b"#,
+            options: []
+        ) {
+            result.append((.telegramBotToken, regex))
+        }
+
+        // SendGrid API Key - high confidence
+        // SG. followed by two base64 segments separated by a dot
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.sendgridKey, regex))
+        }
+
+        // Shopify Token - high confidence
+        // shpat_, shpca_, shppa_ prefixes
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bshp(?:at|ca|pa)_[A-Fa-f0-9]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.shopifyToken, regex))
+        }
+
+        // DigitalOcean Token - high confidence
+        // dop_v1_ (personal), doo_v1_ (OAuth)
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bdo[op]_v1_[a-f0-9]{64}\b"#,
+            options: []
+        ) {
+            result.append((.digitaloceanToken, regex))
+        }
+
         // Generic API Key patterns - high confidence
         // Common prefixes: sk-, pk-, api_, key_, token_
+        // Placed AFTER specific providers (OpenAI sk-proj-, Anthropic sk-ant-, Groq gsk_)
         if let regex = try? NSRegularExpression(
             pattern: #"\b(sk|pk|api|key|token|secret|bearer)[_-][A-Za-z0-9]{20,}\b"#,
             options: [.caseInsensitive]

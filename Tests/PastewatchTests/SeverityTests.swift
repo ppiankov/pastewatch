@@ -7,7 +7,10 @@ final class SeverityTests: XCTestCase {
         let criticalTypes: [SensitiveDataType] = [
             .awsKey, .genericApiKey, .sshPrivateKey,
             .dbConnectionString, .jwtToken, .creditCard, .credential,
-            .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount
+            .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
+            .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
+            .npmToken, .pypiToken, .rubygemsToken,
+            .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken
         ]
         for type in criticalTypes {
             XCTAssertEqual(type.severity, .critical, "\(type.rawValue) should be critical")
