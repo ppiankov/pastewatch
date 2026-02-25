@@ -106,6 +106,9 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | DB Connections | `postgres://...`, `clickhouse://...` |
 | SSH Keys | `-----BEGIN RSA PRIVATE KEY-----` |
 | Credit Cards | `4111111111111111` (Luhn validated) |
+| File Paths | `/etc/nginx/nginx.conf`, `/home/deploy/.ssh/id_rsa` |
+| Hostnames | `db-primary.internal.corp.net` |
+| Credentials | `password=...`, `secret: ...`, `api_key=...` |
 | Slack Webhooks | `https://hooks.slack.com/services/...` |
 | Discord Webhooks | `https://discord.com/api/webhooks/...` |
 | Azure Connections | `DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...` |
@@ -257,6 +260,21 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
 | `pastewatch_scan_dir` | Scan a directory recursively |
 
 The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops.
+
+**Audit logging** — verify what the MCP server did during a session:
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret values.
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 

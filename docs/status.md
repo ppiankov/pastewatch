@@ -88,6 +88,7 @@ Core and CLI functionality complete:
 | Registry token detection (npm, PyPI, RubyGems) | ✓ Stable |
 | Platform token detection (GitLab, Telegram, SendGrid, Shopify, DO) | ✓ Stable |
 | ClickHouse connection string detection | ✓ Stable |
+| MCP audit logging (--audit-log) | ✓ Stable |
 
 ---
 
