@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-25
+
+### Added
+
+- 12 new detection types: OpenAI Key, Anthropic Key, Hugging Face Token, Groq Key, npm Token, PyPI Token, RubyGems Token, GitLab Token, Telegram Bot Token, SendGrid Key, Shopify Token, DigitalOcean Token (all critical severity)
+- ClickHouse connection string detection (`clickhouse://`)
+- MCP redacted read/write tools (`pastewatch_read_file`, `pastewatch_write_file`, `pastewatch_check_output`) for AI agent secret protection
+- MCP audit logging via `--audit-log` flag — proof of what was redacted during agent sessions
+- Agent safety guide (`docs/agent-safety.md`) with setup for Claude Code, Cline, and Cursor
+
 ## [0.6.0] - 2026-02-23
 
 ### Added

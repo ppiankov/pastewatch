@@ -60,7 +60,7 @@ Local-only clipboard guardian. Deterministic detection of sensitive data via reg
 - Pre-commit hook scans for secret patterns in staged diffs — sanitize examples
 
 ## Verification
-- Run `make test` after code changes (164 tests as of v0.6.0)
+- Run `make test` after code changes (211 tests as of v0.7.0)
 - Run `make lint` before marking complete
 - Test on both macOS and Linux (CI covers both)
 
