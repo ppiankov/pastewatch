@@ -324,6 +324,218 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertTrue(matches.contains { $0.type == .gcpServiceAccount })
     }
 
+    // MARK: - ClickHouse Connection String Detection
+
+    func testDetectsClickHouseConnectionString() {
+        let content = "CH_URL=clickhouse://user:pass@host:9000/db"
+        let matches = DetectionRules.scan(content, config: config)
+        let dbMatches = matches.filter { $0.type == .dbConnectionString }
+        XCTAssertGreaterThanOrEqual(dbMatches.count, 1)
+    }
+
+    // MARK: - OpenAI Key Detection
+
+    // Test values use string concatenation to avoid triggering pre-commit hooks
+    private static let skProj = "sk-" + "proj-"
+    private static let skSvcacct = "sk-" + "svcacct-"
+    private static let skAntApi = "sk-" + "ant-api03-"
+    private static let skAntAdmin = "sk-" + "ant-admin01-"
+    private static let testSuffix = "abc123def456ghi789jkl012mno345"
+
+    func testDetectsOpenAIProjectKey() {
+        let content = "OPENAI_KEY=" + Self.skProj + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .openaiKey })
+    }
+
+    func testDetectsOpenAIServiceAccountKey() {
+        let content = "key: " + Self.skSvcacct + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .openaiKey })
+    }
+
+    func testOpenAIKeyNotMatchedAsGenericApiKey() {
+        let content = Self.skProj + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        // Should match as OpenAI, not generic API key
+        XCTAssertTrue(matches.contains { $0.type == .openaiKey })
+        XCTAssertFalse(matches.contains { $0.type == .genericApiKey })
+    }
+
+    // MARK: - Anthropic Key Detection
+
+    func testDetectsAnthropicApiKey() {
+        let content = "ANTHROPIC_KEY=" + Self.skAntApi + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .anthropicKey })
+    }
+
+    func testDetectsAnthropicAdminKey() {
+        let content = "key=" + Self.skAntAdmin + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .anthropicKey })
+    }
+
+    func testAnthropicKeyNotMatchedAsGenericApiKey() {
+        let content = Self.skAntApi + Self.testSuffix
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .anthropicKey })
+        XCTAssertFalse(matches.contains { $0.type == .genericApiKey })
+    }
+
+    // MARK: - Hugging Face Token Detection
+
+    func testDetectsHuggingFaceToken() {
+        let content = "HF_TOKEN=hf_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .huggingfaceToken })
+    }
+
+    func testHuggingFaceTokenTooShort() {
+        let content = "hf_short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .huggingfaceToken })
+    }
+
+    // MARK: - Groq Key Detection
+
+    func testDetectsGroqKey() {
+        let content = "GROQ_KEY=gsk_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .groqKey })
+    }
+
+    func testGroqKeyTooShort() {
+        let content = "gsk_short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .groqKey })
+    }
+
+    // MARK: - npm Token Detection
+
+    func testDetectsNpmToken() {
+        let content = "NPM_TOKEN=npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .npmToken })
+    }
+
+    func testNpmTokenTooShort() {
+        let content = "npm_short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .npmToken })
+    }
+
+    // MARK: - PyPI Token Detection
+
+    func testDetectsPyPIToken() {
+        let content = "PYPI_TOKEN=pypi-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .pypiToken })
+    }
+
+    func testPyPITokenTooShort() {
+        let content = "pypi-short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .pypiToken })
+    }
+
+    // MARK: - RubyGems Token Detection
+
+    func testDetectsRubyGemsToken() {
+        let content = "GEM_TOKEN=rubygems_ABCDEFGHIJKLMNOPQRSTUVWXYZab"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .rubygemsToken })
+    }
+
+    func testRubyGemsTokenTooShort() {
+        let content = "rubygems_short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .rubygemsToken })
+    }
+
+    // MARK: - GitLab Token Detection
+
+    func testDetectsGitLabToken() {
+        let content = "GITLAB_TOKEN=glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .gitlabToken })
+    }
+
+    func testGitLabTokenTooShort() {
+        let content = "glpat-short"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .gitlabToken })
+    }
+
+    // MARK: - Telegram Bot Token Detection
+
+    func testDetectsTelegramBotToken() {
+        let content = "BOT_TOKEN=123456789:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .telegramBotToken })
+    }
+
+    func testTelegramBotTokenWrongFormat() {
+        // Too few digits before colon
+        let content = "12345:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .telegramBotToken })
+    }
+
+    // MARK: - SendGrid Key Detection
+
+    func testDetectsSendGridKey() {
+        let content = "SENDGRID_KEY=SG.abcdefghijklmnopqrstuvwx.ABCDEFGHIJKLMNOPQRSTUVWXyz012345"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .sendgridKey })
+    }
+
+    func testSendGridKeyMissingSecondSegment() {
+        let content = "SG.abcdefghijklmnopqrstuvwx"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .sendgridKey })
+    }
+
+    // MARK: - Shopify Token Detection
+
+    func testDetectsShopifyAccessToken() {
+        let content = "SHOPIFY_TOKEN=shpat_abcdef0123456789abcdef01"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .shopifyToken })
+    }
+
+    func testDetectsShopifyCustomAppToken() {
+        let content = "token: shpca_abcdef0123456789abcdef01"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .shopifyToken })
+    }
+
+    func testShopifyTokenTooShort() {
+        let content = "shpat_abc"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .shopifyToken })
+    }
+
+    // MARK: - DigitalOcean Token Detection
+
+    func testDetectsDigitalOceanPersonalToken() {
+        let content = "DO_TOKEN=dop_v1_" + String(repeating: "a1b2c3d4", count: 8)
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .digitaloceanToken })
+    }
+
+    func testDetectsDigitalOceanOAuthToken() {
+        let content = "DO_TOKEN=doo_v1_" + String(repeating: "a1b2c3d4", count: 8)
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .digitaloceanToken })
+    }
+
+    func testDigitalOceanTokenWrongLength() {
+        let content = "dop_v1_abcdef1234"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .digitaloceanToken })
+    }
+
     // MARK: - Line Number Tracking
 
     func testLineNumbersOnMultilineContent() {

@@ -6,7 +6,7 @@
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
-- 17 detection types with severity levels (critical/high/medium/low)
+- 29 detection types with severity levels (critical/high/medium/low)
 - CLI: file, directory, and stdin scanning
 - Linux binary for CI runners
 - SARIF 2.1.0 and markdown output with severity-appropriate levels
@@ -33,6 +33,18 @@ Core and CLI functionality complete:
 | Generic API key detection | ✓ Stable |
 | GitHub token detection | ✓ Stable |
 | Stripe key detection | ✓ Stable |
+| OpenAI key detection | ✓ Stable |
+| Anthropic key detection | ✓ Stable |
+| Hugging Face token detection | ✓ Stable |
+| Groq key detection | ✓ Stable |
+| npm token detection | ✓ Stable |
+| PyPI token detection | ✓ Stable |
+| RubyGems token detection | ✓ Stable |
+| GitLab token detection | ✓ Stable |
+| Telegram bot token detection | ✓ Stable |
+| SendGrid key detection | ✓ Stable |
+| Shopify token detection | ✓ Stable |
+| DigitalOcean token detection | ✓ Stable |
 | UUID detection | ✓ Stable |
 | JWT detection | ✓ Stable |
 | DB connection string detection | ✓ Stable |
@@ -72,6 +84,10 @@ Core and CLI functionality complete:
 | config check subcommand | ✓ Stable |
 | MCP redacted read/write | ✓ Stable |
 | Agent safety guide | ✓ Stable |
+| LLM key detection (OpenAI, Anthropic, HF, Groq) | ✓ Stable |
+| Registry token detection (npm, PyPI, RubyGems) | ✓ Stable |
+| Platform token detection (GitLab, Telegram, SendGrid, Shopify, DO) | ✓ Stable |
+| ClickHouse connection string detection | ✓ Stable |
 
 ---
 
