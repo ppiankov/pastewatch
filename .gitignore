@@ -32,3 +32,5 @@ release/
 
 # Config (user-specific)
 .config/
+
+# Claude Code session files
