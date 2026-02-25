@@ -134,6 +134,9 @@ Validate configuration files (JSON syntax, type names, regex patterns, severity 
 
 Run as MCP server (JSON-RPC 2.0 over stdio). macOS ARM only.
 
+**Flags:**
+- `--audit-log path` — write audit log of all tool calls to file (append mode). Logs timestamps, tool names, file paths, redaction counts — never logs secret values.
+
 **Install:**
 ```bash
 brew install ppiankov/tap/pastewatch
@@ -146,6 +149,18 @@ brew install ppiankov/tap/pastewatch
     "pastewatch": {
       "command": "pastewatch-cli",
       "args": ["mcp"]
+    }
+  }
+}
+```
+
+With audit logging:
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
     }
   }
 }

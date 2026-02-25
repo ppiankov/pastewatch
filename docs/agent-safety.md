@@ -159,6 +159,29 @@ database:
   api_key: (original key restored)
 ```
 
+### Audit logging
+
+Enable audit logging to get proof of what the MCP server did during a session:
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+The log records every tool call with timestamps — what files were read, how many secrets were redacted, what types were found, how many placeholders were resolved on write. Secret values are never logged.
+
+```
+2026-02-25T00:30:12Z READ  /app/config.yml  redacted=3 [AWS Key, Credential, Email]
+2026-02-25T00:30:15Z WRITE /app/config.yml  resolved=3 unresolved=0
+2026-02-25T00:30:18Z CHECK (inline)  clean=true
+```
+
 ### Important notes
 
 - The MCP tools are **opt-in** — the agent must choose to use them
