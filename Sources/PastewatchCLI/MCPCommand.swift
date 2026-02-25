@@ -7,8 +7,12 @@ struct MCP: ParsableCommand {
         abstract: "Run as MCP server (stdio transport)"
     )
 
+    @Option(name: .long, help: "Path to audit log file (append mode)")
+    var auditLog: String?
+
     func run() throws {
-        let server = MCPServer()
+        let logger = auditLog.map { MCPAuditLogger(path: $0) }
+        let server = MCPServer(auditLogger: logger)
         server.start()
     }
 }
@@ -16,6 +20,11 @@ struct MCP: ParsableCommand {
 /// Stateful MCP server that holds redaction mappings for the session.
 final class MCPServer {
     private let store = RedactionStore()
+    private let auditLogger: MCPAuditLogger?
+
+    init(auditLogger: MCPAuditLogger? = nil) {
+        self.auditLogger = auditLogger
+    }
 
     func start() {
         FileHandle.standardError.write(Data("pastewatch-cli: MCP server started\n".utf8))
@@ -225,6 +234,7 @@ final class MCPServer {
         }
 
         let matches = DetectionRules.scan(text, config: config)
+        auditLogger?.log("SCAN  (inline)  findings=\(matches.count)")
         return successResult(id: id, matches: matches)
     }
 
@@ -266,6 +276,7 @@ final class MCPServer {
             matches = DetectionRules.scan(content, config: config)
         }
 
+        auditLogger?.log("SCAN  \(path)  findings=\(matches.count)")
         return successResult(id: id, matches: matches, filePath: path)
     }
 
@@ -296,6 +307,7 @@ final class MCPServer {
                 }
             }
 
+            auditLogger?.log("SCAN  \(path)  files=\(filesScanned) findings=\(totalFindings)")
             let resultText = "Scanned \(filesScanned) files. Found \(totalFindings) findings."
 
             let content: JSONValue = .array([
@@ -337,6 +349,7 @@ final class MCPServer {
         let matches = DetectionRules.scan(content, config: config)
 
         if matches.isEmpty {
+            auditLogger?.log("READ  \(path)  clean")
             let result: JSONValue = .array([
                 .object([
                     "type": .string("text"),
@@ -351,6 +364,9 @@ final class MCPServer {
         }
 
         let (redacted, entries) = store.redact(content: content, matches: matches, filePath: path)
+
+        let typeNames = Set(entries.map { $0.type }).sorted()
+        auditLogger?.log("READ  \(path)  redacted=\(entries.count) [\(typeNames.joined(separator: ", "))]")
 
         var redactionsArray: [JSONValue] = []
         for entry in entries {
@@ -394,6 +410,8 @@ final class MCPServer {
             return errorResult(id: id, text: "Could not write file: \(error.localizedDescription)")
         }
 
+        auditLogger?.log("WRITE \(path)  resolved=\(resolved.resolved) unresolved=\(resolved.unresolved)")
+
         var responseObj: [String: JSONValue] = [
             "written": .bool(true),
             "path": .string(path),
@@ -421,6 +439,7 @@ final class MCPServer {
         }
 
         let matches = DetectionRules.scan(text, config: config)
+        auditLogger?.log("CHECK (inline)  clean=\(matches.isEmpty)")
 
         var findingsArray: [JSONValue] = []
         for match in matches {
