@@ -258,7 +258,7 @@ Response: JSON object with `clean` (boolean) and `findings` array (type/severity
 | AWS Key | AKIA/ABIA/ACCA/ASIA key IDs and 40-char secret keys |
 | API Key | Generic keys (sk-, pk-, api_, token_), GitHub tokens, Stripe keys |
 | UUID | Standard UUID v4 format |
-| DB Connection | PostgreSQL, MySQL, MongoDB, Redis connection strings |
+| DB Connection | PostgreSQL, MySQL, MongoDB, Redis, ClickHouse connection strings |
 | SSH Key | RSA, DSA, EC, OPENSSH private key headers |
 | JWT | Three-segment base64url tokens (eyJ...) |
 | Card | Visa, Mastercard, Amex, Discover with Luhn validation |
@@ -269,12 +269,24 @@ Response: JSON object with `clean` (boolean) and `findings` array (type/severity
 | Discord Webhook | Discord webhook URLs |
 | Azure Connection | Azure Storage connection strings with AccountKey |
 | GCP Service Account | GCP service account JSON key files |
+| OpenAI Key | OpenAI API keys (sk-proj-, sk-svcacct-) |
+| Anthropic Key | Anthropic API keys (sk-ant-api03-, sk-ant-admin01-, sk-ant-oat01-) |
+| Hugging Face Token | Hugging Face access tokens (hf_) |
+| Groq Key | Groq API keys (gsk_) |
+| npm Token | npm access tokens (npm_) |
+| PyPI Token | PyPI API tokens (pypi-) |
+| RubyGems Token | RubyGems API keys (rubygems_) |
+| GitLab Token | GitLab personal access tokens (glpat-) |
+| Telegram Bot Token | Telegram bot tokens (numeric ID + AA hash) |
+| SendGrid Key | SendGrid API keys (SG. prefix) |
+| Shopify Token | Shopify access tokens (shpat_, shpca_, shppa_) |
+| DigitalOcean Token | DigitalOcean tokens (dop_v1_, doo_v1_) |
 
 ## Severity levels
 
 | Severity | Types |
 |----------|-------|
-| critical | AWS Key, API Key, SSH Key, DB Connection, JWT, Card, Credential, Slack Webhook, Discord Webhook, Azure Connection, GCP Service Account |
+| critical | AWS Key, API Key, SSH Key, DB Connection, JWT, Card, Credential, Slack Webhook, Discord Webhook, Azure Connection, GCP Service Account, OpenAI Key, Anthropic Key, Hugging Face Token, Groq Key, npm Token, PyPI Token, RubyGems Token, GitLab Token, Telegram Bot Token, SendGrid Key, Shopify Token, DigitalOcean Token |
 | high | Email, Phone |
 | medium | IP, File Path, Hostname |
 | low | UUID |

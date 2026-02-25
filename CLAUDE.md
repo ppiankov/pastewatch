@@ -37,7 +37,7 @@ Local-only clipboard guardian. Deterministic detection of sensitive data via reg
 - Swift 5.9, macOS 14+ deployment target
 - SwiftLint (strict), SwiftFormat
 - PastewatchCore holds all shared logic — CLI and GUI depend on it
-- 17 detection types with severity levels (critical/high/medium/low)
+- 29 detection types with severity levels (critical/high/medium/low)
 - Output formats: text, json, sarif, markdown
 - Exit codes: 0 (clean), 1 (error), 2 (invalid args), 6 (findings)
 - Config cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults

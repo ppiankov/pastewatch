@@ -50,13 +50,28 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case discordWebhook = "Discord Webhook"
     case azureConnectionString = "Azure Connection"
     case gcpServiceAccount = "GCP Service Account"
+    case openaiKey = "OpenAI Key"
+    case anthropicKey = "Anthropic Key"
+    case huggingfaceToken = "Hugging Face Token"
+    case groqKey = "Groq Key"
+    case npmToken = "npm Token"
+    case pypiToken = "PyPI Token"
+    case rubygemsToken = "RubyGems Token"
+    case gitlabToken = "GitLab Token"
+    case telegramBotToken = "Telegram Bot Token"
+    case sendgridKey = "SendGrid Key"
+    case shopifyToken = "Shopify Token"
+    case digitaloceanToken = "DigitalOcean Token"
 
     /// Severity of this detection type.
     public var severity: Severity {
         switch self {
         case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
              .jwtToken, .creditCard, .credential,
-             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount:
+             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
+             .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
+             .npmToken, .pypiToken, .rubygemsToken,
+             .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken:
             return .critical
         case .email, .phone:
             return .high
@@ -87,6 +102,18 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .discordWebhook: return "Discord webhook URLs"
         case .azureConnectionString: return "Azure Storage connection strings with AccountKey"
         case .gcpServiceAccount: return "GCP service account JSON key files"
+        case .openaiKey: return "OpenAI API keys (sk-proj-, sk-svcacct- prefixes)"
+        case .anthropicKey: return "Anthropic API keys (sk-ant-api03-, sk-ant-admin01-, sk-ant-oat01- prefixes)"
+        case .huggingfaceToken: return "Hugging Face access tokens (hf_ prefix)"
+        case .groqKey: return "Groq API keys (gsk_ prefix)"
+        case .npmToken: return "npm access tokens (npm_ prefix)"
+        case .pypiToken: return "PyPI API tokens (pypi- prefix)"
+        case .rubygemsToken: return "RubyGems API keys (rubygems_ prefix)"
+        case .gitlabToken: return "GitLab personal access tokens (glpat- prefix)"
+        case .telegramBotToken: return "Telegram bot tokens (numeric ID + AA hash)"
+        case .sendgridKey: return "SendGrid API keys (SG. prefix with base64 segments)"
+        case .shopifyToken: return "Shopify access tokens (shpat_, shpca_, shppa_ prefixes)"
+        case .digitaloceanToken: return "DigitalOcean tokens (dop_v1_, doo_v1_ prefixes)"
         }
     }
 
@@ -110,6 +137,18 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .discordWebhook: return ["https://discord.com/api/webhooks/<id>/<token>"]
         case .azureConnectionString: return ["DefaultEndpointsProtocol=https;AccountName=<name>;AccountKey=<key>"]
         case .gcpServiceAccount: return ["{\"type\": \"service_account\", \"project_id\": \"<id>\"}"]
+        case .openaiKey: return ["sk-proj-<project key>", "sk-svcacct-<service account key>"]
+        case .anthropicKey: return ["sk-ant-api03-<API key>", "sk-ant-admin01-<admin key>"]
+        case .huggingfaceToken: return ["hf_<access token>"]
+        case .groqKey: return ["gsk_<API key>"]
+        case .npmToken: return ["npm_<access token>"]
+        case .pypiToken: return ["pypi-<API token>"]
+        case .rubygemsToken: return ["rubygems_<API key>"]
+        case .gitlabToken: return ["glpat-<personal access token>"]
+        case .telegramBotToken: return ["123456789:AA<33-character hash>"]
+        case .sendgridKey: return ["SG.<base64>.<base64>"]
+        case .shopifyToken: return ["shpat_<access token>", "shpca_<token>", "shppa_<token>"]
+        case .digitaloceanToken: return ["dop_v1_<64-hex-chars>", "doo_v1_<64-hex-chars>"]
         }
     }
 }

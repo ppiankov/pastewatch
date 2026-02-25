@@ -103,13 +103,25 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | API Keys | `sk_test_...`, `ghp_...` |
 | UUIDs | `550e8400-e29b-41d4-a716-446655440000` |
 | JWT Tokens | `eyJhbGciOiJIUzI1NiIs...` |
-| DB Connections | `postgres://user:pass@host/db` |
+| DB Connections | `postgres://...`, `clickhouse://...` |
 | SSH Keys | `-----BEGIN RSA PRIVATE KEY-----` |
 | Credit Cards | `4111111111111111` (Luhn validated) |
 | Slack Webhooks | `https://hooks.slack.com/services/...` |
 | Discord Webhooks | `https://discord.com/api/webhooks/...` |
 | Azure Connections | `DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...` |
 | GCP Service Accounts | `{"type": "service_account", ...}` |
+| OpenAI Keys | `sk-proj-...`, `sk-svcacct-...` |
+| Anthropic Keys | `sk-ant-api03-...`, `sk-ant-admin01-...` |
+| Hugging Face Tokens | `hf_...` |
+| Groq Keys | `gsk_...` |
+| npm Tokens | `npm_...` |
+| PyPI Tokens | `pypi-...` |
+| RubyGems Tokens | `rubygems_...` |
+| GitLab Tokens | `glpat-...` |
+| Telegram Bot Tokens | `123456789:AA...` |
+| SendGrid Keys | `SG....` |
+| Shopify Tokens | `shpat_...`, `shpca_...` |
+| DigitalOcean Tokens | `dop_v1_...`, `doo_v1_...` |
 
 Each type has a severity level (critical, high, medium, low) used in SARIF, JSON, and markdown output.
 
@@ -443,7 +455,7 @@ Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only
 
 ## License
 
-MIT License.
+[MIT License](LICENSE).
 
 Use it. Fork it. Modify it.
 
@@ -457,7 +469,7 @@ Do not pretend it guarantees compliance or safety.
 
 | Milestone | Status |
 |-----------|--------|
-| Core detection (17 types) | Complete |
+| Core detection (29 types) | Complete |
 | Clipboard obfuscation | Complete |
 | CLI scan mode | Complete |
 | macOS menubar app | Complete |
