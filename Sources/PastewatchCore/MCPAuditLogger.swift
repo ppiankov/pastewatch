@@ -28,6 +28,7 @@ public final class MCPAuditLogger {
         let line = "\(timestamp) \(message)\n"
         if let data = line.data(using: .utf8) {
             fileHandle?.write(data)
+            fileHandle?.synchronizeFile()
             FileHandle.standardError.write(data)
         }
     }
