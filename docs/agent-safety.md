@@ -283,3 +283,33 @@ This lets you adopt agent safety incrementally without blocking work on legacy c
 | 6. Baseline | Gradual cleanup of legacy codebases | Per-project |
 
 Layers are additive. Use as many as your threat model requires. Layer 2 (MCP redacted read/write) is the most impactful for active agent workflows.
+
+---
+
+## What Pastewatch Covers — and What It Doesn't
+
+Pastewatch protects **credentials** — the highest-damage leak vector. If a key leaks, attackers get immediate access to infrastructure. Pastewatch prevents this structurally.
+
+**What pastewatch protects (secrets never leave your machine):**
+
+| Category | Examples |
+|----------|----------|
+| API keys | AWS, OpenAI, Anthropic, Stripe, GitHub tokens, etc. |
+| Database credentials | Connection strings, passwords in config files |
+| SSH/TLS keys | Private key headers |
+| Identity data | Emails, phone numbers, IPs |
+| Session tokens | JWTs, bearer tokens |
+| Platform credentials | Slack/Discord webhooks, Azure/GCP keys |
+
+**What pastewatch does NOT protect:**
+
+| Category | Why |
+|----------|-----|
+| Prompt content | Your questions and instructions still reach the API |
+| Code structure | Architecture, patterns, business logic — visible to the provider |
+| Conversation context | What you're building, for whom, why |
+| Non-secret data | Domain names, file paths, comments, variable names |
+
+Pastewatch protects your **keys**. For protecting your **ideas**, you need a local model (Ollama, llama.cpp). For protecting your **commands**, you need a local proxy (intercepting before they reach the API).
+
+Think of it as: secrets are the highest-consequence leak — a leaked API key has immediate, measurable damage. Pastewatch eliminates that risk. The other risks (prompt content, business logic) are real but require different tools.

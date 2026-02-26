@@ -276,6 +276,8 @@ The server holds mappings in memory for the session. Same file re-read returns t
 
 Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret values.
 
+**What this protects:** API keys, DB credentials, SSH keys, tokens, emails, IPs — secrets never leave your machine. **What this doesn't protect:** prompt content, code structure, business logic — these still reach the API. Pastewatch protects your keys; for protecting your ideas, use a local model.
+
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
 ### Pre-commit Hook
