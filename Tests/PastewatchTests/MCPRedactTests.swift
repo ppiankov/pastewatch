@@ -82,4 +82,55 @@ final class MCPRedactTests: XCTestCase {
         XCTAssertTrue(matches.isEmpty)
         XCTAssertFalse(store.hasMappings(for: tmpFile))
     }
+
+    // MARK: - Severity Filtering
+
+    func testSeverityFilteringHighDefault() {
+        let content = "contact: user@corp.com server: 192.168.1.50"
+        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        let filtered = allMatches.filter { $0.effectiveSeverity >= .high }
+
+        // Email is high severity — kept. IP is medium — dropped.
+        let emailMatches = filtered.filter { $0.type == .email }
+        let ipMatches = filtered.filter { $0.type == .ipAddress }
+        XCTAssertGreaterThanOrEqual(emailMatches.count, 1)
+        XCTAssertEqual(ipMatches.count, 0)
+    }
+
+    func testSeverityFilteringCriticalOnly() {
+        let content = "email: user@corp.com"
+        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        let filtered = allMatches.filter { $0.effectiveSeverity >= .critical }
+
+        // Email is high, not critical — filtered out
+        XCTAssertTrue(filtered.isEmpty)
+    }
+
+    func testSeverityFilteringLow() {
+        let content = "contact: user@corp.com server: 192.168.1.50"
+        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        let filtered = allMatches.filter { $0.effectiveSeverity >= .low }
+
+        // Low threshold keeps everything
+        XCTAssertEqual(filtered.count, allMatches.count)
+    }
+
+    func testReadmeWithBadgesNotRedacted() throws {
+        let tmpFile = NSTemporaryDirectory() + "mcp_readme_test.md"
+        let readme = "# My Project\n[![Build](https://img.shields.io/badge/build-passing-green)](https://github.com/user/repo)\n[![Coverage](https://codecov.io/gh/user/repo/badge.svg)](https://codecov.io/gh/user/repo)"
+        try readme.write(toFile: tmpFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        let store = RedactionStore()
+        let content = try String(contentsOfFile: tmpFile, encoding: .utf8)
+        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        let matches = allMatches.filter { $0.effectiveSeverity >= .high }
+
+        // No high+ severity findings in a typical README with badges
+        XCTAssertTrue(matches.isEmpty)
+
+        let (redacted, entries) = store.redact(content: content, matches: matches, filePath: tmpFile)
+        XCTAssertEqual(redacted, content)
+        XCTAssertTrue(entries.isEmpty)
+    }
 }

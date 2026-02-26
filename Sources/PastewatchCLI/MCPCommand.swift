@@ -150,6 +150,16 @@ final class MCPServer {
                             "path": .object([
                                 "type": .string("string"),
                                 "description": .string("File path to read")
+                            ]),
+                            "min_severity": .object([
+                                "type": .string("string"),
+                                "description": .string("Minimum severity to redact: critical, high, medium, low (default: high)"),
+                                "enum": .array([
+                                    .string("critical"),
+                                    .string("high"),
+                                    .string("medium"),
+                                    .string("low")
+                                ])
                             ])
                         ]),
                         "required": .array([.string("path")])
@@ -351,7 +361,16 @@ final class MCPServer {
             return errorResult(id: id, text: "Could not read file: \(path)")
         }
 
-        let matches = DetectionRules.scan(content, config: config)
+        let minSeverity: Severity
+        if case .string(let severityStr) = arguments["min_severity"],
+           let parsed = Severity(rawValue: severityStr) {
+            minSeverity = parsed
+        } else {
+            minSeverity = .high
+        }
+
+        let allMatches = DetectionRules.scan(content, config: config)
+        let matches = allMatches.filter { $0.effectiveSeverity >= minSeverity }
 
         if matches.isEmpty {
             auditLogger?.log("READ  \(path)  clean")

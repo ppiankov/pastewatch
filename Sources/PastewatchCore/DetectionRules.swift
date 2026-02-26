@@ -10,6 +10,7 @@ public struct DetectionRules {
     /// Safe hosts that should not trigger hostname detection.
     /// Matches chainwatch's safeHosts for consistency across tools.
     static let safeHosts: Set<String> = [
+        // Common public domains
         "example.com", "example.org", "example.net",
         "localhost",
         "github.com", "google.com",
@@ -19,7 +20,32 @@ public struct DetectionRules {
         "stackexchange.com", "stackoverflow.com",
         "apple.com", "microsoft.com",
         "npmjs.com", "pypi.org", "swift.org",
-        "golang.org"
+        "golang.org",
+        // Badge and CI services
+        "img.shields.io", "badge.fury.io",
+        "badgen.net", "codecov.io",
+        "coveralls.io", "codeclimate.com",
+        "sonarcloud.io", "snyk.io",
+        // CI/CD platforms
+        "travis-ci.org", "travis-ci.com",
+        "circleci.com",
+        // Package registries
+        "crates.io", "rubygems.org",
+        "pkg.go.dev", "registry.npmjs.org",
+        "hub.docker.com", "ghcr.io",
+        // Documentation and hosting
+        "readthedocs.io", "readthedocs.org",
+        "docs.aws.amazon.com", "cloud.google.com",
+        "learn.microsoft.com",
+        // Dev tools and platforms
+        "gitlab.com", "bitbucket.org",
+        "brew.sh", "docker.com",
+        // CDN and static content
+        "cdn.jsdelivr.net", "unpkg.com",
+        "cdnjs.cloudflare.com",
+        // Project-specific
+        "raw.githubusercontent.com",
+        "ancc.dev"
     ]
 
     /// All detection rules, ordered by specificity (most specific first).

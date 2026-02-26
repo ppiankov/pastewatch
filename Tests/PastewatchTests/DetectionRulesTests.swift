@@ -568,4 +568,35 @@ final class DetectionRulesTests: XCTestCase {
         // Should only detect phone, not email
         XCTAssertTrue(matches.allSatisfy { $0.type == .phone })
     }
+
+    // MARK: - Safe Hosts (Badge and CI Services)
+
+    func testIgnoresBadgeServiceHosts() {
+        let badgeHosts = [
+            "img.shields.io",
+            "badge.fury.io",
+            "codecov.io",
+            "coveralls.io"
+        ]
+        for host in badgeHosts {
+            let content = "badge: https://\(host)/some/badge.svg"
+            let matches = DetectionRules.scan(content, config: config)
+            let hostMatches = matches.filter { $0.type == .hostname }
+            XCTAssertEqual(hostMatches.count, 0, "\(host) should be in safeHosts")
+        }
+    }
+
+    func testIgnoresPackageRegistryHosts() {
+        let registryHosts = [
+            "crates.io",
+            "rubygems.org",
+            "pkg.go.dev"
+        ]
+        for host in registryHosts {
+            let content = "install from \(host)"
+            let matches = DetectionRules.scan(content, config: config)
+            let hostMatches = matches.filter { $0.type == .hostname }
+            XCTAssertEqual(hostMatches.count, 0, "\(host) should be in safeHosts")
+        }
+    }
 }
