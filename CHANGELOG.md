@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-02-26
+
+### Added
+
+- `guard` subcommand: scans files referenced in Bash commands for secrets, blocks commands that would leak sensitive data to cloud APIs
+- `CommandParser` for extracting file paths from shell commands (cat, head, tail, sed, awk, grep, source)
+
+### Changed
+
+- Extracted per-type validators in `DetectionRules` to fix cyclomatic complexity lint violation
+
 ## [0.8.1] - 2026-02-26
 
 ### Fixed
