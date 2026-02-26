@@ -461,7 +461,7 @@ If a feature increases complexity without reducing risk, it is rejected.
 | macOS 14+ (Apple Silicon) | GUI + CLI | Supported |
 | Linux x86_64 | CLI only | Supported |
 
-Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only.
+Intel-based Macs are not supported and there are no plans to add prebuilt binaries. Intel Mac users can compile from source (`swift build -c release`). The GUI (clipboard monitoring) is macOS-only.
 
 ---
 
