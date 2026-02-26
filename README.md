@@ -280,6 +280,29 @@ Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
+### Bash Command Guard
+
+Block shell commands that would read or write files containing secrets:
+
+```bash
+pastewatch-cli guard "cat .env"
+# BLOCKED: .env contains 3 secret(s) (2 critical, 1 high)
+
+pastewatch-cli guard "echo hello"
+# exit 0 (safe — no file access)
+
+pastewatch-cli guard --json "cat config.yml"
+# JSON output for programmatic integration
+```
+
+Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [docs/agent-setup.md](docs/agent-setup.md) for hook configuration.
+
+### Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `PW_GUARD=0` | Disable `guard` and `scan --check` — all commands allowed, no scanning. Set before starting the agent session. |
+
 ### Pre-commit Hook
 
 ```bash

@@ -133,9 +133,45 @@ The log records every tool call with timestamps — what files were read, how ma
 ### Important notes
 
 - The MCP tools are **opt-in** — the agent must choose to use them
-- Built-in Read/Write tools still bypass pastewatch (agents may use either)
+- Built-in Read/Write tools still bypass pastewatch unless hooks enforce it (see Layer 2b)
 - Mappings live in server process memory only — die when MCP server stops
 - Same file re-read returns the same placeholders (idempotent within session)
+
+---
+
+## Layer 2b: Enforce MCP Usage via Hooks
+
+MCP tools are opt-in — agents can still use native Read/Write and `cat .env` via Bash, bypassing redaction entirely. Hooks make enforcement structural.
+
+### Bash command guard
+
+The `guard` subcommand intercepts shell commands before execution:
+
+```bash
+pastewatch-cli guard "cat .env"
+# BLOCKED: .env contains 3 secret(s) (2 critical, 1 high)
+# Use pastewatch MCP tools for files with secrets.
+
+pastewatch-cli guard "echo hello"
+# exit 0 (safe)
+```
+
+It parses shell commands (`cat`, `head`, `tail`, `sed`, `awk`, `grep`, `source`), extracts file arguments, and scans those files for secrets. Unknown commands pass through (exit 0).
+
+Integrate with agent Bash hooks to block commands automatically. See [agent-setup.md](agent-setup.md) for hook configuration per agent.
+
+### `PW_GUARD=0` — escape hatch
+
+`PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately — every hook that calls pastewatch-cli gets the bypass for free.
+
+```bash
+export PW_GUARD=0    # disable for current shell session
+unset PW_GUARD       # re-enable
+```
+
+This is **agent-proof by design**: the guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` to bypass it — only the human can, before starting the agent session. The bypass requires human action outside the agent's control.
+
+Use it when editing detection rules, working with test fixtures, or handling files with intentional secret-like patterns.
 
 ---
 
@@ -225,6 +261,7 @@ This lets you adopt agent safety incrementally without blocking work on legacy c
 |-------|-------------|--------|
 | 1. No secrets in code | Eliminate the source | High (best ROI) |
 | 2. MCP redacted read/write | Secrets stay local during agent sessions | Low (configure once) |
+| 2b. Enforce via hooks | Block native Read/Write/Bash when secrets present | Low (configure once) |
 | 3. Restrict file access | Limit agent's blast radius | Low |
 | 4. Pre-commit hook | Catch secrets before commit | Low (one-time setup) |
 | 5. Pre-session scan | Find secrets before agent reads them | Per-session |
