@@ -1,7 +1,7 @@
 # Pastewatch
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 
-Local macOS utility that obfuscates sensitive data before it is pasted into AI chat interfaces.
+Detects and obfuscates sensitive data before it reaches AI systems — clipboard monitoring (macOS), CLI scanning (macOS/Linux), and MCP server for AI agent integration.
 
 It operates **before paste**, not after submission.
 

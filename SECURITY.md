@@ -14,9 +14,11 @@ The clipboard content never leaves your machine.
 
 | Threat | Protection |
 |--------|------------|
-| Accidental paste of secrets into AI chat | Obfuscation before paste |
+| Accidental paste of secrets into AI chat | Obfuscation before paste (GUI) |
 | Credential leakage to LLM training data | Data never reaches the service |
 | API key exposure in prompts | Pattern-based detection and replacement |
+| Secret leakage via AI coding agents | MCP server redacts secrets, agent sees only placeholders |
+| Secrets committed to repositories | Pre-commit hook and CLI scanning |
 
 ### What Pastewatch Does NOT Protect Against
 
@@ -30,28 +32,28 @@ The clipboard content never leaves your machine.
 
 ### Limitations
 
-Pastewatch is an **MVP prototype**. Known limitations:
+Known limitations:
 
 1. **Detection is conservative** — Unknown secret formats will not be detected
 2. **No encryption** — Obfuscated content uses plaintext placeholders
-3. **No audit log** — Obfuscation events are not logged
-4. **Memory only** — Mappings are not persisted (by design)
-5. **macOS only** — No Windows/Linux support
+3. **Memory only** — Mappings are not persisted (by design)
+4. **GUI is macOS only** — CLI and MCP server run on macOS and Linux
 
 ## Security Boundaries
 
 ### What Pastewatch Can Access
 
-- System clipboard (read and write)
+- System clipboard (read and write) — GUI only
+- Files and directories — CLI scan and MCP read/write tools
 - Configuration file at `~/.config/pastewatch/config.json`
-- System notification service
+- System notification service — GUI only
+- MCP audit log file (if `--audit-log` specified)
 
 ### What Pastewatch Cannot Access
 
 - Network
 - Other applications' data
 - Keychain
-- File system (beyond config)
 - Screen content
 
 ## Responsible Disclosure

@@ -7,7 +7,7 @@ Thank you for your interest in contributing.
 Before contributing, understand what Pastewatch is and is not:
 
 **Pastewatch is:**
-- A local-only utility
+- A local-only secret detection and obfuscation tool (GUI, CLI, MCP server)
 - Deterministic and predictable
 - Conservative (false negatives > false positives)
 - Silent when successful
@@ -32,21 +32,44 @@ If your contribution moves Pastewatch toward the second list, it will be decline
 
 ```
 pastewatch/
-├── Sources/Pastewatch/
-│   ├── PastewatchApp.swift      # Main app entry
-│   ├── Types.swift              # Data models
-│   ├── DetectionRules.swift     # Pattern detection
-│   ├── Obfuscator.swift         # Value replacement
-│   ├── ClipboardMonitor.swift   # Clipboard watching
-│   ├── MenuBarView.swift        # UI
-│   └── NotificationManager.swift
+├── Sources/
+│   ├── Pastewatch/              # macOS GUI (menubar app)
+│   │   ├── PastewatchApp.swift
+│   │   ├── ClipboardMonitor.swift
+│   │   ├── MenuBarView.swift
+│   │   └── NotificationManager.swift
+│   ├── PastewatchCLI/           # CLI tool (pastewatch-cli)
+│   │   ├── PastewatchCLI.swift
+│   │   ├── ScanCommand.swift
+│   │   ├── MCPCommand.swift     # MCP server for AI agents
+│   │   ├── HookCommand.swift
+│   │   ├── BaselineCommand.swift
+│   │   ├── InitCommand.swift
+│   │   ├── ConfigCommand.swift
+│   │   ├── ExplainCommand.swift
+│   │   └── VersionCommand.swift
+│   └── PastewatchCore/          # Shared detection and obfuscation logic
+│       ├── DetectionRules.swift
+│       ├── Obfuscator.swift
+│       ├── Types.swift
+│       ├── RedactionStore.swift # MCP placeholder mapping
+│       ├── MCPProtocol.swift
+│       ├── MCPAuditLogger.swift
+│       ├── DirectoryScanner.swift
+│       ├── FormatParser.swift   # .env, JSON, YAML, properties
+│       ├── SarifOutput.swift
+│       ├── MarkdownOutput.swift
+│       ├── Allowlist.swift
+│       ├── Baseline.swift
+│       ├── CustomRule.swift
+│       └── IgnoreFile.swift
 ├── Tests/PastewatchTests/
-│   ├── DetectionRulesTests.swift
-│   └── ObfuscatorTests.swift
+├── docs/
 ├── Package.swift
+├── Makefile
 ├── README.md
-├── CONTRIBUTING.md
 ├── CHANGELOG.md
+├── CONTRIBUTING.md
 ├── SECURITY.md
 └── LICENSE
 ```
@@ -55,7 +78,7 @@ pastewatch/
 
 ### Prerequisites
 
-- macOS 13.0+
+- macOS 14.0+ (GUI) or Linux (CLI only)
 - Xcode 15.0+ or Swift 5.9+
 
 ### Building
