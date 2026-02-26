@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-02-26
+
+### Added
+
+- `PW_GUARD=0` environment variable: native bypass for `guard` and `scan --check` — every hook gets the escape hatch for free
+- Homebrew formula auto-update in release workflow
+- Documentation: guard subcommand in README, enforcement hooks in agent-setup, Layer 2b in agent-safety
+
 ## [0.9.0] - 2026-02-26
 
 ### Added
