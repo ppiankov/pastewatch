@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-26
+
+### Added
+
+- `min_severity` parameter for `pastewatch_read_file` MCP tool (default: `high`) — only redacts findings at or above the threshold
+- Built-in safe hosts allowlist for badge services, CI/CD platforms, package registries, and CDNs
+
 ## [0.7.2] - 2026-02-26
 
 ### Fixed
