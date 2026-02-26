@@ -509,11 +509,28 @@ public struct DetectionRules {
         switch type {
         case .ipAddress:
             // Exclude common non-sensitive IPs
-            let excluded = ["0.0.0.0", "127.0.0.1", "255.255.255.255"]
+            let excluded: Set<String> = [
+                "0.0.0.0", "127.0.0.1", "255.255.255.255",
+                // Well-known public DNS
+                "8.8.8.8", "8.8.4.4",         // Google DNS
+                "1.1.1.1", "1.0.0.1",         // Cloudflare DNS
+                "9.9.9.9",                     // Quad9 DNS
+                "208.67.222.222", "208.67.220.220", // OpenDNS
+                // Metadata and link-local
+                "169.254.169.254",             // Cloud metadata endpoint
+            ]
             if excluded.contains(value) { return false }
 
-            // Exclude IPs that look like version numbers (context check)
-            // This is a heuristic — we're conservative
+            // RFC 5737 documentation ranges (192.0.2.x, 198.51.100.x, 203.0.113.x)
+            if value.hasPrefix("192.0.2.") || value.hasPrefix("198.51.100.") || value.hasPrefix("203.0.113.") {
+                return false
+            }
+
+            // Multicast (224.x-239.x) and broadcast
+            if let first = value.split(separator: ".").first, let octet = Int(first), octet >= 224 {
+                return false
+            }
+
             return true
 
         case .phone:
@@ -526,13 +543,25 @@ public struct DetectionRules {
             return isValidLuhn(value)
 
         case .email:
-            // Basic validation — regex already handles most
-            return value.contains("@") && value.contains(".")
+            guard value.contains("@") && value.contains(".") else { return false }
+            let lower = value.lowercased()
+            // Exclude noreply and bot addresses
+            let safeEmails: Set<String> = [
+                "noreply@github.com", "no-reply@github.com",
+                "dependabot[bot]@users.noreply.github.com",
+                "actions@github.com", "github-actions[bot]@users.noreply.github.com",
+                "noreply@example.com",
+            ]
+            if safeEmails.contains(lower) { return false }
+            // Exclude noreply patterns broadly
+            if lower.hasPrefix("noreply@") || lower.hasPrefix("no-reply@") { return false }
+            if lower.hasSuffix("@users.noreply.github.com") { return false }
+            return true
 
         case .hostname:
             // Exclude safe/public hosts
-            let lower = value.lowercased()
-            if safeHosts.contains(lower) { return false }
+            let hostLower = value.lowercased()
+            if safeHosts.contains(hostLower) { return false }
             // Exclude strings that look like IP addresses (all digits and dots)
             if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
             return true
@@ -540,11 +569,35 @@ public struct DetectionRules {
         case .filePath:
             // Require minimum path depth to avoid false positives
             let components = value.split(separator: "/").filter { !$0.isEmpty }
-            return components.count >= 3
+            if components.count < 3 { return false }
+            // Exclude common system paths that are never sensitive
+            let safePaths: Set<String> = [
+                "/dev/null", "/dev/zero", "/dev/stdin", "/dev/stdout", "/dev/stderr",
+                "/dev/random", "/dev/urandom",
+                "/bin/sh", "/bin/bash", "/bin/zsh",
+                "/usr/bin/env", "/usr/bin/make", "/usr/bin/git",
+                "/usr/local/bin", "/usr/local/lib",
+                "/etc/hosts", "/etc/resolv.conf", "/etc/passwd",
+                "/tmp", "/var/tmp",
+            ]
+            if safePaths.contains(value) { return false }
+            // Exclude standard prefix paths
+            if value.hasPrefix("/usr/bin/") || value.hasPrefix("/usr/lib/") {
+                return false
+            }
+            return true
 
         case .credential:
             // Regex is already high-confidence (keyword + separator + value)
             return true
+
+        case .uuid:
+            // Exclude nil/empty UUIDs
+            let nilUUIDs: Set<String> = [
+                "00000000-0000-0000-0000-000000000000",
+                "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            ]
+            return !nilUUIDs.contains(value.lowercased())
 
         default:
             return true
