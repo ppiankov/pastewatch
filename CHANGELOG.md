@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-02-26
+
+### Fixed
+
+- Reduced false positives: exclude well-known DNS IPs, noreply/bot emails, common system paths, nil UUIDs
+
 ## [0.8.0] - 2026-02-26
 
 ### Added
