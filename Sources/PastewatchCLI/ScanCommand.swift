@@ -50,6 +50,8 @@ struct Scan: ParsableCommand {
     }
 
     func run() throws {
+        if check && ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
+
         let config = PastewatchConfig.resolve()
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)

@@ -21,6 +21,8 @@ struct Guard: ParsableCommand {
     var quiet = false
 
     func run() throws {
+        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
+
         let config = PastewatchConfig.resolve()
         let paths = CommandParser.extractFilePaths(from: command)
 
