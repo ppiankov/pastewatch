@@ -167,3 +167,52 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION_NUM="${TAG#v}"
+          SHA256=$(shasum -a 256 release/pastewatch-cli | awk '{print $1}')
+
+          cat > /tmp/pastewatch.rb << FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          class Pastewatch < Formula
+            desc "Sensitive data scanner — deterministic detection and obfuscation for text content"
+            homepage "https://github.com/ppiankov/pastewatch"
+            version "${VERSION_NUM}"
+            license "MIT"
+
+            depends_on :macos
+            depends_on arch: :arm64
+
+            url "https://github.com/ppiankov/pastewatch/releases/download/${TAG}/pastewatch-cli"
+            sha256 "${SHA256}"
+
+            def install
+              bin.install "pastewatch-cli"
+            end
+
+            test do
+              assert_match "pastewatch-cli", shell_output("#{bin}/pastewatch-cli version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i '' 's/^          //' /tmp/pastewatch.rb
+
+          if [ -n "$GH_TOKEN" ]; then
+            EXISTING_SHA=$(gh api repos/ppiankov/homebrew-tap/contents/Formula/pastewatch.rb --jq .sha 2>/dev/null || echo '')
+            gh api repos/ppiankov/homebrew-tap/contents/Formula/pastewatch.rb \
+              --method PUT \
+              --field message="Update pastewatch to ${TAG}" \
+              --field content="$(base64 -i /tmp/pastewatch.rb)" \
+              --field sha="${EXISTING_SHA}" \
+              || echo "Homebrew tap update failed — check HOMEBREW_TAP_TOKEN secret"
+          else
+            echo "HOMEBREW_TAP_TOKEN not set — skipping Homebrew update"
+          fi
