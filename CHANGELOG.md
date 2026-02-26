@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-26
+
+### Fixed
+
+- MCP server no longer responds to JSON-RPC notifications (fixes Cline compatibility)
+
+### Added
+
+- Per-agent MCP setup guide (`docs/agent-setup.md`) covering Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code
+
 ## [0.7.0] - 2026-02-25
 
 ### Added
