@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-02-27
+
+### Added
+
+- `safeHosts` config field: user-defined hostnames excluded from detection (extends built-in safe list)
+- `sensitiveHosts` config field: hostnames that always trigger detection, overriding built-in and user safe hosts
+- Config validation: warns when a host appears in both lists
+
 ## [0.9.1] - 2026-02-26
 
 ### Added
