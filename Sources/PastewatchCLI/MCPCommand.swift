@@ -33,7 +33,7 @@ final class MCPServer {
             guard !line.isEmpty else { continue }
             guard let data = line.data(using: .utf8) else { continue }
 
-            let response: JSONRPCResponse
+            let response: JSONRPCResponse?
             do {
                 let request = try JSONDecoder().decode(JSONRPCRequest.self, from: data)
                 response = handleRequest(request)
@@ -44,6 +44,8 @@ final class MCPServer {
                     error: JSONRPCError(code: -32700, message: "Parse error")
                 )
             }
+
+            guard let response else { continue }
 
             let encoder = JSONEncoder()
             if let responseData = try? encoder.encode(response),
@@ -56,17 +58,20 @@ final class MCPServer {
 
     // MARK: - Request dispatch
 
-    private func handleRequest(_ request: JSONRPCRequest) -> JSONRPCResponse {
+    private func handleRequest(_ request: JSONRPCRequest) -> JSONRPCResponse? {
         switch request.method {
         case "initialize":
             return initializeResponse(id: request.id)
         case "notifications/initialized":
-            return JSONRPCResponse(jsonrpc: "2.0", id: request.id, result: .object([:]), error: nil)
+            return nil
         case "tools/list":
             return toolsListResponse(id: request.id)
         case "tools/call":
             return toolsCallResponse(id: request.id, params: request.params)
         default:
+            if request.method.hasPrefix("notifications/") {
+                return nil
+            }
             return JSONRPCResponse(
                 jsonrpc: "2.0", id: request.id,
                 result: nil,
@@ -85,7 +90,7 @@ final class MCPServer {
             ]),
             "serverInfo": .object([
                 "name": .string("pastewatch-cli"),
-                "version": .string("0.7.0")
+                "version": .string("0.7.1")
             ])
         ])
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: result, error: nil)
