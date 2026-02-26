@@ -34,6 +34,24 @@ public enum ConfigValidator {
             validateRule(rule, index: i, errors: &errors)
         }
 
+        // Validate safeHosts / sensitiveHosts
+        for (i, host) in config.safeHosts.enumerated() {
+            if host.trimmingCharacters(in: .whitespaces).isEmpty {
+                errors.append("safeHosts[\(i)]: empty value")
+            }
+        }
+        for (i, host) in config.sensitiveHosts.enumerated() {
+            if host.trimmingCharacters(in: .whitespaces).isEmpty {
+                errors.append("sensitiveHosts[\(i)]: empty value")
+            }
+        }
+        let safeSet = Set(config.safeHosts.map { $0.lowercased() })
+        let sensitiveSet = Set(config.sensitiveHosts.map { $0.lowercased() })
+        let overlap = safeSet.intersection(sensitiveSet)
+        for host in overlap.sorted() {
+            errors.append("'\(host)' appears in both safeHosts and sensitiveHosts (sensitiveHosts takes precedence)")
+        }
+
         return ConfigValidationResult(errors: errors)
     }
 

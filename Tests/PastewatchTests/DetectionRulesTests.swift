@@ -599,4 +599,61 @@ final class DetectionRulesTests: XCTestCase {
             XCTAssertEqual(hostMatches.count, 0, "\(host) should be in safeHosts")
         }
     }
+
+    // MARK: - Configurable Safe/Sensitive Hosts
+
+    func testDefaultConfigBuiltInSafeHostsStillWork() {
+        let content = "Visit github.com for source"
+        let matches = DetectionRules.scan(content, config: config)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0, "built-in safeHost should still be excluded")
+    }
+
+    func testUserSafeHostNotDetected() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = ["my-safe.internal.com"]
+        let content = "Connect to my-safe.internal.com"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0, "user safeHost should not be detected")
+    }
+
+    func testSensitiveHostDetectedEvenIfBuiltInSafe() {
+        // img.shields.io is a built-in safe host and matches the 3-segment FQDN regex
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = ["img.shields.io"]
+        let content = "badge at img.shields.io/badge"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "sensitiveHost should override built-in safeHost")
+    }
+
+    func testSensitiveHostWinsOverUserSafeHost() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = ["overlap.corp.net"]
+        customConfig.sensitiveHosts = ["overlap.corp.net"]
+        let content = "Connect to overlap.corp.net"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "sensitiveHost should win over user safeHost")
+    }
+
+    func testHostConfigCaseInsensitive() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = ["MY-SAFE.INTERNAL.COM"]
+        let content = "Connect to my-safe.internal.com"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0, "safeHosts lookup should be case insensitive")
+    }
+
+    func testSensitiveHostCaseInsensitive() {
+        // cdn.jsdelivr.net is a built-in safe host and matches the 3-segment FQDN regex
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = ["CDN.JSDELIVR.NET"]
+        let content = "load from cdn.jsdelivr.net/npm"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "sensitiveHosts lookup should be case insensitive")
+    }
 }

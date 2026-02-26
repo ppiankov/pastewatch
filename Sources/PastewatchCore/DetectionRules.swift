@@ -438,7 +438,7 @@ public struct DetectionRules {
                 if shouldExclude(value) { continue }
 
                 // Additional validation per type
-                if !isValidMatch(value, type: type) { continue }
+                if !isValidMatch(value, type: type, config: config) { continue }
 
                 let line = lineNumber(of: range.lowerBound, in: content)
                 matches.append(DetectedMatch(type: type, value: value, range: range, line: line))
@@ -505,13 +505,13 @@ public struct DetectionRules {
     }
 
     /// Additional validation for specific types.
-    private static func isValidMatch(_ value: String, type: SensitiveDataType) -> Bool {
+    private static func isValidMatch(_ value: String, type: SensitiveDataType, config: PastewatchConfig) -> Bool {
         switch type {
         case .ipAddress:  return isValidIP(value)
         case .phone:      return isValidPhone(value)
         case .creditCard: return isValidLuhn(value)
         case .email:      return isValidEmail(value)
-        case .hostname:   return isValidHostname(value)
+        case .hostname:   return isValidHostname(value, config: config)
         case .filePath:   return isValidFilePath(value)
         case .uuid:       return isValidUUID(value)
         default:          return true
@@ -562,9 +562,14 @@ public struct DetectionRules {
         return true
     }
 
-    private static func isValidHostname(_ value: String) -> Bool {
+    private static func isValidHostname(_ value: String, config: PastewatchConfig) -> Bool {
         let hostLower = value.lowercased()
-        if safeHosts.contains(hostLower) { return false }
+        // sensitiveHosts always flag (highest precedence)
+        let sensitive = Set(config.sensitiveHosts.map { $0.lowercased() })
+        if sensitive.contains(hostLower) { return true }
+        // Built-in safe hosts + user safe hosts
+        let userSafe = Set(config.safeHosts.map { $0.lowercased() })
+        if safeHosts.contains(hostLower) || userSafe.contains(hostLower) { return false }
         if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
         return true
     }
