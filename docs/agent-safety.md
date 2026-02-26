@@ -70,59 +70,7 @@ Install pastewatch:
 brew install ppiankov/tap/pastewatch
 ```
 
-### Claude Code
-
-Add to `~/.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Or per-project in `.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Cline (VS Code)
-
-Add to Cline MCP settings (`cline_mcp_settings.json`):
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Cursor
-
-Add to Cursor settings (`~/.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+For per-agent registration instructions (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code), see [agent-setup.md](agent-setup.md).
 
 ### How the agent uses it
 
@@ -224,7 +172,7 @@ pastewatch-cli hook install
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.7.0
+    rev: v0.7.1
     hooks:
       - id: pastewatch
 ```

@@ -347,7 +347,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.7.0
+    rev: v0.7.1
     hooks:
       - id: pastewatch
 ```
@@ -467,7 +467,8 @@ Intel-based Macs are not supported. The GUI (clipboard monitoring) is macOS-only
 
 ## Documentation
 
-- [docs/agent-safety.md](docs/agent-safety.md) — Agent safety guide (Claude Code, Cline, Cursor setup)
+- [docs/agent-setup.md](docs/agent-setup.md) — Per-agent MCP setup (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code)
+- [docs/agent-safety.md](docs/agent-safety.md) — Agent safety guide (layered defenses for AI coding agents)
 - [docs/hard-constraints.md](docs/hard-constraints.md) — Design philosophy and non-negotiable rules
 - [docs/status.md](docs/status.md) — Current scope and non-goals
 
@@ -485,7 +486,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.7.0** · Active development
+**Status: Stable** · **v0.7.1** · Active development
 
 | Milestone | Status |
 |-----------|--------|
