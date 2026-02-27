@@ -109,38 +109,10 @@ public struct DirectoryScanner {
 
             // Format-aware scanning
             let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
-            var fileMatches: [DetectedMatch]
-            if let parser = parserForExtension(parsedExt) {
-                let parsedValues = parser.parseValues(from: content)
-                fileMatches = []
-                for pv in parsedValues {
-                    let valueMatches = DetectionRules.scan(pv.value, config: config)
-                    for vm in valueMatches {
-                        fileMatches.append(DetectedMatch(
-                            type: vm.type,
-                            value: vm.value,
-                            range: vm.range,
-                            line: pv.line,
-                            filePath: relativePath,
-                            customRuleName: vm.customRuleName,
-                            customSeverity: vm.customSeverity
-                        ))
-                    }
-                }
-            } else {
-                let matches = DetectionRules.scan(content, config: config)
-                fileMatches = matches.map { match in
-                    DetectedMatch(
-                        type: match.type,
-                        value: match.value,
-                        range: match.range,
-                        line: match.line,
-                        filePath: relativePath,
-                        customRuleName: match.customRuleName,
-                        customSeverity: match.customSeverity
-                    )
-                }
-            }
+            var fileMatches = scanFileContent(
+                content: content, ext: parsedExt,
+                relativePath: relativePath, config: config
+            )
 
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
 
@@ -155,6 +127,33 @@ public struct DirectoryScanner {
         }
 
         return results.sorted { $0.filePath < $1.filePath }
+    }
+
+    /// Scan file content using format-aware parsing when available.
+    private static func scanFileContent(
+        content: String, ext: String,
+        relativePath: String, config: PastewatchConfig
+    ) -> [DetectedMatch] {
+        guard let parser = parserForExtension(ext) else {
+            return DetectionRules.scan(content, config: config).map { match in
+                DetectedMatch(
+                    type: match.type, value: match.value, range: match.range,
+                    line: match.line, filePath: relativePath,
+                    customRuleName: match.customRuleName, customSeverity: match.customSeverity
+                )
+            }
+        }
+        var matches: [DetectedMatch] = []
+        for pv in parser.parseValues(from: content) {
+            for vm in DetectionRules.scan(pv.value, config: config) {
+                matches.append(DetectedMatch(
+                    type: vm.type, value: vm.value, range: vm.range,
+                    line: pv.line, filePath: relativePath,
+                    customRuleName: vm.customRuleName, customSeverity: vm.customSeverity
+                ))
+            }
+        }
+        return matches
     }
 
     /// Check if a file appears to be binary by looking for null bytes.
