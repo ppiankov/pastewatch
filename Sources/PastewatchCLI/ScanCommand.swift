@@ -40,6 +40,12 @@ struct Scan: ParsableCommand {
     @Flag(name: .long, help: "Stop at first finding (fast pre-dispatch gate)")
     var bail = false
 
+    @Flag(name: .long, help: "Scan git diff changes (staged by default)")
+    var gitDiff = false
+
+    @Flag(name: .long, help: "Include unstaged changes (requires --git-diff)")
+    var unstaged = false
+
     @Option(name: .long, help: "Write report to file instead of stdout")
     var output: String?
 
@@ -47,11 +53,17 @@ struct Scan: ParsableCommand {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
         }
+        if gitDiff && (file != nil || dir != nil) {
+            throw ValidationError("--git-diff is mutually exclusive with --file and --dir")
+        }
         if stdinFilename != nil && (file != nil || dir != nil) {
             throw ValidationError("--stdin-filename is only valid when reading from stdin")
         }
-        if bail && dir == nil {
-            throw ValidationError("--bail is only valid with --dir")
+        if unstaged && !gitDiff {
+            throw ValidationError("--unstaged requires --git-diff")
+        }
+        if bail && dir == nil && !gitDiff {
+            throw ValidationError("--bail is only valid with --dir or --git-diff")
         }
     }
 
@@ -62,6 +74,13 @@ struct Scan: ParsableCommand {
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)
         let baselineFile = try loadBaseline()
+
+        // Git diff scanning mode
+        if gitDiff {
+            try runGitDiffScan(config: config, allowlist: mergedAllowlist,
+                               customRules: customRulesList, baseline: baselineFile)
+            return
+        }
 
         // Directory scanning mode
         if let dirPath = dir {
@@ -274,6 +293,59 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // MARK: - Git diff scanning
+
+    private func runGitDiffScan(
+        config: PastewatchConfig,
+        allowlist: Allowlist,
+        customRules: [CustomRule],
+        baseline: BaselineFile? = nil
+    ) throws {
+        let fileResults: [FileScanResult]
+        do {
+            fileResults = try GitDiffScanner.scan(
+                staged: !unstaged, unstaged: unstaged,
+                config: config, bail: bail
+            )
+        } catch let error as GitDiffError {
+            FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+
+        // Apply allowlist filtering
+        var filteredResults: [FileScanResult] = []
+        for fr in fileResults {
+            var allMatches = fr.matches
+            if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
+                allMatches = allowlist.filter(allMatches)
+            }
+            if !allMatches.isEmpty {
+                filteredResults.append(FileScanResult(
+                    filePath: fr.filePath, matches: allMatches, content: fr.content
+                ))
+            }
+        }
+
+        // Apply baseline filtering
+        if let bl = baseline {
+            filteredResults = bl.filterNewResults(results: filteredResults)
+        }
+
+        guard !filteredResults.isEmpty else { return }
+
+        try redirectStdoutIfNeeded()
+
+        if check {
+            outputDirCheckMode(results: filteredResults)
+        } else {
+            outputDirFindings(results: filteredResults)
+        }
+        let allMatches = filteredResults.flatMap { $0.matches }
+        if shouldFail(matches: allMatches) {
+            throw ExitCode(rawValue: 6)
+        }
+    }
+
     private func outputDirCheckMode(results: [FileScanResult]) {
         switch format {
         case .text:
@@ -299,7 +371,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.10.0")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.11.0")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -330,7 +402,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.10.0")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.11.0")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -360,7 +432,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.10.0"
+                matches: matches, filePath: filePath, version: "0.11.0"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
@@ -385,7 +457,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.10.0"
+                matches: matches, filePath: filePath, version: "0.11.0"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:

@@ -130,7 +130,7 @@ public struct DirectoryScanner {
     }
 
     /// Scan file content using format-aware parsing when available.
-    private static func scanFileContent(
+    static func scanFileContent(
         content: String, ext: String,
         relativePath: String, config: PastewatchConfig
     ) -> [DetectedMatch] {
