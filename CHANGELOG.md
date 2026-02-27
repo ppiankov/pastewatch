@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-02-27
+
+### Added
+
+- VS Code extension (`vscode-pastewatch/`): real-time secret detection in the editor
+  - Inline diagnostics with severity-mapped squiggles (red/yellow/blue)
+  - Hover tooltips showing detection type and severity
+  - Quick-fix actions: add inline `pastewatch:allow` or append to `.pastewatch-allow`
+  - Status bar with finding count, auto-refresh on save (debounced)
+  - CI workflow for build, VSIX packaging, and marketplace publishing
+
 ## [0.13.0] - 2026-02-27
 
 ### Added
