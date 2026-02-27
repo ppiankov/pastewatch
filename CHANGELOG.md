@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-02-27
+
+### Added
+
+- Host suffix matching: leading-dot entries in `safeHosts`/`sensitiveHosts` match any subdomain (e.g., `.company.com` matches `db.company.com`)
+- `allowedPatterns` config field: regex-based allowlist for suppressing findings by pattern (e.g., `sk_test_.*` suppresses Stripe test keys)
+
 ## [0.9.2] - 2026-02-27
 
 ### Added
