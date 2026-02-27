@@ -5,8 +5,8 @@ struct PastewatchCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pastewatch-cli",
         abstract: "Scan text for sensitive data patterns",
-        version: "0.11.0",
-        subcommands: [Scan.self, Fix.self, Version.self, Init.self, BaselineGroup.self, HookGroup.self, MCP.self, Explain.self, ConfigGroup.self, Guard.self],
+        version: "0.12.0",
+        subcommands: [Scan.self, Fix.self, Version.self, Init.self, BaselineGroup.self, HookGroup.self, MCP.self, Explain.self, ConfigGroup.self, Guard.self, GuardRead.self, GuardWrite.self],
         defaultSubcommand: Scan.self
     )
 }
