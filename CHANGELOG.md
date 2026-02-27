@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-02-27
+
+### Added
+
+- `--git-diff` flag for `scan`: scans only added lines in git diff with format-aware parsing and accurate line numbers
+  - Staged changes by default, `--unstaged` for working tree changes
+  - Proper JSON/YAML/env parsing (scans full file, filters to added lines)
+  - Works with `--check`, `--bail`, `--format`, `--fail-on-severity`
+  - Replaces raw `git diff | scan` piping with correct per-file scanning
+
 ## [0.10.0] - 2026-02-27
 
 ### Added
