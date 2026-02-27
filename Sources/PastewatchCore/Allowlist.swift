@@ -3,9 +3,11 @@ import Foundation
 /// Manages allowed values that should be excluded from scan results.
 public struct Allowlist {
     public let values: Set<String>
+    public let patterns: [NSRegularExpression]
 
-    public init(values: Set<String> = []) {
+    public init(values: Set<String> = [], patterns: [NSRegularExpression] = []) {
         self.values = values
+        self.patterns = patterns
     }
 
     /// Load allowlist from a file (one value per line, # comments).
@@ -20,17 +22,27 @@ public struct Allowlist {
 
     /// Merge multiple allowlists.
     public func merged(with other: Allowlist) -> Allowlist {
-        Allowlist(values: values.union(other.values))
+        Allowlist(values: values.union(other.values), patterns: patterns + other.patterns)
     }
 
-    /// Merge with config's allowedValues.
+    /// Merge with config's allowedValues and allowedPatterns.
     public static func fromConfig(_ config: PastewatchConfig) -> Allowlist {
-        Allowlist(values: Set(config.allowedValues))
+        let compiled = config.allowedPatterns.compactMap {
+            try? NSRegularExpression(pattern: "^(\($0))$")
+        }
+        return Allowlist(values: Set(config.allowedValues), patterns: compiled)
     }
 
-    /// Filter matches, removing any whose value is in the allowlist.
+    /// Filter matches, removing any whose value is in the allowlist or matches a pattern.
     public func filter(_ matches: [DetectedMatch]) -> [DetectedMatch] {
-        matches.filter { !values.contains($0.value) }
+        matches.filter { match in
+            if values.contains(match.value) { return false }
+            for pattern in patterns {
+                let range = NSRange(match.value.startIndex..., in: match.value)
+                if pattern.firstMatch(in: match.value, range: range) != nil { return false }
+            }
+            return true
+        }
     }
 
     /// Check if a value is allowed (should be skipped).

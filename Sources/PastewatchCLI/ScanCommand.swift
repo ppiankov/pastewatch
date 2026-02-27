@@ -234,7 +234,7 @@ struct Scan: ParsableCommand {
             var allMatches: [DetectedMatch] = fr.matches
 
             // Re-scan with allowlist/custom rules if either is provided
-            if !allowlist.values.isEmpty || !customRules.isEmpty {
+            if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
                 allMatches = allowlist.filter(allMatches)
             }
 

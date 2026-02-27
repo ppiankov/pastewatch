@@ -486,7 +486,7 @@ public struct DetectionRules {
         }
 
         // Apply allowlist filtering
-        if !allowlist.values.isEmpty {
+        if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty {
             matches = allowlist.filter(matches)
         }
 
@@ -564,14 +564,26 @@ public struct DetectionRules {
 
     private static func isValidHostname(_ value: String, config: PastewatchConfig) -> Bool {
         let hostLower = value.lowercased()
-        // sensitiveHosts always flag (highest precedence)
-        let sensitive = Set(config.sensitiveHosts.map { $0.lowercased() })
-        if sensitive.contains(hostLower) { return true }
-        // Built-in safe hosts + user safe hosts
-        let userSafe = Set(config.safeHosts.map { $0.lowercased() })
-        if safeHosts.contains(hostLower) || userSafe.contains(hostLower) { return false }
+        // sensitiveHosts always flag (highest precedence, exact + suffix)
+        if hostMatches(hostLower, in: config.sensitiveHosts) { return true }
+        // Built-in safe hosts (exact only) + user safe hosts (exact + suffix)
+        if safeHosts.contains(hostLower) || hostMatches(hostLower, in: config.safeHosts) { return false }
         if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
         return true
+    }
+
+    /// Check if a hostname matches any entry in a list (exact or suffix with leading dot).
+    private static func hostMatches(_ host: String, in list: [String]) -> Bool {
+        let hostLower = host.lowercased()
+        for entry in list {
+            let entryLower = entry.lowercased()
+            if entryLower.hasPrefix(".") {
+                if hostLower.hasSuffix(entryLower) { return true }
+            } else {
+                if hostLower == entryLower { return true }
+            }
+        }
+        return false
     }
 
     private static func isValidFilePath(_ value: String) -> Bool {

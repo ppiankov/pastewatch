@@ -256,6 +256,7 @@ public struct PastewatchConfig: Codable {
     public var customRules: [CustomRuleConfig]
     public var safeHosts: [String]
     public var sensitiveHosts: [String]
+    public var allowedPatterns: [String]
 
     public init(
         enabled: Bool,
@@ -265,7 +266,8 @@ public struct PastewatchConfig: Codable {
         allowedValues: [String] = [],
         customRules: [CustomRuleConfig] = [],
         safeHosts: [String] = [],
-        sensitiveHosts: [String] = []
+        sensitiveHosts: [String] = [],
+        allowedPatterns: [String] = []
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -275,6 +277,7 @@ public struct PastewatchConfig: Codable {
         self.customRules = customRules
         self.safeHosts = safeHosts
         self.sensitiveHosts = sensitiveHosts
+        self.allowedPatterns = allowedPatterns
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -288,6 +291,7 @@ public struct PastewatchConfig: Codable {
         customRules = try container.decodeIfPresent([CustomRuleConfig].self, forKey: .customRules) ?? []
         safeHosts = try container.decodeIfPresent([String].self, forKey: .safeHosts) ?? []
         sensitiveHosts = try container.decodeIfPresent([String].self, forKey: .sensitiveHosts) ?? []
+        allowedPatterns = try container.decodeIfPresent([String].self, forKey: .allowedPatterns) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(
