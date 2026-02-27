@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-02-27
+
+### Added
+
+- `fix` subcommand: externalize secrets to environment variables with language-aware code patching
+  - `--dry-run` to preview fix plan without applying
+  - `--min-severity` to filter by severity threshold (default: high)
+  - `--env-file` to specify output .env path
+  - Language-aware replacements: Python (`os.environ`), JS/TS (`process.env`), Go (`os.Getenv`), Ruby (`ENV`), Swift (`ProcessInfo`), Shell (`${VAR}`)
+  - Auto-generates `.env` file with extracted secrets
+  - Warns if `.env` not in `.gitignore`
+
 ## [0.9.4] - 2026-02-27
 
 ### Added
