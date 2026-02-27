@@ -35,15 +35,13 @@ public enum ConfigValidator {
         }
 
         // Validate safeHosts / sensitiveHosts
-        for (i, host) in config.safeHosts.enumerated() {
-            if host.trimmingCharacters(in: .whitespaces).isEmpty {
-                errors.append("safeHosts[\(i)]: empty value")
-            }
+        for (i, host) in config.safeHosts.enumerated()
+            where host.trimmingCharacters(in: .whitespaces).isEmpty {
+            errors.append("safeHosts[\(i)]: empty value")
         }
-        for (i, host) in config.sensitiveHosts.enumerated() {
-            if host.trimmingCharacters(in: .whitespaces).isEmpty {
-                errors.append("sensitiveHosts[\(i)]: empty value")
-            }
+        for (i, host) in config.sensitiveHosts.enumerated()
+            where host.trimmingCharacters(in: .whitespaces).isEmpty {
+            errors.append("sensitiveHosts[\(i)]: empty value")
         }
         let safeSet = Set(config.safeHosts.map { $0.lowercased() })
         let sensitiveSet = Set(config.sensitiveHosts.map { $0.lowercased() })
