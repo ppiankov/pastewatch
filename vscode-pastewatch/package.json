@@ -1,0 +1,76 @@
+{
+  "name": "pastewatch",
+  "displayName": "pastewatch",
+  "description": "Real-time secret detection in the editor.",
+  "version": "0.1.0",
+  "publisher": "ppiankov",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ppiankov/pastewatch"
+  },
+  "homepage": "https://github.com/ppiankov/pastewatch",
+  "bugs": {
+    "url": "https://github.com/ppiankov/pastewatch/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pastewatch.refresh",
+        "title": "pastewatch: Refresh Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "pastewatch",
+      "properties": {
+        "pastewatch.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-run pastewatch diagnostics on file save (debounced)."
+        },
+        "pastewatch.binaryPath": {
+          "type": "string",
+          "default": "pastewatch-cli",
+          "description": "Path to the pastewatch-cli binary."
+        },
+        "pastewatch.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 10000,
+          "description": "Debounce window in milliseconds for save-triggered refresh."
+        },
+        "pastewatch.failOnSeverity": {
+          "type": "string",
+          "default": "low",
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "Minimum severity to show diagnostics."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "package:vsix": "npm run build && npx @vscode/vsce package",
+    "publish:marketplace": "npm run build && npx @vscode/vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.57",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.26.0",
+    "typescript": "^5.8.2"
+  }
+}
