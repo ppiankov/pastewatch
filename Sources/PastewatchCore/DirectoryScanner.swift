@@ -34,7 +34,8 @@ public struct DirectoryScanner {
         directory: String,
         config: PastewatchConfig,
         ignoreFile: IgnoreFile? = nil,
-        extraIgnorePatterns: [String] = []
+        extraIgnorePatterns: [String] = [],
+        bail: Bool = false
     ) throws -> [FileScanResult] {
         let dirURL = URL(fileURLWithPath: directory).standardizedFileURL
         let dirPath = dirURL.path
@@ -149,6 +150,7 @@ public struct DirectoryScanner {
                     matches: fileMatches,
                     content: content
                 ))
+                if bail { return results }
             }
         }
 
