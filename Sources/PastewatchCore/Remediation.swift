@@ -180,38 +180,40 @@ public enum Remediation {
     }
 
     /// Default env var name based on detection type.
+    private static let defaultEnvVarNames: [SensitiveDataType: String] = [
+        .awsKey: "AWS_ACCESS_KEY_ID",
+        .dbConnectionString: "DATABASE_URL",
+        .openaiKey: "OPENAI_API_KEY",
+        .anthropicKey: "ANTHROPIC_API_KEY",
+        .huggingfaceToken: "HF_TOKEN",
+        .groqKey: "GROQ_API_KEY",
+        .npmToken: "NPM_TOKEN",
+        .pypiToken: "PYPI_TOKEN",
+        .rubygemsToken: "GEM_HOST_API_KEY",
+        .gitlabToken: "GITLAB_TOKEN",
+        .telegramBotToken: "TELEGRAM_BOT_TOKEN",
+        .sendgridKey: "SENDGRID_API_KEY",
+        .shopifyToken: "SHOPIFY_ACCESS_TOKEN",
+        .digitaloceanToken: "DIGITALOCEAN_TOKEN",
+        .genericApiKey: "API_KEY",
+        .jwtToken: "JWT_SECRET",
+        .slackWebhook: "SLACK_WEBHOOK_URL",
+        .discordWebhook: "DISCORD_WEBHOOK_URL",
+        .azureConnectionString: "AZURE_CONNECTION_STRING",
+        .gcpServiceAccount: "GCP_SERVICE_ACCOUNT",
+        .credential: "SECRET",
+        .sshPrivateKey: "SSH_PRIVATE_KEY",
+        .creditCard: "CARD_NUMBER",
+        .email: "EMAIL",
+        .phone: "PHONE",
+        .ipAddress: "IP_ADDRESS",
+        .hostname: "HOSTNAME",
+        .filePath: "FILE_PATH",
+        .uuid: "UUID"
+    ]
+
     static func defaultEnvVarName(for type: SensitiveDataType) -> String {
-        switch type {
-        case .awsKey: return "AWS_ACCESS_KEY_ID"
-        case .dbConnectionString: return "DATABASE_URL"
-        case .openaiKey: return "OPENAI_API_KEY"
-        case .anthropicKey: return "ANTHROPIC_API_KEY"
-        case .huggingfaceToken: return "HF_TOKEN"
-        case .groqKey: return "GROQ_API_KEY"
-        case .npmToken: return "NPM_TOKEN"
-        case .pypiToken: return "PYPI_TOKEN"
-        case .rubygemsToken: return "GEM_HOST_API_KEY"
-        case .gitlabToken: return "GITLAB_TOKEN"
-        case .telegramBotToken: return "TELEGRAM_BOT_TOKEN"
-        case .sendgridKey: return "SENDGRID_API_KEY"
-        case .shopifyToken: return "SHOPIFY_ACCESS_TOKEN"
-        case .digitaloceanToken: return "DIGITALOCEAN_TOKEN"
-        case .genericApiKey: return "API_KEY"
-        case .jwtToken: return "JWT_SECRET"
-        case .slackWebhook: return "SLACK_WEBHOOK_URL"
-        case .discordWebhook: return "DISCORD_WEBHOOK_URL"
-        case .azureConnectionString: return "AZURE_CONNECTION_STRING"
-        case .gcpServiceAccount: return "GCP_SERVICE_ACCOUNT"
-        case .credential: return "SECRET"
-        case .sshPrivateKey: return "SSH_PRIVATE_KEY"
-        case .creditCard: return "CARD_NUMBER"
-        case .email: return "EMAIL"
-        case .phone: return "PHONE"
-        case .ipAddress: return "IP_ADDRESS"
-        case .hostname: return "HOSTNAME"
-        case .filePath: return "FILE_PATH"
-        case .uuid: return "UUID"
-        }
+        defaultEnvVarNames[type] ?? "SECRET"
     }
 
     /// Add numeric suffix to deduplicate env var names.
