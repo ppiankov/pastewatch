@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-02-27
+
+### Added
+
+- Entropy-based secret detection: Shannon entropy scoring as opt-in second pass after pattern rules
+  - Threshold 4.0 bits/char, minimum 20 characters, requires 2+ character classes
+  - Filters git SHAs, pure alphabetic/numeric strings; severity `.low`
+  - Enable via `enabledTypes: ["High Entropy", ...]` in `.pastewatch.json`
+- `guard-read` subcommand: blocks Claude Code Read tool on files containing secrets (exit 2)
+- `guard-write` subcommand: blocks Claude Code Write tool on files containing secrets (exit 2)
+  - Both use format-aware scanning (`.env`, `.json`, `.yml`) unlike the shell-based `guard` command
+  - Support `--fail-on-severity`, `PW_GUARD=0` bypass, inline `pastewatch:allow` comments
+
 ## [0.11.0] - 2026-02-27
 
 ### Added
