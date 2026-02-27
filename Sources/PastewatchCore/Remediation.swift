@@ -209,7 +209,8 @@ public enum Remediation {
         .ipAddress: "IP_ADDRESS",
         .hostname: "HOSTNAME",
         .filePath: "FILE_PATH",
-        .uuid: "UUID"
+        .uuid: "UUID",
+        .highEntropyString: "SECRET"
     ]
 
     static func defaultEnvVarName(for type: SensitiveDataType) -> String {
