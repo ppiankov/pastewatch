@@ -703,9 +703,13 @@ public struct DetectionRules {
         var hasLower = false
         var hasDigit = false
         for char in s {
-            if char.isUppercase { hasUpper = true }
-            else if char.isLowercase { hasLower = true }
-            else if char.isNumber { hasDigit = true }
+            if char.isUppercase {
+                hasUpper = true
+            } else if char.isLowercase {
+                hasLower = true
+            } else if char.isNumber {
+                hasDigit = true
+            }
         }
         let classes = [hasUpper, hasLower, hasDigit].filter { $0 }.count
         return classes >= 2

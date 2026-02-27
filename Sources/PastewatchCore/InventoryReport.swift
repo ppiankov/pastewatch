@@ -103,6 +103,12 @@ public struct InventoryReport: Codable {
     }
 }
 
+private struct EntryAccumulator {
+    let type: String
+    let severity: String
+    var lines: [Int]
+}
+
 // MARK: - Build
 
 public extension InventoryReport {
@@ -113,14 +119,18 @@ public extension InventoryReport {
         }
 
         // Entries: group by (filePath, type)
-        var entryMap: [String: (type: String, severity: String, lines: [Int])] = [:]
+        var entryMap: [String: EntryAccumulator] = [:]
         for (path, match) in allMatches {
             let key = "\(path)|\(match.displayName)"
             if var existing = entryMap[key] {
                 existing.lines.append(match.line)
                 entryMap[key] = existing
             } else {
-                entryMap[key] = (type: match.displayName, severity: match.effectiveSeverity.rawValue, lines: [match.line])
+                entryMap[key] = EntryAccumulator(
+                    type: match.displayName,
+                    severity: match.effectiveSeverity.rawValue,
+                    lines: [match.line]
+                )
             }
         }
 
