@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-02-27
+
+### Added
+
+- `--bail` flag for `scan --dir`: stops at first finding for fast pre-dispatch gate checks (optimized for runforge integration)
+
 ## [0.9.3] - 2026-02-27
 
 ### Added

@@ -81,4 +81,35 @@ final class DirectoryScannerTests: XCTestCase {
         // Should be relative, not absolute
         XCTAssertFalse(results[0].filePath.hasPrefix("/"))
     }
+
+    // MARK: - Bail (early exit)
+
+    func testBailReturnsOneResult() throws {
+        let conn1 = ["postgres", "://user:pass@host1:5432/db1"].joined()
+        let conn2 = ["postgres", "://user:pass@host2:5432/db2"].joined()
+        try "DB_URL=\(conn1)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
+        try "DB_URL=\(conn2)".write(toFile: testDir + "/b.env", atomically: true, encoding: .utf8)
+
+        let all = try DirectoryScanner.scan(directory: testDir, config: config)
+        XCTAssertGreaterThan(all.count, 1, "should find multiple files without bail")
+
+        let bailed = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        XCTAssertEqual(bailed.count, 1, "bail should return exactly one result")
+    }
+
+    func testBailWithNoFindingsReturnsEmpty() throws {
+        try "clean content".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
+
+        let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        XCTAssertEqual(results.count, 0)
+    }
+
+    func testBailStillHasMatches() throws {
+        let conn = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        try "DB_URL=\(conn)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
+
+        let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertGreaterThan(results[0].matches.count, 0)
+    }
 }

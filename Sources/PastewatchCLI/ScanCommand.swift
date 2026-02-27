@@ -37,6 +37,9 @@ struct Scan: ParsableCommand {
     @Option(name: .long, parsing: .singleValue, help: "Glob pattern to ignore (can be repeated)")
     var ignore: [String] = []
 
+    @Flag(name: .long, help: "Stop at first finding (fast pre-dispatch gate)")
+    var bail = false
+
     @Option(name: .long, help: "Write report to file instead of stdout")
     var output: String?
 
@@ -46,6 +49,9 @@ struct Scan: ParsableCommand {
         }
         if stdinFilename != nil && (file != nil || dir != nil) {
             throw ValidationError("--stdin-filename is only valid when reading from stdin")
+        }
+        if bail && dir == nil {
+            throw ValidationError("--bail is only valid with --dir")
         }
     }
 
@@ -225,7 +231,8 @@ struct Scan: ParsableCommand {
         let ignoreFile = IgnoreFile.load(from: dirPath)
         let fileResults = try DirectoryScanner.scan(
             directory: dirPath, config: config,
-            ignoreFile: ignoreFile, extraIgnorePatterns: ignore
+            ignoreFile: ignoreFile, extraIgnorePatterns: ignore,
+            bail: bail
         )
 
         // Apply allowlist and custom rules to each file's matches
@@ -292,7 +299,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.9.3")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.9.4")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -323,7 +330,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.9.3")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.9.4")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -353,7 +360,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.9.3"
+                matches: matches, filePath: filePath, version: "0.9.4"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
@@ -378,7 +385,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.9.3"
+                matches: matches, filePath: filePath, version: "0.9.4"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
