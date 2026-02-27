@@ -9,6 +9,20 @@ public struct GitDiffScanner {
         let addedLines: Set<Int>
     }
 
+    /// Mutable state used during diff parsing.
+    private struct DiffParserState {
+        var files: [DiffFile] = []
+        var currentPath: String?
+        var currentAdded = Set<Int>()
+        var newLineNumber = 0
+
+        mutating func flushCurrentFile() {
+            if let path = currentPath, !currentAdded.isEmpty {
+                files.append(DiffFile(path: path, addedLines: currentAdded))
+            }
+        }
+    }
+
     /// Scan staged and/or unstaged git changes for secrets.
     public static func scan(
         staged: Bool = true,
@@ -101,78 +115,63 @@ public struct GitDiffScanner {
     static func parseDiff(_ diff: String) -> [DiffFile] {
         guard !diff.isEmpty else { return [] }
 
-        var files: [DiffFile] = []
-        var currentPath: String?
-        var currentAdded = Set<Int>()
-        var newLineNumber = 0
-
+        var state = DiffParserState()
         let lines = diff.components(separatedBy: "\n")
 
         for line in lines {
-            // New file boundary
-            if line.hasPrefix("diff --git ") {
-                // Save previous file if any
-                if let path = currentPath, !currentAdded.isEmpty {
-                    files.append(DiffFile(path: path, addedLines: currentAdded))
-                }
-                currentPath = nil
-                currentAdded = Set<Int>()
-                newLineNumber = 0
-                continue
-            }
-
-            // Skip binary file entries
-            if line.hasPrefix("Binary files ") {
-                currentPath = nil
-                continue
-            }
-
-            // Extract file path from +++ line
-            if line.hasPrefix("+++ ") {
-                let pathPart = String(line.dropFirst(4))
-                if pathPart == "/dev/null" {
-                    currentPath = nil
-                } else if pathPart.hasPrefix("b/") {
-                    currentPath = String(pathPart.dropFirst(2))
-                } else {
-                    currentPath = pathPart
-                }
-                continue
-            }
-
-            // Skip --- line
-            if line.hasPrefix("--- ") {
-                continue
-            }
-
-            // Parse hunk header for new-file line number
-            if line.hasPrefix("@@ ") {
-                if let newStart = parseHunkHeader(line) {
-                    newLineNumber = newStart
-                }
-                continue
-            }
-
-            // Skip index, mode, and other header lines
-            guard currentPath != nil else { continue }
-
-            if line.hasPrefix("+") {
-                currentAdded.insert(newLineNumber)
-                newLineNumber += 1
-            } else if line.hasPrefix("-") {
-                // Removed line: don't increment new-file counter
-            } else if line.hasPrefix(" ") || line.isEmpty {
-                // Context line or empty: increment counter
-                newLineNumber += 1
-            }
+            parseDiffLine(line, state: &state)
         }
 
         // Save last file
-        if let path = currentPath, !currentAdded.isEmpty {
-            files.append(DiffFile(path: path, addedLines: currentAdded))
+        state.flushCurrentFile()
+        return state.files
+    }
+
+    private static func parseDiffLine(_ line: String, state: inout DiffParserState) {
+        if line.hasPrefix("diff --git ") {
+            state.flushCurrentFile()
+            state.currentPath = nil
+            state.currentAdded = Set<Int>()
+            state.newLineNumber = 0
+            return
         }
 
-        return files
+        if line.hasPrefix("Binary files ") {
+            state.currentPath = nil
+            return
+        }
+
+        if line.hasPrefix("+++ ") {
+            state.currentPath = extractPath(from: line)
+            return
+        }
+
+        if line.hasPrefix("--- ") { return }
+
+        if line.hasPrefix("@@ ") {
+            if let newStart = parseHunkHeader(line) {
+                state.newLineNumber = newStart
+            }
+            return
+        }
+
+        guard state.currentPath != nil else { return }
+
+        if line.hasPrefix("+") {
+            state.currentAdded.insert(state.newLineNumber)
+            state.newLineNumber += 1
+        } else if line.hasPrefix("-") {
+            // Removed line: don't increment new-file counter
+        } else if line.hasPrefix(" ") || line.isEmpty {
+            state.newLineNumber += 1
+        }
+    }
+
+    private static func extractPath(from line: String) -> String? {
+        let pathPart = String(line.dropFirst(4))
+        if pathPart == "/dev/null" { return nil }
+        if pathPart.hasPrefix("b/") { return String(pathPart.dropFirst(2)) }
+        return pathPart
     }
 
     /// Extract the new-file start line from a hunk header like `@@ -1,3 +4,5 @@`.

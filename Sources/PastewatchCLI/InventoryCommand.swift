@@ -74,36 +74,42 @@ struct Inventory: ParsableCommand {
 
         // Compare mode
         if let comparePath = compare {
-            guard FileManager.default.fileExists(atPath: comparePath) else {
-                FileHandle.standardError.write(Data("error: compare file not found: \(comparePath)\n".utf8))
-                throw ExitCode(rawValue: 2)
+            try runCompare(comparePath: comparePath, report: report)
+        }
+    }
+
+    private func runCompare(comparePath: String, report: InventoryReport) throws {
+        guard FileManager.default.fileExists(atPath: comparePath) else {
+            FileHandle.standardError.write(Data("error: compare file not found: \(comparePath)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+        let previous: InventoryReport
+        do {
+            previous = try InventoryReport.load(from: comparePath)
+        } catch {
+            FileHandle.standardError.write(Data("error: invalid inventory file: \(comparePath)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+        let delta = InventoryReport.compare(current: report, previous: previous)
+        let deltaOutput = formatDelta(delta)
+        if !deltaOutput.isEmpty {
+            print(deltaOutput, terminator: "")
+        }
+    }
+
+    private func formatDelta(_ delta: InventoryDelta) -> String {
+        switch format {
+        case .text: return InventoryFormatter.formatDeltaText(delta)
+        case .json:
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(delta),
+               let str = String(data: data, encoding: .utf8) {
+                return "\n" + str
             }
-            let previous: InventoryReport
-            do {
-                previous = try InventoryReport.load(from: comparePath)
-            } catch {
-                FileHandle.standardError.write(Data("error: invalid inventory file: \(comparePath)\n".utf8))
-                throw ExitCode(rawValue: 2)
-            }
-            let delta = InventoryReport.compare(current: report, previous: previous)
-            let deltaOutput: String
-            switch format {
-            case .text: deltaOutput = InventoryFormatter.formatDeltaText(delta)
-            case .json:
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                if let data = try? encoder.encode(delta),
-                   let str = String(data: data, encoding: .utf8) {
-                    deltaOutput = "\n" + str
-                } else {
-                    deltaOutput = ""
-                }
-            case .markdown: deltaOutput = InventoryFormatter.formatDeltaMarkdown(delta)
-            case .csv: deltaOutput = ""
-            }
-            if !deltaOutput.isEmpty {
-                print(deltaOutput, terminator: "")
-            }
+            return ""
+        case .markdown: return InventoryFormatter.formatDeltaMarkdown(delta)
+        case .csv: return ""
         }
     }
 
