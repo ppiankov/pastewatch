@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-02-27
+
+### Added
+
+- `inventory` subcommand: generates structured secret posture reports for a directory
+  - Output formats: text (default), json, markdown, csv
+  - Severity breakdown, hot spots (top 10 files), findings by type, per-entry line numbers
+  - `--compare` flag loads a previous JSON inventory and shows added/removed findings
+  - `--output` writes report to file instead of stdout
+  - Supports `--allowlist`, `--rules`, `--ignore` (same as `scan`)
+
 ## [0.12.0] - 2026-02-27
 
 ### Added
