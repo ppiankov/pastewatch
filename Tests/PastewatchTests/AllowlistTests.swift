@@ -54,4 +54,42 @@ final class AllowlistTests: XCTestCase {
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].value, "admin@corp.com")
     }
+
+    // MARK: - Allowed Patterns (regex)
+
+    func testPatternSuppressesMatchingValue() {
+        let content = "key=sk_test_abc123def456ghi789"
+        let pattern = try! NSRegularExpression(pattern: "^(sk_test_.*)$")
+        let allowlist = Allowlist(values: [], patterns: [pattern])
+        let matches = DetectionRules.scan(content, config: config)
+        let filtered = allowlist.filter(matches)
+        let apiKeyMatches = filtered.filter { $0.type == .genericApiKey }
+        XCTAssertEqual(apiKeyMatches.count, 0, "sk_test_ pattern should suppress test API keys")
+    }
+
+    func testPatternDoesNotSuppressNonMatching() {
+        let content = "Contact admin@corp.com"
+        let pattern = try! NSRegularExpression(pattern: "^(sk_test_.*)$")
+        let allowlist = Allowlist(values: [], patterns: [pattern])
+        let matches = DetectionRules.scan(content, config: config)
+        let filtered = allowlist.filter(matches)
+        XCTAssertEqual(filtered.count, matches.count, "pattern should not suppress non-matching values")
+    }
+
+    func testMultiplePatternsWorkTogether() {
+        let content = "key1=sk_test_abc123 email=test@example.com"
+        let p1 = try! NSRegularExpression(pattern: "^(sk_test_.*)$")
+        let p2 = try! NSRegularExpression(pattern: "^(test@.*)$")
+        let allowlist = Allowlist(values: [], patterns: [p1, p2])
+        let matches = DetectionRules.scan(content, config: config)
+        let filtered = allowlist.filter(matches)
+        XCTAssertEqual(filtered.count, 0, "both patterns should suppress their matches")
+    }
+
+    func testAllowedPatternsFromConfig() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.allowedPatterns = ["sk_test_.*"]
+        let allowlist = Allowlist.fromConfig(customConfig)
+        XCTAssertEqual(allowlist.patterns.count, 1)
+    }
 }

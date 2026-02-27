@@ -656,4 +656,47 @@ final class DetectionRulesTests: XCTestCase {
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertEqual(hostMatches.count, 1, "sensitiveHosts lookup should be case insensitive")
     }
+
+    // MARK: - Suffix Matching for Host Lists
+
+    func testSafeHostSuffixSuppressesSubdomain() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = [".company.com"]
+        let content = "Connect to db.company.com"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0, "suffix .company.com should suppress db.company.com")
+    }
+
+    func testSafeHostSuffixDoesNotSuppressExactDomain() {
+        // "company.com" is only 2 segments — won't match the FQDN regex anyway
+        // Use a 3-segment domain to test suffix behavior
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = [".corp.net"]
+        let content = "Connect to corp.net.example.org"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        // corp.net.example.org does NOT end with ".corp.net" — should still be detected
+        XCTAssertGreaterThanOrEqual(hostMatches.count, 1)
+    }
+
+    func testSensitiveHostSuffixFlagsSubdomain() {
+        // img.shields.io is built-in safe, but .shields.io suffix in sensitiveHosts should override
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = [".shields.io"]
+        let content = "badge at img.shields.io/badge"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "sensitiveHost suffix should override built-in safe")
+    }
+
+    func testSensitiveHostSuffixWinsOverSafeHostSuffix() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.safeHosts = [".corp.net"]
+        customConfig.sensitiveHosts = [".corp.net"]
+        let content = "Connect to admin.corp.net"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "sensitiveHost suffix should win over safeHost suffix")
+    }
 }

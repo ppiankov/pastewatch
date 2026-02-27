@@ -52,6 +52,19 @@ public enum ConfigValidator {
             errors.append("'\(host)' appears in both safeHosts and sensitiveHosts (sensitiveHosts takes precedence)")
         }
 
+        // Validate allowedPatterns
+        for (i, pattern) in config.allowedPatterns.enumerated() {
+            if pattern.trimmingCharacters(in: .whitespaces).isEmpty {
+                errors.append("allowedPatterns[\(i)]: empty pattern")
+            } else {
+                do {
+                    _ = try NSRegularExpression(pattern: pattern)
+                } catch {
+                    errors.append("allowedPatterns[\(i)]: invalid regex: \(error.localizedDescription)")
+                }
+            }
+        }
+
         return ConfigValidationResult(errors: errors)
     }
 
