@@ -446,6 +446,25 @@ public struct DetectionRules {
             }
         }
 
+        // Second pass: entropy-based detection (opt-in)
+        if config.isTypeEnabled(.highEntropyString) {
+            let tokens = tokenizeForEntropy(content)
+            for (token, range) in tokens {
+                guard token.count >= minimumEntropyLength else { continue }
+
+                let overlaps = matchedRanges.contains { $0.overlaps(range) }
+                if overlaps { continue }
+
+                guard hasCharacterMix(token) else { continue }
+                guard !isLikelyGitSHA(token) else { continue }
+                guard shannonEntropy(token) >= entropyThreshold else { continue }
+
+                let line = lineNumber(of: range.lowerBound, in: content)
+                matches.append(DetectedMatch(type: .highEntropyString, value: token, range: range, line: line))
+                matchedRanges.append(range)
+            }
+        }
+
         return matches
     }
 
@@ -622,6 +641,80 @@ public struct DetectionRules {
             current = content.index(after: current)
         }
         return line
+    }
+
+    // MARK: - Entropy detection
+
+    private static let minimumEntropyLength = 20
+    private static let entropyThreshold = 4.0
+
+    /// Shannon entropy in bits per character.
+    static func shannonEntropy(_ s: String) -> Double {
+        guard !s.isEmpty else { return 0.0 }
+        var freq: [Character: Int] = [:]
+        for char in s { freq[char, default: 0] += 1 }
+        let length = Double(s.count)
+        var entropy = 0.0
+        for count in freq.values {
+            let p = Double(count) / length
+            entropy -= p * (log(p) / log(2.0))
+        }
+        return entropy
+    }
+
+    /// Tokenize content for entropy scanning — split on delimiters.
+    static func tokenizeForEntropy(_ content: String) -> [(token: String, range: Range<String.Index>)] {
+        let delimiters = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "\"'`=:;,(){}[]<>"))
+        var results: [(String, Range<String.Index>)] = []
+        var tokenStart: String.Index?
+
+        for i in content.indices {
+            let char = content[i]
+            let isDelimiter = char.unicodeScalars.allSatisfy { delimiters.contains($0) }
+
+            if isDelimiter {
+                if let start = tokenStart {
+                    let token = String(content[start..<i])
+                    if !token.isEmpty {
+                        results.append((token, start..<i))
+                    }
+                    tokenStart = nil
+                }
+            } else if tokenStart == nil {
+                tokenStart = i
+            }
+        }
+
+        // Handle last token
+        if let start = tokenStart {
+            let token = String(content[start..<content.endIndex])
+            if !token.isEmpty {
+                results.append((token, start..<content.endIndex))
+            }
+        }
+
+        return results
+    }
+
+    /// Check if a string has at least 2 of: uppercase, lowercase, digits.
+    private static func hasCharacterMix(_ s: String) -> Bool {
+        var hasUpper = false
+        var hasLower = false
+        var hasDigit = false
+        for char in s {
+            if char.isUppercase { hasUpper = true }
+            else if char.isLowercase { hasLower = true }
+            else if char.isNumber { hasDigit = true }
+        }
+        let classes = [hasUpper, hasLower, hasDigit].filter { $0 }.count
+        return classes >= 2
+    }
+
+    /// Check if a string looks like a git SHA (40 hex chars).
+    private static func isLikelyGitSHA(_ s: String) -> Bool {
+        guard s.count == 40 else { return false }
+        return s.allSatisfy { $0.isHexDigit }
     }
 
     /// Luhn algorithm for credit card validation.

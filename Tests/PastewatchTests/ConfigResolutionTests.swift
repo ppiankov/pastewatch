@@ -5,7 +5,10 @@ final class ConfigResolutionTests: XCTestCase {
 
     func testDefaultConfigHasAllTypesEnabled() {
         let config = PastewatchConfig.defaultConfig
-        XCTAssertEqual(config.enabledTypes.count, SensitiveDataType.allCases.count)
+        // highEntropyString is opt-in only, excluded from defaults
+        let expectedCount = SensitiveDataType.allCases.count - 1
+        XCTAssertEqual(config.enabledTypes.count, expectedCount)
+        XCTAssertFalse(config.isTypeEnabled(.highEntropyString))
         XCTAssertTrue(config.enabled)
     }
 
