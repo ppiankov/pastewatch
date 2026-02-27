@@ -1,0 +1,227 @@
+import Foundation
+
+/// Scans git diff output for sensitive data, reporting only findings on added lines.
+public struct GitDiffScanner {
+
+    /// Parsed representation of one file in a unified diff.
+    struct DiffFile {
+        let path: String
+        let addedLines: Set<Int>
+    }
+
+    /// Scan staged and/or unstaged git changes for secrets.
+    public static func scan(
+        staged: Bool = true,
+        unstaged: Bool = false,
+        config: PastewatchConfig,
+        bail: Bool = false
+    ) throws -> [FileScanResult] {
+        var diffFiles: [DiffFile] = []
+
+        if staged {
+            let diff = try runGit(["diff", "--cached", "--no-color", "--diff-filter=d"])
+            diffFiles.append(contentsOf: parseDiff(diff))
+        }
+
+        if unstaged {
+            let diff = try runGit(["diff", "--no-color", "--diff-filter=d"])
+            let unstagedFiles = parseDiff(diff)
+            // Merge unstaged into existing: union addedLines for same path
+            for uf in unstagedFiles {
+                if let idx = diffFiles.firstIndex(where: { $0.path == uf.path }) {
+                    let merged = DiffFile(
+                        path: uf.path,
+                        addedLines: diffFiles[idx].addedLines.union(uf.addedLines)
+                    )
+                    diffFiles[idx] = merged
+                } else {
+                    diffFiles.append(uf)
+                }
+            }
+        }
+
+        guard !diffFiles.isEmpty else { return [] }
+
+        var results: [FileScanResult] = []
+
+        for df in diffFiles {
+            // Check extension filter (same as DirectoryScanner)
+            let url = URL(fileURLWithPath: df.path)
+            let fileName = url.lastPathComponent
+            let ext = url.pathExtension.lowercased()
+            let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+
+            guard isEnvFile || DirectoryScanner.allowedExtensions.contains(ext) else {
+                continue
+            }
+
+            // Get file content
+            let content: String
+            if staged && !unstaged {
+                // Staged only: get from git index
+                guard let staged = try? runGit(["show", ":\(df.path)"]) else { continue }
+                content = staged
+            } else {
+                // Unstaged or both: read from disk
+                guard let disk = try? String(contentsOfFile: df.path, encoding: .utf8) else {
+                    continue
+                }
+                content = disk
+            }
+
+            guard !content.isEmpty else { continue }
+
+            let parsedExt = isEnvFile ? "env" : ext
+            var fileMatches = DirectoryScanner.scanFileContent(
+                content: content, ext: parsedExt,
+                relativePath: df.path, config: config
+            )
+
+            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+
+            // Filter to only added lines
+            fileMatches = fileMatches.filter { df.addedLines.contains($0.line) }
+
+            if !fileMatches.isEmpty {
+                results.append(FileScanResult(
+                    filePath: df.path,
+                    matches: fileMatches,
+                    content: content
+                ))
+                if bail { return results }
+            }
+        }
+
+        return results.sorted { $0.filePath < $1.filePath }
+    }
+
+    // MARK: - Diff parsing
+
+    /// Parse unified diff output into per-file entries with added line numbers.
+    static func parseDiff(_ diff: String) -> [DiffFile] {
+        guard !diff.isEmpty else { return [] }
+
+        var files: [DiffFile] = []
+        var currentPath: String?
+        var currentAdded = Set<Int>()
+        var newLineNumber = 0
+
+        let lines = diff.components(separatedBy: "\n")
+
+        for line in lines {
+            // New file boundary
+            if line.hasPrefix("diff --git ") {
+                // Save previous file if any
+                if let path = currentPath, !currentAdded.isEmpty {
+                    files.append(DiffFile(path: path, addedLines: currentAdded))
+                }
+                currentPath = nil
+                currentAdded = Set<Int>()
+                newLineNumber = 0
+                continue
+            }
+
+            // Skip binary file entries
+            if line.hasPrefix("Binary files ") {
+                currentPath = nil
+                continue
+            }
+
+            // Extract file path from +++ line
+            if line.hasPrefix("+++ ") {
+                let pathPart = String(line.dropFirst(4))
+                if pathPart == "/dev/null" {
+                    currentPath = nil
+                } else if pathPart.hasPrefix("b/") {
+                    currentPath = String(pathPart.dropFirst(2))
+                } else {
+                    currentPath = pathPart
+                }
+                continue
+            }
+
+            // Skip --- line
+            if line.hasPrefix("--- ") {
+                continue
+            }
+
+            // Parse hunk header for new-file line number
+            if line.hasPrefix("@@ ") {
+                if let newStart = parseHunkHeader(line) {
+                    newLineNumber = newStart
+                }
+                continue
+            }
+
+            // Skip index, mode, and other header lines
+            guard currentPath != nil else { continue }
+
+            if line.hasPrefix("+") {
+                currentAdded.insert(newLineNumber)
+                newLineNumber += 1
+            } else if line.hasPrefix("-") {
+                // Removed line: don't increment new-file counter
+            } else if line.hasPrefix(" ") || line.isEmpty {
+                // Context line or empty: increment counter
+                newLineNumber += 1
+            }
+        }
+
+        // Save last file
+        if let path = currentPath, !currentAdded.isEmpty {
+            files.append(DiffFile(path: path, addedLines: currentAdded))
+        }
+
+        return files
+    }
+
+    /// Extract the new-file start line from a hunk header like `@@ -1,3 +4,5 @@`.
+    private static func parseHunkHeader(_ line: String) -> Int? {
+        // Match +start or +start,count
+        guard let plusRange = line.range(of: "+", range: line.index(line.startIndex, offsetBy: 3)..<line.endIndex) else {
+            return nil
+        }
+        let afterPlus = line[plusRange.upperBound...]
+        // Find end: either comma or space
+        let endIdx = afterPlus.firstIndex(where: { $0 == "," || $0 == " " }) ?? afterPlus.endIndex
+        return Int(afterPlus[..<endIdx])
+    }
+
+    // MARK: - Git subprocess
+
+    /// Run a git command and return stdout. Throws on non-zero exit.
+    private static func runGit(_ arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw GitDiffError.gitCommandFailed(arguments.joined(separator: " "))
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+/// Errors from git diff scanning.
+public enum GitDiffError: Error, CustomStringConvertible {
+    case gitCommandFailed(String)
+    case notAGitRepository
+
+    public var description: String {
+        switch self {
+        case .gitCommandFailed(let cmd):
+            return "git command failed: git \(cmd)"
+        case .notAGitRepository:
+            return "not a git repository"
+        }
+    }
+}
