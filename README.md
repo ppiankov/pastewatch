@@ -463,7 +463,8 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
     {"name": "Internal ID", "pattern": "MYCO-[0-9]{6}", "severity": "medium"}
   ],
   "safeHosts": [".internal.company.com"],
-  "sensitiveHosts": ["secrets.vault.internal.net"]
+  "sensitiveHosts": [".local", "secrets.vault.internal.net"],
+  "sensitiveIPPrefixes": ["172.16.", "10."]
 }
 ```
 
@@ -477,7 +478,8 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `allowedPatterns` | string[] | Regex patterns for value suppression (wrapped in `^(...)$`) |
 | `customRules` | object[] | Additional regex patterns with name, pattern, optional severity |
 | `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |
-| `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts) |
+| `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts, catches 2-segment hosts like `.local`) |
+| `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
 
 GUI settings can also be changed via the menubar dropdown.
 

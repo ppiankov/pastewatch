@@ -47,9 +47,12 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
     {"name": "Internal ID", "pattern": "MYCO-[0-9]{6}", "severity": "medium"}
   ],
   "safeHosts": [".internal.company.com", "safe.dev.local"],
-  "sensitiveHosts": ["secrets.vault.internal.net"]
+  "sensitiveHosts": [".local", "secrets.vault.internal.net"],
+  "sensitiveIPPrefixes": ["172.16.", "10."]
 }
 ```
+
+`sensitiveHosts` supports 2-segment hostnames (e.g., `.local` catches `nas.local`) as well as 3+ segment FQDNs.
 
 ### Field reference
 
@@ -63,7 +66,8 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
 | `allowedPatterns` | string[] | `[]` | Regex patterns for value suppression (wrapped in `^(...)$`) |
 | `customRules` | object[] | `[]` | Additional regex detection patterns with name, pattern, optional severity |
 | `safeHosts` | string[] | `[]` | Hostnames excluded from detection. Leading dot = suffix match (`.co.com` matches `x.co.com`) |
-| `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts |
+| `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts. Also catches 2-segment hosts (e.g., `.local` → `nas.local`) |
+| `sensitiveIPPrefixes` | string[] | `[]` | IP prefixes always detected — overrides built-in IP exclude list (e.g., `172.16.`, `10.`) |
 
 ## Commands
 
