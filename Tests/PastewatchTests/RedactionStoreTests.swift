@@ -77,12 +77,30 @@ final class RedactionStoreTests: XCTestCase {
         let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
         store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
-        // Content references placeholders from both files
-        let mixed = "users: __PW{EMAIL_1}__ and __PW{EMAIL_1}__"
+        // Global counters: admin@corp.com → EMAIL_1, dev@corp.com → EMAIL_2
+        let mixed = "users: __PW{EMAIL_1}__ and __PW{EMAIL_2}__"
         let result = store.resolveAll(content: mixed)
-        // resolveAll checks all files — both __PW{EMAIL_1}__ entries resolve
-        XCTAssertTrue(result.resolved > 0)
-        XCTAssertFalse(result.content.contains("__PW{EMAIL_1}__"))
+        XCTAssertEqual(result.resolved, 2)
+        XCTAssertTrue(result.content.contains("admin@corp.com"))
+        XCTAssertTrue(result.content.contains("dev@corp.com"))
+    }
+
+    func testCrossFileConsistency() {
+        let store = RedactionStore()
+        let email = "shared@corp.com"
+
+        let text1 = "from: \(email)"
+        let matches1 = DetectionRules.scan(text1, config: .defaultConfig)
+        let (redacted1, entries1) = store.redact(content: text1, matches: matches1, filePath: "/tmp/a.txt")
+
+        let text2 = "to: \(email)"
+        let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
+        let (redacted2, entries2) = store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
+
+        // Same value across files → same placeholder
+        XCTAssertEqual(entries1[0].placeholder, entries2[0].placeholder)
+        XCTAssertTrue(redacted1.contains("__PW{EMAIL_1}__"))
+        XCTAssertTrue(redacted2.contains("__PW{EMAIL_1}__"))
     }
 
     func testNoMatchesReturnsOriginal() {
