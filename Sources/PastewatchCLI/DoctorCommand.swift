@@ -2,6 +2,12 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
+private struct CheckResult {
+    let check: String
+    let status: String
+    let detail: String
+}
+
 struct Doctor: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Check installation health and show active configuration"
@@ -11,44 +17,39 @@ struct Doctor: ParsableCommand {
     var json = false
 
     func run() throws {
-        var checks: [(String, String, String)] = [] // (label, status, detail)
+        var checks: [CheckResult] = []
 
         // 1. CLI version and binary path
         let version = "0.16.0"
         let binaryPath = ProcessInfo.processInfo.arguments.first ?? "unknown"
-        checks.append(("cli", "ok", "v\(version) at \(binaryPath)"))
+        checks.append(CheckResult(check: "cli", status: "ok", detail: "v\(version) at \(binaryPath)"))
 
         // 2. PATH check — is pastewatch-cli on PATH?
-        let pathStatus = checkOnPath()
-        checks.append(("path", pathStatus.0, pathStatus.1))
+        checks.append(checkOnPath())
 
         // 3. Config resolution
-        let configChecks = checkConfig()
-        checks.append(contentsOf: configChecks)
+        checks.append(contentsOf: checkConfig())
 
         // 4. Pre-commit hook
-        let hookCheck = checkHook()
-        checks.append(("hook", hookCheck.0, hookCheck.1))
+        let hookResult = checkHook()
+        checks.append(CheckResult(check: "hook", status: hookResult.status, detail: hookResult.detail))
 
         // 5. Allowlist file
-        let allowCheck = checkFile(".pastewatch-allow", label: "allowlist")
-        checks.append(allowCheck)
+        checks.append(checkFile(".pastewatch-allow", label: "allowlist"))
 
         // 6. Ignore file
-        let ignoreCheck = checkFile(".pastewatchignore", label: "ignore")
-        checks.append(ignoreCheck)
+        checks.append(checkFile(".pastewatchignore", label: "ignore"))
 
         // 7. Baseline file
-        let baselineCheck = checkFile(".pastewatch-baseline.json", label: "baseline")
-        checks.append(baselineCheck)
+        checks.append(checkFile(".pastewatch-baseline.json", label: "baseline"))
 
         // 8. MCP server processes
-        let mcpCheck = checkMCPProcesses()
-        checks.append(("mcp", mcpCheck.0, mcpCheck.1))
+        let mcpResult = checkMCPProcesses()
+        checks.append(CheckResult(check: "mcp", status: mcpResult.status, detail: mcpResult.detail))
 
         // 9. Homebrew
-        let brewCheck = checkHomebrew(currentVersion: version)
-        checks.append(("homebrew", brewCheck.0, brewCheck.1))
+        let brewResult = checkHomebrew(currentVersion: version)
+        checks.append(CheckResult(check: "homebrew", status: brewResult.status, detail: brewResult.detail))
 
         if json {
             printJSON(checks)
@@ -57,7 +58,7 @@ struct Doctor: ParsableCommand {
         }
     }
 
-    private func checkOnPath() -> (String, String) {
+    private func checkOnPath() -> CheckResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = ["pastewatch-cli"]
@@ -71,14 +72,14 @@ struct Doctor: ParsableCommand {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let path = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return ("ok", path)
+                return CheckResult(check: "path", status: "ok", detail: path)
             }
         } catch {}
-        return ("warn", "pastewatch-cli not found on PATH")
+        return CheckResult(check: "path", status: "warn", detail: "pastewatch-cli not found on PATH")
     }
 
-    private func checkConfig() -> [(String, String, String)] {
-        var results: [(String, String, String)] = []
+    private func checkConfig() -> [CheckResult] {
+        var results: [CheckResult] = []
         let fm = FileManager.default
         let cwd = fm.currentDirectoryPath
 
@@ -88,36 +89,34 @@ struct Doctor: ParsableCommand {
         let projectExists = fm.fileExists(atPath: projectPath)
         let userExists = fm.fileExists(atPath: userPath)
 
-        // Which config is active?
         if projectExists {
-            results.append(("config", "ok", "project: \(projectPath)"))
+            results.append(CheckResult(check: "config", status: "ok", detail: "project: \(projectPath)"))
             let validation = ConfigValidator.validate(path: projectPath)
             if !validation.isValid {
                 for err in validation.errors {
-                    results.append(("config", "warn", err))
+                    results.append(CheckResult(check: "config", status: "warn", detail: err))
                 }
             }
         } else if userExists {
-            results.append(("config", "ok", "user: \(userPath)"))
+            results.append(CheckResult(check: "config", status: "ok", detail: "user: \(userPath)"))
             let validation = ConfigValidator.validate(path: userPath)
             if !validation.isValid {
                 for err in validation.errors {
-                    results.append(("config", "warn", err))
+                    results.append(CheckResult(check: "config", status: "warn", detail: err))
                 }
             }
         } else {
-            results.append(("config", "ok", "defaults (no config file found)"))
+            results.append(CheckResult(check: "config", status: "ok", detail: "defaults (no config file found)"))
         }
 
-        // Show inactive config if it exists
         if projectExists && userExists {
-            results.append(("config", "info", "user config exists but overridden: \(userPath)"))
+            results.append(CheckResult(check: "config", status: "info", detail: "user config exists but overridden: \(userPath)"))
         }
 
         return results
     }
 
-    private func checkHook() -> (String, String) {
+    private func checkHook() -> (status: String, detail: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["rev-parse", "--git-path", "hooks"]
@@ -150,16 +149,16 @@ struct Doctor: ParsableCommand {
         }
     }
 
-    private func checkFile(_ name: String, label: String) -> (String, String, String) {
+    private func checkFile(_ name: String, label: String) -> CheckResult {
         let cwd = FileManager.default.currentDirectoryPath
         let path = cwd + "/" + name
         if FileManager.default.fileExists(atPath: path) {
-            return (label, "ok", path)
+            return CheckResult(check: label, status: "ok", detail: path)
         }
-        return (label, "info", "not found")
+        return CheckResult(check: label, status: "info", detail: "not found")
     }
 
-    private func checkMCPProcesses() -> (String, String) {
+    private func checkMCPProcesses() -> (status: String, detail: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         process.arguments = ["-fl", "pastewatch-cli.*mcp"]
@@ -184,7 +183,7 @@ struct Doctor: ParsableCommand {
         return ("info", "no MCP server processes found")
     }
 
-    private func checkHomebrew(currentVersion: String) -> (String, String) {
+    private func checkHomebrew(currentVersion: String) -> (status: String, detail: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["brew", "info", "--json=v2", "ppiankov/tap/pastewatch"]
@@ -220,27 +219,27 @@ struct Doctor: ParsableCommand {
         return ("info", "not installed via Homebrew")
     }
 
-    private func printText(_ checks: [(String, String, String)]) {
-        for (label, status, detail) in checks {
+    private func printText(_ checks: [CheckResult]) {
+        for entry in checks {
             let icon: String
-            switch status {
+            switch entry.status {
             case "ok": icon = "ok"
             case "warn": icon = "WARN"
             case "info": icon = "--"
             default: icon = "??"
             }
-            let paddedLabel = label.padding(toLength: 12, withPad: " ", startingAt: 0)
-            print("  [\(icon)] \(paddedLabel) \(detail)")
+            let paddedLabel = entry.check.padding(toLength: 12, withPad: " ", startingAt: 0)
+            print("  [\(icon)] \(paddedLabel) \(entry.detail)")
         }
     }
 
-    private func printJSON(_ checks: [(String, String, String)]) {
+    private func printJSON(_ checks: [CheckResult]) {
         var entries: [String] = []
-        for (label, status, detail) in checks {
-            let escapedDetail = detail
+        for entry in checks {
+            let escapedDetail = entry.detail
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
-            entries.append("    {\"check\": \"\(label)\", \"status\": \"\(status)\", \"detail\": \"\(escapedDetail)\"}")
+            entries.append("    {\"check\": \"\(entry.check)\", \"status\": \"\(entry.status)\", \"detail\": \"\(escapedDetail)\"}")
         }
         print("[\n\(entries.joined(separator: ",\n"))\n]")
     }
