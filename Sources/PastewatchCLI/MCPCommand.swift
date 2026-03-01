@@ -10,9 +10,12 @@ struct MCP: ParsableCommand {
     @Option(name: .long, help: "Path to audit log file (append mode)")
     var auditLog: String?
 
+    @Option(name: .long, help: "Default minimum severity for redacted reads (critical, high, medium, low)")
+    var minSeverity: String?
+
     func run() throws {
         let logger = auditLog.map { MCPAuditLogger(path: $0) }
-        let server = MCPServer(auditLogger: logger)
+        let server = MCPServer(auditLogger: logger, defaultMinSeverity: minSeverity)
         server.start()
     }
 }
@@ -21,9 +24,11 @@ struct MCP: ParsableCommand {
 final class MCPServer {
     private let store = RedactionStore()
     private let auditLogger: MCPAuditLogger?
+    private let defaultMinSeverity: String?
 
-    init(auditLogger: MCPAuditLogger? = nil) {
+    init(auditLogger: MCPAuditLogger? = nil, defaultMinSeverity: String? = nil) {
         self.auditLogger = auditLogger
+        self.defaultMinSeverity = defaultMinSeverity
     }
 
     func start() {
@@ -361,9 +366,12 @@ final class MCPServer {
             return errorResult(id: id, text: "Could not read file: \(path)")
         }
 
+        // Precedence: per-request > CLI flag > config > default (high)
         let minSeverity: Severity
         if case .string(let severityStr) = arguments["min_severity"],
            let parsed = Severity(rawValue: severityStr) {
+            minSeverity = parsed
+        } else if let flagStr = defaultMinSeverity, let parsed = Severity(rawValue: flagStr) {
             minSeverity = parsed
         } else {
             minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .high

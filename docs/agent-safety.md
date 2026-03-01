@@ -146,6 +146,25 @@ INTERNAL_SERVER=__PW{HOSTNAME_1}__           # medium — now redacted
 
 The default `high` threshold is intentional — it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.
 
+### Per-agent severity
+
+Different agents may need different thresholds. Use `--min-severity` on the MCP server command to set each agent's default independently:
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log", "--min-severity", "medium"]
+    }
+  }
+}
+```
+
+**Precedence chain:** per-request `min_severity` parameter > `--min-severity` CLI flag > `mcpMinSeverity` config field > default (`high`).
+
+This means you can run Claude Code at `high` (default) and Cline at `medium` — each agent's MCP registration controls its own threshold, and any agent can still override per-request when needed.
+
 ### Audit logging
 
 Enable audit logging to get proof of what the MCP server did during a session:
