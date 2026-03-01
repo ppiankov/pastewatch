@@ -218,7 +218,7 @@ final class MCPServer {
             arguments = [:]
         }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = PastewatchConfig.resolve()
 
         switch toolName {
         case "pastewatch_scan":
