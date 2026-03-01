@@ -2,8 +2,17 @@ import XCTest
 @testable import PastewatchCore
 
 final class ConfigCheckTests: XCTestCase {
-    func testValidDefaultConfig() {
-        let result = ConfigValidator.validate(path: nil)
+    func testValidDefaultConfig() throws {
+        // Write a known-good config to a temp file instead of relying on user config
+        let config = PastewatchConfig.defaultConfig
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(config)
+        let path = "/tmp/pastewatch-test-default-config.json"
+        try data.write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let result = ConfigValidator.validate(path: path)
         XCTAssertTrue(result.isValid)
     }
 
