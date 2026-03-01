@@ -306,6 +306,7 @@ Run as MCP server (JSON-RPC 2.0 over stdio).
 
 **Flags:**
 - `--audit-log path` — write audit log of all tool calls to file (append mode). Logs timestamps, tool names, file paths, redaction counts — never logs secret values.
+- `--min-severity level` — default minimum severity for redacted reads (critical, high, medium, low). Overrides config `mcpMinSeverity`. Per-request `min_severity` parameter still takes highest precedence.
 
 **MCP config (Claude Desktop, Cursor, etc.):**
 ```json
@@ -318,6 +319,20 @@ Run as MCP server (JSON-RPC 2.0 over stdio).
   }
 }
 ```
+
+**Per-agent severity — use `--min-severity` to set different thresholds per agent:**
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log", "--min-severity", "medium"]
+    }
+  }
+}
+```
+
+**Precedence:** per-request `min_severity` > `--min-severity` flag > config `mcpMinSeverity` > default (`high`).
 
 **Tools provided:**
 
