@@ -107,6 +107,45 @@ database:
   api_key: (original key restored)
 ```
 
+### Severity threshold (`min_severity`)
+
+`pastewatch_read_file` accepts an optional `min_severity` parameter (default: `high`). Only findings at or above the threshold are redacted — everything below passes through unchanged.
+
+**What gets redacted at each threshold:**
+
+| `min_severity` | Redacted | Passes through |
+|---|---|---|
+| `critical` | AWS keys, API keys, DB connections, SSH keys, JWTs, cards, webhooks | Credentials, emails, phones, IPs, hostnames, UUIDs |
+| `high` (default) | All critical + credentials, emails, phones | IPs, hostnames, file paths, UUIDs |
+| `medium` | All high + IPs, hostnames, file paths | UUIDs, high entropy |
+| `low` | Everything | Nothing |
+
+**Example: `.env` file read with default `min_severity: "high"`**
+
+Original file contains AWS keys, a database URL, an API token, an IP address, and an internal hostname. After redaction with the default `high` threshold:
+
+```bash
+# What the agent sees (sent to API)
+AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__          # critical — redacted
+DATABASE_URL=__PW{DB_CONNECTION_1}__         # critical — redacted
+API_TOKEN=__PW{OPENAI_KEY_1}__               # critical — redacted
+ANSIBLE_HOST=172.16.161.206                  # medium — passes through
+INTERNAL_SERVER=keeper2.ipa.local            # medium — passes through
+```
+
+The IP and hostname pass through because they are `medium` severity — below the default `high` threshold. To redact them too, pass `min_severity: "medium"`:
+
+```bash
+# With min_severity: "medium" — IPs and hostnames also redacted
+AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__
+DATABASE_URL=__PW{DB_CONNECTION_1}__
+API_TOKEN=__PW{OPENAI_KEY_1}__
+ANSIBLE_HOST=__PW{IP_1}__                   # medium — now redacted
+INTERNAL_SERVER=__PW{HOSTNAME_1}__           # medium — now redacted
+```
+
+The default `high` threshold is intentional — it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.
+
 ### Audit logging
 
 Enable audit logging to get proof of what the MCP server did during a session:
