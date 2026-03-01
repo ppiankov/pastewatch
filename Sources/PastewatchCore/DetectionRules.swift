@@ -465,6 +465,14 @@ public struct DetectionRules {
             }
         }
 
+        // Third pass: 2-segment hostnames for sensitiveHosts only
+        // The main hostname regex requires 3+ segments (FQDN). This catches
+        // 2-segment hosts like nas.local or printer.lan when they match a
+        // sensitiveHosts entry.
+        if config.isTypeEnabled(.hostname), !config.sensitiveHosts.isEmpty {
+            scanTwoSegmentHosts(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+        }
+
         return matches
     }
 
@@ -526,7 +534,7 @@ public struct DetectionRules {
     /// Additional validation for specific types.
     private static func isValidMatch(_ value: String, type: SensitiveDataType, config: PastewatchConfig) -> Bool {
         switch type {
-        case .ipAddress:  return isValidIP(value)
+        case .ipAddress:  return isValidIP(value, config: config)
         case .phone:      return isValidPhone(value)
         case .creditCard: return isValidLuhn(value)
         case .email:      return isValidEmail(value)
@@ -537,7 +545,12 @@ public struct DetectionRules {
         }
     }
 
-    private static func isValidIP(_ value: String) -> Bool {
+    private static func isValidIP(_ value: String, config: PastewatchConfig) -> Bool {
+        // sensitiveIPPrefixes override all exclusions (highest precedence)
+        for prefix in config.sensitiveIPPrefixes where value.hasPrefix(prefix) {
+            return true
+        }
+
         let excluded: Set<String> = [
             "0.0.0.0", "127.0.0.1", "255.255.255.255",
             "8.8.8.8", "8.8.4.4",         // Google DNS
@@ -589,6 +602,37 @@ public struct DetectionRules {
         if safeHosts.contains(hostLower) || hostMatches(hostLower, in: config.safeHosts) { return false }
         if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
         return true
+    }
+
+    /// Regex for 2-segment hostnames (e.g., nas.local, printer.lan).
+    // swiftlint:disable:next force_try
+    private static let twoSegmentHostRegex = try! NSRegularExpression(
+        pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b"#
+    )
+
+    /// Scan for 2-segment hostnames and flag only those matching sensitiveHosts.
+    private static func scanTwoSegmentHosts(
+        _ content: String,
+        config: PastewatchConfig,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        let nsRange = NSRange(content.startIndex..., in: content)
+        let regexMatches = twoSegmentHostRegex.matches(in: content, options: [], range: nsRange)
+
+        for match in regexMatches {
+            guard let range = Range(match.range, in: content) else { continue }
+            let overlaps = matchedRanges.contains { $0.overlaps(range) }
+            if overlaps { continue }
+
+            let value = String(content[range])
+            // Only flag if it matches a sensitiveHosts entry
+            guard hostMatches(value.lowercased(), in: config.sensitiveHosts) else { continue }
+
+            let line = lineNumber(of: range.lowerBound, in: content)
+            matches.append(DetectedMatch(type: .hostname, value: value, range: range, line: line))
+            matchedRanges.append(range)
+        }
     }
 
     /// Check if a hostname matches any entry in a list (exact or suffix with leading dot).
