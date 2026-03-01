@@ -699,4 +699,71 @@ final class DetectionRulesTests: XCTestCase {
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertEqual(hostMatches.count, 1, "sensitiveHost suffix should win over safeHost suffix")
     }
+
+    // MARK: - 2-Segment Hostname Detection (WO-50)
+
+    func testTwoSegmentHostDetectedViaSensitiveHosts() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = [".local"]
+        let content = "Connect to nas.local for backups"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, ".local suffix should catch 2-segment nas.local")
+        XCTAssertEqual(hostMatches.first?.value, "nas.local")
+    }
+
+    func testTwoSegmentHostNotDetectedWithoutSensitiveHosts() {
+        let content = "Connect to nas.local for backups"
+        let matches = DetectionRules.scan(content, config: config)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 0, "2-segment hosts should not be detected by default")
+    }
+
+    func testTwoSegmentHostExactMatch() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = ["printer.lan"]
+        let content = "Print to printer.lan"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 1, "exact 2-segment sensitiveHost should be detected")
+    }
+
+    func testTwoSegmentHostMultipleDepths() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveHosts = [".local"]
+        let content = "hosts: nas.local and db.staging.local"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let hostMatches = matches.filter { $0.type == .hostname }
+        XCTAssertEqual(hostMatches.count, 2, ".local should match both 2-segment and 3-segment hosts")
+    }
+
+    // MARK: - Sensitive IP Prefixes (WO-51)
+
+    func testSensitiveIPPrefixOverridesExclude() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveIPPrefixes = ["8.8."]
+        let content = "dns at 8.8.8.8"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let ipMatches = matches.filter { $0.type == .ipAddress }
+        XCTAssertEqual(ipMatches.count, 1, "sensitiveIPPrefixes should override built-in exclude for 8.8.8.8")
+    }
+
+    func testSensitiveIPPrefixMatchesRange() {
+        var customConfig = PastewatchConfig.defaultConfig
+        customConfig.sensitiveIPPrefixes = ["172.16."]
+        let content = "db at 172.16.0.5 and dns at 8.8.8.8"
+        let matches = DetectionRules.scan(content, config: customConfig)
+        let ipMatches = matches.filter { $0.type == .ipAddress }
+        // 172.16.0.5 detected (matches prefix), 8.8.8.8 excluded (built-in exclude, no matching prefix)
+        XCTAssertEqual(ipMatches.count, 1, "only 172.16.* should be detected")
+        XCTAssertEqual(ipMatches.first?.value, "172.16.0.5")
+    }
+
+    func testSensitiveIPPrefixEmpty() {
+        // Default config — no sensitive prefixes, normal behavior
+        let content = "server at 8.8.8.8"
+        let matches = DetectionRules.scan(content, config: config)
+        let ipMatches = matches.filter { $0.type == .ipAddress }
+        XCTAssertEqual(ipMatches.count, 0, "8.8.8.8 should be excluded by default")
+    }
 }

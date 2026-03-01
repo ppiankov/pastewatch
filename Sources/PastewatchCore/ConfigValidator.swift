@@ -50,6 +50,16 @@ public enum ConfigValidator {
             errors.append("'\(host)' appears in both safeHosts and sensitiveHosts (sensitiveHosts takes precedence)")
         }
 
+        // Validate sensitiveIPPrefixes
+        for (i, prefix) in config.sensitiveIPPrefixes.enumerated() {
+            let trimmed = prefix.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                errors.append("sensitiveIPPrefixes[\(i)]: empty value")
+            } else if !trimmed.allSatisfy({ $0.isNumber || $0 == "." }) {
+                errors.append("sensitiveIPPrefixes[\(i)]: must contain only digits and dots")
+            }
+        }
+
         // Validate allowedPatterns
         for (i, pattern) in config.allowedPatterns.enumerated() {
             if pattern.trimmingCharacters(in: .whitespaces).isEmpty {
