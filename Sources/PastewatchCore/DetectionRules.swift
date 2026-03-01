@@ -604,7 +604,7 @@ public struct DetectionRules {
         return true
     }
 
-    /// Regex for 2-segment hostnames (e.g., nas.local, printer.lan).
+    // Regex for 2-segment hostnames (e.g., nas.local, printer.lan).
     // swiftlint:disable:next force_try
     private static let twoSegmentHostRegex = try! NSRegularExpression(
         pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b"#
