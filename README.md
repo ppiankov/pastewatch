@@ -431,24 +431,55 @@ sudo mv pastewatch-cli /usr/local/bin/
 
 **For CI/CD**: Use the CLI scan command or [GitHub Action](https://github.com/ppiankov/pastewatch-action).
 
-Agents: read [`SKILL.md`](SKILL.md) for commands, flags, detection types, and exit codes.
+Agents: read [`docs/SKILL.md`](docs/SKILL.md) for commands, flags, config files, detection types, and exit codes.
 
 ---
 
 ## Configuration
 
-Optional configuration file: `~/.config/pastewatch/config.json`
+### Config files
+
+| File | Location | Purpose | Created By |
+|------|----------|---------|------------|
+| `.pastewatch.json` | Project root | Project-level config (rules, allowlists, hosts) | `pastewatch-cli init` |
+| `~/.config/pastewatch/config.json` | Home | User-level defaults | Manual / GUI app |
+| `.pastewatch-allow` | Project root | Value allowlist (one per line, `#` comments) | `pastewatch-cli init` |
+| `.pastewatchignore` | Project root | Path exclusion patterns (glob, like `.gitignore`) | Manual |
+| `.pastewatch-baseline.json` | Project root | Known findings baseline | `pastewatch-cli baseline create` |
+
+Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
+
+### `.pastewatch.json` schema
 
 ```json
 {
   "enabled": true,
-  "enabledTypes": ["Email", "Phone", "IP", "AWS Key", "API Key", "UUID", "DB Connection", "SSH Key", "JWT", "Card"],
+  "enabledTypes": ["Email", "AWS Key", "API Key", "Credential", "High Entropy"],
   "showNotifications": true,
-  "soundEnabled": false
+  "soundEnabled": false,
+  "allowedValues": ["test@example.com"],
+  "allowedPatterns": ["sk_test_.*", "EXAMPLE_.*"],
+  "customRules": [
+    {"name": "Internal ID", "pattern": "MYCO-[0-9]{6}", "severity": "medium"}
+  ],
+  "safeHosts": [".internal.company.com"],
+  "sensitiveHosts": ["secrets.vault.internal.net"]
 }
 ```
 
-All settings can also be changed via the menubar dropdown.
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Enable/disable scanning globally |
+| `enabledTypes` | string[] | Detection types to activate (default: all except High Entropy) |
+| `showNotifications` | bool | System notifications on GUI obfuscation |
+| `soundEnabled` | bool | Sound on GUI obfuscation |
+| `allowedValues` | string[] | Exact values to suppress (merged with `.pastewatch-allow`) |
+| `allowedPatterns` | string[] | Regex patterns for value suppression (wrapped in `^(...)$`) |
+| `customRules` | object[] | Additional regex patterns with name, pattern, optional severity |
+| `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |
+| `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts) |
+
+GUI settings can also be changed via the menubar dropdown.
 
 ---
 

@@ -276,6 +276,54 @@ When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guar
 
 ---
 
+## 7. Configuration Files
+
+Pastewatch config resolves from the agent's working directory. When an agent runs `pastewatch-cli scan` or uses MCP tools, it picks up the project's `.pastewatch.json` automatically.
+
+### Config files
+
+| File | Location | Purpose | Created By |
+|------|----------|---------|------------|
+| `.pastewatch.json` | Project root (`$CWD`) | Project-level config | `pastewatch-cli init` |
+| `~/.config/pastewatch/config.json` | Home | User-level defaults | Manual / GUI app |
+| `.pastewatch-allow` | Project root | Value allowlist (one per line) | `pastewatch-cli init` |
+| `.pastewatchignore` | Project root | Path exclusion patterns (glob) | Manual |
+| `.pastewatch-baseline.json` | Project root | Known findings baseline | `pastewatch-cli baseline create` |
+
+Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
+
+### `.pastewatch.json` schema
+
+```json
+{
+  "enabled": true,
+  "enabledTypes": ["Email", "AWS Key", "API Key", "Credential", "High Entropy"],
+  "showNotifications": true,
+  "soundEnabled": false,
+  "allowedValues": ["test@example.com"],
+  "allowedPatterns": ["sk_test_.*", "EXAMPLE_.*"],
+  "customRules": [
+    {"name": "Internal ID", "pattern": "MYCO-[0-9]{6}", "severity": "medium"}
+  ],
+  "safeHosts": [".internal.company.com"],
+  "sensitiveHosts": ["secrets.vault.internal.net"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Enable/disable scanning globally |
+| `enabledTypes` | string[] | Detection types to activate (default: all except High Entropy) |
+| `allowedValues` | string[] | Exact values to suppress (merged with `.pastewatch-allow`) |
+| `allowedPatterns` | string[] | Regex patterns for value suppression (wrapped in `^(...)$`) |
+| `customRules` | object[] | Additional regex patterns with name, pattern, optional severity |
+| `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |
+| `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts) |
+
+For the full command reference, see [SKILL.md](SKILL.md).
+
+---
+
 ## Verification
 
 After configuring MCP and hooks for any agent:
