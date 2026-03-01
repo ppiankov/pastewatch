@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Design:
 /// - Mapping lives only in server process memory — dies on exit, never persisted
-/// - Keyed by file path — same file re-read returns same placeholders
+/// - Same value always maps to same placeholder across all files in a session
 /// - Deobfuscation happens locally on-device — secrets never leave the machine
 /// - Uses __PW{TYPE_N}__ format — never collides with real content
 public final class RedactionStore {
@@ -14,11 +14,11 @@ public final class RedactionStore {
     /// Forward mapping: placeholder → original value, per file.
     private var mappings: [String: [String: String]] = [:]
 
-    /// Reverse mapping: original value → placeholder, per file (for idempotent re-reads).
-    private var reverseMappings: [String: [String: String]] = [:]
+    /// Global reverse mapping: original value → placeholder (cross-file consistency).
+    private var globalReverse: [String: String] = [:]
 
-    /// Type counters per file for placeholder numbering.
-    private var typeCounters: [String: [SensitiveDataType: Int]] = [:]
+    /// Global type counters for placeholder numbering.
+    private var globalTypeCounters: [SensitiveDataType: Int] = [:]
 
     public init() {}
 
@@ -37,28 +37,23 @@ public final class RedactionStore {
 
         for match in sorted {
             let original = match.value
-            let reverse = reverseMappings[filePath] ?? [:]
 
             let placeholder: String
-            if let existing = reverse[original] {
-                // Same value seen before in this file — reuse placeholder
+            if let existing = globalReverse[original] {
+                // Same value seen before in any file — reuse placeholder
                 placeholder = existing
             } else {
-                var counters = typeCounters[filePath] ?? [:]
-                let count = (counters[match.type] ?? 0) + 1
-                counters[match.type] = count
-                typeCounters[filePath] = counters
+                let count = (globalTypeCounters[match.type] ?? 0) + 1
+                globalTypeCounters[match.type] = count
 
                 placeholder = Obfuscator.makeMCPPlaceholder(type: match.type, number: count)
-
-                var forward = mappings[filePath] ?? [:]
-                forward[placeholder] = original
-                mappings[filePath] = forward
-
-                var rev = reverseMappings[filePath] ?? [:]
-                rev[original] = placeholder
-                reverseMappings[filePath] = rev
+                globalReverse[original] = placeholder
             }
+
+            // Always store in per-file forward mapping for resolution
+            var forward = mappings[filePath] ?? [:]
+            forward[placeholder] = original
+            mappings[filePath] = forward
 
             placeholdersByMatch.append((match, placeholder))
 
@@ -92,8 +87,8 @@ public final class RedactionStore {
     /// Clear all mappings.
     public func clear() {
         mappings.removeAll()
-        reverseMappings.removeAll()
-        typeCounters.removeAll()
+        globalReverse.removeAll()
+        globalTypeCounters.removeAll()
     }
 
     /// Check if any mappings exist for a file.
