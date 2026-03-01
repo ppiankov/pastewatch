@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-03-01
+
+### Added
+
+- `doctor` subcommand — installation health check showing CLI version, active config, hook status, MCP server processes, and Homebrew formula version
+- `--json` flag for `doctor` for programmatic output
+
+### Fixed
+
+- CI auto-tag now triggers release workflow (uses PAT instead of GITHUB_TOKEN for tag push)
+- SwiftLint orphaned doc comment violation in DetectionRules.swift
+
 ## [0.15.0] - 2026-03-01
 
 ### Added
