@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-03-01
+
+### Added
+
+- `sensitiveHosts` now catches 2-segment hostnames (e.g., `.local` matches `nas.local`)
+- `sensitiveIPPrefixes` config field — IP prefixes that override the built-in exclude list (e.g., `172.16.`, `10.`)
+
+### Fixed
+
+- MCP server now reads `.pastewatch.json` and `~/.config/pastewatch/config.json` instead of using hardcoded defaults
+
 ## [0.14.1] - 2026-03-01
 
 ### Fixed
