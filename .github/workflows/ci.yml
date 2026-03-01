@@ -75,7 +75,12 @@ jobs:
 
       - name: Create and push tag
         if: steps.check.outputs.should_tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           TAG="v${{ steps.check.outputs.version }}"
           git tag "$TAG"
+          if [ -n "$GH_TOKEN" ]; then
+            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          fi
           git push origin "$TAG"

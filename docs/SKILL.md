@@ -267,6 +267,30 @@ Validate configuration files (JSON syntax, type names, regex patterns, severity 
 - 0: valid
 - 2: validation errors
 
+### pastewatch-cli doctor
+
+Check installation health and show active configuration. Reports CLI version, PATH status, config resolution, hook installation, MCP server processes, and Homebrew formula version.
+
+**Flags:**
+- `--json` — output results as JSON
+
+**Checks performed:**
+
+| Check | What it reports |
+|-------|----------------|
+| cli | Version and binary path |
+| path | Whether pastewatch-cli is on PATH |
+| config | Which config file is active (project > user > defaults), validation warnings |
+| hook | Pre-commit hook installation status |
+| allowlist | `.pastewatch-allow` file presence |
+| ignore | `.pastewatchignore` file presence |
+| baseline | `.pastewatch-baseline.json` file presence |
+| mcp | Running MCP server processes and PIDs |
+| homebrew | Formula version vs installed version vs current CLI version |
+
+**Exit codes:**
+- 0: success
+
 ### pastewatch-cli version
 
 Print version information.
@@ -476,4 +500,10 @@ pastewatch-cli inventory --dir . --format json --output inventory.json
 
 # Compare inventories
 pastewatch-cli inventory --dir . --compare inventory.json
+
+# Check installation health
+pastewatch-cli doctor
+
+# Get doctor output as JSON
+pastewatch-cli doctor --json
 ```
