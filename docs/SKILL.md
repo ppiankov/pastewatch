@@ -375,6 +375,8 @@ Input:
 
 Response: JSON object with `content` (redacted text), `redactions` (manifest of type/severity/line/placeholder), `clean` (boolean).
 
+**Severity thresholds:** `high` (default) redacts credentials, API keys, DB connections, emails, phones. IPs, hostnames, and file paths are `medium` — pass through unless `min_severity: "medium"` is set. UUIDs and high entropy are `low`.
+
 #### pastewatch_write_file
 Write file contents, resolving `__PW{TYPE_N}__` placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing.
 
