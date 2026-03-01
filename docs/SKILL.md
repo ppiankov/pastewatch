@@ -48,7 +48,8 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
   ],
   "safeHosts": [".internal.company.com", "safe.dev.local"],
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
-  "sensitiveIPPrefixes": ["172.16.", "10."]
+  "sensitiveIPPrefixes": ["172.16.", "10."],
+  "mcpMinSeverity": "high"
 }
 ```
 
@@ -68,6 +69,7 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
 | `safeHosts` | string[] | `[]` | Hostnames excluded from detection. Leading dot = suffix match (`.co.com` matches `x.co.com`) |
 | `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts. Also catches 2-segment hosts (e.g., `.local` → `nas.local`) |
 | `sensitiveIPPrefixes` | string[] | `[]` | IP prefixes always detected — overrides built-in IP exclude list (e.g., `172.16.`, `10.`) |
+| `mcpMinSeverity` | string | `"high"` | Default minimum severity for MCP `pastewatch_read_file` redaction (critical, high, medium, low) |
 
 ## Commands
 

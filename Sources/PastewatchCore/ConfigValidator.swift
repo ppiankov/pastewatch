@@ -73,6 +73,11 @@ public enum ConfigValidator {
             }
         }
 
+        // Validate mcpMinSeverity
+        if Severity(rawValue: config.mcpMinSeverity) == nil {
+            errors.append("mcpMinSeverity: invalid severity '\(config.mcpMinSeverity)' (use: critical, high, medium, low)")
+        }
+
         return ConfigValidationResult(errors: errors)
     }
 

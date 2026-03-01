@@ -366,7 +366,7 @@ final class MCPServer {
            let parsed = Severity(rawValue: severityStr) {
             minSeverity = parsed
         } else {
-            minSeverity = .high
+            minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .high
         }
 
         let allMatches = DetectionRules.scan(content, config: config)

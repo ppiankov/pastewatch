@@ -464,7 +464,8 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
   ],
   "safeHosts": [".internal.company.com"],
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
-  "sensitiveIPPrefixes": ["172.16.", "10."]
+  "sensitiveIPPrefixes": ["172.16.", "10."],
+  "mcpMinSeverity": "high"
 }
 ```
 
@@ -480,6 +481,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |
 | `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts, catches 2-segment hosts like `.local`) |
 | `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
+| `mcpMinSeverity` | string | Default severity threshold for MCP redacted reads (default: `high`) |
 
 GUI settings can also be changed via the menubar dropdown.
 
