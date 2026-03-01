@@ -49,3 +49,33 @@ jobs:
 
       - name: Run SwiftLint
         run: swiftlint lint --strict
+
+  auto-tag:
+    name: Auto-tag version bumps
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check for version bump commit
+        id: check
+        run: |
+          MSG=$(git log -1 --format='%s')
+          if echo "$MSG" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
+            VERSION=$(echo "$MSG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "should_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.should_tag == 'true'
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
