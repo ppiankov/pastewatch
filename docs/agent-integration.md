@@ -200,7 +200,15 @@ pastewatch-cli guard "python3 -c 'open(\".env\").read()'"
 # BLOCKED: detects python3/ruby/node scripting workarounds
 ```
 
-Commands detected: `cat`, `head`, `tail`, `less`, `more`, `sed`, `awk`, `grep`, `source`, `python3`, `ruby`, `node`, `perl`.
+Commands detected:
+- **File readers:** `cat`, `head`, `tail`, `less`, `more`, `bat`, `tac`, `nl`
+- **File writers:** `sed`, `awk`
+- **File searchers:** `grep`, `egrep`, `fgrep`, `rg`, `ag`
+- **Source commands:** `source`, `.`
+- **Scripting interpreters:** `python3`, `python`, `ruby`, `node`, `perl`, `php`, `lua`
+- **File transfer tools:** `scp`, `rsync`, `ssh`, `ssh-keygen`
+- **Infrastructure tools:** `ansible-playbook`, `ansible`, `ansible-vault`, `terraform`, `docker-compose`, `docker`, `kubectl`, `helm`
+- **Pipe chains:** `|`, `&&`, `||`, `;` — each segment is parsed independently
 
 ### Read/Write/Edit guard
 

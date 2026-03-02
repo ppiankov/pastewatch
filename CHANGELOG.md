@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `guard` now detects scripting interpreters: `python3`, `python`, `ruby`, `node`, `perl`, `php`, `lua` (skips `-c`/`-e` inline code)
+- `guard` now detects file transfer tools: `scp`, `rsync`, `ssh`, `ssh-keygen` (skips remote paths with `:`)
+- `guard` now parses pipe chains (`|`) and command chaining (`&&`, `||`, `;`) — each segment scanned independently
+- Quoted strings are preserved across pipe/chain splitting (e.g., `grep 'foo|bar'` is not split)
+
 ## [0.17.2] - 2026-03-02
 
 ### Added

@@ -24,6 +24,28 @@ public struct CommandParser {
         "source", ".",
     ]
 
+    /// Scripting interpreters that execute a script file (first positional arg).
+    private static let scriptInterpreters: Set<String> = [
+        "python3", "python", "python3.11", "python3.12", "python3.13",
+        "ruby", "node", "perl", "php", "lua",
+    ]
+
+    /// Flags that take inline code for scripting interpreters (skip — can't parse).
+    private static let scriptInlineFlags: Set<String> = ["-c", "-e"]
+
+    /// File transfer and remote tools that read local files.
+    private static let fileTransferTools: Set<String> = [
+        "scp", "rsync", "ssh", "ssh-keygen",
+    ]
+
+    /// Flags that take a file path for transfer/remote tools.
+    private static let transferFlagsWithFile: [String: Set<String>] = [
+        "scp": [],
+        "rsync": ["--password-file", "--include-from", "--exclude-from"],
+        "ssh": ["-i", "-F"],
+        "ssh-keygen": ["-f"],
+    ]
+
     /// Infrastructure tools that read config/inventory files via flags and positional args.
     private static let infraTools: Set<String> = [
         "ansible-playbook", "ansible", "ansible-vault",
@@ -43,11 +65,27 @@ public struct CommandParser {
     ]
 
     /// Extract file paths from a shell command string.
+    /// Handles pipe chains (|) and command chaining (&&, ||, ;).
     /// Returns absolute paths resolved against `workingDirectory`.
     /// Returns empty array for unknown commands (allow by default).
     public static func extractFilePaths(
         from command: String,
         workingDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> [String] {
+        let segments = splitCommandChain(command)
+        var allPaths: [String] = []
+        for segment in segments {
+            allPaths.append(contentsOf: extractFilePathsSingle(
+                from: segment, workingDirectory: workingDirectory
+            ))
+        }
+        return allPaths
+    }
+
+    /// Extract file paths from a single command (no pipes or chaining).
+    private static func extractFilePathsSingle(
+        from command: String,
+        workingDirectory: String
     ) -> [String] {
         let tokens = tokenize(command)
         guard let rawCmd = tokens.first else { return [] }
@@ -76,6 +114,10 @@ public struct CommandParser {
             rawPaths = extractLastFileArg(args)
         } else if fileSearchers.contains(cmd) {
             rawPaths = extractGrepFileArgs(args)
+        } else if scriptInterpreters.contains(cmd) {
+            rawPaths = extractScriptFileArgs(args)
+        } else if fileTransferTools.contains(cmd) {
+            rawPaths = extractTransferFileArgs(cmd, args: args)
         } else if infraTools.contains(cmd) {
             rawPaths = extractInfraFileArgs(cmd, args: args)
         } else {
@@ -83,6 +125,93 @@ public struct CommandParser {
         }
 
         return rawPaths.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }
+    }
+
+    // MARK: - Command chain splitting
+
+    /// Split a command string on pipes (|) and chain operators (&&, ||, ;).
+    /// Respects quotes — operators inside quotes are not split on.
+    static func splitCommandChain(_ command: String) -> [String] {
+        var segments: [String] = []
+        var current = ""
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        let chars = Array(command)
+        var i = 0
+
+        while i < chars.count {
+            let char = chars[i]
+
+            if escaped {
+                current.append(char)
+                escaped = false
+                i += 1
+                continue
+            }
+
+            if char == "\\" && !inSingle {
+                escaped = true
+                current.append(char)
+                i += 1
+                continue
+            }
+
+            if char == "'" && !inDouble {
+                inSingle.toggle()
+                current.append(char)
+                i += 1
+                continue
+            }
+
+            if char == "\"" && !inSingle {
+                inDouble.toggle()
+                current.append(char)
+                i += 1
+                continue
+            }
+
+            // Only split when not inside quotes
+            if !inSingle && !inDouble {
+                // Check for && or ||
+                if i + 1 < chars.count {
+                    let next = chars[i + 1]
+                    if (char == "&" && next == "&") || (char == "|" && next == "|") {
+                        let trimmed = current.trimmingCharacters(in: .whitespaces)
+                        if !trimmed.isEmpty { segments.append(trimmed) }
+                        current = ""
+                        i += 2
+                        continue
+                    }
+                }
+
+                // Single pipe (not ||)
+                if char == "|" {
+                    let trimmed = current.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { segments.append(trimmed) }
+                    current = ""
+                    i += 1
+                    continue
+                }
+
+                // Semicolon
+                if char == ";" {
+                    let trimmed = current.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { segments.append(trimmed) }
+                    current = ""
+                    i += 1
+                    continue
+                }
+            }
+
+            current.append(char)
+            i += 1
+        }
+
+        let trimmed = current.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty { segments.append(trimmed) }
+
+        return segments
     }
 
     // MARK: - Tokenizer
@@ -212,6 +341,66 @@ public struct CommandParser {
         return Array(positional.dropFirst())
     }
 
+    /// For scripting interpreters: extract the script file (first positional arg).
+    /// Skips -c/-e inline code flags and their arguments.
+    private static func extractScriptFileArgs(_ args: [String]) -> [String] {
+        var skipNext = false
+
+        for arg in args {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+
+            // -c/-e take inline code as next arg — skip both
+            if scriptInlineFlags.contains(arg) {
+                skipNext = true
+                continue
+            }
+
+            // Skip other flags
+            if arg.hasPrefix("-") {
+                continue
+            }
+
+            // First positional arg is the script file
+            return [arg]
+        }
+
+        return []
+    }
+
+    /// For file transfer tools: extract file paths from flags and positional args.
+    private static func extractTransferFileArgs(_ cmd: String, args: [String]) -> [String] {
+        let flagsWithFile = transferFlagsWithFile[cmd] ?? []
+        var paths: [String] = []
+        var skipNext = false
+
+        for arg in args {
+            if skipNext {
+                paths.append(arg)
+                skipNext = false
+                continue
+            }
+
+            if arg.hasPrefix("-") {
+                if flagsWithFile.contains(arg) {
+                    skipNext = true
+                }
+                continue
+            }
+
+            // For scp/rsync: positional args that don't contain ":" are local files
+            if cmd == "scp" || cmd == "rsync" {
+                if !arg.contains(":") {
+                    paths.append(arg)
+                }
+            }
+        }
+
+        return paths
+    }
+
     /// For infrastructure tools: extract file paths from known flags and positional args.
     /// Positional args that look like file paths (contain / or .) are included.
     private static func extractInfraFileArgs(_ cmd: String, args: [String]) -> [String] {
@@ -219,9 +408,8 @@ public struct CommandParser {
         var paths: [String] = []
         var skipNext = false
 
-        for (index, arg) in args.enumerated() {
+        for arg in args {
             if skipNext {
-                // This token is the value for a file-taking flag
                 // Handle ansible -e @file syntax
                 if arg.hasPrefix("@") {
                     paths.append(String(arg.dropFirst()))
@@ -255,7 +443,6 @@ public struct CommandParser {
             }
 
             // Positional args — include if they look like file paths
-            // (contain path separator, extension, or end with known config extensions)
             let lowerArg = arg.lowercased()
             let hasPathChars = arg.contains("/") || arg.contains(".")
             let isKnownExt = lowerArg.hasSuffix(".yml") || lowerArg.hasSuffix(".yaml")
