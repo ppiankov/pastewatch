@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-03-02
+
+### Added
+
+- `doctor` now shows per-process `--min-severity` and `--audit-log` for each running MCP server
+- `doctor` now shows `mcpMinSeverity` from resolved config
+- Ready-to-use agent integration examples in `docs/examples/` (Claude Code, Cline, Cursor)
+
 ## [0.17.0] - 2026-03-02
 
 ### Added
