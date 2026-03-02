@@ -130,4 +130,71 @@ final class CommandParserTests: XCTestCase {
         let tokens = CommandParser.tokenize("sed -i 's/old/new/' file.txt")
         XCTAssertEqual(tokens, ["sed", "-i", "s/old/new/", "file.txt"])
     }
+
+    // MARK: - Infrastructure tools
+
+    func testAnsiblePlaybookInventoryAndPlaybook() {
+        let paths = CommandParser.extractFilePaths(
+            from: "ansible-playbook -i /app/inventory/production /app/deploy.yml --tags cron --check"
+        )
+        XCTAssertEqual(paths, ["/app/inventory/production", "/app/deploy.yml"])
+    }
+
+    func testAnsiblePlaybookLongInventoryFlag() {
+        let paths = CommandParser.extractFilePaths(
+            from: "ansible-playbook --inventory /app/hosts.ini /app/site.yml"
+        )
+        XCTAssertEqual(paths, ["/app/hosts.ini", "/app/site.yml"])
+    }
+
+    func testAnsiblePlaybookExtraVarsFile() {
+        let paths = CommandParser.extractFilePaths(
+            from: "ansible-playbook -e @/app/secrets.yml /app/deploy.yml"
+        )
+        XCTAssertEqual(paths, ["/app/secrets.yml", "/app/deploy.yml"])
+    }
+
+    func testDockerComposeFileFlag() {
+        let paths = CommandParser.extractFilePaths(
+            from: "docker-compose -f /app/docker-compose.yml up"
+        )
+        XCTAssertEqual(paths, ["/app/docker-compose.yml"])
+    }
+
+    func testDockerEnvFileFlag() {
+        let paths = CommandParser.extractFilePaths(
+            from: "docker run --env-file /app/.env myimage"
+        )
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testKubectlApplyFile() {
+        let paths = CommandParser.extractFilePaths(
+            from: "kubectl apply -f /app/k8s/deployment.yaml"
+        )
+        XCTAssertEqual(paths, ["/app/k8s/deployment.yaml"])
+    }
+
+    func testHelmValuesFile() {
+        let paths = CommandParser.extractFilePaths(
+            from: "helm install myrelease /app/chart -f /app/values.yaml"
+        )
+        XCTAssertTrue(paths.contains("/app/values.yaml"))
+        XCTAssertTrue(paths.contains("/app/chart"))
+    }
+
+    func testTerraformVarFileEquals() {
+        let paths = CommandParser.extractFilePaths(
+            from: "terraform plan -var-file=/app/prod.tfvars"
+        )
+        XCTAssertEqual(paths, ["/app/prod.tfvars"])
+    }
+
+    func testInfraToolSkipsNonPathPositionals() {
+        // "up" doesn't look like a file path — no / or . or known extension
+        let paths = CommandParser.extractFilePaths(
+            from: "docker-compose up"
+        )
+        XCTAssertTrue(paths.isEmpty)
+    }
 }
