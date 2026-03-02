@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-03-02
+
+### Added
+
+- `mcpMinSeverity` config field — set default MCP redaction threshold in `.pastewatch.json`
+- `--min-severity` flag on `mcp` subcommand — per-agent severity thresholds (e.g., `pastewatch-cli mcp --min-severity medium`)
+- Severity precedence: per-request `min_severity` > `--min-severity` CLI flag > config `mcpMinSeverity` > default (`high`)
+
 ## [0.16.0] - 2026-03-01
 
 ### Added
