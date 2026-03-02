@@ -44,8 +44,7 @@ struct Doctor: ParsableCommand {
         checks.append(checkFile(".pastewatch-baseline.json", label: "baseline"))
 
         // 8. MCP server processes
-        let mcpResult = checkMCPProcesses()
-        checks.append(CheckResult(check: "mcp", status: mcpResult.status, detail: mcpResult.detail))
+        checks.append(contentsOf: checkMCPProcesses())
 
         // 9. Homebrew
         let brewResult = checkHomebrew(currentVersion: version)
@@ -113,6 +112,10 @@ struct Doctor: ParsableCommand {
             results.append(CheckResult(check: "config", status: "info", detail: "user config exists but overridden: \(userPath)"))
         }
 
+        // Show mcpMinSeverity from resolved config
+        let config = PastewatchConfig.resolve()
+        results.append(CheckResult(check: "config", status: "info", detail: "mcpMinSeverity: \(config.mcpMinSeverity)"))
+
         return results
     }
 
@@ -158,7 +161,8 @@ struct Doctor: ParsableCommand {
         return CheckResult(check: label, status: "info", detail: "not found")
     }
 
-    private func checkMCPProcesses() -> (status: String, detail: String) {
+    private func checkMCPProcesses() -> [CheckResult] {
+        var results: [CheckResult] = []
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         process.arguments = ["-fl", "pastewatch-cli.*mcp"]
@@ -168,19 +172,47 @@ struct Doctor: ParsableCommand {
         do {
             try process.run()
             process.waitUntilExit()
-            if process.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let lines = output.split(separator: "\n")
-                let pids = lines.compactMap { line -> String? in
-                    let parts = line.split(separator: " ", maxSplits: 1)
-                    return parts.first.map(String.init)
-                }
-                return ("ok", "\(pids.count) running (PIDs: \(pids.joined(separator: ", ")))")
+            guard process.terminationStatus == 0 else {
+                results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
+                return results
             }
-        } catch {}
-        return ("info", "no MCP server processes found")
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let lines = output.split(separator: "\n")
+                .filter { $0.contains("pastewatch-cli mcp") }
+
+            if lines.isEmpty {
+                results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
+                return results
+            }
+
+            results.append(CheckResult(check: "mcp", status: "ok", detail: "\(lines.count) running"))
+
+            for line in lines {
+                let parts = line.split(separator: " ", maxSplits: 1)
+                let pid = parts.first.map(String.init) ?? "?"
+                let cmdLine = parts.count > 1 ? String(parts[1]) : ""
+
+                let severity = extractFlag(cmdLine, flag: "--min-severity") ?? "high (default)"
+                let auditLog = extractFlag(cmdLine, flag: "--audit-log") ?? "none"
+
+                results.append(CheckResult(
+                    check: "mcp",
+                    status: "info",
+                    detail: "PID \(pid): min-severity=\(severity), audit-log=\(auditLog)"
+                ))
+            }
+        } catch {
+            results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
+        }
+        return results
+    }
+
+    private func extractFlag(_ cmdLine: String, flag: String) -> String? {
+        guard let flagRange = cmdLine.range(of: flag) else { return nil }
+        let afterFlag = cmdLine[flagRange.upperBound...].trimmingCharacters(in: .whitespaces)
+        return afterFlag.split(separator: " ").first.map(String.init)
     }
 
     private func checkHomebrew(currentVersion: String) -> (status: String, detail: String) {
