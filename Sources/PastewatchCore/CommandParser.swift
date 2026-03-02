@@ -24,6 +24,24 @@ public struct CommandParser {
         "source", ".",
     ]
 
+    /// Infrastructure tools that read config/inventory files via flags and positional args.
+    private static let infraTools: Set<String> = [
+        "ansible-playbook", "ansible", "ansible-vault",
+        "terraform", "docker-compose", "docker", "kubectl", "helm",
+    ]
+
+    /// Flags that take a file path as their next argument, per infra tool.
+    private static let infraFlagsWithFile: [String: Set<String>] = [
+        "ansible-playbook": ["-i", "--inventory", "--vault-password-file", "--private-key", "-e", "--extra-vars"],
+        "ansible": ["-i", "--inventory", "--vault-password-file", "--private-key", "-e", "--extra-vars"],
+        "ansible-vault": ["--vault-password-file"],
+        "terraform": ["-var-file"],
+        "docker-compose": ["-f", "--file", "--env-file"],
+        "docker": ["--env-file"],
+        "kubectl": ["-f", "--filename", "--kubeconfig"],
+        "helm": ["-f", "--values", "--kubeconfig"],
+    ]
+
     /// Extract file paths from a shell command string.
     /// Returns absolute paths resolved against `workingDirectory`.
     /// Returns empty array for unknown commands (allow by default).
@@ -58,6 +76,8 @@ public struct CommandParser {
             rawPaths = extractLastFileArg(args)
         } else if fileSearchers.contains(cmd) {
             rawPaths = extractGrepFileArgs(args)
+        } else if infraTools.contains(cmd) {
+            rawPaths = extractInfraFileArgs(cmd, args: args)
         } else {
             return []
         }
@@ -190,6 +210,65 @@ public struct CommandParser {
         // First positional is the pattern, rest are files
         guard positional.count >= 2 else { return [] }
         return Array(positional.dropFirst())
+    }
+
+    /// For infrastructure tools: extract file paths from known flags and positional args.
+    /// Positional args that look like file paths (contain / or .) are included.
+    private static func extractInfraFileArgs(_ cmd: String, args: [String]) -> [String] {
+        let flagsWithFile = infraFlagsWithFile[cmd] ?? []
+        var paths: [String] = []
+        var skipNext = false
+
+        for (index, arg) in args.enumerated() {
+            if skipNext {
+                // This token is the value for a file-taking flag
+                // Handle ansible -e @file syntax
+                if arg.hasPrefix("@") {
+                    paths.append(String(arg.dropFirst()))
+                } else {
+                    paths.append(arg)
+                }
+                skipNext = false
+                continue
+            }
+
+            // Check for --flag=value syntax
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                let flag = String(parts[0])
+                if flagsWithFile.contains(flag), parts.count == 2 {
+                    let value = String(parts[1])
+                    if value.hasPrefix("@") {
+                        paths.append(String(value.dropFirst()))
+                    } else {
+                        paths.append(value)
+                    }
+                }
+                continue
+            }
+
+            if arg.hasPrefix("-") {
+                if flagsWithFile.contains(arg) {
+                    skipNext = true
+                }
+                continue
+            }
+
+            // Positional args — include if they look like file paths
+            // (contain path separator, extension, or end with known config extensions)
+            let lowerArg = arg.lowercased()
+            let hasPathChars = arg.contains("/") || arg.contains(".")
+            let isKnownExt = lowerArg.hasSuffix(".yml") || lowerArg.hasSuffix(".yaml")
+                || lowerArg.hasSuffix(".json") || lowerArg.hasSuffix(".tf")
+                || lowerArg.hasSuffix(".env") || lowerArg.hasSuffix(".toml")
+                || lowerArg.hasSuffix(".cfg") || lowerArg.hasSuffix(".ini")
+                || lowerArg.hasSuffix(".conf")
+            if hasPathChars || isKnownExt {
+                paths.append(arg)
+            }
+        }
+
+        return paths
     }
 
     // MARK: - Path resolution
