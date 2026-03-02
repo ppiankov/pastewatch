@@ -208,7 +208,10 @@ Commands detected:
 - **Scripting interpreters:** `python3`, `python`, `ruby`, `node`, `perl`, `php`, `lua`
 - **File transfer tools:** `scp`, `rsync`, `ssh`, `ssh-keygen`
 - **Infrastructure tools:** `ansible-playbook`, `ansible`, `ansible-vault`, `terraform`, `docker-compose`, `docker`, `kubectl`, `helm`
+- **Database CLIs:** `psql`, `mysql`, `mongosh`, `mongo`, `redis-cli`, `sqlite3` — extracts file flags and scans inline connection strings/passwords
 - **Pipe chains:** `|`, `&&`, `||`, `;` — each segment is parsed independently
+- **Redirect operators:** `>`, `>>`, `2>`, `&>`, `<` — stripped from commands; input redirects (`<`) scanned as file access
+- **Subshells:** `$(...)` and backticks — inner commands extracted and scanned
 
 ### Read/Write/Edit guard
 

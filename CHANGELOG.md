@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `guard` now detects database CLIs: `psql`, `mysql`, `mongosh`, `mongo`, `redis-cli`, `sqlite3` — extracts file flags (`-f`, `--defaults-file`) and positional database files
+- `guard` now scans inline values in database commands: connection strings (`postgres://`, `mongodb://`, `redis://`), attached passwords (`-psecret`, `--password=secret`), auth tokens (`-a token`)
+- `guard` now strips redirect operators (`>`, `>>`, `2>`, `&>`) from commands and scans input redirect (`<`) source files
+- `guard` now extracts and scans subshell commands: `$(cat .env)` and backtick expressions
+
 ## [0.17.3] - 2026-03-02
 
 ### Added

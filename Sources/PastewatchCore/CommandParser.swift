@@ -46,6 +46,21 @@ public struct CommandParser {
         "ssh-keygen": ["-f"],
     ]
 
+    /// Database CLI tools that may read credential files or contain inline secrets.
+    private static let databaseCLIs: Set<String> = [
+        "psql", "mysql", "mongosh", "mongo", "redis-cli", "sqlite3",
+    ]
+
+    /// Flags that take a file path for database CLIs.
+    private static let dbFlagsWithFile: [String: Set<String>] = [
+        "psql": ["-f", "--file"],
+        "mysql": ["--defaults-file", "--defaults-extra-file"],
+        "mongosh": [],
+        "mongo": [],
+        "redis-cli": [],
+        "sqlite3": [],
+    ]
+
     /// Infrastructure tools that read config/inventory files via flags and positional args.
     private static let infraTools: Set<String> = [
         "ansible-playbook", "ansible", "ansible-vault",
@@ -65,20 +80,42 @@ public struct CommandParser {
     ]
 
     /// Extract file paths from a shell command string.
-    /// Handles pipe chains (|) and command chaining (&&, ||, ;).
+    /// Handles pipe chains (|), command chaining (&&, ||, ;), redirects, and subshells.
     /// Returns absolute paths resolved against `workingDirectory`.
     /// Returns empty array for unknown commands (allow by default).
     public static func extractFilePaths(
         from command: String,
         workingDirectory: String = FileManager.default.currentDirectoryPath
     ) -> [String] {
-        let segments = splitCommandChain(command)
         var allPaths: [String] = []
+
+        // Process main command segments
+        let segments = splitCommandChain(command)
         for segment in segments {
+            let (cleaned, inputFiles) = stripRedirects(segment)
+            allPaths.append(contentsOf: inputFiles.flatMap {
+                expandAndResolve($0, workingDirectory: workingDirectory)
+            })
             allPaths.append(contentsOf: extractFilePathsSingle(
-                from: segment, workingDirectory: workingDirectory
+                from: cleaned, workingDirectory: workingDirectory
             ))
         }
+
+        // Extract and process subshell commands (one level deep)
+        let subshellCommands = extractSubshellCommands(command)
+        for subCmd in subshellCommands {
+            let subSegments = splitCommandChain(subCmd)
+            for segment in subSegments {
+                let (cleaned, inputFiles) = stripRedirects(segment)
+                allPaths.append(contentsOf: inputFiles.flatMap {
+                    expandAndResolve($0, workingDirectory: workingDirectory)
+                })
+                allPaths.append(contentsOf: extractFilePathsSingle(
+                    from: cleaned, workingDirectory: workingDirectory
+                ))
+            }
+        }
+
         return allPaths
     }
 
@@ -120,6 +157,8 @@ public struct CommandParser {
             rawPaths = extractTransferFileArgs(cmd, args: args)
         } else if infraTools.contains(cmd) {
             rawPaths = extractInfraFileArgs(cmd, args: args)
+        } else if databaseCLIs.contains(cmd) {
+            rawPaths = extractDBFileArgs(cmd, args: args)
         } else {
             return []
         }
@@ -212,6 +251,223 @@ public struct CommandParser {
         if !trimmed.isEmpty { segments.append(trimmed) }
 
         return segments
+    }
+
+    // MARK: - Redirect stripping
+
+    /// Strip redirect operators and their targets from a command segment.
+    /// Returns the cleaned command and any input redirect source files.
+    /// Works at the character level to preserve quoting in the original string.
+    static func stripRedirects(_ segment: String) -> (command: String, inputFiles: [String]) {
+        var inputFiles: [String] = []
+        let chars = Array(segment)
+        var result: [Character] = []
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        var i = 0
+
+        while i < chars.count {
+            if escaped {
+                result.append(chars[i])
+                escaped = false
+                i += 1
+                continue
+            }
+            if chars[i] == "\\" && !inSingle {
+                escaped = true
+                result.append(chars[i])
+                i += 1
+                continue
+            }
+            if chars[i] == "'" && !inDouble {
+                inSingle.toggle()
+                result.append(chars[i])
+                i += 1
+                continue
+            }
+            if chars[i] == "\"" && !inSingle {
+                inDouble.toggle()
+                result.append(chars[i])
+                i += 1
+                continue
+            }
+
+            // Only detect redirects outside quotes
+            if !inSingle && !inDouble {
+                let remaining = chars[i...]
+
+                // Check for output redirects (order: longest prefix first)
+                if let skip = matchOutputRedirect(remaining) {
+                    i += skip
+                    continue
+                }
+
+                // Check for input redirect: < (not <<)
+                if chars[i] == "<" && !(i + 1 < chars.count && chars[i + 1] == "<") {
+                    i += 1
+                    // Skip whitespace
+                    while i < chars.count && chars[i] == " " { i += 1 }
+                    // Collect the file path
+                    let file = collectWord(chars, from: &i)
+                    if !file.isEmpty { inputFiles.append(file) }
+                    continue
+                }
+
+                // Skip heredoc << or <<-
+                if chars[i] == "<" && i + 1 < chars.count && chars[i + 1] == "<" {
+                    i += 2
+                    if i < chars.count && chars[i] == "-" { i += 1 }
+                    while i < chars.count && chars[i] == " " { i += 1 }
+                    // Skip the delimiter word
+                    _ = collectWord(chars, from: &i)
+                    continue
+                }
+            }
+
+            result.append(chars[i])
+            i += 1
+        }
+
+        let cleaned = String(result).trimmingCharacters(in: .whitespaces)
+        // Collapse multiple spaces
+        let collapsed = cleaned.replacingOccurrences(
+            of: "  +", with: " ", options: .regularExpression
+        )
+        return (command: collapsed, inputFiles: inputFiles)
+    }
+
+    /// Match an output redirect operator at the current position.
+    /// Returns the number of characters to skip (operator + whitespace + target word), or nil.
+    private static func matchOutputRedirect(_ chars: ArraySlice<Character>) -> Int? {
+        let prefixes: [(String, Int)] = [
+            ("&>>", 3), ("&>", 2), ("2>>", 3), ("2>", 2), (">>", 2), (">", 1),
+        ]
+        let arr = Array(chars)
+        for (prefix, len) in prefixes {
+            if arr.count >= len {
+                let candidate = String(arr[0..<len])
+                if candidate == prefix {
+                    var skip = len
+                    // Skip whitespace after operator
+                    while skip < arr.count && arr[skip] == " " { skip += 1 }
+                    // Skip the target word (handles quoted targets)
+                    var pos = skip
+                    _ = collectWord(arr, from: &pos)
+                    return pos
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Collect a word (possibly quoted) starting at position, advancing the index.
+    private static func collectWord(_ chars: [Character], from i: inout Int) -> String {
+        guard i < chars.count else { return "" }
+        var word = ""
+
+        // Handle quoted word
+        if chars[i] == "'" || chars[i] == "\"" {
+            let quote = chars[i]
+            i += 1
+            while i < chars.count && chars[i] != quote {
+                word.append(chars[i])
+                i += 1
+            }
+            if i < chars.count { i += 1 } // skip closing quote
+            return word
+        }
+
+        // Unquoted word — collect until space
+        while i < chars.count && chars[i] != " " {
+            word.append(chars[i])
+            i += 1
+        }
+        return word
+    }
+
+    // MARK: - Subshell extraction
+
+    /// Extract commands from $(...) and backtick expressions.
+    /// Returns inner commands for recursive processing.
+    /// One level deep only — does not parse nested subshells.
+    static func extractSubshellCommands(_ command: String) -> [String] {
+        var commands: [String] = []
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        let chars = Array(command)
+        var i = 0
+
+        while i < chars.count {
+            let char = chars[i]
+
+            if escaped {
+                escaped = false
+                i += 1
+                continue
+            }
+
+            if char == "\\" && !inSingle {
+                escaped = true
+                i += 1
+                continue
+            }
+
+            if char == "'" && !inDouble {
+                inSingle.toggle()
+                i += 1
+                continue
+            }
+
+            if char == "\"" && !inSingle {
+                inDouble.toggle()
+                i += 1
+                continue
+            }
+
+            // $(...) outside quotes (or inside double quotes — subshells expand there)
+            if !inSingle && char == "$" && i + 1 < chars.count && chars[i + 1] == "(" {
+                // Find matching closing paren
+                var depth = 1
+                var j = i + 2
+                while j < chars.count && depth > 0 {
+                    if chars[j] == "(" { depth += 1 }
+                    if chars[j] == ")" { depth -= 1 }
+                    j += 1
+                }
+                // Extract content between $( and )
+                let start = i + 2
+                let end = j - 1
+                if start < end {
+                    let inner = String(chars[start..<end])
+                    commands.append(inner)
+                }
+                i = j
+                continue
+            }
+
+            // Backtick outside quotes
+            if !inSingle && char == "`" {
+                // Find matching closing backtick
+                var j = i + 1
+                while j < chars.count && chars[j] != "`" {
+                    j += 1
+                }
+                if j < chars.count {
+                    let inner = String(chars[(i + 1)..<j])
+                    commands.append(inner)
+                    i = j + 1
+                } else {
+                    i += 1
+                }
+                continue
+            }
+
+            i += 1
+        }
+
+        return commands
     }
 
     // MARK: - Tokenizer
@@ -456,6 +712,171 @@ public struct CommandParser {
         }
 
         return paths
+    }
+
+    /// For database CLIs: extract file paths from known flags.
+    private static func extractDBFileArgs(_ cmd: String, args: [String]) -> [String] {
+        let flagsWithFile = dbFlagsWithFile[cmd] ?? []
+        var paths: [String] = []
+        var skipNext = false
+
+        for arg in args {
+            if skipNext {
+                paths.append(arg)
+                skipNext = false
+                continue
+            }
+
+            // Check for --flag=value syntax
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                let flag = String(parts[0])
+                if flagsWithFile.contains(flag), parts.count == 2 {
+                    paths.append(String(parts[1]))
+                }
+                continue
+            }
+
+            if arg.hasPrefix("-") {
+                if flagsWithFile.contains(arg) {
+                    skipNext = true
+                }
+                continue
+            }
+
+            // For sqlite3: first positional arg is the database file
+            if cmd == "sqlite3" && paths.isEmpty {
+                paths.append(arg)
+                break
+            }
+        }
+
+        return paths
+    }
+
+    // MARK: - Inline value extraction
+
+    /// Extract inline values from a command that may contain secrets.
+    /// These are argument values (not file paths) to scan with DetectionRules.
+    /// Returns raw strings to be scanned directly.
+    public static func extractInlineValues(from command: String) -> [String] {
+        let segments = splitCommandChain(command)
+        var allValues: [String] = []
+        for segment in segments {
+            let (cleaned, _) = stripRedirects(segment)
+            allValues.append(contentsOf: extractInlineValuesSingle(from: cleaned))
+        }
+        return allValues
+    }
+
+    /// Extract inline values from a single command.
+    private static func extractInlineValuesSingle(from command: String) -> [String] {
+        let tokens = tokenize(command)
+        guard let rawCmd = tokens.first else { return [] }
+
+        let args = Array(tokens.dropFirst())
+
+        let cmd: String
+        if rawCmd.contains("/") {
+            cmd = (rawCmd as NSString).lastPathComponent
+        } else {
+            cmd = rawCmd
+        }
+
+        guard databaseCLIs.contains(cmd) else { return [] }
+
+        if let extractor = inlineExtractors[cmd] {
+            return extractor(args)
+        }
+        return []
+    }
+
+    /// Per-CLI inline value extractors, dispatched by command name.
+    private static let inlineExtractors: [String: ([String]) -> [String]] = [
+        "psql": extractPsqlInlineValues,
+        "mysql": extractMysqlInlineValues,
+        "mongosh": extractMongoInlineValues,
+        "mongo": extractMongoInlineValues,
+        "redis-cli": extractRedisInlineValues,
+    ]
+
+    /// psql: first positional arg containing :// is a connection string.
+    private static func extractPsqlInlineValues(_ args: [String]) -> [String] {
+        var skipNext = false
+        for arg in args {
+            if skipNext { skipNext = false; continue }
+            if arg == "-f" || arg == "--file" || arg == "-h" || arg == "-p"
+                || arg == "-U" || arg == "-d" || arg == "-o" {
+                skipNext = true
+                continue
+            }
+            if arg.hasPrefix("-") { continue }
+            if arg.contains("://") { return [arg] }
+        }
+        return []
+    }
+
+    /// mysql: -p<password> (attached), --password=<value>, -p <password> (space).
+    private static func extractMysqlInlineValues(_ args: [String]) -> [String] {
+        var values: [String] = []
+        var i = 0
+        while i < args.count {
+            let arg = args[i]
+
+            // --password=value
+            if arg.hasPrefix("--password=") {
+                let value = String(arg.dropFirst("--password=".count))
+                if !value.isEmpty { values.append(value) }
+                i += 1
+                continue
+            }
+
+            // -pPASSWORD (attached, no space) — not -P (port) or --p* long flags
+            if arg.hasPrefix("-p") && arg.count > 2 && !arg.hasPrefix("-P")
+                && !arg.hasPrefix("--") {
+                values.append(String(arg.dropFirst(2)))
+                i += 1
+                continue
+            }
+
+            // First positional containing :// is a connection string
+            if !arg.hasPrefix("-") && arg.contains("://") {
+                values.append(arg)
+            }
+
+            i += 1
+        }
+        return values
+    }
+
+    /// mongosh/mongo: first positional arg containing :// is a connection string.
+    private static func extractMongoInlineValues(_ args: [String]) -> [String] {
+        for arg in args {
+            if arg.hasPrefix("-") { continue }
+            if arg.contains("://") { return [arg] }
+        }
+        return []
+    }
+
+    /// redis-cli: -a (auth password), -u (URL with auth).
+    private static func extractRedisInlineValues(_ args: [String]) -> [String] {
+        var values: [String] = []
+        var i = 0
+        while i < args.count {
+            let arg = args[i]
+            if arg == "-a" && i + 1 < args.count {
+                values.append(args[i + 1])
+                i += 2
+                continue
+            }
+            if arg == "-u" && i + 1 < args.count {
+                values.append(args[i + 1])
+                i += 2
+                continue
+            }
+            i += 1
+        }
+        return values
     }
 
     // MARK: - Path resolution
