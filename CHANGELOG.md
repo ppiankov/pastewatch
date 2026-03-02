@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scan --git-log` scans git commit history for secrets, reporting only the first commit that introduced each finding
+- `--range`, `--since`, `--branch` flags for scoping history scans (e.g., `--range HEAD~50..HEAD`, `--since 2025-01-01`)
+- Deduplication by fingerprint — same secret across multiple commits is reported once at its introduction point
+- All output formats supported: text (commit-grouped), json, sarif, markdown
 - `guard` now detects database CLIs: `psql`, `mysql`, `mongosh`, `mongo`, `redis-cli`, `sqlite3` — extracts file flags (`-f`, `--defaults-file`) and positional database files
 - `guard` now scans inline values in database commands: connection strings (`postgres://`, `mongodb://`, `redis://`), attached passwords (`-psecret`, `--password=secret`), auth tokens (`-a token`)
 - `guard` now strips redirect operators (`>`, `>>`, `2>`, `&>`) from commands and scans input redirect (`<`) source files
