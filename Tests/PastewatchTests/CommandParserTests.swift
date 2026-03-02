@@ -197,4 +197,115 @@ final class CommandParserTests: XCTestCase {
         )
         XCTAssertTrue(paths.isEmpty)
     }
+
+    // MARK: - Scripting interpreters
+
+    func testPython3ScriptFile() {
+        let paths = CommandParser.extractFilePaths(from: "python3 /app/script.py")
+        XCTAssertEqual(paths, ["/app/script.py"])
+    }
+
+    func testPythonSkipsInlineCode() {
+        // -c takes inline code — can't parse file paths from it
+        let paths = CommandParser.extractFilePaths(from: "python3 -c 'import os; print(os.environ)'")
+        XCTAssertTrue(paths.isEmpty)
+    }
+
+    func testRubyScriptFile() {
+        let paths = CommandParser.extractFilePaths(from: "ruby /app/deploy.rb")
+        XCTAssertEqual(paths, ["/app/deploy.rb"])
+    }
+
+    func testRubySkipsInlineFlag() {
+        let paths = CommandParser.extractFilePaths(from: "ruby -e 'puts 1'")
+        XCTAssertTrue(paths.isEmpty)
+    }
+
+    func testNodeScriptFile() {
+        let paths = CommandParser.extractFilePaths(from: "node /app/server.js")
+        XCTAssertEqual(paths, ["/app/server.js"])
+    }
+
+    func testPerlScriptFile() {
+        let paths = CommandParser.extractFilePaths(from: "perl /app/process.pl")
+        XCTAssertEqual(paths, ["/app/process.pl"])
+    }
+
+    func testPython3WithFlags() {
+        let paths = CommandParser.extractFilePaths(from: "python3 -u /app/script.py")
+        XCTAssertEqual(paths, ["/app/script.py"])
+    }
+
+    // MARK: - File transfer tools
+
+    func testScpLocalFile() {
+        let paths = CommandParser.extractFilePaths(from: "scp /app/.env user@remote:/tmp/")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testScpSkipsRemotePaths() {
+        let paths = CommandParser.extractFilePaths(from: "scp user@remote:/tmp/file.txt /app/local.txt")
+        XCTAssertEqual(paths, ["/app/local.txt"])
+    }
+
+    func testSshIdentityFile() {
+        let paths = CommandParser.extractFilePaths(from: "ssh -i /app/.ssh/id_rsa user@host")
+        XCTAssertEqual(paths, ["/app/.ssh/id_rsa"])
+    }
+
+    func testRsyncPasswordFile() {
+        let paths = CommandParser.extractFilePaths(from: "rsync --password-file /app/.rsync-pass /src/ remote:/dst/")
+        XCTAssertTrue(paths.contains("/app/.rsync-pass"))
+        XCTAssertTrue(paths.contains("/src/"))
+    }
+
+    // MARK: - Pipe chains
+
+    func testPipeChain() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env | base64")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testMultiPipeChain() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env | grep password | head -1")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testAndChain() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env && cat /app/config.yml")
+        XCTAssertTrue(paths.contains("/app/.env"))
+        XCTAssertTrue(paths.contains("/app/config.yml"))
+    }
+
+    func testOrChain() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env || cat /app/fallback.yml")
+        XCTAssertTrue(paths.contains("/app/.env"))
+        XCTAssertTrue(paths.contains("/app/fallback.yml"))
+    }
+
+    func testSemicolonChain() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env; head /app/secrets.txt")
+        XCTAssertTrue(paths.contains("/app/.env"))
+        XCTAssertTrue(paths.contains("/app/secrets.txt"))
+    }
+
+    func testPipeInsideQuotesNotSplit() {
+        let paths = CommandParser.extractFilePaths(from: "grep 'foo|bar' /app/config.yml")
+        XCTAssertEqual(paths, ["/app/config.yml"])
+    }
+
+    func testSplitCommandChainSimple() {
+        let segments = CommandParser.splitCommandChain("cat file.txt | grep secret")
+        XCTAssertEqual(segments, ["cat file.txt", "grep secret"])
+    }
+
+    func testSplitCommandChainPreservesQuotedPipes() {
+        let segments = CommandParser.splitCommandChain("grep 'a|b' file.txt")
+        XCTAssertEqual(segments, ["grep 'a|b' file.txt"])
+    }
+
+    func testSplitCommandChainMultipleOperators() {
+        let segments = CommandParser.splitCommandChain("cmd1 && cmd2 || cmd3; cmd4 | cmd5")
+        XCTAssertEqual(segments, ["cmd1", "cmd2", "cmd3", "cmd4", "cmd5"])
+    }
 }
