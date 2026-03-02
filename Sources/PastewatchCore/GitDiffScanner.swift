@@ -189,7 +189,7 @@ public struct GitDiffScanner {
     // MARK: - Git subprocess
 
     /// Run a git command and return stdout. Throws on non-zero exit.
-    private static func runGit(_ arguments: [String]) throws -> String {
+    static func runGit(_ arguments: [String]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments

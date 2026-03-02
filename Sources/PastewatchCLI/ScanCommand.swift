@@ -46,6 +46,18 @@ struct Scan: ParsableCommand {
     @Flag(name: .long, help: "Include unstaged changes (requires --git-diff)")
     var unstaged = false
 
+    @Flag(name: .long, help: "Scan git commit history for secrets")
+    var gitLog = false
+
+    @Option(name: .long, help: "Git revision range (e.g., HEAD~50..HEAD)")
+    var range: String?
+
+    @Option(name: .long, help: "Only commits since date (ISO format, requires --git-log)")
+    var since: String?
+
+    @Option(name: .long, help: "Scan specific branch (requires --git-log)")
+    var branch: String?
+
     @Option(name: .long, help: "Write report to file instead of stdout")
     var output: String?
 
@@ -56,14 +68,20 @@ struct Scan: ParsableCommand {
         if gitDiff && (file != nil || dir != nil) {
             throw ValidationError("--git-diff is mutually exclusive with --file and --dir")
         }
+        if gitLog && (file != nil || dir != nil || gitDiff) {
+            throw ValidationError("--git-log is mutually exclusive with --file, --dir, and --git-diff")
+        }
         if stdinFilename != nil && (file != nil || dir != nil) {
             throw ValidationError("--stdin-filename is only valid when reading from stdin")
         }
         if unstaged && !gitDiff {
             throw ValidationError("--unstaged requires --git-diff")
         }
-        if bail && dir == nil && !gitDiff {
-            throw ValidationError("--bail is only valid with --dir or --git-diff")
+        if (range != nil || since != nil || branch != nil) && !gitLog {
+            throw ValidationError("--range, --since, and --branch require --git-log")
+        }
+        if bail && dir == nil && !gitDiff && !gitLog {
+            throw ValidationError("--bail is only valid with --dir, --git-diff, or --git-log")
         }
     }
 
@@ -74,6 +92,13 @@ struct Scan: ParsableCommand {
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)
         let baselineFile = try loadBaseline()
+
+        // Git history scanning mode
+        if gitLog {
+            try runGitLogScan(config: config, allowlist: mergedAllowlist,
+                              customRules: customRulesList, baseline: baselineFile)
+            return
+        }
 
         // Git diff scanning mode
         if gitDiff {
@@ -346,6 +371,169 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // MARK: - Git log scanning
+
+    private func runGitLogScan(
+        config: PastewatchConfig,
+        allowlist: Allowlist,
+        customRules: [CustomRule],
+        baseline: BaselineFile? = nil
+    ) throws {
+        let result: GitLogScanResult
+        do {
+            result = try GitHistoryScanner.scan(
+                range: range, since: since, branch: branch,
+                config: config, bail: bail
+            )
+        } catch let error as GitDiffError {
+            FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+
+        // Apply allowlist filtering
+        var filteredFindings: [CommitFinding] = []
+        for cf in result.findings {
+            var allMatches = cf.matches
+            if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
+                allMatches = allowlist.filter(allMatches)
+            }
+            if !allMatches.isEmpty {
+                filteredFindings.append(CommitFinding(
+                    commitHash: cf.commitHash, author: cf.author,
+                    date: cf.date, filePath: cf.filePath, matches: allMatches
+                ))
+            }
+        }
+
+        // Apply baseline filtering
+        if let bl = baseline {
+            filteredFindings = filteredFindings.compactMap { cf in
+                let filtered = bl.filterNew(matches: cf.matches, filePath: cf.filePath)
+                guard !filtered.isEmpty else { return nil }
+                return CommitFinding(
+                    commitHash: cf.commitHash, author: cf.author,
+                    date: cf.date, filePath: cf.filePath, matches: filtered
+                )
+            }
+        }
+
+        guard !filteredFindings.isEmpty else { return }
+
+        try redirectStdoutIfNeeded()
+
+        if check {
+            outputGitLogCheckMode(findings: filteredFindings, result: result)
+        } else {
+            outputGitLogFindings(findings: filteredFindings, result: result)
+        }
+        let allMatches = filteredFindings.flatMap { $0.matches }
+        if shouldFail(matches: allMatches) {
+            throw ExitCode(rawValue: 6)
+        }
+    }
+
+    private func outputGitLogFindings(findings: [CommitFinding], result: GitLogScanResult) {
+        switch format {
+        case .text:
+            outputGitLogText(findings: findings, result: result)
+        case .json:
+            outputGitLogJSON(findings: findings, result: result)
+        case .sarif:
+            let pairs = findings.map { ($0.filePath, $0.matches) }
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.17.4")
+            print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            outputGitLogMarkdown(findings: findings, result: result)
+        }
+    }
+
+    private func outputGitLogCheckMode(findings: [CommitFinding], result: GitLogScanResult) {
+        switch format {
+        case .text:
+            let totalFindings = findings.flatMap { $0.matches }.count
+            let commitCount = Set(findings.map { $0.commitHash }).count
+            let msg = "\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+        case .json:
+            outputGitLogJSON(findings: findings, result: result)
+        case .sarif:
+            let pairs = findings.map { ($0.filePath, $0.matches) }
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.17.4")
+            print(String(data: data, encoding: .utf8)!)
+        case .markdown:
+            outputGitLogMarkdown(findings: findings, result: result)
+        }
+    }
+
+    private func outputGitLogText(findings: [CommitFinding], result: GitLogScanResult) {
+        // Group by commit
+        let grouped = Dictionary(grouping: findings, by: { $0.commitHash })
+        let commitOrder = findings.map { $0.commitHash }.reduce(into: [String]()) {
+            if !$0.contains($1) { $0.append($1) }
+        }
+
+        for hash in commitOrder {
+            guard let commitFindings = grouped[hash] else { continue }
+            let first = commitFindings[0]
+            let shortHash = String(hash.prefix(7))
+            print("commit \(shortHash) (\(first.date), \(first.author))")
+            for cf in commitFindings {
+                for match in cf.matches {
+                    print("  \(cf.filePath):\(match.line)  \(match.displayName)  \(match.value)  (\(match.effectiveSeverity.rawValue))")
+                }
+            }
+            print()
+        }
+
+        let totalFindings = findings.flatMap { $0.matches }.count
+        let commitCount = commitOrder.count
+        print("\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits, \(result.filesScanned) files)")
+    }
+
+    private func outputGitLogJSON(findings: [CommitFinding], result: GitLogScanResult) {
+        let output = GitLogOutput(
+            commitsScanned: result.commitsScanned,
+            filesScanned: result.filesScanned,
+            findings: findings.map { cf in
+                GitLogFindingOutput(
+                    commit: cf.commitHash,
+                    author: cf.author,
+                    date: cf.date,
+                    file: cf.filePath,
+                    matches: cf.matches.map {
+                        GitLogMatchOutput(
+                            type: $0.displayName, line: $0.line,
+                            severity: $0.effectiveSeverity.rawValue, value: $0.value
+                        )
+                    }
+                )
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(output) {
+            print(String(data: data, encoding: .utf8)!)
+        }
+    }
+
+    private func outputGitLogMarkdown(findings: [CommitFinding], result: GitLogScanResult) {
+        var lines = [
+            "| Commit | File | Line | Type | Severity |",
+            "|--------|------|------|------|----------|",
+        ]
+        for cf in findings {
+            let shortHash = String(cf.commitHash.prefix(7))
+            for match in cf.matches {
+                lines.append("| \(shortHash) | \(cf.filePath) | \(match.line) | \(match.displayName) | \(match.effectiveSeverity.rawValue) |")
+            }
+        }
+        let totalFindings = findings.flatMap { $0.matches }.count
+        let commitCount = Set(findings.map { $0.commitHash }).count
+        lines.append("")
+        lines.append("\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits)")
+        print(lines.joined(separator: "\n"))
+    }
+
     private func outputDirCheckMode(results: [FileScanResult]) {
         switch format {
         case .text:
@@ -491,4 +679,25 @@ struct DirScanFileOutput: Codable {
     let file: String
     let findings: [Finding]
     let count: Int
+}
+
+struct GitLogOutput: Codable {
+    let commitsScanned: Int
+    let filesScanned: Int
+    let findings: [GitLogFindingOutput]
+}
+
+struct GitLogFindingOutput: Codable {
+    let commit: String
+    let author: String
+    let date: String
+    let file: String
+    let matches: [GitLogMatchOutput]
+}
+
+struct GitLogMatchOutput: Codable {
+    let type: String
+    let line: Int
+    let severity: String
+    let value: String
 }
