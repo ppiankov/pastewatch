@@ -25,17 +25,20 @@ struct Guard: ParsableCommand {
 
         let config = PastewatchConfig.resolve()
         let paths = CommandParser.extractFilePaths(from: command)
+        let inlineValues = CommandParser.extractInlineValues(from: command)
 
-        if paths.isEmpty {
+        if paths.isEmpty && inlineValues.isEmpty {
             if json {
-                printJSON(GuardResult(blocked: false, command: command, files: []))
+                printJSON(GuardResult(blocked: false, command: command, files: [], inlineFindings: []))
             }
             return
         }
 
         var allFileResults: [FileResult] = []
+        var allInlineResults: [InlineResult] = []
         var shouldBlock = false
 
+        // Scan referenced files
         for path in paths {
             guard FileManager.default.fileExists(atPath: path),
                   let content = try? String(contentsOfFile: path, encoding: .utf8) else {
@@ -59,6 +62,24 @@ struct Guard: ParsableCommand {
             }
         }
 
+        // Scan inline values (connection strings, passwords in command args)
+        for value in inlineValues {
+            let matches = DetectionRules.scan(value, config: config)
+            let filtered = matches.filter { $0.effectiveSeverity >= failOnSeverity }
+
+            if !filtered.isEmpty {
+                shouldBlock = true
+                let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
+                let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
+                    .sorted()
+                allInlineResults.append(InlineResult(
+                    findings: filtered.count,
+                    severityCounts: counts.joined(separator: ", "),
+                    types: Set(filtered.map { $0.displayName }).sorted()
+                ))
+            }
+        }
+
         if shouldBlock {
             if json {
                 let result = GuardResult(
@@ -66,6 +87,9 @@ struct Guard: ParsableCommand {
                     command: command,
                     files: allFileResults.map {
                         .init(path: $0.path, findings: $0.findings, types: $0.types)
+                    },
+                    inlineFindings: allInlineResults.map {
+                        .init(findings: $0.findings, types: $0.types)
                     }
                 )
                 printJSON(result)
@@ -74,13 +98,17 @@ struct Guard: ParsableCommand {
                     let msg = "BLOCKED: \(fr.path) contains \(fr.findings) secret(s) (\(fr.severityCounts))\n"
                     FileHandle.standardError.write(Data(msg.utf8))
                 }
+                for ir in allInlineResults {
+                    let msg = "BLOCKED: command contains inline secret(s) (\(ir.severityCounts): \(ir.types.joined(separator: ", ")))\n"
+                    FileHandle.standardError.write(Data(msg.utf8))
+                }
                 FileHandle.standardError.write(Data("Use pastewatch MCP tools for files with secrets.\n".utf8))
             }
             throw ExitCode(rawValue: 1)
         }
 
         if json {
-            printJSON(GuardResult(blocked: false, command: command, files: []))
+            printJSON(GuardResult(blocked: false, command: command, files: [], inlineFindings: []))
         }
     }
 
@@ -103,13 +131,25 @@ private struct FileResult {
     let types: [String]
 }
 
+private struct InlineResult {
+    let findings: Int
+    let severityCounts: String
+    let types: [String]
+}
+
 private struct GuardResult: Codable {
     let blocked: Bool
     let command: String
     let files: [GuardFileEntry]
+    let inlineFindings: [InlineEntry]
 
     struct GuardFileEntry: Codable {
         let path: String
+        let findings: Int
+        let types: [String]
+    }
+
+    struct InlineEntry: Codable {
         let findings: Int
         let types: [String]
     }

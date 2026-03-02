@@ -308,4 +308,144 @@ final class CommandParserTests: XCTestCase {
         let segments = CommandParser.splitCommandChain("cmd1 && cmd2 || cmd3; cmd4 | cmd5")
         XCTAssertEqual(segments, ["cmd1", "cmd2", "cmd3", "cmd4", "cmd5"])
     }
+
+    // MARK: - Redirect operators
+
+    func testOutputRedirectStripped() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env > /tmp/copy")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testAppendRedirectStripped() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env >> /tmp/log")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testStderrRedirectStripped() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env 2> /tmp/err")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testInputRedirectExtractsFile() {
+        let paths = CommandParser.extractFilePaths(from: "sort < /app/data.csv")
+        XCTAssertTrue(paths.contains("/app/data.csv"))
+    }
+
+    func testRedirectNoSpace() {
+        let paths = CommandParser.extractFilePaths(from: "cat /app/.env >/tmp/copy")
+        XCTAssertEqual(paths, ["/app/.env"])
+    }
+
+    func testStripRedirectsPreservesCommand() {
+        let result = CommandParser.stripRedirects("grep secret /app/config.yml 2>/dev/null")
+        XCTAssertEqual(result.command, "grep secret /app/config.yml")
+        XCTAssertTrue(result.inputFiles.isEmpty)
+    }
+
+    func testStripRedirectsExtractsInputFile() {
+        let result = CommandParser.stripRedirects("sort < /app/data.csv > /tmp/sorted.csv")
+        XCTAssertEqual(result.command, "sort")
+        XCTAssertEqual(result.inputFiles, ["/app/data.csv"])
+    }
+
+    // MARK: - Subshell extraction
+
+    func testDollarParenSubshell() {
+        let paths = CommandParser.extractFilePaths(from: "echo $(cat /app/.env)")
+        XCTAssertTrue(paths.contains("/app/.env"))
+    }
+
+    func testBacktickSubshell() {
+        let paths = CommandParser.extractFilePaths(from: "echo `cat /app/.env`")
+        XCTAssertTrue(paths.contains("/app/.env"))
+    }
+
+    func testSubshellInArgument() {
+        let paths = CommandParser.extractFilePaths(
+            from: "curl -d \"$(cat /app/token)\" https://api.example.com"
+        )
+        XCTAssertTrue(paths.contains("/app/token"))
+    }
+
+    func testMultipleSubshells() {
+        let paths = CommandParser.extractFilePaths(
+            from: "echo $(cat /app/a.txt) $(head /app/b.txt)"
+        )
+        XCTAssertTrue(paths.contains("/app/a.txt"))
+        XCTAssertTrue(paths.contains("/app/b.txt"))
+    }
+
+    func testExtractSubshellCommands() {
+        let commands = CommandParser.extractSubshellCommands("echo $(cat file.txt) and `head other.txt`")
+        XCTAssertTrue(commands.contains("cat file.txt"))
+        XCTAssertTrue(commands.contains("head other.txt"))
+    }
+
+    func testNoSubshellReturnsEmpty() {
+        let commands = CommandParser.extractSubshellCommands("cat file.txt")
+        XCTAssertTrue(commands.isEmpty)
+    }
+
+    // MARK: - Database CLIs
+
+    func testPsqlFileFlag() {
+        let paths = CommandParser.extractFilePaths(from: "psql -f /app/schema.sql")
+        XCTAssertEqual(paths, ["/app/schema.sql"])
+    }
+
+    func testMysqlDefaultsFile() {
+        let paths = CommandParser.extractFilePaths(from: "mysql --defaults-file=/app/.my.cnf")
+        XCTAssertEqual(paths, ["/app/.my.cnf"])
+    }
+
+    func testSqlite3DatabaseFile() {
+        let paths = CommandParser.extractFilePaths(from: "sqlite3 /app/data.db")
+        XCTAssertEqual(paths, ["/app/data.db"])
+    }
+
+    func testPsqlConnectionStringNoFilePaths() {
+        let connStr = ["postgres://user:", "pass@host:5432/db"].joined()
+        let paths = CommandParser.extractFilePaths(from: "psql \(connStr)")
+        XCTAssertTrue(paths.isEmpty)
+    }
+
+    // MARK: - Inline value extraction
+
+    func testPsqlConnectionStringExtracted() {
+        let connStr = ["postgres://user:", "pass@host:5432/db"].joined()
+        let values = CommandParser.extractInlineValues(from: "psql \(connStr)")
+        XCTAssertTrue(values.contains(connStr))
+    }
+
+    func testMysqlAttachedPasswordExtracted() {
+        let values = CommandParser.extractInlineValues(from: "mysql -u root -psecretpass123 mydb")
+        XCTAssertTrue(values.contains("secretpass123"))
+    }
+
+    func testMysqlPasswordEqualsExtracted() {
+        let values = CommandParser.extractInlineValues(from: "mysql --password=secretpass123 mydb")
+        XCTAssertTrue(values.contains("secretpass123"))
+    }
+
+    func testRedisCliAuthExtracted() {
+        let values = CommandParser.extractInlineValues(from: "redis-cli -a mysecrettoken123")
+        XCTAssertTrue(values.contains("mysecrettoken123"))
+    }
+
+    func testRedisCliUrlExtracted() {
+        let url = ["redis://user:", "pass@host:6379"].joined()
+        let values = CommandParser.extractInlineValues(from: "redis-cli -u \(url)")
+        XCTAssertTrue(values.contains(url))
+    }
+
+    func testMongoshConnectionStringExtracted() {
+        let connStr = ["mongodb://admin:", "pass@host:27017/prod"].joined()
+        let values = CommandParser.extractInlineValues(from: "mongosh \(connStr)")
+        XCTAssertTrue(values.contains(connStr))
+    }
+
+    func testNonDatabaseCLIReturnsEmptyInline() {
+        let values = CommandParser.extractInlineValues(from: "cat /app/.env")
+        XCTAssertTrue(values.isEmpty)
+    }
 }
