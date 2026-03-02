@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/pastewatch-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
