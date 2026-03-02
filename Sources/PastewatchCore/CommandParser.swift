@@ -344,18 +344,16 @@ public struct CommandParser {
             ("&>>", 3), ("&>", 2), ("2>>", 3), ("2>", 2), (">>", 2), (">", 1),
         ]
         let arr = Array(chars)
-        for (prefix, len) in prefixes {
-            if arr.count >= len {
-                let candidate = String(arr[0..<len])
-                if candidate == prefix {
-                    var skip = len
-                    // Skip whitespace after operator
-                    while skip < arr.count && arr[skip] == " " { skip += 1 }
-                    // Skip the target word (handles quoted targets)
-                    var pos = skip
-                    _ = collectWord(arr, from: &pos)
-                    return pos
-                }
+        for (prefix, len) in prefixes where arr.count >= len {
+            let candidate = String(arr[0..<len])
+            if candidate == prefix {
+                var skip = len
+                // Skip whitespace after operator
+                while skip < arr.count && arr[skip] == " " { skip += 1 }
+                // Skip the target word (handles quoted targets)
+                var pos = skip
+                _ = collectWord(arr, from: &pos)
+                return pos
             }
         }
         return nil
