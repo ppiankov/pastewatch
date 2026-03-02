@@ -95,7 +95,7 @@ final class MCPServer {
             ]),
             "serverInfo": .object([
                 "name": .string("pastewatch-cli"),
-                "version": .string("0.17.2")
+                "version": .string("0.17.3")
             ])
         ])
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: result, error: nil)
