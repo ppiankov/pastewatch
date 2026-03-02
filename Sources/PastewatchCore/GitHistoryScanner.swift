@@ -163,16 +163,16 @@ public struct GitHistoryScanner {
 
         var chunks: [CommitChunk] = []
         let lines = output.components(separatedBy: "\n")
-        var currentMeta: (hash: String, author: String, date: String)?
+        var currentChunk: CommitChunk?
         var currentDiffLines: [String] = []
 
         for line in lines {
             if line.hasPrefix(commitMarker) {
                 // Flush previous chunk
-                if let meta = currentMeta {
+                if let chunk = currentChunk {
                     chunks.append(CommitChunk(
-                        hash: meta.hash, author: meta.author,
-                        date: meta.date,
+                        hash: chunk.hash, author: chunk.author,
+                        date: chunk.date,
                         diffContent: currentDiffLines.joined(separator: "\n")
                     ))
                 }
@@ -181,9 +181,12 @@ public struct GitHistoryScanner {
                     .split(separator: " ", maxSplits: 2)
                     .map { String($0) }
                 if parts.count >= 3 {
-                    currentMeta = (hash: parts[0], author: parts[1], date: parts[2])
+                    currentChunk = CommitChunk(
+                        hash: parts[0], author: parts[1],
+                        date: parts[2], diffContent: ""
+                    )
                 } else {
-                    currentMeta = nil
+                    currentChunk = nil
                 }
                 currentDiffLines = []
             } else {
@@ -192,10 +195,10 @@ public struct GitHistoryScanner {
         }
 
         // Flush last chunk
-        if let meta = currentMeta {
+        if let chunk = currentChunk {
             chunks.append(CommitChunk(
-                hash: meta.hash, author: meta.author,
-                date: meta.date,
+                hash: chunk.hash, author: chunk.author,
+                date: chunk.date,
                 diffContent: currentDiffLines.joined(separator: "\n")
             ))
         }
