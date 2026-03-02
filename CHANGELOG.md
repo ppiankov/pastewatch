@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-03-02
+
+### Added
+
+- `guard` now detects infrastructure tools: `ansible-playbook`, `ansible`, `ansible-vault`, `terraform`, `docker-compose`, `docker`, `kubectl`, `helm`
+- Extracts file paths from tool-specific flags (`-i`, `-f`, `--env-file`, `-var-file`, etc.) and positional arguments
+
 ## [0.17.1] - 2026-03-02
 
 ### Added
