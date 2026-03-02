@@ -370,7 +370,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.17.4
+    rev: v0.18.0
     hooks:
       - id: pastewatch
 ```
@@ -544,7 +544,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.17.4** · Active development
+**Status: Stable** · **v0.18.0** · Active development
 
 | Milestone | Status |
 |-----------|--------|
