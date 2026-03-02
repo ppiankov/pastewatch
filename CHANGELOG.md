@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `setup` subcommand for one-command agent integration: `pastewatch-cli setup claude-code`, `setup cline`, `setup cursor`
+- Claude Code setup: writes guard hook script, merges MCP + hook config into settings.json, aligns severity
+- Cline setup: merges MCP config, writes hook script, prints hook registration instructions
+- Cursor setup: merges MCP config, prints advisory instructions
+- `--severity` flag aligns hook blocking and MCP redaction thresholds by construction
+- `--project` flag for project-level Claude Code config (`.claude/settings.json`)
+- Idempotent: safe to re-run — updates existing config without duplication
 - `scan --git-log` scans git commit history for secrets, reporting only the first commit that introduced each finding
 - `--range`, `--since`, `--branch` flags for scoping history scans (e.g., `--range HEAD~50..HEAD`, `--since 2025-01-01`)
 - Deduplication by fingerprint — same secret across multiple commits is reported once at its introduction point
