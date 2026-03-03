@@ -21,6 +21,19 @@ Pastewatch refuses that transition.
 
 ---
 
+## Why Pastewatch
+
+No other tool does what Pastewatch does. Here's why:
+
+- **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
+- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
+- **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
+- **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
+- **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
+- **One-command agent setup** — `pastewatch-cli setup claude-code` and you're protected. MCP server, hooks, severity alignment — all configured in one step
+
+---
+
 ## What Pastewatch Does
 
 - Monitors clipboard content locally
