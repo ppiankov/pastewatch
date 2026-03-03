@@ -42,6 +42,14 @@ public struct FileAccess: Codable {
     public let secretsRedacted: Int
 }
 
+// MARK: - Internal Aggregation Types
+
+struct WriteFileStats {
+    var writes: Int = 0
+    var resolved: Int = 0
+    var unresolved: Int = 0
+}
+
 // MARK: - Builder
 
 /// Parses MCP audit log content and builds a SessionReport.
@@ -62,7 +70,7 @@ public enum SessionReportBuilder {
         // Parse lines into entries
         var timestamps: [String] = []
         var readFiles: [String: (reads: Int, secrets: Int)] = [:]
-        var writeFiles: [String: (writes: Int, resolved: Int, unresolved: Int)] = [:]
+        var writeFiles: [String: WriteFileStats] = [:]
         var typeCounts: [String: Int] = [:]
         var totalRedacted = 0
         var totalResolved = 0
@@ -203,7 +211,7 @@ public enum SessionReportBuilder {
 
     private static func parseWriteLine(
         _ line: String,
-        writeFiles: inout [String: (writes: Int, resolved: Int, unresolved: Int)],
+        writeFiles: inout [String: WriteFileStats],
         totalResolved: inout Int,
         totalUnresolved: inout Int
     ) {
@@ -214,7 +222,7 @@ public enum SessionReportBuilder {
         let path = extractPath(from: parts)
         guard !path.isEmpty else { return }
 
-        var existing = writeFiles[path] ?? (writes: 0, resolved: 0, unresolved: 0)
+        var existing = writeFiles[path] ?? WriteFileStats()
         existing.writes += 1
 
         if let n = extractInt(from: parts, key: "resolved") {
