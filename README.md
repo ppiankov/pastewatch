@@ -125,6 +125,7 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | SendGrid Keys | `SG....` |
 | Shopify Tokens | `shpat_...`, `shpca_...` |
 | DigitalOcean Tokens | `dop_v1_...`, `doo_v1_...` |
+| High Entropy Strings | Opt-in Shannon entropy detection (4.0 bits/char threshold) |
 
 Each type has a severity level (critical, high, medium, low) used in SARIF, JSON, and markdown output.
 
@@ -280,6 +281,46 @@ Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
+### Agent Auto-Setup
+
+One-command agent integration — configures MCP server, hooks, and severity alignment:
+
+```bash
+pastewatch-cli setup claude-code              # global config
+pastewatch-cli setup claude-code --project    # project-level config
+pastewatch-cli setup cline
+pastewatch-cli setup cursor
+pastewatch-cli setup claude-code --severity medium  # align hook + MCP thresholds
+```
+
+Idempotent — safe to re-run. Updates existing config without duplication.
+
+### Session Report
+
+Generate compliance artifacts from MCP audit logs:
+
+```bash
+pastewatch-cli report --audit-log /tmp/pastewatch-audit.log
+pastewatch-cli report --audit-log /tmp/pw.log --format json
+pastewatch-cli report --audit-log /tmp/pw.log --format markdown --output session-report.md
+pastewatch-cli report --audit-log /tmp/pw.log --since "2026-03-02T10:00:00Z"
+```
+
+Aggregates files read/written, secrets redacted, placeholders resolved, output checks, and scan findings. Verdict indicates whether any secrets leaked.
+
+### Canary Secrets
+
+Plant format-valid but non-functional secrets as leak detection tripwires:
+
+```bash
+pastewatch-cli canary generate                    # generate 7 canary tokens
+pastewatch-cli canary generate --prefix myproject # embed identifier for tracking
+pastewatch-cli canary verify                      # confirm all canaries are detected
+pastewatch-cli canary check --log /tmp/trail.json # search logs for leaked canaries
+```
+
+Covers AWS Key, GitHub Token, OpenAI Key, Anthropic Key, DB Connection, Stripe Key, and generic API Key. If a canary value appears in provider logs, your prevention failed.
+
 ### Bash Command Guard
 
 Block shell commands that would read or write files containing secrets:
@@ -295,7 +336,71 @@ pastewatch-cli guard --json "cat config.yml"
 # JSON output for programmatic integration
 ```
 
+Handles pipe chains (`|`), command chaining (`&&`, `||`, `;`), redirect operators, subshell extraction (`$(...)`, backticks), scripting interpreters, file transfer tools, infrastructure tools (terraform, docker, kubectl), and database CLIs (psql, mysql, redis-cli) with inline value scanning.
+
 Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [docs/agent-setup.md](docs/agent-setup.md) for hook configuration.
+
+### Secret Externalization (Fix)
+
+Externalize secrets to environment variables with language-aware code patching:
+
+```bash
+pastewatch-cli fix --dir .                    # apply fixes
+pastewatch-cli fix --dir . --dry-run          # preview fix plan
+pastewatch-cli fix --dir . --min-severity high --env-file .env
+```
+
+Supports Python (`os.environ`), JS/TS (`process.env`), Go (`os.Getenv`), Ruby (`ENV`), Swift (`ProcessInfo`), and Shell (`${VAR}`).
+
+### Secret Inventory
+
+Generate structured posture reports with severity breakdown and hot spots:
+
+```bash
+pastewatch-cli inventory --dir .
+pastewatch-cli inventory --dir . --format json --output inventory.json
+pastewatch-cli inventory --dir . --compare previous.json  # show added/removed
+```
+
+Output formats: text, json, markdown, csv.
+
+### Git History Scanning
+
+Scan commit history for secrets, reporting the first commit that introduced each finding:
+
+```bash
+pastewatch-cli scan --git-log
+pastewatch-cli scan --git-log --range HEAD~50..HEAD
+pastewatch-cli scan --git-log --since 2025-01-01
+pastewatch-cli scan --git-log --branch feature/auth --format sarif
+```
+
+Deduplicates by fingerprint — same secret across multiple commits is reported once.
+
+### Git Diff Scanning
+
+Scan only added lines in git diff with format-aware parsing:
+
+```bash
+pastewatch-cli scan --git-diff              # staged changes (default)
+pastewatch-cli scan --git-diff --unstaged   # working tree changes
+pastewatch-cli scan --git-diff --check      # CI gate mode
+```
+
+### Doctor
+
+Installation health check:
+
+```bash
+pastewatch-cli doctor        # text output
+pastewatch-cli doctor --json # programmatic output
+```
+
+Shows CLI version, config status, hook status, MCP server processes (with per-process `--min-severity` and `--audit-log`), and Homebrew version.
+
+### VS Code Extension
+
+Real-time secret detection in the editor with inline diagnostics, hover tooltips, and quick-fix actions. Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ppiankov.pastewatch).
 
 ### Environment Variables
 
@@ -525,8 +630,10 @@ Intel-based Macs are not supported and there are no plans to add prebuilt binari
 
 ## Documentation
 
+- [docs/agent-integration.md](docs/agent-integration.md) — Consolidated agent reference (enforcement matrix, MCP setup, hooks, config)
 - [docs/agent-setup.md](docs/agent-setup.md) — Per-agent MCP setup (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code)
 - [docs/agent-safety.md](docs/agent-safety.md) — Agent safety guide (layered defenses for AI coding agents)
+- [docs/examples/](docs/examples/) — Ready-to-use agent configs (Claude Code, Cline, Cursor)
 - [docs/hard-constraints.md](docs/hard-constraints.md) — Design philosophy and non-negotiable rules
 - [docs/status.md](docs/status.md) — Current scope and non-goals
 
@@ -548,7 +655,7 @@ Do not pretend it guarantees compliance or safety.
 
 | Milestone | Status |
 |-----------|--------|
-| Core detection (29 types) | Complete |
+| Core detection (30 types) | Complete |
 | Clipboard obfuscation | Complete |
 | CLI scan mode | Complete |
 | macOS menubar app | Complete |
@@ -577,3 +684,19 @@ Do not pretend it guarantees compliance or safety.
 | Explain subcommand | Complete |
 | Config check subcommand | Complete |
 | MCP redacted read/write | Complete |
+| MCP per-agent severity thresholds | Complete |
+| MCP audit logging | Complete |
+| Bash command guard (pipes, subshells, redirects) | Complete |
+| Guard: database CLIs, infra tools, scripting interpreters | Complete |
+| Read/Write tool guards | Complete |
+| Fix subcommand (secret externalization) | Complete |
+| Inventory subcommand (posture reports) | Complete |
+| Doctor subcommand (health check) | Complete |
+| Setup subcommand (agent auto-setup) | Complete |
+| Report subcommand (session reports) | Complete |
+| Canary subcommand (leak detection) | Complete |
+| Git diff scanning | Complete |
+| Git history scanning | Complete |
+| Entropy-based detection | Complete |
+| VS Code extension | Complete |
+| Host/IP config (safeHosts, sensitiveHosts, sensitiveIPPrefixes) | Complete |
