@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fix --encrypt` writes secrets to ChaCha20-Poly1305 encrypted vault (`.pastewatch-vault`) instead of plaintext `.env`
+- `--init-key` generates a 256-bit encryption key (`.pastewatch-key`, local-only, mode 0600)
+- `vault decrypt` exports vault to `.env` for deployment
+- `vault export` prints `export VAR=VALUE` for shell eval
+- `vault rotate-key` re-encrypts all entries with a new key
+- `vault list` shows vault entries without decrypting values
 - `canary generate` creates format-valid but non-functional canary tokens for 7 critical secret types (AWS, GitHub, OpenAI, Anthropic, DB, Stripe, API Key)
 - `--prefix` flag embeds identifier in canary values for source tracking
 - `canary verify` confirms all canaries are detected by DetectionRules

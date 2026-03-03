@@ -22,6 +22,12 @@ struct Fix: ParsableCommand {
     @Option(name: .long, parsing: .singleValue, help: "Glob pattern to ignore (can be repeated)")
     var ignore: [String] = []
 
+    @Flag(name: .long, help: "Encrypt secrets to vault instead of plaintext .env")
+    var encrypt = false
+
+    @Flag(name: .long, help: "Generate encryption key if none exists")
+    var initKey = false
+
     func run() throws {
         guard FileManager.default.fileExists(atPath: dir) else {
             FileHandle.standardError.write(Data("error: directory not found: \(dir)\n".utf8))
@@ -64,14 +70,71 @@ struct Fix: ParsableCommand {
 
         // Apply if not dry-run
         if !dryRun {
-            try Remediation.apply(plan: plan, dirPath: dir, envFilePath: envFile)
-            FileHandle.standardError.write(Data("\nApplied \(plan.actions.count) fixes.\n".utf8))
+            if encrypt {
+                try applyWithVault(plan: plan)
+            } else {
+                try Remediation.apply(plan: plan, dirPath: dir, envFilePath: envFile)
+                FileHandle.standardError.write(Data("\nApplied \(plan.actions.count) fixes.\n".utf8))
 
-            if !Remediation.gitignoreContainsEnv(dirPath: dir) {
+                if !Remediation.gitignoreContainsEnv(dirPath: dir) {
+                    FileHandle.standardError.write(
+                        Data("warning: \(envFile) not in .gitignore — secrets may be committed\n".utf8)
+                    )
+                }
+            }
+        }
+    }
+
+    private func applyWithVault(plan: FixPlan) throws {
+        let keyPath = (dir as NSString).appendingPathComponent(".pastewatch-key")
+        let vaultPath = (dir as NSString).appendingPathComponent(".pastewatch-vault")
+
+        // Resolve or generate key
+        let keyHex: String
+        if FileManager.default.fileExists(atPath: keyPath) {
+            keyHex = try Vault.readKey(from: keyPath)
+        } else if initKey {
+            keyHex = Vault.generateKey()
+            try Vault.writeKey(keyHex, to: keyPath)
+            FileHandle.standardError.write(Data("Generated key: \(keyPath)\n".utf8))
+        } else {
+            FileHandle.standardError.write(
+                Data("error: no key file at \(keyPath) — use --init-key to generate\n".utf8)
+            )
+            throw ExitCode(rawValue: 2)
+        }
+
+        // Build new vault entries
+        var newVault = try Vault.buildVault(plan: plan, keyHex: keyHex)
+
+        // Merge with existing vault if present
+        if FileManager.default.fileExists(atPath: vaultPath) {
+            let existing = try Vault.load(from: vaultPath)
+            newVault = Vault.merge(existing: existing, new: newVault)
+        }
+
+        try Vault.save(newVault, to: vaultPath)
+
+        // Patch source files (same as regular fix, minus .env generation)
+        try Remediation.patchFiles(plan: plan, dirPath: dir)
+
+        FileHandle.standardError.write(
+            Data("\nEncrypted \(plan.envEntries.count) secrets → \(vaultPath)\n".utf8)
+        )
+
+        // Warn about key in gitignore
+        let gitignorePath = (dir as NSString).appendingPathComponent(".gitignore")
+        if FileManager.default.fileExists(atPath: gitignorePath) {
+            let gitignore = (try? String(contentsOfFile: gitignorePath, encoding: .utf8)) ?? ""
+            if !gitignore.contains(".pastewatch-key") {
                 FileHandle.standardError.write(
-                    Data("warning: \(envFile) not in .gitignore — secrets may be committed\n".utf8)
+                    Data("warning: .pastewatch-key not in .gitignore — key may be committed\n".utf8)
                 )
             }
+        } else {
+            FileHandle.standardError.write(
+                Data("warning: no .gitignore found — .pastewatch-key may be committed\n".utf8)
+            )
         }
     }
 

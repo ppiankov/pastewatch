@@ -106,15 +106,19 @@ public enum Remediation {
 
     /// Apply a fix plan: patch source files and generate .env file.
     public static func apply(plan: FixPlan, dirPath: String, envFilePath: String) throws {
-        // Group actions by file and apply patches
+        try patchFiles(plan: plan, dirPath: dirPath)
+
+        // Generate .env file
+        try writeEnvFile(plan: plan, dirPath: dirPath, envFilePath: envFilePath)
+    }
+
+    /// Patch source files only (no .env generation). Used by --encrypt vault path.
+    public static func patchFiles(plan: FixPlan, dirPath: String) throws {
         let grouped = Dictionary(grouping: plan.actions, by: { $0.filePath })
         for (relPath, actions) in grouped {
             let fullPath = (dirPath as NSString).appendingPathComponent(relPath)
             try patchFile(at: fullPath, actions: actions)
         }
-
-        // Generate .env file
-        try writeEnvFile(plan: plan, dirPath: dirPath, envFilePath: envFilePath)
     }
 
     /// Check if .gitignore contains a .env entry.
