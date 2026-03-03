@@ -2,20 +2,30 @@
 
 ## Current State
 
-**Stable — v0.18.0**
+**Stable — v0.18.0** (unreleased features committed on main)
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
-- 29 detection types with severity levels (critical/high/medium/low)
-- CLI: file, directory, and stdin scanning
+- 30 detection types with severity levels (critical/high/medium/low)
+- CLI: file, directory, stdin, git-diff, and git-log scanning
 - Linux binary for CI runners
 - SARIF 2.1.0 and markdown output with severity-appropriate levels
 - Format-aware parsing (.env, JSON, YAML, properties)
 - Allowlist, custom detection rules with custom severity, inline allowlist comments
-- MCP server for AI agent integration
+- MCP server for AI agent integration with per-agent severity thresholds
+- Bash command guard with pipe chains, subshells, redirects, database CLIs, infra tools
+- Read/Write tool guards for Claude Code hooks
 - Baseline diff mode for existing projects
 - Pre-commit hook installer + pre-commit.com framework integration
 - Project-level config init, resolution, and validation
+- fix subcommand for secret externalization to env vars
+- inventory subcommand for secret posture reports with compare mode
+- doctor subcommand for installation health checks
+- setup subcommand for one-command agent integration
+- report subcommand for MCP audit log session reports
+- canary subcommand for leak detection honeypots
+- VS Code extension with real-time diagnostics
+- Entropy-based detection (opt-in)
 - --stdin-filename, --fail-on-severity, --output, --ignore flags
 - .pastewatchignore for glob-based path exclusion
 - explain and config check subcommands
@@ -89,6 +99,31 @@ Core and CLI functionality complete:
 | Platform token detection (GitLab, Telegram, SendGrid, Shopify, DO) | ✓ Stable |
 | ClickHouse connection string detection | ✓ Stable |
 | MCP audit logging (--audit-log) | ✓ Stable |
+| MCP per-agent severity (--min-severity) | ✓ Stable |
+| Guard: Bash command scanning | ✓ Stable |
+| Guard: pipe chains, command chaining | ✓ Stable |
+| Guard: scripting interpreters | ✓ Stable |
+| Guard: file transfer tools (scp, rsync, ssh) | ✓ Stable |
+| Guard: infrastructure tools (terraform, docker, kubectl) | ✓ Stable |
+| Guard: database CLIs (psql, mysql, redis-cli) | ✓ Stable |
+| Guard: redirect operators, subshell extraction | ✓ Stable |
+| Guard: inline value scanning (connection strings, passwords) | ✓ Stable |
+| Guard-read / guard-write (Read/Write tool hooks) | ✓ Stable |
+| Fix subcommand (secret externalization) | ✓ Stable |
+| Inventory subcommand (posture reports) | ✓ Stable |
+| Doctor subcommand (health check) | ✓ Stable |
+| Setup subcommand (agent auto-setup) | ✓ Stable |
+| Report subcommand (MCP session report) | ✓ Stable |
+| Canary subcommand (leak detection honeypots) | ✓ Stable |
+| Git diff scanning (--git-diff) | ✓ Stable |
+| Git history scanning (--git-log) | ✓ Stable |
+| Entropy-based detection (opt-in) | ✓ Stable |
+| VS Code extension | ✓ Stable |
+| safeHosts / sensitiveHosts config | ✓ Stable |
+| sensitiveIPPrefixes config | ✓ Stable |
+| allowedPatterns config | ✓ Stable |
+| PW_GUARD=0 bypass | ✓ Stable |
+| Homebrew distribution | ✓ Stable |
 
 ---
 
