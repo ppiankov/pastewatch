@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `canary generate` creates format-valid but non-functional canary tokens for 7 critical secret types (AWS, GitHub, OpenAI, Anthropic, DB, Stripe, API Key)
+- `--prefix` flag embeds identifier in canary values for source tracking
+- `canary verify` confirms all canaries are detected by DetectionRules
+- `canary check --log` searches external log files for leaked canary values
 - `report` subcommand generates session report from MCP audit log: `pastewatch-cli report --audit-log /tmp/pw.log`
 - Report aggregates files read/written, secrets redacted, placeholders resolved, output checks, scan findings
 - Report outputs text, JSON, markdown formats with `--format` and `--output` flags
