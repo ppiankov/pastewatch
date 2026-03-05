@@ -170,11 +170,11 @@ jobs:
         run: |
           TAG="${{ needs.resolve.outputs.tag }}"
           VERSION="${TAG#v}"
-          # Extract the [Unreleased] or [VERSION] section from CHANGELOG.md
-          # Try exact version first, fall back to Unreleased
-          NOTES=$(awk -v ver="## [${VERSION}]" -v unrel="## [Unreleased]" '
+          # Extract the [VERSION] section from CHANGELOG.md
+          # Matches "## [0.19.0]" and captures until the next "## [" header
+          NOTES=$(awk -v ver="## [${VERSION}]" '
             BEGIN { found=0 }
-            $0 ~ ver || $0 ~ unrel { found=1; next }
+            index($0, ver) == 1 { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md | sed '/^$/N;/^\n$/d')
