@@ -53,6 +53,7 @@ jobs:
   auto-tag:
     name: Auto-tag version bumps
     runs-on: ubuntu-22.04
+    needs: [build, build-linux, lint]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
