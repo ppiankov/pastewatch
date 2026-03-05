@@ -14,11 +14,32 @@ permissions:
   contents: write
 
 jobs:
+  resolve:
+    name: Resolve Tag
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+    steps:
+      - name: Resolve tag and ref
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Test
     runs-on: macos-14
+    needs: resolve
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.2.app
@@ -29,9 +50,11 @@ jobs:
   build-linux:
     name: Build Linux Release
     runs-on: ubuntu-22.04
-    needs: test
+    needs: [resolve, test]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
 
       - uses: swift-actions/setup-swift@v2
         with:
@@ -57,21 +80,14 @@ jobs:
   build:
     name: Build Release
     runs-on: macos-14
-    needs: [test, build-linux]
+    needs: [resolve, test, build-linux]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.2.app
-
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Build Release Binaries
         run: |
@@ -82,7 +98,7 @@ jobs:
 
       - name: Create App Bundle
         run: |
-          VERSION="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ needs.resolve.outputs.tag }}"
           VERSION="${VERSION#v}"
           mkdir -p "release/Pastewatch.app/Contents/MacOS"
           mkdir -p "release/Pastewatch.app/Contents/Resources"
@@ -125,18 +141,18 @@ jobs:
 
       - name: Create DMG
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           hdiutil create -volname "Pastewatch" -srcfolder release/Pastewatch.app -ov -format UDZO "release/Pastewatch-${TAG}.dmg"
 
       - name: Create ZIP
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           cd release
           zip -r "Pastewatch-${TAG}.zip" Pastewatch.app
 
       - name: Generate SHA256 checksums
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           cd release
           shasum -a 256 "Pastewatch-${TAG}.dmg" > "Pastewatch-${TAG}.dmg.sha256"
           shasum -a 256 "Pastewatch-${TAG}.zip" > "Pastewatch-${TAG}.zip.sha256"
@@ -149,22 +165,44 @@ jobs:
           name: linux-release
           path: release/
 
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          VERSION="${TAG#v}"
+          # Extract the [Unreleased] or [VERSION] section from CHANGELOG.md
+          # Try exact version first, fall back to Unreleased
+          NOTES=$(awk -v ver="## [${VERSION}]" -v unrel="## [Unreleased]" '
+            BEGIN { found=0 }
+            $0 ~ ver || $0 ~ unrel { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed '/^$/N;/^\n$/d')
+
+          if [ -z "$NOTES" ]; then
+            NOTES="Release ${TAG}"
+          fi
+
+          # Write to file to avoid quoting issues
+          echo "$NOTES" > /tmp/release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          body_path: /tmp/release-notes.md
           files: |
-            release/Pastewatch-${{ steps.tag.outputs.tag }}.dmg
-            release/Pastewatch-${{ steps.tag.outputs.tag }}.dmg.sha256
-            release/Pastewatch-${{ steps.tag.outputs.tag }}.zip
-            release/Pastewatch-${{ steps.tag.outputs.tag }}.zip.sha256
+            release/Pastewatch-${{ needs.resolve.outputs.tag }}.dmg
+            release/Pastewatch-${{ needs.resolve.outputs.tag }}.dmg.sha256
+            release/Pastewatch-${{ needs.resolve.outputs.tag }}.zip
+            release/Pastewatch-${{ needs.resolve.outputs.tag }}.zip.sha256
             release/pastewatch
             release/pastewatch.sha256
             release/pastewatch-cli
             release/pastewatch-cli.sha256
             release/pastewatch-cli-linux-amd64
             release/pastewatch-cli-linux-amd64.sha256
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -172,7 +210,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           VERSION_NUM="${TAG#v}"
           SHA256=$(shasum -a 256 release/pastewatch-cli | awk '{print $1}')
 
