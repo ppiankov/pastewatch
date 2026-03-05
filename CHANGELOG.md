@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-03-05
+
+### Fixed
+
+- `version` subcommand now reads from CommandConfiguration instead of hardcoded string (was stuck at 0.8.1)
+
 ## [0.19.0] - 2026-03-05
 
 ### Added
