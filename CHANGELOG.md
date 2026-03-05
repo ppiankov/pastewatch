@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-03-05
+
 ### Added
 
 - `fix --encrypt` writes secrets to ChaCha20-Poly1305 encrypted vault (`.pastewatch-vault`) instead of plaintext `.env`
@@ -39,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `guard` now scans inline values in database commands: connection strings (`postgres://`, `mongodb://`, `redis://`), attached passwords (`-psecret`, `--password=secret`), auth tokens (`-a token`)
 - `guard` now strips redirect operators (`>`, `>>`, `2>`, `&>`) from commands and scans input redirect (`<`) source files
 - `guard` now extracts and scans subshell commands: `$(cat .env)` and backtick expressions
+
+### Fixed
+
+- CI auto-tag now waits for all jobs (build, test, lint) to pass before tagging
+- Release workflow now checks out the tag commit, not main HEAD, for workflow_dispatch triggers
+- Release notes now extracted from CHANGELOG.md instead of auto-generated
 
 ## [0.17.3] - 2026-03-02
 
