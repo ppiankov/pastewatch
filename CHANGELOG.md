@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-03-07
+
+### Added
+
 - `posture --org <user>` scans all repos in a GitHub org/user for secret posture
 - `--repos org/repo` flag for scanning specific repositories
 - `--compare` compares with previous posture scan JSON for trend tracking
