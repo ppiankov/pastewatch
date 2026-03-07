@@ -128,7 +128,7 @@ final class PostureScannerTests: XCTestCase {
         XCTAssertTrue(text.contains("2/2"))
     }
 
-    func testFormatJSONRoundtrip() {
+    func testFormatJSONRoundtrip() throws {
         let report = PostureReport(
             version: "1", generatedAt: "2025-01-01T00:00:00Z", organization: "org",
             totalRepos: 1, reposScanned: 1, totalFindings: 3,
@@ -140,8 +140,8 @@ final class PostureScannerTests: XCTestCase {
             ]
         )
         let json = PostureFormatter.formatJSON(report)
-        let data = json.data(using: .utf8)!
-        let decoded = try! JSONDecoder().decode(PostureReport.self, from: data)
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let decoded = try JSONDecoder().decode(PostureReport.self, from: data)
         XCTAssertEqual(decoded.totalFindings, 3)
         XCTAssertEqual(decoded.repositories.first?.name, "repo-x")
     }
