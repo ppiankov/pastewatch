@@ -11,7 +11,7 @@
 #   3. Add the hook matcher to ~/.claude/settings.json (see settings.json in this directory)
 #
 # Configuration:
-#   PW_SEVERITY — severity threshold for blocking (default: "high")
+#   PW_SEVERITY - severity threshold for blocking (default: "high")
 #   Must match the --min-severity flag on your MCP server registration.
 #   Example: PW_SEVERITY=medium for stricter enforcement.
 
@@ -76,19 +76,19 @@ if [ "$scan_exit" -eq 6 ]; then
   case "$tool" in
     Read)
       echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
-      echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
+      echo "Blocked: secrets in Read target - use pastewatch_read_file" >&2
       ;;
     Write)
       echo "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead. Do NOT delete the file or use python3 as a workaround."
-      echo "Blocked: secrets in Write target — use pastewatch_write_file" >&2
+      echo "Blocked: secrets in Write target - use pastewatch_write_file" >&2
       ;;
     Edit)
       echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file to read, then pastewatch_write_file to write back. Do NOT use any workaround."
-      echo "Blocked: secrets in Edit target — use pastewatch_read_file + pastewatch_write_file" >&2
+      echo "Blocked: secrets in Edit target - use pastewatch_read_file + pastewatch_write_file" >&2
       ;;
   esac
   exit 2
 fi
 
-# Clean file or scan error — allow native tool
+# Clean file or scan error - allow native tool
 exit 0

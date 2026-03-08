@@ -66,7 +66,7 @@ See [claude-code/settings.json](claude-code/settings.json) for the complete exam
 1. Claude tries native Read/Write/Edit on a file with secrets
 2. Hook scans the file, finds secrets at or above the severity threshold
 3. Hook blocks (exit 2) with a message: "You MUST use pastewatch_read_file instead"
-4. Claude automatically retries with the MCP tool — secrets are redacted
+4. Claude automatically retries with the MCP tool - secrets are redacted
 
 ---
 
@@ -100,10 +100,10 @@ The hook handles both bash commands (`execute_command` via `pastewatch-cli guard
 
 With hooks enabled, each file with secrets triggers two steps: hook blocks native read, then Cline falls back to the MCP tool. To reduce manual approvals:
 
-- **Auto-approve MCP tools**: In Cline settings, auto-approve `pastewatch_read_file` and `pastewatch_write_file`. These are safety tools (not destructive) — auto-approving them means reads go through redaction automatically without confirmation.
+- **Auto-approve MCP tools**: In Cline settings, auto-approve `pastewatch_read_file` and `pastewatch_write_file`. These are safety tools (not destructive) - auto-approving them means reads go through redaction automatically without confirmation.
 - **Auto-approve read-only tools**: If your Cline version supports it, enable auto-approve for MCP read operations to cut approvals in half.
 
-The hook block itself shows as a notification — Cline should automatically retry with the MCP tool without asking for approval on the block.
+The hook block itself shows as a notification - Cline should automatically retry with the MCP tool without asking for approval on the block.
 
 ---
 
@@ -175,9 +175,9 @@ Result: IP never leaves your machine
 
 ### How to set severity
 
-**Default (`high`)** — protects credentials, API keys, emails, phones. IPs and hostnames pass through. Good for most workflows.
+**Default (`high`)** - protects credentials, API keys, emails, phones. IPs and hostnames pass through. Good for most workflows.
 
-**Medium** — also protects IPs, hostnames, file paths. Use when infrastructure identifiers are sensitive.
+**Medium** - also protects IPs, hostnames, file paths. Use when infrastructure identifiers are sensitive.
 
 For hooks, set the `PW_SEVERITY` environment variable or edit the script directly:
 ```bash
@@ -204,7 +204,7 @@ You can also set the default in `.pastewatch.json`:
 
 Different agents can use different severity thresholds. Each agent's MCP registration is independent:
 
-**Claude Code** — default severity (`high`):
+**Claude Code** - default severity (`high`):
 ```json
 {
   "mcpServers": {
@@ -216,7 +216,7 @@ Different agents can use different severity thresholds. Each agent's MCP registr
 }
 ```
 
-**Cline** — stricter (`medium`), also catches IPs and hostnames:
+**Cline** - stricter (`medium`), also catches IPs and hostnames:
 ```json
 {
   "mcpServers": {

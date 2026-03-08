@@ -12,7 +12,7 @@
 #   3. Register MCP server in Cline settings (see mcp-config.json in this directory)
 #
 # Configuration:
-#   PW_SEVERITY — severity threshold for blocking (default: "high")
+#   PW_SEVERITY - severity threshold for blocking (default: "high")
 #   Must match the --min-severity flag on your MCP server registration.
 #   Example: PW_SEVERITY=medium for stricter enforcement.
 #
@@ -32,7 +32,7 @@ tool_name=$(echo "$input" | jq -r '.preToolUse.toolName // empty')
 
 # --- Session check ---
 # Only enforce if pastewatch MCP is running in THIS Cline session.
-# Cline runs hooks as children of its node process — check siblings.
+# Cline runs hooks as children of its node process - check siblings.
 _pw_mcp_ok=false
 _cline_pid=${PPID:-0}
 if command -v pastewatch-cli &>/dev/null && pgrep -P "$_cline_pid" -qf 'pastewatch-cli mcp' 2>/dev/null; then
@@ -64,7 +64,7 @@ if [ "$tool_name" = "read_file" ] || [ "$tool_name" = "write_to_file" ] || [ "$t
       *.png|*.jpg|*.jpeg|*.gif|*.ico|*.bmp|*.webp|*.svg|*.woff|*.woff2|*.ttf|\
       *.zip|*.tar|*.gz|*.bz2|*.exe|*.dll|*.so|*.dylib|*.pdf|*.mp3|*.mp4|\
       *.sqlite|*.db|*.pyc|*.o|*.a|*.class)
-        ;;  # skip binary — fall through to allow
+        ;;  # skip binary - fall through to allow
       *)
         # Check for placeholder leak in write content
         if [ "$tool_name" = "write_to_file" ]; then
