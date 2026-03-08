@@ -20,7 +20,7 @@ brew install ppiankov/tap/pastewatch
 | Codex CLI | Advisory | Advisory | Instructions only | No hook support yet |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
 
-**Structural** means the agent cannot bypass the check — hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.
+**Structural** means the agent cannot bypass the check - hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.
 
 ---
 
@@ -208,10 +208,10 @@ Commands detected:
 - **Scripting interpreters:** `python3`, `python`, `ruby`, `node`, `perl`, `php`, `lua`
 - **File transfer tools:** `scp`, `rsync`, `ssh`, `ssh-keygen`
 - **Infrastructure tools:** `ansible-playbook`, `ansible`, `ansible-vault`, `terraform`, `docker-compose`, `docker`, `kubectl`, `helm`
-- **Database CLIs:** `psql`, `mysql`, `mongosh`, `mongo`, `redis-cli`, `sqlite3` — extracts file flags and scans inline connection strings/passwords
-- **Pipe chains:** `|`, `&&`, `||`, `;` — each segment is parsed independently
-- **Redirect operators:** `>`, `>>`, `2>`, `&>`, `<` — stripped from commands; input redirects (`<`) scanned as file access
-- **Subshells:** `$(...)` and backticks — inner commands extracted and scanned
+- **Database CLIs:** `psql`, `mysql`, `mongosh`, `mongo`, `redis-cli`, `sqlite3` - extracts file flags and scans inline connection strings/passwords
+- **Pipe chains:** `|`, `&&`, `||`, `;` - each segment is parsed independently
+- **Redirect operators:** `>`, `>>`, `2>`, `&>`, `<` - stripped from commands; input redirects (`<`) scanned as file access
+- **Subshells:** `$(...)` and backticks - inner commands extracted and scanned
 
 ### Read/Write/Edit guard
 
@@ -236,7 +236,7 @@ Hook stdout messages use imperative language that agents follow:
 For advisory-only agents (no hooks), add explicit rules to agent config files:
 
 ```markdown
-## Pastewatch — Secret Redaction — CRITICAL
+## Pastewatch - Secret Redaction - CRITICAL
 
 When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use the pastewatch MCP tool:
 - Read blocked → use `pastewatch_read_file`
@@ -263,7 +263,7 @@ export PW_GUARD=0    # disable for current shell session
 unset PW_GUARD       # re-enable (or restart shell)
 ```
 
-**Agent-proof by design:** The guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` — only the human can, before starting the agent session.
+**Agent-proof by design:** The guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` - only the human can, before starting the agent session.
 
 **When to use:**
 - Editing detection rule source files (DetectionRules.swift)
@@ -280,8 +280,8 @@ Agents without hook support can only use advisory enforcement (instruction files
 |-------|-------|--------|----------|
 | OpenCode | [anomalyco/opencode#12472](https://github.com/anomalyco/opencode/issues/12472) | Open | thdxr |
 | Qwen Code | [QwenLM/qwen-code#268](https://github.com/QwenLM/qwen-code/issues/268) | P2 | Mingholy |
-| Codex CLI | No issue filed | — | — |
-| Cursor | Supported | Available | — |
+| Codex CLI | No issue filed | - | - |
+| Cursor | Supported | Available | - |
 
 When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guard` hooks following the Claude Code pattern.
 
@@ -343,10 +343,10 @@ For the full command reference, see [SKILL.md](SKILL.md).
 
 After configuring MCP and hooks for any agent:
 
-1. Start the agent — pastewatch should appear in the MCP/tools panel with 6 tools
+1. Start the agent - pastewatch should appear in the MCP/tools panel with 6 tools
 2. Create a test file with a fake secret (e.g., `password=hunter2`)
-3. Ask the agent to read the test file with native Read — hook should block and redirect to `pastewatch_read_file`
-4. Ask the agent to use `pastewatch_read_file` — verify the secret is replaced with a `__PW{...}__` placeholder
+3. Ask the agent to read the test file with native Read - hook should block and redirect to `pastewatch_read_file`
+4. Ask the agent to use `pastewatch_read_file` - verify the secret is replaced with a `__PW{...}__` placeholder
 5. Check `/tmp/pastewatch-audit.log` for the read entry
 
 ### Troubleshooting

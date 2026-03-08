@@ -85,9 +85,9 @@ Once configured, the agent has access to these MCP tools:
 **Round-trip workflow:**
 1. Agent calls `pastewatch_read_file` for sensitive files
 2. Gets back content with `__PW{CREDENTIAL_1}__`, `__PW{AWS_KEY_1}__` etc.
-3. API processes code — only sees placeholders, never real secrets
-4. Agent calls `pastewatch_write_file` — MCP server resolves placeholders on-device
-5. Written file contains real values — code stays functional
+3. API processes code - only sees placeholders, never real secrets
+4. Agent calls `pastewatch_write_file` - MCP server resolves placeholders on-device
+5. Written file contains real values - code stays functional
 
 **What the agent sees (sent to API):**
 ```yaml
@@ -109,7 +109,7 @@ database:
 
 ### Severity threshold (`min_severity`)
 
-`pastewatch_read_file` accepts an optional `min_severity` parameter (default: `high`). Only findings at or above the threshold are redacted — everything below passes through unchanged.
+`pastewatch_read_file` accepts an optional `min_severity` parameter (default: `high`). Only findings at or above the threshold are redacted - everything below passes through unchanged.
 
 **What gets redacted at each threshold:**
 
@@ -126,25 +126,25 @@ Original file contains AWS keys, a database URL, an API token, an IP address, an
 
 ```bash
 # What the agent sees (sent to API)
-AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__          # critical — redacted
-DATABASE_URL=__PW{DB_CONNECTION_1}__         # critical — redacted
-API_TOKEN=__PW{OPENAI_KEY_1}__               # critical — redacted
-ANSIBLE_HOST=172.16.161.206                  # medium — passes through
-INTERNAL_SERVER=keeper2.ipa.local            # medium — passes through
+AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__          # critical - redacted
+DATABASE_URL=__PW{DB_CONNECTION_1}__         # critical - redacted
+API_TOKEN=__PW{OPENAI_KEY_1}__               # critical - redacted
+ANSIBLE_HOST=172.16.161.206                  # medium - passes through
+INTERNAL_SERVER=keeper2.ipa.local            # medium - passes through
 ```
 
-The IP and hostname pass through because they are `medium` severity — below the default `high` threshold. To redact them too, pass `min_severity: "medium"`:
+The IP and hostname pass through because they are `medium` severity - below the default `high` threshold. To redact them too, pass `min_severity: "medium"`:
 
 ```bash
-# With min_severity: "medium" — IPs and hostnames also redacted
+# With min_severity: "medium" - IPs and hostnames also redacted
 AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__
 DATABASE_URL=__PW{DB_CONNECTION_1}__
 API_TOKEN=__PW{OPENAI_KEY_1}__
-ANSIBLE_HOST=__PW{IP_1}__                   # medium — now redacted
-INTERNAL_SERVER=__PW{HOSTNAME_1}__           # medium — now redacted
+ANSIBLE_HOST=__PW{IP_1}__                   # medium - now redacted
+INTERNAL_SERVER=__PW{HOSTNAME_1}__           # medium - now redacted
 ```
 
-The default `high` threshold is intentional — it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.
+The default `high` threshold is intentional - it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.
 
 ### Per-agent severity
 
@@ -163,7 +163,7 @@ Different agents may need different thresholds. Use `--min-severity` on the MCP 
 
 **Precedence chain:** per-request `min_severity` parameter > `--min-severity` CLI flag > `mcpMinSeverity` config field > default (`high`).
 
-This means you can run Claude Code at `high` (default) and Cline at `medium` — each agent's MCP registration controls its own threshold, and any agent can still override per-request when needed.
+This means you can run Claude Code at `high` (default) and Cline at `medium` - each agent's MCP registration controls its own threshold, and any agent can still override per-request when needed.
 
 ### Audit logging
 
@@ -180,7 +180,7 @@ Enable audit logging to get proof of what the MCP server did during a session:
 }
 ```
 
-The log records every tool call with timestamps — what files were read, how many secrets were redacted, what types were found, how many placeholders were resolved on write. Secret values are never logged.
+The log records every tool call with timestamps - what files were read, how many secrets were redacted, what types were found, how many placeholders were resolved on write. Secret values are never logged.
 
 ```
 2026-02-25T00:30:12Z READ  /app/config.yml  redacted=3 [AWS Key, Credential, Email]
@@ -190,16 +190,16 @@ The log records every tool call with timestamps — what files were read, how ma
 
 ### Important notes
 
-- The MCP tools are **opt-in** — the agent must choose to use them
+- The MCP tools are **opt-in** - the agent must choose to use them
 - Built-in Read/Write tools still bypass pastewatch unless hooks enforce it (see Layer 2b)
-- Mappings live in server process memory only — die when MCP server stops
+- Mappings live in server process memory only - die when MCP server stops
 - Same file re-read returns the same placeholders (idempotent within session)
 
 ---
 
 ## Layer 2b: Enforce MCP Usage via Hooks
 
-MCP tools are opt-in — agents can still use native Read/Write and `cat .env` via Bash, bypassing redaction entirely. Hooks make enforcement structural.
+MCP tools are opt-in - agents can still use native Read/Write and `cat .env` via Bash, bypassing redaction entirely. Hooks make enforcement structural.
 
 ### Bash command guard
 
@@ -218,16 +218,16 @@ It parses shell commands (`cat`, `head`, `tail`, `sed`, `awk`, `grep`, `source`)
 
 Integrate with agent Bash hooks to block commands automatically. See [agent-setup.md](agent-setup.md) for hook configuration per agent.
 
-### `PW_GUARD=0` — escape hatch
+### `PW_GUARD=0` - escape hatch
 
-`PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately — every hook that calls pastewatch-cli gets the bypass for free.
+`PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately - every hook that calls pastewatch-cli gets the bypass for free.
 
 ```bash
 export PW_GUARD=0    # disable for current shell session
 unset PW_GUARD       # re-enable
 ```
 
-This is **agent-proof by design**: the guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` to bypass it — only the human can, before starting the agent session. The bypass requires human action outside the agent's control.
+This is **agent-proof by design**: the guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` to bypass it - only the human can, before starting the agent session. The bypass requires human action outside the agent's control.
 
 Use it when editing detection rules, working with test fixtures, or handling files with intentional secret-like patterns.
 
@@ -237,7 +237,7 @@ Use it when editing detection rules, working with test fixtures, or handling fil
 
 Limit which files the agent can read. Fewer files exposed = fewer secrets at risk.
 
-**Claude Code** — `.claude/settings.json`:
+**Claude Code** - `.claude/settings.json`:
 ```json
 {
   "permissions": {
@@ -256,7 +256,7 @@ Limit which files the agent can read. Fewer files exposed = fewer secrets at ris
 
 ## Layer 4: Pre-commit Safety Net
 
-Catches secrets before they're committed — including secrets an agent may have written into code.
+Catches secrets before they're committed - including secrets an agent may have written into code.
 
 ```bash
 # Install pastewatch pre-commit hook
@@ -329,9 +329,9 @@ Layers are additive. Use as many as your threat model requires. Layer 2 (MCP red
 
 ---
 
-## What Pastewatch Covers — and What It Doesn't
+## What Pastewatch Covers - and What It Doesn't
 
-Pastewatch protects **credentials** — the highest-damage leak vector. If a key leaks, attackers get immediate access to infrastructure. Pastewatch prevents this structurally.
+Pastewatch protects **credentials** - the highest-damage leak vector. If a key leaks, attackers get immediate access to infrastructure. Pastewatch prevents this structurally.
 
 **What pastewatch protects (secrets never leave your machine):**
 
@@ -349,10 +349,10 @@ Pastewatch protects **credentials** — the highest-damage leak vector. If a key
 | Category | Why |
 |----------|-----|
 | Prompt content | Your questions and instructions still reach the API |
-| Code structure | Architecture, patterns, business logic — visible to the provider |
+| Code structure | Architecture, patterns, business logic - visible to the provider |
 | Conversation context | What you're building, for whom, why |
 | Non-secret data | Domain names, file paths, comments, variable names |
 
 Pastewatch protects your **keys**. For protecting your **ideas**, you need a local model (Ollama, llama.cpp). For protecting your **commands**, you need a local proxy (intercepting before they reach the API).
 
-Think of it as: secrets are the highest-consequence leak — a leaked API key has immediate, measurable damage. Pastewatch eliminates that risk. The other risks (prompt content, business logic) are real but require different tools.
+Think of it as: secrets are the highest-consequence leak - a leaked API key has immediate, measurable damage. Pastewatch eliminates that risk. The other risks (prompt content, business logic) are real but require different tools.

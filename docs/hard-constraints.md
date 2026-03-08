@@ -140,4 +140,4 @@ Not "behind a config."
 
 No.
 
-These constraints exist because removing them creates a different tool — one that erodes trust, demands attention, and eventually gets uninstalled.
+These constraints exist because removing them creates a different tool - one that erodes trust, demands attention, and eventually gets uninstalled.

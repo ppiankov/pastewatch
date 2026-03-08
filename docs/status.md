@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Stable — v0.19.2**
+**Stable - v0.19.2**
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
@@ -182,5 +182,5 @@ See [CHANGELOG.md](../CHANGELOG.md) for detailed version history.
 ## Contributing
 
 Before proposing changes, read:
-- [docs/hard-constraints.md](hard-constraints.md) — Design philosophy and non-negotiable rules
-- [CONTRIBUTING.md](../CONTRIBUTING.md) — Development workflow
+- [docs/hard-constraints.md](hard-constraints.md) - Design philosophy and non-negotiable rules
+- [CONTRIBUTING.md](../CONTRIBUTING.md) - Development workflow
