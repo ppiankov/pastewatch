@@ -1,7 +1,7 @@
 # Pastewatch
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 
-Detects and obfuscates sensitive data before it reaches AI systems — clipboard monitoring (macOS), CLI scanning (macOS/Linux), and MCP server for AI agent integration.
+Detects and obfuscates sensitive data before it reaches AI systems - clipboard monitoring (macOS), CLI scanning (macOS/Linux), and MCP server for AI agent integration.
 
 It operates **before paste**, not after submission.
 
@@ -11,7 +11,7 @@ If sensitive data never enters the prompt, the incident does not exist.
 
 ## Core Principle
 
-**Principiis obsta** — resist the beginnings.
+**Principiis obsta** - resist the beginnings.
 
 Pastewatch intervenes at the earliest irreversible boundary: the moment data leaves the user's control.
 
@@ -25,12 +25,12 @@ Pastewatch refuses that transition.
 
 No other tool does what Pastewatch does. Here's why:
 
-- **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
-- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
-- **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
-- **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
-- **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
-- **One-command agent setup** — `pastewatch-cli setup claude-code` and you're protected. MCP server, hooks, severity alignment — all configured in one step
+- **Before-paste boundary** - secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
+- **MCP server for AI agents** - no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
+- **Bash guard with deep parsing** - pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
+- **Canary honeypots** - "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
+- **Local-only, deterministic, no ML** - no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
+- **One-command agent setup** - `pastewatch-cli setup claude-code` and you're protected. MCP server, hooks, severity alignment - all configured in one step
 
 ---
 
@@ -233,7 +233,7 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
-### MCP Server — Redacted Read/Write
+### MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**
 
@@ -249,7 +249,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
   └────────────────────────┘
 ```
 
-**Setup** (Claude Code, Cline, Cursor — any MCP-compatible agent):
+**Setup** (Claude Code, Cline, Cursor - any MCP-compatible agent):
 
 ```json
 {
@@ -275,7 +275,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
 
 The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops.
 
-**Audit logging** — verify what the MCP server did during a session:
+**Audit logging** - verify what the MCP server did during a session:
 
 ```json
 {
@@ -290,13 +290,13 @@ The server holds mappings in memory for the session. Same file re-read returns t
 
 Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret values.
 
-**What this protects:** API keys, DB credentials, SSH keys, tokens, emails, IPs — secrets never leave your machine. **What this doesn't protect:** prompt content, code structure, business logic — these still reach the API. Pastewatch protects your keys; for protecting your ideas, use a local model.
+**What this protects:** API keys, DB credentials, SSH keys, tokens, emails, IPs - secrets never leave your machine. **What this doesn't protect:** prompt content, code structure, business logic - these still reach the API. Pastewatch protects your keys; for protecting your ideas, use a local model.
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
 ### Agent Auto-Setup
 
-One-command agent integration — configures MCP server, hooks, and severity alignment:
+One-command agent integration - configures MCP server, hooks, and severity alignment:
 
 ```bash
 pastewatch-cli setup claude-code              # global config
@@ -306,7 +306,7 @@ pastewatch-cli setup cursor
 pastewatch-cli setup claude-code --severity medium  # align hook + MCP thresholds
 ```
 
-Idempotent — safe to re-run. Updates existing config without duplication.
+Idempotent - safe to re-run. Updates existing config without duplication.
 
 ### Session Report
 
@@ -343,7 +343,7 @@ pastewatch-cli guard "cat .env"
 # BLOCKED: .env contains 3 secret(s) (2 critical, 1 high)
 
 pastewatch-cli guard "echo hello"
-# exit 0 (safe — no file access)
+# exit 0 (safe - no file access)
 
 pastewatch-cli guard --json "cat config.yml"
 # JSON output for programmatic integration
@@ -388,7 +388,7 @@ pastewatch-cli scan --git-log --since 2025-01-01
 pastewatch-cli scan --git-log --branch feature/auth --format sarif
 ```
 
-Deduplicates by fingerprint — same secret across multiple commits is reported once.
+Deduplicates by fingerprint - same secret across multiple commits is reported once.
 
 ### Git Diff Scanning
 
@@ -419,7 +419,7 @@ Real-time secret detection in the editor with inline diagnostics, hover tooltips
 
 | Variable | Effect |
 |----------|--------|
-| `PW_GUARD=0` | Disable `guard` and `scan --check` — all commands allowed, no scanning. Set before starting the agent session. |
+| `PW_GUARD=0` | Disable `guard` and `scan --check` - all commands allowed, no scanning. Set before starting the agent session. |
 
 ### Pre-commit Hook
 
@@ -545,7 +545,7 @@ chmod +x pastewatch-cli
 sudo mv pastewatch-cli /usr/local/bin/
 ```
 
-**For AI coding agents**: Use MCP redacted read/write to prevent secret leakage — see [docs/agent-safety.md](docs/agent-safety.md) for setup.
+**For AI coding agents**: Use MCP redacted read/write to prevent secret leakage - see [docs/agent-safety.md](docs/agent-safety.md) for setup.
 
 **For CI/CD**: Use the CLI scan command or [GitHub Action](https://github.com/ppiankov/pastewatch-action).
 
@@ -643,12 +643,12 @@ Intel-based Macs are not supported and there are no plans to add prebuilt binari
 
 ## Documentation
 
-- [docs/agent-integration.md](docs/agent-integration.md) — Consolidated agent reference (enforcement matrix, MCP setup, hooks, config)
-- [docs/agent-setup.md](docs/agent-setup.md) — Per-agent MCP setup (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code)
-- [docs/agent-safety.md](docs/agent-safety.md) — Agent safety guide (layered defenses for AI coding agents)
-- [docs/examples/](docs/examples/) — Ready-to-use agent configs (Claude Code, Cline, Cursor)
-- [docs/hard-constraints.md](docs/hard-constraints.md) — Design philosophy and non-negotiable rules
-- [docs/status.md](docs/status.md) — Current scope and non-goals
+- [docs/agent-integration.md](docs/agent-integration.md) - Consolidated agent reference (enforcement matrix, MCP setup, hooks, config)
+- [docs/agent-setup.md](docs/agent-setup.md) - Per-agent MCP setup (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code)
+- [docs/agent-safety.md](docs/agent-safety.md) - Agent safety guide (layered defenses for AI coding agents)
+- [docs/examples/](docs/examples/) - Ready-to-use agent configs (Claude Code, Cline, Cursor)
+- [docs/hard-constraints.md](docs/hard-constraints.md) - Design philosophy and non-negotiable rules
+- [docs/status.md](docs/status.md) - Current scope and non-goals
 
 ---
 
