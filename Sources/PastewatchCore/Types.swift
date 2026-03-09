@@ -62,6 +62,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case sendgridKey = "SendGrid Key"
     case shopifyToken = "Shopify Token"
     case digitaloceanToken = "DigitalOcean Token"
+    case perplexityKey = "Perplexity Key"
     case highEntropyString = "High Entropy"
 
     /// Severity of this detection type.
@@ -72,7 +73,8 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
-             .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken:
+             .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
+             .perplexityKey:
             return .critical
         case .email, .phone:
             return .high
@@ -115,6 +117,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .sendgridKey: return "SendGrid API keys (SG. prefix with base64 segments)"
         case .shopifyToken: return "Shopify access tokens (shpat_, shpca_, shppa_ prefixes)"
         case .digitaloceanToken: return "DigitalOcean tokens (dop_v1_, doo_v1_ prefixes)"
+        case .perplexityKey: return "Perplexity AI API keys (pplx- prefix)"
         case .highEntropyString: return "High-entropy strings that may be secrets (Shannon entropy > 4.0, mixed character classes)"
         }
     }
@@ -151,6 +154,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .sendgridKey: return ["SG.<base64>.<base64>"]
         case .shopifyToken: return ["shpat_<access token>", "shpca_<token>", "shppa_<token>"]
         case .digitaloceanToken: return ["dop_v1_<64-hex-chars>", "doo_v1_<64-hex-chars>"]
+        case .perplexityKey: return ["pplx-<48-alphanumeric-chars>"]
         case .highEntropyString: return ["xK9mP2qL8nR5vT1wY6hJ3dF0s (20+ chars, mixed case/digits)"]
         }
     }

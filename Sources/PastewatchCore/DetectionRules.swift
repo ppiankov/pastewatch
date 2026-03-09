@@ -237,6 +237,15 @@ public struct DetectionRules {
             result.append((.digitaloceanToken, regex))
         }
 
+        // Perplexity API Key - high confidence
+        // pplx- prefix followed by 48 alphanumeric characters
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bpplx-[a-zA-Z0-9]{48}\b"#,
+            options: []
+        ) {
+            result.append((.perplexityKey, regex))
+        }
+
         // Generic API Key patterns - high confidence
         // Common prefixes: sk-, pk-, api_, key_, token_
         // Placed AFTER specific providers (OpenAI sk-proj-, Anthropic sk-ant-, Groq gsk_)
