@@ -536,6 +536,24 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertFalse(matches.contains { $0.type == .digitaloceanToken })
     }
 
+    // MARK: - Perplexity Key Detection
+
+    func testDetectsPerplexityKey() {
+        let content = "PPLX_KEY=pplx-" + String(repeating: "aB1cD2eF", count: 6)
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .perplexityKey })
+    }
+
+    func testPerplexityKeyWrongLength() {
+        let content = "pplx-tooshort123"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .perplexityKey })
+    }
+
+    func testPerplexityKeySeverityIsCritical() {
+        XCTAssertEqual(SensitiveDataType.perplexityKey.severity, .critical)
+    }
+
     // MARK: - Line Number Tracking
 
     func testLineNumbersOnMultilineContent() {
