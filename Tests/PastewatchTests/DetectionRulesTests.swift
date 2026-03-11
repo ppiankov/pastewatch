@@ -554,6 +554,86 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertEqual(SensitiveDataType.perplexityKey.severity, .critical)
     }
 
+    // MARK: - XML Credential Detection
+
+    func testDetectsXMLPasswordTag() {
+        let content = "<password>my_secret_pass</password>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
+    }
+
+    func testDetectsXMLPasswordSHA256Tag() {
+        let content = "<password_sha256_hex>abcdef1234567890</password_sha256_hex>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
+    }
+
+    func testDetectsXMLSecretAccessKeyTag() {
+        let content = "<secret_access_key>wJalrXUtnFEMI</secret_access_key>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
+    }
+
+    func testDetectsXMLUserTag() {
+        let content = "<user>admin</user>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlUsername })
+    }
+
+    func testDetectsXMLHostTag() {
+        let content = "<host>db-primary.internal.corp.net</host>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
+    }
+
+    func testDetectsXMLHostnameTag() {
+        let content = "<hostname>replica-02.dc1.internal</hostname>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
+    }
+
+    func testDetectsXMLInterserverHttpHostTag() {
+        let content = "<interserver_http_host>ch-node3.corp.net</interserver_http_host>"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
+    }
+
+    func testXMLCredentialSeverityIsCritical() {
+        XCTAssertEqual(SensitiveDataType.xmlCredential.severity, .critical)
+    }
+
+    func testXMLUsernameSeverityIsHigh() {
+        XCTAssertEqual(SensitiveDataType.xmlUsername.severity, .high)
+    }
+
+    func testXMLHostnameSeverityIsMedium() {
+        XCTAssertEqual(SensitiveDataType.xmlHostname.severity, .medium)
+    }
+
+    // MARK: - XML Format-Aware Scanning
+
+    func testXMLFormatAwareScanningCatchesEmbeddedSecrets() {
+        let content = [
+            "<access_key_id>AKIA", "IOSFODNN7EXAMPLE</access_key_id>"
+        ].joined()
+        let matches = DirectoryScanner.scanFileContent(
+            content: content, ext: "xml",
+            relativePath: "config.xml", config: config
+        )
+        // Should catch AWS key via parser extraction
+        XCTAssertTrue(matches.contains { $0.type == .awsKey })
+    }
+
+    func testXMLFormatAwareScanningCatchesPasswordTags() {
+        let content = "<password>plaintext_pass</password>"
+        let matches = DirectoryScanner.scanFileContent(
+            content: content, ext: "xml",
+            relativePath: "users.xml", config: config
+        )
+        // Raw XML credential rule should fire
+        XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
+    }
+
     // MARK: - Line Number Tracking
 
     func testLineNumbersOnMultilineContent() {

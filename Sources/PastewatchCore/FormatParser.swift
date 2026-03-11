@@ -19,7 +19,7 @@ public protocol FormatParser {
 }
 
 /// Select appropriate parser for a file extension.
-public func parserForExtension(_ ext: String) -> FormatParser? {
+public func parserForExtension(_ ext: String, config: PastewatchConfig? = nil) -> FormatParser? {
     switch ext.lowercased() {
     case "env":
         return EnvParser()
@@ -29,6 +29,13 @@ public func parserForExtension(_ ext: String) -> FormatParser? {
         return YAMLValueParser()
     case "properties", "cfg", "ini":
         return PropertiesParser()
+    case "xml":
+        let customTags = config?.xmlSensitiveTags ?? []
+        if customTags.isEmpty {
+            return XMLValueParser()
+        }
+        let merged = XMLValueParser.defaultSensitiveTags.union(Set(customTags))
+        return XMLValueParser(sensitiveTags: merged)
     default:
         return nil
     }

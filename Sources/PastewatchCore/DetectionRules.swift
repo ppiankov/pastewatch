@@ -246,6 +246,33 @@ public struct DetectionRules {
             result.append((.perplexityKey, regex))
         }
 
+        // XML Credential tags - high confidence
+        // Catches <password>, <password_sha256_hex>, <secret_access_key>, etc.
+        if let regex = try? NSRegularExpression(
+            pattern: #"<(password[^>]*|secret[^>]*|token[^>]*|access_key[^>]*|secret_access_key)>([^<]+)</\1>"#,
+            options: [.caseInsensitive]
+        ) {
+            result.append((.xmlCredential, regex))
+        }
+
+        // XML Username tags - high confidence
+        // <user> within config context, <quota_key>
+        if let regex = try? NSRegularExpression(
+            pattern: #"<(user|quota_key)>([^<]+)</\1>"#,
+            options: [.caseInsensitive]
+        ) {
+            result.append((.xmlUsername, regex))
+        }
+
+        // XML Hostname tags - high confidence
+        // <host>, <hostname>, <interserver_http_host>
+        if let regex = try? NSRegularExpression(
+            pattern: #"<(host|hostname|interserver_http_host)>([^<]+)</\1>"#,
+            options: [.caseInsensitive]
+        ) {
+            result.append((.xmlHostname, regex))
+        }
+
         // Generic API Key patterns - high confidence
         // Common prefixes: sk-, pk-, api_, key_, token_
         // Placed AFTER specific providers (OpenAI sk-proj-, Anthropic sk-ant-, Groq gsk_)
