@@ -134,7 +134,7 @@ public struct DirectoryScanner {
         content: String, ext: String,
         relativePath: String, config: PastewatchConfig
     ) -> [DetectedMatch] {
-        guard let parser = parserForExtension(ext) else {
+        guard let parser = parserForExtension(ext, config: config) else {
             return DetectionRules.scan(content, config: config).map { match in
                 DetectedMatch(
                     type: match.type, value: match.value, range: match.range,
@@ -143,6 +143,8 @@ public struct DirectoryScanner {
                 )
             }
         }
+
+        // Format-aware: extract values and scan each
         var matches: [DetectedMatch] = []
         for pv in parser.parseValues(from: content) {
             for vm in DetectionRules.scan(pv.value, config: config) {
@@ -153,6 +155,28 @@ public struct DirectoryScanner {
                 ))
             }
         }
+
+        // XML files: also run raw detection for XML-specific tag patterns
+        // (e.g., <password>plain</password> where the extracted value alone
+        // wouldn't match any pattern rule)
+        if ext.lowercased() == "xml" {
+            let rawMatches = DetectionRules.scan(content, config: config)
+            for rm in rawMatches {
+                // Only add XML-specific types not already found
+                guard rm.type == .xmlCredential || rm.type == .xmlUsername || rm.type == .xmlHostname else {
+                    continue
+                }
+                let alreadyFound = matches.contains { $0.line == rm.line && $0.type == rm.type }
+                if !alreadyFound {
+                    matches.append(DetectedMatch(
+                        type: rm.type, value: rm.value, range: rm.range,
+                        line: rm.line, filePath: relativePath,
+                        customRuleName: rm.customRuleName, customSeverity: rm.customSeverity
+                    ))
+                }
+            }
+        }
+
         return matches
     }
 

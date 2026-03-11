@@ -63,6 +63,9 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case shopifyToken = "Shopify Token"
     case digitaloceanToken = "DigitalOcean Token"
     case perplexityKey = "Perplexity Key"
+    case xmlCredential = "XML Credential"
+    case xmlUsername = "XML Username"
+    case xmlHostname = "XML Hostname"
     case highEntropyString = "High Entropy"
 
     /// Severity of this detection type.
@@ -74,11 +77,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
-             .perplexityKey:
+             .perplexityKey, .xmlCredential:
             return .critical
-        case .email, .phone:
+        case .email, .phone, .xmlUsername:
             return .high
-        case .ipAddress, .filePath, .hostname:
+        case .ipAddress, .filePath, .hostname, .xmlHostname:
             return .medium
         case .uuid, .highEntropyString:
             return .low
@@ -118,6 +121,9 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .shopifyToken: return "Shopify access tokens (shpat_, shpca_, shppa_ prefixes)"
         case .digitaloceanToken: return "DigitalOcean tokens (dop_v1_, doo_v1_ prefixes)"
         case .perplexityKey: return "Perplexity AI API keys (pplx- prefix)"
+        case .xmlCredential: return "Credentials in XML tags (password, secret, access_key)"
+        case .xmlUsername: return "Usernames in XML tags (user, name within users context)"
+        case .xmlHostname: return "Hostnames in XML tags (host, hostname, replica)"
         case .highEntropyString: return "High-entropy strings that may be secrets (Shannon entropy > 4.0, mixed character classes)"
         }
     }
@@ -155,6 +161,9 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .shopifyToken: return ["shpat_<access token>", "shpca_<token>", "shppa_<token>"]
         case .digitaloceanToken: return ["dop_v1_<64-hex-chars>", "doo_v1_<64-hex-chars>"]
         case .perplexityKey: return ["pplx-<48-alphanumeric-chars>"]
+        case .xmlCredential: return ["<password>secret123</password>", "<secret_access_key>KEY</secret_access_key>"]
+        case .xmlUsername: return ["<user>admin</user>", "<name>deploy</name>"]
+        case .xmlHostname: return ["<host>db-primary.internal.corp.net</host>"]
         case .highEntropyString: return ["xK9mP2qL8nR5vT1wY6hJ3dF0s (20+ chars, mixed case/digits)"]
         }
     }
@@ -266,6 +275,7 @@ public struct PastewatchConfig: Codable {
     public var allowedPatterns: [String]
     public var sensitiveIPPrefixes: [String]
     public var mcpMinSeverity: String
+    public var xmlSensitiveTags: [String]
 
     public init(
         enabled: Bool,
@@ -278,7 +288,8 @@ public struct PastewatchConfig: Codable {
         sensitiveHosts: [String] = [],
         allowedPatterns: [String] = [],
         sensitiveIPPrefixes: [String] = [],
-        mcpMinSeverity: String = "high"
+        mcpMinSeverity: String = "high",
+        xmlSensitiveTags: [String] = []
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -291,6 +302,7 @@ public struct PastewatchConfig: Codable {
         self.allowedPatterns = allowedPatterns
         self.sensitiveIPPrefixes = sensitiveIPPrefixes
         self.mcpMinSeverity = mcpMinSeverity
+        self.xmlSensitiveTags = xmlSensitiveTags
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -307,6 +319,7 @@ public struct PastewatchConfig: Codable {
         allowedPatterns = try container.decodeIfPresent([String].self, forKey: .allowedPatterns) ?? []
         sensitiveIPPrefixes = try container.decodeIfPresent([String].self, forKey: .sensitiveIPPrefixes) ?? []
         mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? "high"
+        xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(
