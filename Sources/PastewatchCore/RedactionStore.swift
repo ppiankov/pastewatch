@@ -6,10 +6,20 @@ import Foundation
 /// - Mapping lives only in server process memory — dies on exit, never persisted
 /// - Same value always maps to same placeholder across all files in a session
 /// - Deobfuscation happens locally on-device — secrets never leave the machine
-/// - Uses __PW{TYPE_N}__ format — never collides with real content
+/// - Default format: __PW{TYPE_N}__ — never collides with real content
+/// - Custom prefix format: {prefix}{NNN} — LLM-proxy compatible, no braces
 public final class RedactionStore {
     // swiftlint:disable:next force_try
-    private static let placeholderRegex = try! NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern)
+    private static let structuredRegex = try! NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern)
+
+    /// Optional custom prefix for LLM-proxy compatibility.
+    private let customPrefix: String?
+
+    /// Compiled regex for custom-prefix placeholders (nil when using structured format).
+    private let customRegex: NSRegularExpression?
+
+    /// Global sequential counter for custom-prefix placeholders.
+    private var globalCounter: Int = 0
 
     /// Forward mapping: placeholder → original value, per file.
     private var mappings: [String: [String: String]] = [:]
@@ -17,10 +27,18 @@ public final class RedactionStore {
     /// Global reverse mapping: original value → placeholder (cross-file consistency).
     private var globalReverse: [String: String] = [:]
 
-    /// Global type counters for placeholder numbering.
+    /// Global type counters for placeholder numbering (structured format only).
     private var globalTypeCounters: [SensitiveDataType: Int] = [:]
 
-    public init() {}
+    public init(placeholderPrefix: String? = nil) {
+        self.customPrefix = placeholderPrefix
+        if let prefix = placeholderPrefix {
+            // swiftlint:disable:next force_try
+            self.customRegex = try! NSRegularExpression(pattern: Obfuscator.customPlaceholderPattern(prefix: prefix))
+        } else {
+            self.customRegex = nil
+        }
+    }
 
     /// Redact sensitive values in content, storing the mapping for later resolution.
     /// Returns the redacted content and a manifest of redactions.
@@ -42,10 +60,13 @@ public final class RedactionStore {
             if let existing = globalReverse[original] {
                 // Same value seen before in any file — reuse placeholder
                 placeholder = existing
+            } else if let prefix = customPrefix {
+                globalCounter += 1
+                placeholder = Obfuscator.makeCustomPlaceholder(prefix: prefix, number: globalCounter)
+                globalReverse[original] = placeholder
             } else {
                 let count = (globalTypeCounters[match.type] ?? 0) + 1
                 globalTypeCounters[match.type] = count
-
                 placeholder = Obfuscator.makeMCPPlaceholder(type: match.type, number: count)
                 globalReverse[original] = placeholder
             }
@@ -89,6 +110,7 @@ public final class RedactionStore {
         mappings.removeAll()
         globalReverse.removeAll()
         globalTypeCounters.removeAll()
+        globalCounter = 0
     }
 
     /// Check if any mappings exist for a file.
@@ -111,9 +133,9 @@ public final class RedactionStore {
         var resolvedCount = 0
         var unresolvedPlaceholders: [String] = []
 
-        // Find all MCP placeholder patterns: __PW{TYPE_N}__
+        let regex = customRegex ?? Self.structuredRegex
         let nsContent = result as NSString
-        let allMatches = Self.placeholderRegex.matches(in: result, range: NSRange(location: 0, length: nsContent.length))
+        let allMatches = regex.matches(in: result, range: NSRange(location: 0, length: nsContent.length))
 
         // Process in reverse order to preserve indices
         for match in allMatches.reversed() {

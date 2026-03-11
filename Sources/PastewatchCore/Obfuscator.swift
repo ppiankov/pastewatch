@@ -55,6 +55,17 @@ public struct Obfuscator {
         return "__PW{\(typeName)_\(number)}__"
     }
 
+    /// Create a custom-prefix placeholder for LLM-proxy compatibility.
+    /// Format: {prefix}{zero-padded number} — no braces, no special chars.
+    public static func makeCustomPlaceholder(prefix: String, number: Int) -> String {
+        return "\(prefix)\(String(format: "%03d", number))"
+    }
+
     /// Regex pattern matching MCP placeholders for resolution.
     public static let mcpPlaceholderPattern = "__PW\\{[A-Z][A-Z0-9_]*_\\d+\\}__"
+
+    /// Build a regex pattern matching custom-prefix placeholders.
+    public static func customPlaceholderPattern(prefix: String) -> String {
+        return NSRegularExpression.escapedPattern(for: prefix) + "\\d{3,}"
+    }
 }

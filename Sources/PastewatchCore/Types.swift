@@ -276,6 +276,7 @@ public struct PastewatchConfig: Codable {
     public var sensitiveIPPrefixes: [String]
     public var mcpMinSeverity: String
     public var xmlSensitiveTags: [String]
+    public var placeholderPrefix: String?
 
     public init(
         enabled: Bool,
@@ -289,7 +290,8 @@ public struct PastewatchConfig: Codable {
         allowedPatterns: [String] = [],
         sensitiveIPPrefixes: [String] = [],
         mcpMinSeverity: String = "high",
-        xmlSensitiveTags: [String] = []
+        xmlSensitiveTags: [String] = [],
+        placeholderPrefix: String? = nil
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -303,6 +305,7 @@ public struct PastewatchConfig: Codable {
         self.sensitiveIPPrefixes = sensitiveIPPrefixes
         self.mcpMinSeverity = mcpMinSeverity
         self.xmlSensitiveTags = xmlSensitiveTags
+        self.placeholderPrefix = placeholderPrefix
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -320,6 +323,7 @@ public struct PastewatchConfig: Codable {
         sensitiveIPPrefixes = try container.decodeIfPresent([String].self, forKey: .sensitiveIPPrefixes) ?? []
         mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? "high"
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []
+        placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
     }
 
     public static let defaultConfig = PastewatchConfig(
