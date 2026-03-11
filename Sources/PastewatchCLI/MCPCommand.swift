@@ -15,18 +15,24 @@ struct MCP: ParsableCommand {
 
     func run() throws {
         let logger = auditLog.map { MCPAuditLogger(path: $0) }
-        let server = MCPServer(auditLogger: logger, defaultMinSeverity: minSeverity)
+        let config = PastewatchConfig.resolve()
+        let server = MCPServer(
+            auditLogger: logger,
+            defaultMinSeverity: minSeverity,
+            placeholderPrefix: config.placeholderPrefix
+        )
         server.start()
     }
 }
 
 /// Stateful MCP server that holds redaction mappings for the session.
 final class MCPServer {
-    private let store = RedactionStore()
+    private let store: RedactionStore
     private let auditLogger: MCPAuditLogger?
     private let defaultMinSeverity: String?
 
-    init(auditLogger: MCPAuditLogger? = nil, defaultMinSeverity: String? = nil) {
+    init(auditLogger: MCPAuditLogger? = nil, defaultMinSeverity: String? = nil, placeholderPrefix: String? = nil) {
+        self.store = RedactionStore(placeholderPrefix: placeholderPrefix)
         self.auditLogger = auditLogger
         self.defaultMinSeverity = defaultMinSeverity
     }
