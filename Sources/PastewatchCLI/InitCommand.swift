@@ -29,12 +29,25 @@ struct Init: ParsableCommand {
             }
         }
 
-        // Write .pastewatch.json
-        let config = PastewatchConfig.defaultConfig
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let configData = try encoder.encode(config)
-        try configData.write(to: URL(fileURLWithPath: configPath))
+        // Write .pastewatch.json with commented examples
+        let configTemplate = """
+        {
+          "enabled": true,
+          "enabledTypes": \(Self.defaultEnabledTypesJSON()),
+          "showNotifications": true,
+          "soundEnabled": false,
+          "allowedValues": [],
+          "allowedPatterns": [],
+          "customRules": [],
+          "safeHosts": [],
+          "sensitiveHosts": [],
+          "sensitiveIPPrefixes": [],
+          "mcpMinSeverity": "high",
+          "xmlSensitiveTags": [],
+          "placeholderPrefix": null
+        }
+        """
+        try configTemplate.write(toFile: configPath, atomically: true, encoding: .utf8)
 
         // Write .pastewatch-allow
         let allowTemplate = """
@@ -52,5 +65,12 @@ struct Init: ParsableCommand {
 
         print("created .pastewatch.json")
         print("created .pastewatch-allow")
+    }
+
+    private static func defaultEnabledTypesJSON() -> String {
+        let types = SensitiveDataType.allCases
+            .filter { $0 != .highEntropyString }
+            .map { "\"\($0.rawValue)\"" }
+        return "[\(types.joined(separator: ", "))]"
     }
 }
