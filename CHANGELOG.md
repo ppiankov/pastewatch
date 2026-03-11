@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.6] - 2026-03-11
+
+### Fixed
+
+- `init` generates complete config with all fields including `placeholderPrefix`
+
 ## [0.19.5] - 2026-03-11
 
 ### Added
