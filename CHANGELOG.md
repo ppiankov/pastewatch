@@ -7,16 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.19.3] - 2026-03-11
+## [0.19.4] - 2026-03-11
 
 ### Added
 
-- Perplexity AI API key detection (`pplx-` prefix, critical severity)
 - XML value parser for ClickHouse and other XML config files
 - XML credential detection (`<password>`, `<secret_access_key>`, etc.)
 - XML username detection (`<user>`, `<quota_key>`)
 - XML hostname detection (`<host>`, `<hostname>`, `<interserver_http_host>`)
 - Configurable `xmlSensitiveTags` for custom XML tag scanning
+
+## [0.19.3] - 2026-03-09
+
+### Added
+
+- Perplexity AI API key detection (`pplx-` prefix, critical severity)
 
 ## [0.19.2] - 2026-03-07
 

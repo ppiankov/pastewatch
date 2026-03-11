@@ -138,6 +138,10 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | SendGrid Keys | `SG....` |
 | Shopify Tokens | `shpat_...`, `shpca_...` |
 | DigitalOcean Tokens | `dop_v1_...`, `doo_v1_...` |
+| Perplexity Keys | `pplx-...` |
+| XML Credentials | `<password>`, `<secret_access_key>`, etc. in XML configs |
+| XML Usernames | `<user>`, `<quota_key>` in XML configs |
+| XML Hostnames | `<host>`, `<hostname>`, `<interserver_http_host>` in XML configs |
 | High Entropy Strings | Opt-in Shannon entropy detection (4.0 bits/char threshold) |
 
 Each type has a severity level (critical, high, medium, low) used in SARIF, JSON, and markdown output.
@@ -488,7 +492,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.19.3
+    rev: v0.19.4
     hooks:
       - id: pastewatch
 ```
@@ -504,7 +508,9 @@ git diff --cached --diff-filter=d | pastewatch-cli scan --check
 
 ### Format-Aware Scanning
 
-When scanning `.env`, `.json`, `.yml`/`.yaml`, or `.properties`/`.cfg`/`.ini` files, pastewatch parses the file structure and scans values only. This reduces false positives from keys, comments, and structural elements.
+When scanning `.env`, `.json`, `.yml`/`.yaml`, `.properties`/`.cfg`/`.ini`, or `.xml` files, pastewatch parses the file structure and scans values only. This reduces false positives from keys, comments, and structural elements.
+
+For XML files, pastewatch extracts values from sensitive tags (`<password>`, `<host>`, `<user>`, etc.) covering ClickHouse, Hadoop, and other XML-based configs. Custom tags can be added via the `xmlSensitiveTags` config field.
 
 ### Allowlist
 
@@ -664,7 +670,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.19.3** · Active development
+**Status: Stable** · **v0.19.4** · Active development
 
 | Milestone | Status |
 |-----------|--------|
