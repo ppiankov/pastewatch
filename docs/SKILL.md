@@ -49,7 +49,8 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
   "safeHosts": [".internal.company.com", "safe.dev.local"],
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
   "sensitiveIPPrefixes": ["172.16.", "10."],
-  "mcpMinSeverity": "high"
+  "mcpMinSeverity": "high",
+  "placeholderPrefix": "REDACTED_PLACEHOLDER_"
 }
 ```
 
@@ -70,6 +71,7 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
 | `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts. Also catches 2-segment hosts (e.g., `.local` → `nas.local`) |
 | `sensitiveIPPrefixes` | string[] | `[]` | IP prefixes always detected — overrides built-in IP exclude list (e.g., `172.16.`, `10.`) |
 | `mcpMinSeverity` | string | `"high"` | Default minimum severity for MCP `pastewatch_read_file` redaction (critical, high, medium, low) |
+| `placeholderPrefix` | string? | `null` | Custom prefix for MCP placeholders. When set, produces `{prefix}001` instead of `__PW{TYPE_N}__`. Use when LLM proxies (e.g., LiteLLM) reject curly-brace placeholders |
 
 ## Commands
 

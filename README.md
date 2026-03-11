@@ -589,7 +589,8 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
   "safeHosts": [".internal.company.com"],
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
   "sensitiveIPPrefixes": ["172.16.", "10."],
-  "mcpMinSeverity": "high"
+  "mcpMinSeverity": "high",
+  "placeholderPrefix": "REDACTED_PLACEHOLDER_"
 }
 ```
 
@@ -606,6 +607,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts, catches 2-segment hosts like `.local`) |
 | `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
 | `mcpMinSeverity` | string | Default severity threshold for MCP redacted reads (default: `high`) |
+| `placeholderPrefix` | string? | Custom prefix for MCP placeholders (e.g., `REDACTED_PLACEHOLDER_` produces `REDACTED_PLACEHOLDER_001`). Default: `null` (uses `__PW{TYPE_N}__` format). Set this if your LLM proxy rejects curly-brace placeholders |
 
 GUI settings can also be changed via the menubar dropdown.
 
