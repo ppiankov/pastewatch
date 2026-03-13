@@ -63,6 +63,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case shopifyToken = "Shopify Token"
     case digitaloceanToken = "DigitalOcean Token"
     case perplexityKey = "Perplexity Key"
+    case jdbcUrl = "JDBC URL"
     case xmlCredential = "XML Credential"
     case xmlUsername = "XML Username"
     case xmlHostname = "XML Hostname"
@@ -77,7 +78,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
-             .perplexityKey, .xmlCredential:
+             .perplexityKey, .jdbcUrl, .xmlCredential:
             return .critical
         case .email, .phone, .xmlUsername:
             return .high
@@ -121,6 +122,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .shopifyToken: return "Shopify access tokens (shpat_, shpca_, shppa_ prefixes)"
         case .digitaloceanToken: return "DigitalOcean tokens (dop_v1_, doo_v1_ prefixes)"
         case .perplexityKey: return "Perplexity AI API keys (pplx- prefix)"
+        case .jdbcUrl: return "JDBC connection URLs (jdbc:oracle, jdbc:db2, jdbc:mysql, jdbc:postgresql, jdbc:sqlserver)"
         case .xmlCredential: return "Credentials in XML tags (password, secret, access_key)"
         case .xmlUsername: return "Usernames in XML tags (user, name within users context)"
         case .xmlHostname: return "Hostnames in XML tags (host, hostname, replica)"
@@ -161,6 +163,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .shopifyToken: return ["shpat_<access token>", "shpca_<token>", "shppa_<token>"]
         case .digitaloceanToken: return ["dop_v1_<64-hex-chars>", "doo_v1_<64-hex-chars>"]
         case .perplexityKey: return ["pplx-<48-alphanumeric-chars>"]
+        case .jdbcUrl: return ["jdbc:oracle:thin:@host:1521:SID", "jdbc:postgresql://host:5432/db"]
         case .xmlCredential: return ["<password>secret123</password>", "<secret_access_key>KEY</secret_access_key>"]
         case .xmlUsername: return ["<user>admin</user>", "<name>deploy</name>"]
         case .xmlHostname: return ["<host>db-primary.internal.corp.net</host>"]

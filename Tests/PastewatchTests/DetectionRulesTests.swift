@@ -554,6 +554,68 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertEqual(SensitiveDataType.perplexityKey.severity, .critical)
     }
 
+    // MARK: - JDBC URL Detection
+
+    func testDetectsJDBCOracleThin() {
+        let content = "url=jdbc:oracle:thin:@dbhost.internal.com:1521:PRODDB"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testDetectsJDBCOracleThinServiceName() {
+        let content = "jdbc:oracle:thin:@//dbhost.internal.com:1521/PRODDB"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testDetectsJDBCPostgreSQL() {
+        let content = "jdbc:postgresql://db.internal.com:5432/mydb"
+        let matches = DetectionRules.scan(content, config: config)
+        // May match as dbConnectionString (postgresql://) or jdbcUrl — either is correct
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
+    }
+
+    func testDetectsJDBCMySQL() {
+        let content = "jdbc:mysql://db.internal.com:3306/mydb?ssl=true"
+        let matches = DetectionRules.scan(content, config: config)
+        // May match as dbConnectionString (mysql://) or jdbcUrl — either is correct
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
+    }
+
+    func testDetectsJDBCSQLServer() {
+        let content = "jdbc:sqlserver://db.internal.com:1433;databaseName=mydb"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testDetectsJDBCDB2() {
+        let content = "jdbc:db2://db.internal.com:50000/mydb"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testDetectsJDBCAS400() {
+        let content = "jdbc:as400://as400.internal.com/MYLIB"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testJDBCInSpringConfig() {
+        let content = "spring.datasource.url=jdbc:oracle:thin:@prod-db:1521:FINDB"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testNoFalsePositiveJDBCPrefix() {
+        let content = "jdbc: is a standard"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .jdbcUrl })
+    }
+
+    func testJDBCSeverityIsCritical() {
+        XCTAssertEqual(SensitiveDataType.jdbcUrl.severity, .critical)
+    }
+
     // MARK: - XML Credential Detection
 
     func testDetectsXMLPasswordTag() {
