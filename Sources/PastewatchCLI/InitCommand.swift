@@ -10,6 +10,9 @@ struct Init: ParsableCommand {
     @Flag(name: .long, help: "Overwrite existing files")
     var force = false
 
+    @Option(name: .long, help: "Configuration profile (default, banking)")
+    var profile: String?
+
     func run() throws {
         let fm = FileManager.default
         let cwd = fm.currentDirectoryPath
@@ -29,24 +32,17 @@ struct Init: ParsableCommand {
             }
         }
 
-        // Write .pastewatch.json with commented examples
-        let configTemplate = """
-        {
-          "enabled": true,
-          "enabledTypes": \(Self.defaultEnabledTypesJSON()),
-          "showNotifications": true,
-          "soundEnabled": false,
-          "allowedValues": [],
-          "allowedPatterns": [],
-          "customRules": [],
-          "safeHosts": [],
-          "sensitiveHosts": [],
-          "sensitiveIPPrefixes": [],
-          "mcpMinSeverity": "high",
-          "xmlSensitiveTags": [],
-          "placeholderPrefix": null
+        let configTemplate: String
+        if let profile = profile {
+            guard let tmpl = Self.profileTemplate(profile) else {
+                FileHandle.standardError.write(Data("error: unknown profile '\(profile)' (available: banking)\n".utf8))
+                throw ExitCode(rawValue: 2)
+            }
+            configTemplate = tmpl
+        } else {
+            configTemplate = Self.defaultTemplate()
         }
-        """
+
         try configTemplate.write(toFile: configPath, atomically: true, encoding: .utf8)
 
         // Write .pastewatch-allow
@@ -63,8 +59,61 @@ struct Init: ParsableCommand {
         """
         try allowTemplate.write(toFile: allowPath, atomically: true, encoding: .utf8)
 
-        print("created .pastewatch.json")
+        let profileLabel = profile.map { " (profile: \($0))" } ?? ""
+        print("created .pastewatch.json\(profileLabel)")
         print("created .pastewatch-allow")
+    }
+
+    private static func defaultTemplate() -> String {
+        return """
+        {
+          "enabled": true,
+          "enabledTypes": \(defaultEnabledTypesJSON()),
+          "showNotifications": true,
+          "soundEnabled": false,
+          "allowedValues": [],
+          "allowedPatterns": [],
+          "customRules": [],
+          "safeHosts": [],
+          "sensitiveHosts": [],
+          "sensitiveIPPrefixes": [],
+          "mcpMinSeverity": "high",
+          "xmlSensitiveTags": [],
+          "placeholderPrefix": null
+        }
+        """
+    }
+
+    private static func profileTemplate(_ name: String) -> String? {
+        switch name {
+        case "banking":
+            return bankingTemplate()
+        default:
+            return nil
+        }
+    }
+
+    private static func bankingTemplate() -> String {
+        return """
+        {
+          "enabled": true,
+          "enabledTypes": \(defaultEnabledTypesJSON()),
+          "showNotifications": true,
+          "soundEnabled": false,
+          "allowedValues": [],
+          "allowedPatterns": [],
+          "customRules": [
+            {"name": "Service Account", "pattern": "svc_[a-zA-Z0-9_]+@[a-zA-Z0-9.-]+", "severity": "high"},
+            {"name": "Internal URI", "pattern": "https?://[a-zA-Z0-9.-]+\\\\.internal\\\\.[a-zA-Z0-9.-]+[^\\\\s]*", "severity": "high"}
+          ],
+          "safeHosts": [],
+          "sensitiveHosts": [".internal.YOURBANK.com", ".corp.YOURBANK.net"],
+          "sensitiveIPPrefixes": ["10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168."],
+          "mcpMinSeverity": "medium",
+          "xmlSensitiveTags": ["password", "connectionString", "jdbcUrl", "datasource"],
+          "placeholderPrefix": null
+        }
+        """
     }
 
     private static func defaultEnabledTypesJSON() -> String {
