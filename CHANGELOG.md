@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `setup claude-code` auto-injects pastewatch snippet into CLAUDE.md (WO-74)
+- `setup` runs `doctor` health check after configuration (WO-75)
 
 ## [0.19.8] - 2026-03-13
 
