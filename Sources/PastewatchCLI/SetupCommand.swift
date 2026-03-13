@@ -104,6 +104,8 @@ struct Setup: ParsableCommand {
         print("  config   \(settingsPath) (\(configStatus))")
         print("  severity \(severity) (hook and MCP aligned)")
         print("\ndone. restart claude code to activate.")
+
+        runDoctor()
     }
 
     // MARK: - Cline
@@ -146,6 +148,8 @@ struct Setup: ParsableCommand {
         print("  next: register the hook in Cline settings as a PreToolUse hook.")
         print("  path: \(hookPath)")
         print("\ndone. restart VS Code to activate MCP server.")
+
+        runDoctor()
     }
 
     // MARK: - Cursor
@@ -173,5 +177,26 @@ struct Setup: ParsableCommand {
         print("    When reading or writing files that may contain secrets,")
         print("    use pastewatch MCP tools (pastewatch_read_file, pastewatch_write_file).")
         print("\ndone. restart Cursor to activate MCP server.")
+
+        runDoctor()
+    }
+
+    // MARK: - Doctor
+
+    /// Run `pastewatch-cli doctor` as a health check after setup.
+    private func runDoctor() {
+        print("\n--- health check ---\n")
+
+        let binaryPath = ProcessInfo.processInfo.arguments.first ?? "pastewatch-cli"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binaryPath)
+        process.arguments = ["doctor"]
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            print("  (skipped: could not run doctor)")
+        }
     }
 }
