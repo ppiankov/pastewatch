@@ -346,7 +346,7 @@ After configuring MCP and hooks for any agent:
 1. Start the agent - pastewatch should appear in the MCP/tools panel with 6 tools
 2. Create a test file with a fake secret (e.g., `password=hunter2`)
 3. Ask the agent to read the test file with native Read - hook should block and redirect to `pastewatch_read_file`
-4. Ask the agent to use `pastewatch_read_file` - verify the secret is replaced with a `__PW{...}__` placeholder
+4. Ask the agent to use `pastewatch_read_file` - verify the secret is replaced with a `__PW_...__` placeholder
 5. Check `/tmp/pastewatch-audit.log` for the read entry
 
 ### Troubleshooting
@@ -366,7 +366,7 @@ Once configured, the agent has access to:
 | Tool | Purpose |
 |------|---------|
 | `pastewatch_scan` | Scan file or directory for secrets |
-| `pastewatch_read_file` | Read file with secrets replaced by `__PW{...}__` placeholders |
+| `pastewatch_read_file` | Read file with secrets replaced by `__PW_...__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan_diff` | Scan git diff for secrets in changed lines |

@@ -6,7 +6,7 @@ import Foundation
 /// - Mapping lives only in server process memory — dies on exit, never persisted
 /// - Same value always maps to same placeholder across all files in a session
 /// - Deobfuscation happens locally on-device — secrets never leave the machine
-/// - Default format: __PW{TYPE_N}__ — never collides with real content
+/// - Default format: __PW_TYPE_N__ — never collides with real content
 /// - Custom prefix format: {prefix}{NNN} — LLM-proxy compatible, no braces
 public final class RedactionStore {
     // swiftlint:disable:next force_try

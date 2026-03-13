@@ -14,7 +14,7 @@ final class MCPRedactTests: XCTestCase {
         let (redacted, entries) = store.redact(content: content, matches: matches, filePath: tmpFile)
 
         XCTAssertFalse(redacted.contains("user@example.com"))
-        XCTAssertTrue(redacted.contains("__PW{EMAIL_1}__"))
+        XCTAssertTrue(redacted.contains("__PW_EMAIL_1__"))
         XCTAssertEqual(entries.count, 1)
     }
 
@@ -35,7 +35,7 @@ final class MCPRedactTests: XCTestCase {
         let written = try String(contentsOfFile: tmpFile, encoding: .utf8)
 
         XCTAssertTrue(written.contains("user@example.com"))
-        XCTAssertFalse(written.contains("__PW{EMAIL_1}__"))
+        XCTAssertFalse(written.contains("__PW_EMAIL_1__"))
         XCTAssertTrue(written.hasSuffix("# email field"))
         XCTAssertEqual(resolved.resolved, 1)
     }
@@ -65,7 +65,7 @@ final class MCPRedactTests: XCTestCase {
     }
 
     func testCheckOutputCleanText() {
-        let text = "config = __PW{EMAIL_1}__"
+        let text = "config = __PW_EMAIL_1__"
         let matches = DetectionRules.scan(text, config: .defaultConfig)
         XCTAssertTrue(matches.isEmpty)
     }

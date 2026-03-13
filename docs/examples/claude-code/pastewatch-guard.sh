@@ -54,8 +54,8 @@ echo "$file_path" | grep -qF '/.git/' && exit 0
 # --- WRITE: Check for pastewatch placeholders in content ---
 if [ "$tool" = "Write" ]; then
   content=$(echo "$input" | jq -r '.tool_input.content // empty')
-  if [ -n "$content" ] && echo "$content" | grep -qE '__PW\{[A-Z][A-Z0-9_]*_[0-9]+\}__'; then
-    echo "BLOCKED: content contains pastewatch placeholders (__PW{...}__). Use pastewatch_write_file to resolve placeholders back to real values."
+  if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+    echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
     echo "Blocked: pastewatch placeholders in Write" >&2
     exit 2
   fi

@@ -48,21 +48,21 @@ public struct Obfuscator {
     }
 
     /// Create an MCP-safe placeholder that never collides with real content.
-    /// Format: __PW{TYPE_N}__ — ASCII-safe, grep-friendly, impossible in nature.
+    /// Format: __PW_TYPE_N__ — ASCII-safe, grep-friendly, proxy-compatible.
     /// Used by MCP redacted read/write tools.
     public static func makeMCPPlaceholder(type: SensitiveDataType, number: Int) -> String {
         let typeName = type.rawValue.uppercased().replacingOccurrences(of: " ", with: "_")
-        return "__PW{\(typeName)_\(number)}__"
+        return "__PW_\(typeName)_\(number)__"
     }
 
-    /// Create a custom-prefix placeholder for LLM-proxy compatibility.
+    /// Create a custom-prefix placeholder.
     /// Format: {prefix}{zero-padded number} — no braces, no special chars.
     public static func makeCustomPlaceholder(prefix: String, number: Int) -> String {
         return "\(prefix)\(String(format: "%03d", number))"
     }
 
     /// Regex pattern matching MCP placeholders for resolution.
-    public static let mcpPlaceholderPattern = "__PW\\{[A-Z][A-Z0-9_]*_\\d+\\}__"
+    public static let mcpPlaceholderPattern = "__PW_[A-Z][A-Z0-9_]*_\\d+__"
 
     /// Build a regex pattern matching custom-prefix placeholders.
     public static func customPlaceholderPattern(prefix: String) -> String {

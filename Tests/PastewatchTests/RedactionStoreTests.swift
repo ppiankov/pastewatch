@@ -11,9 +11,9 @@ final class RedactionStoreTests: XCTestCase {
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
         XCTAssertFalse(redacted.contains("user@example.com"))
-        XCTAssertTrue(redacted.contains("__PW{EMAIL_1}__"))
+        XCTAssertTrue(redacted.contains("__PW_EMAIL_1__"))
         XCTAssertEqual(entries.count, matches.count)
-        XCTAssertEqual(entries[0].placeholder, "__PW{EMAIL_1}__")
+        XCTAssertEqual(entries[0].placeholder, "__PW_EMAIL_1__")
         XCTAssertEqual(entries[0].type, "Email")
     }
 
@@ -44,12 +44,12 @@ final class RedactionStoreTests: XCTestCase {
 
     func testUnresolvedPlaceholders() {
         let store = RedactionStore()
-        let content = "value: __PW{FAKE_PLACEHOLDER_1}__"
+        let content = "value: __PW_FAKE_PLACEHOLDER_1__"
 
         let result = store.resolveAll(content: content)
         XCTAssertEqual(result.resolved, 0)
         XCTAssertEqual(result.unresolved, 1)
-        XCTAssertEqual(result.unresolvedPlaceholders, ["__PW{FAKE_PLACEHOLDER_1}__"])
+        XCTAssertEqual(result.unresolvedPlaceholders, ["__PW_FAKE_PLACEHOLDER_1__"])
         XCTAssertEqual(result.content, content)
     }
 
@@ -78,7 +78,7 @@ final class RedactionStoreTests: XCTestCase {
         store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
         // Global counters: admin@corp.com → EMAIL_1, dev@corp.com → EMAIL_2
-        let mixed = "users: __PW{EMAIL_1}__ and __PW{EMAIL_2}__"
+        let mixed = "users: __PW_EMAIL_1__ and __PW_EMAIL_2__"
         let result = store.resolveAll(content: mixed)
         XCTAssertEqual(result.resolved, 2)
         XCTAssertTrue(result.content.contains("admin@corp.com"))
@@ -99,8 +99,8 @@ final class RedactionStoreTests: XCTestCase {
 
         // Same value across files → same placeholder
         XCTAssertEqual(entries1[0].placeholder, entries2[0].placeholder)
-        XCTAssertTrue(redacted1.contains("__PW{EMAIL_1}__"))
-        XCTAssertTrue(redacted2.contains("__PW{EMAIL_1}__"))
+        XCTAssertTrue(redacted1.contains("__PW_EMAIL_1__"))
+        XCTAssertTrue(redacted2.contains("__PW_EMAIL_1__"))
     }
 
     func testNoMatchesReturnsOriginal() {
