@@ -245,7 +245,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
   Your machine (local only)              Cloud API
   ┌────────────────────────┐
   │  pastewatch MCP server │
-  │                        │   __PW{AWS_KEY_1}__
+  │                        │   __PW_AWS_KEY_1__
   │  read: scan + redact ──┼──────────────────────► Agent sees placeholders
   │  write: resolve local ◄┼────────────────────── Agent returns placeholders
   │                        │
@@ -270,7 +270,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
 
 | Tool | Purpose |
 |------|---------|
-| `pastewatch_read_file` | Read file with secrets replaced by `__PW{TYPE_N}__` placeholders |
+| `pastewatch_read_file` | Read file with secrets replaced by `__PW_TYPE_N__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan` | Scan text for sensitive data |
@@ -607,7 +607,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts, catches 2-segment hosts like `.local`) |
 | `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
 | `mcpMinSeverity` | string | Default severity threshold for MCP redacted reads (default: `high`) |
-| `placeholderPrefix` | string? | Custom prefix for MCP placeholders (e.g., `REDACTED_PLACEHOLDER_` produces `REDACTED_PLACEHOLDER_001`). Default: `null` (uses `__PW{TYPE_N}__` format). Set this if your LLM proxy rejects curly-brace placeholders |
+| `placeholderPrefix` | string? | Custom prefix for MCP placeholders (e.g., `REDACTED_` produces `REDACTED_001`). Default: `null` (uses `__PW_TYPE_N__` format) |
 
 GUI settings can also be changed via the menubar dropdown.
 

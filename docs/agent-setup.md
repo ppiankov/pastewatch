@@ -151,7 +151,7 @@ For all agents:
 1. Start the agent - pastewatch should appear in the MCP/tools panel with 6 tools
 2. Create a test file with a fake secret (e.g., `password=hunter2`)
 3. Ask the agent to use `pastewatch_read_file` on the test file
-4. Verify the secret is replaced with a `__PW{...}__` placeholder
+4. Verify the secret is replaced with a `__PW_...__` placeholder
 5. Check `/tmp/pastewatch-audit.log` for the read entry
 
 ## Troubleshooting
@@ -192,7 +192,7 @@ Intercepts native file tools and blocks them when the target file contains secre
 Hook logic:
 1. Extract file path from tool input
 2. Skip binary files and `.git/` internals
-3. For Write: check content for `__PW{...}__` placeholders - block if found (must use `pastewatch_write_file`)
+3. For Write: check content for `__PW_...__` placeholders - block if found (must use `pastewatch_write_file`)
 4. Run `pastewatch-cli scan --check --fail-on-severity high --file <path>`
 5. Exit 6 from scan = secrets found → block with redirect message
 6. Exit 0 = clean → allow native tool

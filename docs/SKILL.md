@@ -71,7 +71,7 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
 | `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts. Also catches 2-segment hosts (e.g., `.local` → `nas.local`) |
 | `sensitiveIPPrefixes` | string[] | `[]` | IP prefixes always detected — overrides built-in IP exclude list (e.g., `172.16.`, `10.`) |
 | `mcpMinSeverity` | string | `"high"` | Default minimum severity for MCP `pastewatch_read_file` redaction (critical, high, medium, low) |
-| `placeholderPrefix` | string? | `null` | Custom prefix for MCP placeholders. When set, produces `{prefix}001` instead of `__PW{TYPE_N}__`. Use when LLM proxies (e.g., LiteLLM) reject curly-brace placeholders |
+| `placeholderPrefix` | string? | `null` | Custom prefix for MCP placeholders. When set, produces `{prefix}001` instead of `__PW_TYPE_N__` |
 
 ## Commands
 
@@ -382,7 +382,7 @@ Input:
 Response: findings in added lines only, with accurate file paths and line numbers.
 
 #### pastewatch_read_file
-Read a file with sensitive values replaced by `__PW{TYPE_N}__` placeholders. Secrets stay local — only placeholders reach the AI. Same value always maps to same placeholder across all files in a session.
+Read a file with sensitive values replaced by `__PW_TYPE_N__` placeholders. Secrets stay local — only placeholders reach the AI. Same value always maps to same placeholder across all files in a session.
 
 Input:
 ```json
@@ -397,7 +397,7 @@ Response: JSON object with `content` (redacted text), `redactions` (manifest of 
 **Severity thresholds:** `high` (default) redacts credentials, API keys, DB connections, emails, phones. IPs, hostnames, and file paths are `medium` — pass through unless `min_severity: "medium"` is set. UUIDs and high entropy are `low`.
 
 #### pastewatch_write_file
-Write file contents, resolving `__PW{TYPE_N}__` placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing.
+Write file contents, resolving `__PW_TYPE_N__` placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing.
 
 Input:
 ```json
@@ -432,7 +432,7 @@ Response: inventory report with severity breakdown, hot spots, type groups, and 
 
 **Redacted read/write workflow:**
 
-1. Agent calls `pastewatch_read_file` → gets content with `__PW{EMAIL_1}__` style placeholders
+1. Agent calls `pastewatch_read_file` → gets content with `__PW_EMAIL_1__` style placeholders
 2. Agent processes code with placeholders (secrets never reach the API)
 3. Agent calls `pastewatch_write_file` → MCP server resolves placeholders locally, writes real values to disk
 

@@ -51,7 +51,7 @@ Your machine (local)
 │  │   file (real secrets)                 │  │
 │  │     → scan → store mapping in RAM     │  │
 │  │     → return content with             │  │
-│  │       __PW{EMAIL_1}__ placeholders  ──┼──┼──► AI API (sees only placeholders)
+│  │       __PW_EMAIL_1__ placeholders  ──┼──┼──► AI API (sees only placeholders)
 │  │                                       │  │
 │  │ write_file:                           │  │
 │  │   content with placeholders         ◄─┼──┼─── AI API returns code
@@ -78,13 +78,13 @@ Once configured, the agent has access to these MCP tools:
 
 | Tool | Purpose |
 |------|---------|
-| `pastewatch_read_file` | Read file with secrets replaced by `__PW{EMAIL_1}__` placeholders |
+| `pastewatch_read_file` | Read file with secrets replaced by `__PW_EMAIL_1__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 
 **Round-trip workflow:**
 1. Agent calls `pastewatch_read_file` for sensitive files
-2. Gets back content with `__PW{CREDENTIAL_1}__`, `__PW{AWS_KEY_1}__` etc.
+2. Gets back content with `__PW_CREDENTIAL_1__`, `__PW_AWS_KEY_1__` etc.
 3. API processes code - only sees placeholders, never real secrets
 4. Agent calls `pastewatch_write_file` - MCP server resolves placeholders on-device
 5. Written file contains real values - code stays functional
@@ -94,8 +94,8 @@ Once configured, the agent has access to these MCP tools:
 database:
   host: db.internal.corp
   port: 5432
-  password: __PW{CREDENTIAL_1}__
-  api_key: __PW{AWS_KEY_1}__
+  password: __PW_CREDENTIAL_1__
+  api_key: __PW_AWS_KEY_1__
 ```
 
 **What gets written to disk:**
@@ -126,9 +126,9 @@ Original file contains AWS keys, a database URL, an API token, an IP address, an
 
 ```bash
 # What the agent sees (sent to API)
-AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__          # critical - redacted
-DATABASE_URL=__PW{DB_CONNECTION_1}__         # critical - redacted
-API_TOKEN=__PW{OPENAI_KEY_1}__               # critical - redacted
+AWS_ACCESS_KEY_ID=__PW_AWS_KEY_1__          # critical - redacted
+DATABASE_URL=__PW_DB_CONNECTION_1__         # critical - redacted
+API_TOKEN=__PW_OPENAI_KEY_1__               # critical - redacted
 ANSIBLE_HOST=172.16.161.206                  # medium - passes through
 INTERNAL_SERVER=keeper2.ipa.local            # medium - passes through
 ```
@@ -137,11 +137,11 @@ The IP and hostname pass through because they are `medium` severity - below the 
 
 ```bash
 # With min_severity: "medium" - IPs and hostnames also redacted
-AWS_ACCESS_KEY_ID=__PW{AWS_KEY_1}__
-DATABASE_URL=__PW{DB_CONNECTION_1}__
-API_TOKEN=__PW{OPENAI_KEY_1}__
-ANSIBLE_HOST=__PW{IP_1}__                   # medium - now redacted
-INTERNAL_SERVER=__PW{HOSTNAME_1}__           # medium - now redacted
+AWS_ACCESS_KEY_ID=__PW_AWS_KEY_1__
+DATABASE_URL=__PW_DB_CONNECTION_1__
+API_TOKEN=__PW_OPENAI_KEY_1__
+ANSIBLE_HOST=__PW_IP_1__                   # medium - now redacted
+INTERNAL_SERVER=__PW_HOSTNAME_1__           # medium - now redacted
 ```
 
 The default `high` threshold is intentional - it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.

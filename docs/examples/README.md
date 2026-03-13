@@ -168,7 +168,7 @@ Both at the same severity:
 
 ```
 Hook: --fail-on-severity medium  →  blocks native read
-MCP:  --min-severity medium      →  pastewatch_read_file redacts IP as __PW{IP_1}__
+MCP:  --min-severity medium      →  pastewatch_read_file redacts IP as __PW_IP_1__
 
 Result: IP never leaves your machine
 ```
@@ -256,7 +256,7 @@ echo 'DB_PASSWORD=SuperSecret123!' > /tmp/pastewatch-test.env
 #    "Read the file /tmp/pastewatch-test.env"
 #
 #    Expected: hook blocks native read, agent falls back to pastewatch_read_file,
-#    you see __PW{CREDENTIAL_1}__ instead of the password.
+#    you see __PW_CREDENTIAL_1__ instead of the password.
 
 # 3. Check the audit log
 cat /tmp/pastewatch-audit.log
