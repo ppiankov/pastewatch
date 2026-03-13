@@ -213,10 +213,14 @@ Generate project configuration files (`.pastewatch.json` and `.pastewatch-allow`
 
 **Flags:**
 - `--force` — overwrite existing files
+- `--profile <name>` — configuration profile. Available: `banking`
+
+**Profiles:**
+- `banking` — JDBC URL detection, `mcpMinSeverity: medium`, RFC 1918 IP prefixes, example service account and internal URI rules. Replace `YOURBANK` in `sensitiveHosts` with your domain.
 
 **Exit codes:**
 - 0: success
-- 2: files already exist (without --force)
+- 2: files already exist (without --force), or unknown profile
 
 ### pastewatch-cli baseline create
 
@@ -469,6 +473,11 @@ Response: inventory report with severity breakdown, hot spots, type groups, and 
 | SendGrid Key | SendGrid API keys (SG. prefix) | critical |
 | Shopify Token | Shopify access tokens (shpat_, shpca_, shppa_) | critical |
 | DigitalOcean Token | DigitalOcean tokens (dop_v1_, doo_v1_) | critical |
+| Perplexity Key | Perplexity AI API keys (pplx- prefix) | critical |
+| JDBC URL | JDBC connection URLs (Oracle, DB2, MySQL, PostgreSQL, SQL Server, AS/400) | critical |
+| XML Credential | Credentials in XML tags (password, secret, access_key) | critical |
+| XML Username | Usernames in XML tags (user, quota_key) | high |
+| XML Hostname | Hostnames in XML tags (host, hostname) | medium |
 | High Entropy | High-entropy strings (Shannon > 4.0, 20+ chars, mixed classes) — opt-in only | low |
 
 SARIF maps: critical/high → `error`, medium → `warning`, low → `note`.
