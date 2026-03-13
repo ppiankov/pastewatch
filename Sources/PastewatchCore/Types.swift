@@ -354,8 +354,19 @@ public struct PastewatchConfig: Codable {
         }
     }
 
-    /// Resolve config with cascade: CWD .pastewatch.json -> ~/.config/pastewatch/config.json -> defaults.
+    /// System-wide admin config path. If present, takes highest priority (cannot be overridden).
+    public static let systemConfigPath = "/etc/pastewatch/config.json"
+
+    /// Resolve config with cascade: /etc/pastewatch -> CWD .pastewatch.json -> ~/.config/pastewatch -> defaults.
     public static func resolve() -> PastewatchConfig {
+        // 1. Admin-enforced config (highest priority)
+        if FileManager.default.fileExists(atPath: systemConfigPath),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: systemConfigPath)),
+           let config = try? JSONDecoder().decode(PastewatchConfig.self, from: data) {
+            return config
+        }
+
+        // 2. Project config
         let cwd = FileManager.default.currentDirectoryPath
         let projectPath = cwd + "/.pastewatch.json"
         if FileManager.default.fileExists(atPath: projectPath),
@@ -363,6 +374,8 @@ public struct PastewatchConfig: Codable {
            let config = try? JSONDecoder().decode(PastewatchConfig.self, from: data) {
             return config
         }
+
+        // 3. User config / defaults
         return load()
     }
 

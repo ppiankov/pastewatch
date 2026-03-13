@@ -82,13 +82,35 @@ struct Doctor: ParsableCommand {
         let fm = FileManager.default
         let cwd = fm.currentDirectoryPath
 
+        let systemPath = PastewatchConfig.systemConfigPath
         let projectPath = cwd + "/.pastewatch.json"
         let userPath = PastewatchConfig.configPath.path
 
+        let systemExists = fm.fileExists(atPath: systemPath)
         let projectExists = fm.fileExists(atPath: projectPath)
         let userExists = fm.fileExists(atPath: userPath)
 
-        if projectExists {
+        if systemExists {
+            results.append(CheckResult(check: "config", status: "ok", detail: "system (admin): \(systemPath)"))
+            let validation = ConfigValidator.validate(path: systemPath)
+            if !validation.isValid {
+                for err in validation.errors {
+                    results.append(CheckResult(check: "config", status: "warn", detail: err))
+                }
+            }
+            if projectExists {
+                results.append(CheckResult(
+                    check: "config", status: "info",
+                    detail: "project config exists but overridden by system: \(projectPath)"
+                ))
+            }
+            if userExists {
+                results.append(CheckResult(
+                    check: "config", status: "info",
+                    detail: "user config exists but overridden by system: \(userPath)"
+                ))
+            }
+        } else if projectExists {
             results.append(CheckResult(check: "config", status: "ok", detail: "project: \(projectPath)"))
             let validation = ConfigValidator.validate(path: projectPath)
             if !validation.isValid {
@@ -108,7 +130,7 @@ struct Doctor: ParsableCommand {
             results.append(CheckResult(check: "config", status: "ok", detail: "defaults (no config file found)"))
         }
 
-        if projectExists && userExists {
+        if !systemExists && projectExists && userExists {
             results.append(CheckResult(check: "config", status: "info", detail: "user config exists but overridden: \(userPath)"))
         }
 
