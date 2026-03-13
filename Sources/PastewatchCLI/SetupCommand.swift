@@ -181,7 +181,7 @@ struct Setup: ParsableCommand {
         runDoctor()
     }
 
-    // MARK: - Doctor
+    // MARK: - Post-setup checks
 
     /// Run `pastewatch-cli doctor` as a health check after setup.
     private func runDoctor() {
@@ -197,6 +197,27 @@ struct Setup: ParsableCommand {
             process.waitUntilExit()
         } catch {
             print("  (skipped: could not run doctor)")
+        }
+
+        runCanaryVerify()
+    }
+
+    /// Quick canary smoke test — generate canaries, verify all detected.
+    private func runCanaryVerify() {
+        print("\n--- detection smoke test ---\n")
+
+        let manifest = CanaryGenerator.generate(prefix: "setup-verify")
+        let results = CanaryGenerator.verify(manifest: manifest)
+        let allPassed = results.allSatisfy { $0.detected }
+
+        if allPassed {
+            print("  canary   \(results.count)/\(results.count) detection types verified")
+        } else {
+            let failed = results.filter { !$0.detected }
+            print("  canary   WARNING: \(failed.count) detection type(s) not working:")
+            for result in failed {
+                print("           - \(result.type)")
+            }
         }
     }
 }
