@@ -92,7 +92,37 @@ after paste.
 3. Launch Pastewatch from Applications
 4. Grant notification permissions when prompted
 
-### From Source
+### CLI via Homebrew
+
+```bash
+brew install ppiankov/tap/pastewatch
+pastewatch-cli doctor    # verify installation
+```
+
+### CLI Manual Install (No Homebrew)
+
+For environments where Homebrew is not available (CI runners, restricted workstations, Linux):
+
+```bash
+# Download the latest release binary
+curl -L -o pastewatch-cli https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli
+chmod +x pastewatch-cli
+sudo mv pastewatch-cli /usr/local/bin/
+
+# Verify
+pastewatch-cli doctor
+```
+
+Or build from source (requires Swift 5.9+):
+
+```bash
+git clone https://github.com/ppiankov/pastewatch.git
+cd pastewatch
+swift build -c release
+sudo cp .build/release/PastewatchCLI /usr/local/bin/pastewatch-cli
+```
+
+### From Source (GUI)
 
 ```bash
 git clone https://github.com/ppiankov/pastewatch.git
