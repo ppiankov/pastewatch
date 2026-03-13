@@ -80,6 +80,100 @@ public enum AgentSetup {
         json["hooks"] = hooks
     }
 
+    // MARK: - CLAUDE.md Snippet
+
+    /// The pastewatch snippet to inject into CLAUDE.md files.
+    public static let claudeSnippet = """
+    ## Pastewatch — Secret Redaction
+
+    This project uses [pastewatch](https://github.com/ppiankov/pastewatch) to prevent secrets from reaching AI APIs.
+
+    ### When hooks block you
+
+    If a pastewatch hook blocks `Read`, `Write`, or `Edit`:
+    - Use `pastewatch_read_file` MCP tool to read the file (secrets are replaced with `__PW_TYPE_N__` placeholders)
+    - Use `pastewatch_write_file` MCP tool to write back (placeholders are resolved to real values locally)
+    - NEVER use `cat`, `head`, `python3`, or any Bash workaround to read blocked files
+    - NEVER delete or rename files to bypass the hook
+
+    ### Round-trip workflow
+
+    1. Read: `pastewatch_read_file` → you see `password: __PW_CREDENTIAL_1__`
+    2. Edit: work with placeholders in your code changes
+    3. Write: `pastewatch_write_file` → real values restored on disk
+
+    ### Rules
+
+    - Same secret always maps to the same placeholder within a session
+    - Placeholders are in-memory only — they die when the MCP server stops
+    - If you see `__PW_` prefixed values, those are redacted secrets — do not treat them as real values
+    - When writing files that contain `__PW_` placeholders, always use `pastewatch_write_file` — native Write will be blocked
+    """
+
+    /// Sentinel line used to detect existing snippet in CLAUDE.md.
+    private static let snippetSentinel = "## Pastewatch — Secret Redaction"
+
+    /// Inject the pastewatch snippet into a CLAUDE.md file.
+    /// Creates the file if it doesn't exist, appends if no existing snippet, replaces if found.
+    /// Returns (path, action) where action is "created", "updated", or "already present".
+    @discardableResult
+    public static func injectClaudeSnippet(at path: String) throws -> (String, String) {
+        let fm = FileManager.default
+        let dir = (path as NSString).deletingLastPathComponent
+        if !dir.isEmpty && !fm.fileExists(atPath: dir) {
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+
+        if fm.fileExists(atPath: path),
+           let existing = try? String(contentsOfFile: path, encoding: .utf8) {
+            if existing.contains(snippetSentinel) {
+                // Replace existing snippet (everything from sentinel to next ## or end)
+                let lines = existing.components(separatedBy: "\n")
+                var result: [String] = []
+                var inSnippet = false
+                for line in lines {
+                    if line.hasPrefix(snippetSentinel) {
+                        inSnippet = true
+                        continue
+                    }
+                    if inSnippet {
+                        // Next top-level heading ends the snippet
+                        if line.hasPrefix("## ") && !line.hasPrefix("### ") {
+                            inSnippet = false
+                            result.append(claudeSnippet)
+                            result.append("")
+                            result.append(line)
+                        }
+                        continue
+                    }
+                    result.append(line)
+                }
+                // If snippet was at end of file
+                if inSnippet {
+                    result.append(claudeSnippet)
+                    result.append("")
+                }
+                let updated = result.joined(separator: "\n")
+                try updated.write(toFile: path, atomically: true, encoding: .utf8)
+                return (path, "updated")
+            } else {
+                // Append snippet
+                var content = existing
+                if !content.hasSuffix("\n") {
+                    content += "\n"
+                }
+                content += "\n" + claudeSnippet + "\n"
+                try content.write(toFile: path, atomically: true, encoding: .utf8)
+                return (path, "appended")
+            }
+        } else {
+            // Create new file
+            let content = claudeSnippet + "\n"
+            try content.write(toFile: path, atomically: true, encoding: .utf8)
+            return (path, "created")
+        }
+    }
+
     // MARK: - Embedded Templates
 
     /// Generate Claude Code guard script with configured severity.

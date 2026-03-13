@@ -83,7 +83,17 @@ struct Setup: ParsableCommand {
         AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
         try AgentSetup.writeJSON(json, to: settingsPath)
 
-        // 3. Print summary
+        // 3. Inject CLAUDE.md snippet
+        let claudeMdPath: String
+        if project {
+            claudeMdPath = fm.currentDirectoryPath + "/CLAUDE.md"
+        } else {
+            claudeMdPath = home + "/.claude/CLAUDE.md"
+        }
+        let (_, snippetAction) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        print("  claude   \(claudeMdPath) (\(snippetAction))")
+
+        // 4. Print summary
         var mcpArgs = "pastewatch-cli mcp --audit-log /tmp/pastewatch-audit.log"
         if severity != "high" {
             mcpArgs += " --min-severity \(severity)"
