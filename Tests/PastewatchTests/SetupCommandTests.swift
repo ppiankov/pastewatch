@@ -338,6 +338,143 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertEqual(mcpServers?.count, 1, "Should have exactly 1 MCP server entry")
     }
 
+    // MARK: - CLAUDE.md Snippet Tests
+
+    func testInjectSnippetCreatesNewFile() throws {
+        let tmpDir = NSTemporaryDirectory() + "pw-snippet-\(UUID().uuidString)"
+        let claudeMdPath = tmpDir + "/CLAUDE.md"
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+        let (_, action) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        XCTAssertEqual(action, "created")
+
+        let content = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+        XCTAssertTrue(content.contains("## Pastewatch — Secret Redaction"))
+        XCTAssertTrue(content.contains("pastewatch_read_file"))
+        XCTAssertTrue(content.contains("__PW_CREDENTIAL_1__"))
+    }
+
+    func testInjectSnippetAppendsToExisting() throws {
+        let tmpDir = NSTemporaryDirectory() + "pw-snippet-\(UUID().uuidString)"
+        let claudeMdPath = tmpDir + "/CLAUDE.md"
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true
+        )
+        try "# My Project\n\nExisting content here.\n".write(
+            toFile: claudeMdPath, atomically: true, encoding: .utf8
+        )
+
+        let (_, action) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        XCTAssertEqual(action, "appended")
+
+        let content = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+        XCTAssertTrue(content.contains("# My Project"))
+        XCTAssertTrue(content.contains("Existing content here."))
+        XCTAssertTrue(content.contains("## Pastewatch — Secret Redaction"))
+    }
+
+    func testInjectSnippetUpdatesExisting() throws {
+        let tmpDir = NSTemporaryDirectory() + "pw-snippet-\(UUID().uuidString)"
+        let claudeMdPath = tmpDir + "/CLAUDE.md"
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true
+        )
+        // File with old version of snippet
+        let existing = """
+        # My Project
+
+        ## Pastewatch — Secret Redaction
+
+        Old snippet content that should be replaced.
+
+        ### Old subsection
+
+        More old content.
+
+        ## Other Section
+
+        Keep this.
+        """
+        try existing.write(toFile: claudeMdPath, atomically: true, encoding: .utf8)
+
+        let (_, action) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        XCTAssertEqual(action, "updated")
+
+        let content = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+        // Old content replaced
+        XCTAssertFalse(content.contains("Old snippet content"))
+        XCTAssertFalse(content.contains("Old subsection"))
+        // New snippet present
+        XCTAssertTrue(content.contains("pastewatch_read_file"))
+        // Other section preserved
+        XCTAssertTrue(content.contains("## Other Section"))
+        XCTAssertTrue(content.contains("Keep this."))
+        // Header preserved
+        XCTAssertTrue(content.contains("# My Project"))
+    }
+
+    func testInjectSnippetIdempotent() throws {
+        let tmpDir = NSTemporaryDirectory() + "pw-snippet-\(UUID().uuidString)"
+        let claudeMdPath = tmpDir + "/CLAUDE.md"
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+        // First injection
+        try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        let firstContent = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+
+        // Second injection
+        let (_, action) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        XCTAssertEqual(action, "updated")
+
+        let secondContent = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+
+        // Content should be equivalent (snippet replaced with same snippet)
+        XCTAssertTrue(secondContent.contains("## Pastewatch — Secret Redaction"))
+        // Should only contain one instance of the sentinel
+        let occurrences = secondContent.components(separatedBy: "## Pastewatch — Secret Redaction").count - 1
+        XCTAssertEqual(occurrences, 1)
+    }
+
+    func testInjectSnippetAtEndOfFile() throws {
+        let tmpDir = NSTemporaryDirectory() + "pw-snippet-\(UUID().uuidString)"
+        let claudeMdPath = tmpDir + "/CLAUDE.md"
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true
+        )
+        // File with snippet at the very end (no following ## section)
+        let existing = """
+        # My Project
+
+        ## Pastewatch — Secret Redaction
+
+        Old content at end of file.
+        """
+        try existing.write(toFile: claudeMdPath, atomically: true, encoding: .utf8)
+
+        let (_, action) = try AgentSetup.injectClaudeSnippet(at: claudeMdPath)
+        XCTAssertEqual(action, "updated")
+
+        let content = try String(contentsOfFile: claudeMdPath, encoding: .utf8)
+        XCTAssertFalse(content.contains("Old content at end"))
+        XCTAssertTrue(content.contains("pastewatch_read_file"))
+    }
+
+    func testSnippetContainsRequiredContent() {
+        let snippet = AgentSetup.claudeSnippet
+        XCTAssertTrue(snippet.contains("pastewatch_read_file"))
+        XCTAssertTrue(snippet.contains("pastewatch_write_file"))
+        XCTAssertTrue(snippet.contains("__PW_CREDENTIAL_1__"))
+        XCTAssertTrue(snippet.contains("__PW_"))
+        XCTAssertTrue(snippet.contains("Round-trip workflow"))
+        XCTAssertTrue(snippet.contains("NEVER"))
+    }
+
     func testCursorSetupMergesConfig() throws {
         let tmpHome = NSTemporaryDirectory() + "pw-setup-cursor-\(UUID().uuidString)"
         let cursorDir = tmpHome + "/.cursor"
