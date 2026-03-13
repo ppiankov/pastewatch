@@ -246,6 +246,15 @@ public struct DetectionRules {
             result.append((.perplexityKey, regex))
         }
 
+        // JDBC Connection URL - high confidence
+        // Covers Oracle (thin/oci), PostgreSQL, MySQL, DB2, SQL Server, AS/400
+        if let regex = try? NSRegularExpression(
+            pattern: #"jdbc:[a-zA-Z0-9]+(?::[a-zA-Z0-9]+)*(?:://|:@|:@//)[^\s\"'<>]{5,}"#,
+            options: []
+        ) {
+            result.append((.jdbcUrl, regex))
+        }
+
         // XML Credential tags - high confidence
         // Catches <password>, <password_sha256_hex>, <secret_access_key>, etc.
         if let regex = try? NSRegularExpression(
