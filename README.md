@@ -139,6 +139,7 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | Shopify Tokens | `shpat_...`, `shpca_...` |
 | DigitalOcean Tokens | `dop_v1_...`, `doo_v1_...` |
 | Perplexity Keys | `pplx-...` |
+| JDBC URLs | `jdbc:oracle:thin:@...`, `jdbc:db2://...`, `jdbc:postgresql://...` |
 | XML Credentials | `<password>`, `<secret_access_key>`, etc. in XML configs |
 | XML Usernames | `<user>`, `<quota_key>` in XML configs |
 | XML Hostnames | `<host>`, `<hostname>`, `<interserver_http_host>` in XML configs |
@@ -452,9 +453,12 @@ pastewatch-cli scan --dir . --baseline .pastewatch-baseline.json --check
 Generate project configuration files:
 
 ```bash
-pastewatch-cli init          # creates .pastewatch.json and .pastewatch-allow
-pastewatch-cli init --force  # overwrite existing files
+pastewatch-cli init                    # creates .pastewatch.json and .pastewatch-allow
+pastewatch-cli init --profile banking  # banking profile: JDBC, medium severity, internal host detection
+pastewatch-cli init --force            # overwrite existing files
 ```
+
+**Banking profile** sets `mcpMinSeverity: medium` (catches IPs and internal hostnames), enables JDBC URL detection, adds example `customRules` for service accounts and internal URIs, and pre-fills `sensitiveIPPrefixes` with all RFC 1918 ranges. Replace `YOURBANK` in `sensitiveHosts` with your domain.
 
 Config resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults.
 
@@ -492,7 +496,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.19.7
+    rev: v0.19.8
     hooks:
       - id: pastewatch
 ```
@@ -672,7 +676,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.19.7** · Active development
+**Status: Stable** · **v0.19.8** · Active development
 
 | Milestone | Status |
 |-----------|--------|

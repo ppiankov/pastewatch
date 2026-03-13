@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.8] - 2026-03-13
+
+### Added
+
+- JDBC URL built-in detection type — Oracle, DB2, MySQL, PostgreSQL, SQL Server, AS/400 (WO-71)
+- `init --profile banking` for enterprise onboarding — medium severity, JDBC, RFC 1918 IPs, service account rules (WO-72)
+
 ## [0.19.7] - 2026-03-13
 
 ### Changed
