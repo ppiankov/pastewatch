@@ -295,6 +295,16 @@ pastewatch-cli scan --dir . --format markdown --output /tmp/scan-report.md
 
 Fix findings before the agent reads them. The cheapest secret to protect is the one that's not in a file.
 
+### Shell alias for automatic pre-flight
+
+Add to `.zshrc` or `.bashrc` to run a health check before every agent session:
+
+```bash
+alias claude='pastewatch-cli doctor --json >/dev/null 2>&1 && command claude'
+```
+
+This verifies pastewatch is installed, MCP is configured, and config is valid before the agent starts. If doctor fails, the session won't launch — fail-closed instead of fail-open.
+
 ---
 
 ## Layer 6: Baseline for Existing Projects
