@@ -5,11 +5,13 @@ public struct FileScanResult {
     public let filePath: String
     public let matches: [DetectedMatch]
     public let content: String
+    public let gitignored: Bool
 
-    public init(filePath: String, matches: [DetectedMatch], content: String) {
+    public init(filePath: String, matches: [DetectedMatch], content: String, gitignored: Bool = false) {
         self.filePath = filePath
         self.matches = matches
         self.content = content
+        self.gitignored = gitignored
     }
 }
 
@@ -126,7 +128,62 @@ public struct DirectoryScanner {
             }
         }
 
-        return results.sorted { $0.filePath < $1.filePath }
+        let sorted = results.sorted { $0.filePath < $1.filePath }
+
+        // Tag gitignored files
+        let ignoredSet = gitIgnoredFiles(in: directory, paths: sorted.map { $0.filePath })
+        if ignoredSet.isEmpty {
+            return sorted
+        }
+        return sorted.map { result in
+            if ignoredSet.contains(result.filePath) {
+                return FileScanResult(
+                    filePath: result.filePath,
+                    matches: result.matches,
+                    content: result.content,
+                    gitignored: true
+                )
+            }
+            return result
+        }
+    }
+
+    /// Check which paths are gitignored using `git check-ignore`.
+    /// Returns empty set if not in a git repo or git is not available.
+    public static func gitIgnoredFiles(in directory: String, paths: [String]) -> Set<String> {
+        guard !paths.isEmpty else { return [] }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory, "check-ignore", "--stdin"]
+        process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+
+        let input = paths.joined(separator: "\n") + "\n"
+        inputPipe.fileHandleForWriting.write(Data(input.utf8))
+        inputPipe.fileHandleForWriting.closeFile()
+
+        process.waitUntilExit()
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+        return Set(
+            output.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        )
     }
 
     /// Scan file content using format-aware parsing when available.

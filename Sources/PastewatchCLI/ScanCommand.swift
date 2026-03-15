@@ -40,6 +40,9 @@ struct Scan: ParsableCommand {
     @Flag(name: .long, help: "Stop at first finding (fast pre-dispatch gate)")
     var bail = false
 
+    @Flag(name: .long, help: "Include gitignored files in exit code (default: warn only)")
+    var includeGitignored = false
+
     @Flag(name: .long, help: "Scan git diff changes (staged by default)")
     var gitDiff = false
 
@@ -312,7 +315,12 @@ struct Scan: ParsableCommand {
         } else {
             outputDirFindings(results: filteredResults)
         }
-        let allMatches = filteredResults.flatMap { $0.matches }
+
+        // Only non-gitignored findings count toward exit code (unless --include-gitignored)
+        let exitResults = includeGitignored
+            ? filteredResults
+            : filteredResults.filter { !$0.gitignored }
+        let allMatches = exitResults.flatMap { $0.matches }
         if shouldFail(matches: allMatches) {
             throw ExitCode(rawValue: 6)
         }
@@ -534,22 +542,28 @@ struct Scan: ParsableCommand {
         print(lines.joined(separator: "\n"))
     }
 
+    private func gitignorePrefix(_ fr: FileScanResult) -> String {
+        fr.gitignored ? "[gitignored] " : ""
+    }
+
     private func outputDirCheckMode(results: [FileScanResult]) {
         switch format {
         case .text:
             for fr in results {
+                let prefix = gitignorePrefix(fr)
                 let summary = Dictionary(grouping: fr.matches, by: { $0.type })
                     .sorted { $0.value.count > $1.value.count }
                     .map { "\($0.key.rawValue): \($0.value.count)" }
                     .joined(separator: ", ")
-                FileHandle.standardError.write(Data("\(fr.filePath): \(summary)\n".utf8))
+                FileHandle.standardError.write(Data("\(prefix)\(fr.filePath): \(summary)\n".utf8))
             }
         case .json:
             let output = results.map { fr in
                 DirScanFileOutput(
                     file: fr.filePath,
                     findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
-                    count: fr.matches.count
+                    count: fr.matches.count,
+                    gitignored: fr.gitignored
                 )
             }
             let encoder = JSONEncoder()
@@ -570,7 +584,8 @@ struct Scan: ParsableCommand {
         switch format {
         case .text:
             for fr in results {
-                print("--- \(fr.filePath) ---")
+                let prefix = gitignorePrefix(fr)
+                print("--- \(prefix)\(fr.filePath) ---")
                 for match in fr.matches {
                     print("  line \(match.line): \(match.displayName): \(match.value)")
                 }
@@ -580,7 +595,8 @@ struct Scan: ParsableCommand {
                 DirScanFileOutput(
                     file: fr.filePath,
                     findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
-                    count: fr.matches.count
+                    count: fr.matches.count,
+                    gitignored: fr.gitignored
                 )
             }
             let encoder = JSONEncoder()
@@ -679,6 +695,7 @@ struct DirScanFileOutput: Codable {
     let file: String
     let findings: [Finding]
     let count: Int
+    let gitignored: Bool
 }
 
 struct GitLogOutput: Codable {
