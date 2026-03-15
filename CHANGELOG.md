@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Credential regex: exclude boolean values (`auth=true`), Go env lookups (`os.Getenv`), and short values (WO-79)
+- AWS Secret Key regex: require keyword context, no longer matches standalone 40-char strings (WO-79)
+
+### Added
+
+- Gitignore-aware scanning: gitignored files shown with `[gitignored]` prefix but excluded from `--check` exit code (WO-80)
+- `--include-gitignored` flag to count gitignored findings toward exit code
+
 ## [0.20.0] - 2026-03-13
 
 ### Added
