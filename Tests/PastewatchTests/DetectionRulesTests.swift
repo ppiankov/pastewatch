@@ -266,6 +266,78 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
     }
 
+    // MARK: - False Positive Exclusions
+
+    func testIgnoresAuthBooleanValues() {
+        let booleans = ["auth=true", "AUTH=false", "auth=1", "auth=0",
+                        "auth=yes", "auth=no", "auth=none", "auth=null", "auth=nil"]
+        for input in booleans {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect: \(input)")
+        }
+    }
+
+    func testIgnoresGoEnvLookup() {
+        let goPatterns = [
+            "apiKey := os.Getenv(\"API_KEY\")",
+            "secret = os.Getenv(\"SECRET\")",
+            "token = os.Getenv(\"TOKEN\")"
+        ]
+        for input in goPatterns {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect Go env lookup: \(input)")
+        }
+    }
+
+    func testIgnoresProcessEnvLookup() {
+        let jsPatterns = [
+            "const token = process.env.TOKEN",
+            "password = process.env.DB_PASSWORD"
+        ]
+        for input in jsPatterns {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect env lookup: \(input)")
+        }
+    }
+
+    func testIgnoresStandaloneFortyCharStrings() {
+        // Go test function names, git SHAs, markdown paths — should NOT match AWS key
+        let falsePositives = [
+            "TestValidateAgentUpdatesNormalizesValues",
+            "func TestHandleAcknowledgeResponseTimeout()",
+            "/adoption/regret/performance/operational"
+        ]
+        for input in falsePositives {
+            let matches = DetectionRules.scan(input, config: config)
+            let awsMatches = matches.filter { $0.type == .awsKey }
+            XCTAssertEqual(awsMatches.count, 0, "Should not detect as AWS key: \(input)")
+        }
+    }
+
+    func testStillDetectsRealAwsSecretKey() {
+        let input = ["aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfi",
+                     "CYEXAMPLEKEY"].joined()
+        let matches = DetectionRules.scan(input, config: config)
+        let awsMatches = matches.filter { $0.type == .awsKey }
+        XCTAssertGreaterThanOrEqual(awsMatches.count, 1)
+    }
+
+    func testStillDetectsRealCredentials() {
+        let realSecrets = [
+            "password=s3cret_value_123",
+            "secret: my_api_secret_xyz",
+            "api_key=sk_live_abc123def456"
+        ]
+        for input in realSecrets {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect: \(input)")
+        }
+    }
+
     // MARK: - Slack Webhook Detection
 
     func testDetectsSlackWebhook() {
