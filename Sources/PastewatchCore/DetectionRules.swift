@@ -71,9 +71,10 @@ public struct DetectionRules {
         }
 
         // AWS Secret Access Key - high confidence
-        // 40 character base64-ish string (often near AKIA keys)
+        // 40 character base64-ish string preceded by AWS-related keyword
+        // Requires context to avoid matching git SHAs, test function names, etc.
         if let regex = try? NSRegularExpression(
-            pattern: #"\b[A-Za-z0-9/+=]{40}\b"#,
+            pattern: #"(?i)(?:aws.?secret|secret.?access.?key|aws.?key)[ \t]*[=:]\s*[A-Za-z0-9/+=]{40}\b"#,
             options: []
         ) {
             result.append((.awsKey, regex))
@@ -312,8 +313,10 @@ public struct DetectionRules {
         // Matches password=, secret:, api_key=, etc.
         // Placed after API key patterns so specific tokens match first.
         // Ported from chainwatch internal/redact/scanner.go
+        // Excludes: boolean/trivial values (true, false, nil, etc.),
+        //   env-lookup patterns (os.Getenv, process.env, ENV[), Go := declarations
         if let regex = try? NSRegularExpression(
-            pattern: #"(?i)(?:password|passwd|secret|token|api_key|apikey|auth|credentials?)[ \t]*[=:][ \t]*\S+"#,
+            pattern: #"(?i)(?:password|passwd|secret|token|api_key|apikey|auth|credentials?)[ \t]*(?::=|[=:])[ \t]*(?!(?:true|false|yes|no|none|null|nil|0|1)(?:\s|$|[,;)\]}]))(?!os\.(?:Getenv|environ)|process\.env|ENV\[|ProcessInfo)\S{3,}"#,
             options: []
         ) {
             result.append((.credential, regex))
