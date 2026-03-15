@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `watch` subcommand: continuous file monitoring with real-time secret detection (WO-59)
 - Gitignore-aware scanning: gitignored files shown with `[gitignored]` prefix but excluded from `--check` exit code (WO-80)
 - `--include-gitignored` flag to count gitignored findings toward exit code
 

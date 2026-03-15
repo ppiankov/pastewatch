@@ -19,14 +19,14 @@ public struct FileScanResult {
 public struct DirectoryScanner {
 
     /// File extensions to scan.
-    static let allowedExtensions: Set<String> = [
+    public static let allowedExtensions: Set<String> = [
         "env", "yml", "yaml", "json", "toml", "conf", "xml", "tf",
         "sh", "py", "go", "js", "ts", "rb", "swift", "java",
         "properties", "cfg", "ini", "txt", "md", "pem", "key"
     ]
 
     /// Directories to skip.
-    static let skipDirectories: Set<String> = [
+    public static let skipDirectories: Set<String> = [
         ".git", "node_modules", ".build", "vendor", "DerivedData",
         ".swiftpm", "__pycache__", "dist", "build", ".tox"
     ]
