@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-03-15
+
 ### Fixed
 
 - Credential regex: exclude boolean values (`auth=true`), Go env lookups (`os.Getenv`), and short values (WO-79)
