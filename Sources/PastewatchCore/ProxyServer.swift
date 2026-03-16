@@ -8,12 +8,14 @@ import FoundationNetworking
 public final class ProxyServer {
     private let port: UInt16
     private let upstream: URL
+    private let forwardProxy: URL?
     private let config: PastewatchConfig
     private let severity: Severity
     private let auditLogPath: String?
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
     private var running = false
+    private lazy var urlSession: URLSession = makeSession()
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
@@ -26,15 +28,40 @@ public final class ProxyServer {
     public init(
         port: UInt16 = 8443,
         upstream: URL = URL(string: "https://api.anthropic.com")!,
+        forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
         severity: Severity = .high,
         auditLogPath: String? = nil
     ) {
         self.port = port
         self.upstream = upstream
+        self.forwardProxy = forwardProxy
         self.config = config
         self.severity = severity
         self.auditLogPath = auditLogPath
+    }
+
+    private func makeSession() -> URLSession {
+        let sessionConfig = URLSessionConfiguration.default
+        if let proxy = forwardProxy {
+            let proxyHost = proxy.host ?? "127.0.0.1"
+            let proxyPort = proxy.port ?? 8080
+            let isHTTPS = proxy.scheme == "https"
+            sessionConfig.connectionProxyDictionary = [
+                kCFNetworkProxiesHTTPEnable: true,
+                kCFNetworkProxiesHTTPProxy: proxyHost,
+                kCFNetworkProxiesHTTPPort: proxyPort,
+                "HTTPSEnable": true,
+                "HTTPSProxy": proxyHost,
+                "HTTPSPort": proxyPort
+            ]
+            if isHTTPS {
+                sessionConfig.connectionProxyDictionary?["HTTPSEnable"] = true
+                sessionConfig.connectionProxyDictionary?["HTTPSProxy"] = proxyHost
+                sessionConfig.connectionProxyDictionary?["HTTPSPort"] = proxyPort
+            }
+        }
+        return URLSession(configuration: sessionConfig)
     }
 
     /// Start the proxy server. Blocks until stop() is called.
@@ -144,7 +171,7 @@ public final class ProxyServer {
         var responseData: Data?
         var httpResponse: HTTPURLResponse?
 
-        let task = URLSession.shared.dataTask(with: upstreamRequest) { data, response, _ in
+        let task = urlSession.dataTask(with: upstreamRequest) { data, response, _ in
             responseData = data
             httpResponse = response as? HTTPURLResponse
             semaphore.signal()

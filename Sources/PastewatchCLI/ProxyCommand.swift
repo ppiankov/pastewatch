@@ -18,6 +18,9 @@ struct Proxy: ParsableCommand {
     @Option(name: .long, help: "Upstream API URL")
     var upstream: String = "https://api.anthropic.com"
 
+    @Option(name: .long, help: "Forward through corporate proxy (e.g., http://proxy.corp:8080)")
+    var forwardProxy: String?
+
     @Option(name: .long, help: "Minimum severity to redact: critical, high, medium, low")
     var severity: Severity = .high
 
@@ -30,10 +33,20 @@ struct Proxy: ParsableCommand {
             throw ExitCode(rawValue: 2)
         }
 
+        var forwardProxyURL: URL?
+        if let fp = forwardProxy {
+            guard let url = URL(string: fp) else {
+                FileHandle.standardError.write(Data("error: invalid forward proxy URL: \(fp)\n".utf8))
+                throw ExitCode(rawValue: 2)
+            }
+            forwardProxyURL = url
+        }
+
         let config = PastewatchConfig.resolve()
         let server = ProxyServer(
             port: port,
             upstream: upstreamURL,
+            forwardProxy: forwardProxyURL,
             config: config,
             severity: severity,
             auditLogPath: auditLog
@@ -41,6 +54,9 @@ struct Proxy: ParsableCommand {
 
         FileHandle.standardError.write(Data("pastewatch proxy listening on http://127.0.0.1:\(port)\n".utf8))
         FileHandle.standardError.write(Data("upstream: \(upstream)\n".utf8))
+        if let fp = forwardProxy {
+            FileHandle.standardError.write(Data("forward-proxy: \(fp)\n".utf8))
+        }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
         FileHandle.standardError.write(Data("\nusage:\n".utf8))
         FileHandle.standardError.write(Data("  ANTHROPIC_BASE_URL=http://127.0.0.1:\(port) claude\n".utf8))
