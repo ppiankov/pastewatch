@@ -6,7 +6,6 @@ public final class FileWatcher {
     private let config: PastewatchConfig
     private let severity: Severity?
     private let jsonOutput: Bool
-    private var source: DispatchSourceFileSystemObject?
     private var timer: DispatchSourceTimer?
     private var knownModDates: [String: Date] = [:]
     private let queue = DispatchQueue(label: "com.pastewatch.watcher")
@@ -40,8 +39,6 @@ public final class FileWatcher {
     public func stop() {
         timer?.cancel()
         timer = nil
-        source?.cancel()
-        source = nil
     }
 
     // MARK: - Internal
