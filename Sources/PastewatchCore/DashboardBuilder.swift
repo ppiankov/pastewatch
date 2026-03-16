@@ -130,16 +130,21 @@ public enum DashboardBuilder {
             .sorted { $0.count > $1.count }
     }
 
+    private struct FileStats {
+        var reads: Int = 0
+        var writes: Int = 0
+        var secrets: Int = 0
+    }
+
     private static func aggregateFiles(_ reports: [SessionReport]) -> [FileAccess] {
-        var files: [String: (reads: Int, writes: Int, secrets: Int)] = [:]
+        var files: [String: FileStats] = [:]
         for r in reports {
             for fa in r.filesAccessed {
-                let existing = files[fa.file] ?? (reads: 0, writes: 0, secrets: 0)
-                files[fa.file] = (
-                    reads: existing.reads + fa.reads,
-                    writes: existing.writes + fa.writes,
-                    secrets: existing.secrets + fa.secretsRedacted
-                )
+                var existing = files[fa.file] ?? FileStats()
+                existing.reads += fa.reads
+                existing.writes += fa.writes
+                existing.secrets += fa.secretsRedacted
+                files[fa.file] = existing
             }
         }
         return files
