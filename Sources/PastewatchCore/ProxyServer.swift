@@ -43,10 +43,10 @@ public final class ProxyServer {
 
     private func makeSession() -> URLSession {
         let sessionConfig = URLSessionConfiguration.default
+        #if canImport(Darwin)
         if let proxy = forwardProxy {
             let proxyHost = proxy.host ?? "127.0.0.1"
             let proxyPort = proxy.port ?? 8080
-            let isHTTPS = proxy.scheme == "https"
             sessionConfig.connectionProxyDictionary = [
                 kCFNetworkProxiesHTTPEnable: true,
                 kCFNetworkProxiesHTTPProxy: proxyHost,
@@ -55,18 +55,31 @@ public final class ProxyServer {
                 "HTTPSProxy": proxyHost,
                 "HTTPSPort": proxyPort
             ]
-            if isHTTPS {
-                sessionConfig.connectionProxyDictionary?["HTTPSEnable"] = true
-                sessionConfig.connectionProxyDictionary?["HTTPSProxy"] = proxyHost
-                sessionConfig.connectionProxyDictionary?["HTTPSPort"] = proxyPort
-            }
         }
+        #else
+        if let proxy = forwardProxy {
+            let proxyHost = proxy.host ?? "127.0.0.1"
+            let proxyPort = proxy.port ?? 8080
+            sessionConfig.connectionProxyDictionary = [
+                "HTTPEnable": true,
+                "HTTPProxy": proxyHost,
+                "HTTPPort": proxyPort,
+                "HTTPSEnable": true,
+                "HTTPSProxy": proxyHost,
+                "HTTPSPort": proxyPort
+            ]
+        }
+        #endif
         return URLSession(configuration: sessionConfig)
     }
 
     /// Start the proxy server. Blocks until stop() is called.
     public func start() throws {
+        #if canImport(Darwin)
         serverSocket = socket(AF_INET, SOCK_STREAM, 0)
+        #else
+        serverSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #endif
         guard serverSocket >= 0 else {
             throw ProxyError.socketCreationFailed
         }
