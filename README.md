@@ -31,6 +31,7 @@ No other tool does what Pastewatch does. Here's why:
 - **Canary honeypots** - "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
 - **Local-only, deterministic, no ML** - no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
 - **One-command agent setup** - `pastewatch-cli setup claude-code` and you're protected. MCP server, hooks, severity alignment - all configured in one step
+- **Watch mode + dashboard** - continuous file monitoring during sessions, aggregate reporting across sessions. Know what's happening, prove it's working
 
 ---
 
@@ -445,6 +446,30 @@ pastewatch-cli doctor --json # programmatic output
 ```
 
 Shows CLI version, config status, hook status, MCP server processes (with per-process `--min-severity` and `--audit-log`), and Homebrew version.
+
+### Watch Mode
+
+Continuous file monitoring — scans changed files in real-time:
+
+```bash
+pastewatch-cli watch --dir .                    # watch current directory
+pastewatch-cli watch --dir . --severity high    # only report high+ findings
+pastewatch-cli watch --dir . --json             # newline-delimited JSON output
+```
+
+Polls every 2 seconds, prints warnings to stderr. Respects `.pastewatchignore` and `.gitignore`. Ctrl-C to stop.
+
+### Dashboard
+
+Aggregate view across multiple MCP audit log sessions:
+
+```bash
+pastewatch-cli dashboard                            # text summary from /tmp
+pastewatch-cli dashboard --dir /tmp --format json   # machine-readable
+pastewatch-cli dashboard --since 2026-03-01T00:00:00Z --format markdown
+```
+
+Shows total sessions, secrets redacted, top secret types, hot files, and overall verdict.
 
 ### VS Code Extension
 
