@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `proxy` subcommand: API proxy that scans and redacts secrets from all outbound requests (WO-81)
+- Catches secrets from subagents that bypass hooks and MCP — the last line of defense
+
 ## [0.22.0] - 2026-03-16
 
 ## [0.21.0] - 2026-03-15
