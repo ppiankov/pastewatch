@@ -1,6 +1,11 @@
 import ArgumentParser
 import Foundation
 import PastewatchCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 struct Watch: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -40,7 +45,7 @@ struct Watch: ParsableCommand {
         // Handle SIGINT for graceful shutdown
         signal(SIGINT) { _ in
             FileHandle.standardError.write(Data("\nstopped.\n".utf8))
-            Darwin.exit(0)
+            _exit(0)
         }
 
         watcher.start()
