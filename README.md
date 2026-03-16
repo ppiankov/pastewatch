@@ -269,6 +269,58 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
+### API Proxy — Last Line of Defense
+
+Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
+
+```
+  Your machine                                          Cloud API
+  ┌──────────────────────────────────────┐
+  │  Agent (any process, any tool)       │
+  │           │                          │
+  │           ▼                          │
+  │  pastewatch proxy (localhost:8443)   │
+  │  scan request body → redact secrets  │
+  │           │                          │
+  │           ▼                          │
+  │  corporate proxy (if present)        │
+  │           │                          │
+  └───────────┼──────────────────────────┘
+              ▼
+         api.anthropic.com (secrets never arrive)
+```
+
+```bash
+# Start the proxy
+pastewatch-cli proxy
+
+# Start your agent through the proxy
+ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
+```
+
+**Corporate environments** often require a company proxy for API access. Pastewatch chains through it:
+
+```bash
+# Company proxy on :3456 — pastewatch sits in front
+pastewatch-cli proxy --port 3456 --forward-proxy http://127.0.0.1:3457
+
+# Agent connects to :3456 as usual — pastewatch is transparent
+```
+
+Configure port and upstream in your shell profile for zero-friction sessions:
+
+```bash
+# .zshrc / .bashrc
+alias claude='ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude'
+```
+
+The proxy logs every redaction:
+```
+[2026-03-16T11:36:56Z] PROXY REDACTED 3 secret(s) in /v1/messages
+```
+
+Use `--audit-log` to write to a file for dashboard aggregation.
+
 ### MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**

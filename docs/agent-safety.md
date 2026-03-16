@@ -20,6 +20,31 @@ This is not hypothetical. Config files, .env files, and hardcoded credentials ar
 
 ---
 
+## Layer 0: API Proxy (Network Boundary)
+
+The strongest layer. Every API call from every process — including agent subprocesses you don't control — passes through a local proxy that scans and redacts secrets before they leave your machine.
+
+```bash
+# Start the proxy
+pastewatch-cli proxy --audit-log /tmp/pw-proxy.log
+
+# Start your agent through it
+ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
+```
+
+**Why this matters:** Agent subprocesses (subagents, background workers, parallel tasks) bypass tool-level protections like hooks and MCP. They make direct API calls with raw file contents. The proxy is the only layer that catches everything — it operates at the network boundary, not the tool boundary.
+
+**Corporate environments** with mandatory company proxies:
+
+```bash
+# Pastewatch sits between the agent and the corporate proxy
+pastewatch-cli proxy --port 3456 --forward-proxy http://127.0.0.1:3457
+```
+
+The agent connects to pastewatch as if it were the company proxy. Pastewatch scans, redacts, and forwards to the real proxy. Transparent to both the agent and the corporate network.
+
+---
+
 ## Layer 1: Don't Put Secrets in Code
 
 The most effective defense. If secrets aren't in files, they can't leak.
