@@ -537,3 +537,7 @@ pastewatch-cli doctor
 # Get doctor output as JSON
 pastewatch-cli doctor --json
 ```
+
+---
+
+This tool follows the [Agent-Native CLI Convention](https://ancc.dev). Validate with: `ancc validate .`
