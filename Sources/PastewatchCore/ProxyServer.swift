@@ -23,6 +23,13 @@ public final class ProxyServer {
         public var secretsRedacted: Int = 0
     }
 
+    private struct HTTPRequest {
+        let method: String
+        let path: String
+        let headers: [(String, String)]
+        let body: String
+    }
+
     public private(set) var stats = RedactionStats()
 
     public init(
@@ -143,16 +150,16 @@ public final class ProxyServer {
         guard let request = readHTTPRequest(from: clientSocket) else { return }
 
         // Parse the request
-        guard let (method, path, headers, body) = parseHTTPRequest(request) else {
+        guard let parsed = parseHTTPRequest(request) else {
             sendError(to: clientSocket, status: 400, message: "Bad Request")
             return
         }
 
         // Only scan POST /v1/messages (the endpoint that carries tool results)
-        var processedBody = body
+        var processedBody = parsed.body
         var redactionCount = 0
-        if method == "POST" && path.contains("/v1/messages") {
-            let result = scanAndRedactBody(body)
+        if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
+            let result = scanAndRedactBody(parsed.body)
             processedBody = result.body
             redactionCount = result.redacted
         }
@@ -161,17 +168,17 @@ public final class ProxyServer {
         if redactionCount > 0 {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
-            logRedaction(path: path, count: redactionCount)
+            logRedaction(path: parsed.path, count: redactionCount)
         }
 
         // Forward to upstream
-        let upstreamURL = URL(string: path, relativeTo: upstream) ?? upstream.appendingPathComponent(path)
+        let upstreamURL = URL(string: parsed.path, relativeTo: upstream) ?? upstream.appendingPathComponent(parsed.path)
         var upstreamRequest = URLRequest(url: upstreamURL)
-        upstreamRequest.httpMethod = method
+        upstreamRequest.httpMethod = parsed.method
         upstreamRequest.httpBody = processedBody.data(using: .utf8)
 
         // Copy headers (except Host, which we set to upstream)
-        for (key, value) in headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
+        for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
         upstreamRequest.setValue(upstream.host, forHTTPHeaderField: "Host")
@@ -311,11 +318,9 @@ public final class ProxyServer {
                 headerEndIndex = str.distance(from: str.startIndex, to: range.upperBound)
                 // Extract Content-Length
                 let headerStr = String(str[..<range.lowerBound])
-                for line in headerStr.components(separatedBy: "\r\n") {
-                    if line.lowercased().hasPrefix("content-length:") {
-                        let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                        contentLength = Int(val) ?? 0
-                    }
+                for line in headerStr.components(separatedBy: "\r\n") where line.lowercased().hasPrefix("content-length:") {
+                    let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                    contentLength = Int(val) ?? 0
                 }
             }
 
@@ -328,7 +333,7 @@ public final class ProxyServer {
         return String(data: accumulated, encoding: .utf8)
     }
 
-    private func parseHTTPRequest(_ raw: String) -> (method: String, path: String, headers: [(String, String)], body: String)? {
+    private func parseHTTPRequest(_ raw: String) -> HTTPRequest? {
         guard let headerEnd = raw.range(of: "\r\n\r\n") else { return nil }
         let headerSection = String(raw[..<headerEnd.lowerBound])
         let body = String(raw[headerEnd.upperBound...])
@@ -350,7 +355,7 @@ public final class ProxyServer {
             }
         }
 
-        return (method, path, headers, body)
+        return HTTPRequest(method: method, path: path, headers: headers, body: body)
     }
 
     private func sendError(to socket: Int32, status: Int, message: String) {
