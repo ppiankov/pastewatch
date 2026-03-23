@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-03-23
+
+### Added
+
+- Detection rules for Workledger API keys (`wl_sk_` prefix)
+- Detection rules for Oracul API keys (`vc_<role>_` prefix)
+
 ## [0.23.0] - 2026-03-16
 
 ### Added
