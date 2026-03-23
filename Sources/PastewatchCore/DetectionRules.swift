@@ -238,6 +238,24 @@ public struct DetectionRules {
             result.append((.digitaloceanToken, regex))
         }
 
+        // Workledger API Key - high confidence
+        // wl_sk_ prefix followed by 44 base64url characters
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bwl_sk_[A-Za-z0-9_-]{44}\b"#,
+            options: []
+        ) {
+            result.append((.workledgerKey, regex))
+        }
+
+        // Oracul API Key - high confidence
+        // vc_<role>_ prefix followed by 32 hex characters
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bvc_(?:admin|beta|pro|enterprise)_[0-9a-f]{32}\b"#,
+            options: []
+        ) {
+            result.append((.oraculKey, regex))
+        }
+
         // Perplexity API Key - high confidence
         // pplx- prefix followed by 48 alphanumeric characters
         if let regex = try? NSRegularExpression(
