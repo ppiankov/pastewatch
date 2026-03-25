@@ -121,4 +121,20 @@ final class GuardReadWriteTests: XCTestCase {
         let findings = scanFile(at: path, failOnSeverity: .low)
         XCTAssertFalse(findings.isEmpty, "Low threshold should catch medium severity findings")
     }
+
+    func testWorkledgerKeyDetectedByGuardScan() throws {
+        let path = testDir + "/key.txt"
+        let key = "wl_sk_" + String(repeating: "X", count: 44)
+        try "API_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
+        let findings = scanFile(at: path)
+        XCTAssertFalse(findings.isEmpty, "Workledger key should be detected by guard scan")
+        XCTAssertTrue(findings.contains { $0.type == .workledgerKey })
+    }
+
+    func testPathProtectionBlocksOpenClawDir() {
+        let config = PastewatchConfig.defaultConfig
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertTrue(config.isPathProtected(home + "/.openclaw/workledger.key"),
+                      "Guard should block access to ~/.openclaw/ by default")
+    }
 }

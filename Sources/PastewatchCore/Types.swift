@@ -286,6 +286,7 @@ public struct PastewatchConfig: Codable {
     public var mcpMinSeverity: String
     public var xmlSensitiveTags: [String]
     public var placeholderPrefix: String?
+    public var protectedPaths: [String]
 
     public init(
         enabled: Bool,
@@ -300,7 +301,8 @@ public struct PastewatchConfig: Codable {
         sensitiveIPPrefixes: [String] = [],
         mcpMinSeverity: String = "high",
         xmlSensitiveTags: [String] = [],
-        placeholderPrefix: String? = nil
+        placeholderPrefix: String? = nil,
+        protectedPaths: [String] = ["~/.openclaw"]
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -315,6 +317,7 @@ public struct PastewatchConfig: Codable {
         self.mcpMinSeverity = mcpMinSeverity
         self.xmlSensitiveTags = xmlSensitiveTags
         self.placeholderPrefix = placeholderPrefix
+        self.protectedPaths = protectedPaths
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -333,6 +336,7 @@ public struct PastewatchConfig: Codable {
         mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? "high"
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
+        protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]
     }
 
     public static let defaultConfig = PastewatchConfig(
@@ -394,5 +398,23 @@ public struct PastewatchConfig: Codable {
 
     public func isTypeEnabled(_ type: SensitiveDataType) -> Bool {
         enabledTypes.contains(type.rawValue)
+    }
+
+    /// Returns true if the given file path is inside a protected directory.
+    public func isPathProtected(_ filePath: String) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let normalized = filePath.hasPrefix("~")
+            ? home + filePath.dropFirst()
+            : filePath
+        for protectedPath in protectedPaths {
+            let expanded = protectedPath.hasPrefix("~")
+                ? home + protectedPath.dropFirst()
+                : protectedPath
+            let dir = expanded.hasSuffix("/") ? expanded : expanded + "/"
+            if normalized.hasPrefix(dir) || normalized == expanded {
+                return true
+            }
+        }
+        return false
     }
 }

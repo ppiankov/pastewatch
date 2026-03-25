@@ -17,6 +17,14 @@ struct GuardRead: ParsableCommand {
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
+        let config = PastewatchConfig.resolve()
+        if config.isPathProtected(filePath) {
+            let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+            print("You MUST use pastewatch_read_file instead of Read for files in protected directories.")
+            throw ExitCode(rawValue: 2)
+        }
+
         guard FileManager.default.fileExists(atPath: filePath) else { return }
 
         guard let content = try? String(contentsOfFile: filePath, encoding: .utf8),
@@ -24,7 +32,6 @@ struct GuardRead: ParsableCommand {
             return
         }
 
-        let config = PastewatchConfig.resolve()
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
         let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
         let ext = isEnvFile ? "env" : URL(fileURLWithPath: filePath).pathExtension.lowercased()

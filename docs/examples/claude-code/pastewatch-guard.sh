@@ -51,6 +51,14 @@ esac
 # Skip .git internals
 echo "$file_path" | grep -qF '/.git/' && exit 0
 
+# --- PATH PROTECTION: Block access to sensitive directories ---
+case "$file_path" in
+  "$HOME/.openclaw/"*|"$HOME/.openclaw")
+    echo "BLOCKED: $file_path is inside a protected directory. Use pastewatch MCP tools instead."
+    echo "Blocked: protected directory - use pastewatch MCP tools" >&2
+    exit 2 ;;
+esac
+
 # --- WRITE: Check for pastewatch placeholders in content ---
 if [ "$tool" = "Write" ]; then
   content=$(echo "$input" | jq -r '.tool_input.content // empty')

@@ -998,4 +998,62 @@ final class DetectionRulesTests: XCTestCase {
         let ipMatches = matches.filter { $0.type == .ipAddress }
         XCTAssertEqual(ipMatches.count, 0, "8.8.8.8 should be excluded by default")
     }
+
+    // MARK: - Workledger Key Detection
+
+    func testDetectsWorkledgerKey() {
+        let key = "wl_sk_" + String(repeating: "A", count: 44)
+        let content = "WORKLEDGER_API_KEY=\(key)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .workledgerKey },
+                      "Should detect workledger API key with wl_sk_ prefix")
+    }
+
+    func testWorkledgerKeyTooShort() {
+        let key = "wl_sk_" + String(repeating: "A", count: 10)
+        let content = "key=\(key)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .workledgerKey },
+                       "Short wl_sk_ value should not match")
+    }
+
+    func testWorkledgerKeyInBearerHeader() {
+        let key = "wl_sk_" + String(repeating: "B", count: 44)
+        let content = "Authorization: Bearer \(key)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .workledgerKey },
+                      "Should detect workledger key in Bearer header")
+    }
+
+    // MARK: - Protected Paths
+
+    func testIsPathProtectedDefaultOpenClaw() {
+        let config = PastewatchConfig.defaultConfig
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertTrue(config.isPathProtected(home + "/.openclaw/workledger.key"))
+        XCTAssertTrue(config.isPathProtected(home + "/.openclaw/config.json"))
+        XCTAssertFalse(config.isPathProtected(home + "/.config/other.json"))
+        XCTAssertFalse(config.isPathProtected("/tmp/safe.txt"))
+    }
+
+    func testIsPathProtectedTildeExpansion() {
+        let config = PastewatchConfig.defaultConfig
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        // Method receives absolute paths from guard commands
+        XCTAssertTrue(config.isPathProtected(home + "/.openclaw/workledger.key"))
+    }
+
+    func testIsPathProtectedCustomPaths() {
+        let config = PastewatchConfig(
+            enabled: true,
+            enabledTypes: [],
+            showNotifications: false,
+            soundEnabled: false,
+            protectedPaths: ["~/.openclaw", "~/.secrets"]
+        )
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertTrue(config.isPathProtected(home + "/.openclaw/key"))
+        XCTAssertTrue(config.isPathProtected(home + "/.secrets/token"))
+        XCTAssertFalse(config.isPathProtected(home + "/.config/safe"))
+    }
 }
