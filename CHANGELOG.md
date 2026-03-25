@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-03-25
+
+### Added
+
+- Path-based protection for `~/.openclaw/` directory in guard commands
+- Configurable `protectedPaths` in `config.json` (default: `["~/.openclaw"]`)
+- Tests for workledger key detection and path protection (8 new tests)
+
 ## [0.23.1] - 2026-03-23
 
 ### Added
