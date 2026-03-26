@@ -239,9 +239,9 @@ public struct DetectionRules {
         }
 
         // Workledger API Key - high confidence
-        // wl_sk_ prefix followed by 44 base64url characters
+        // wl_sk_ prefix followed by 32+ base64url characters
         if let regex = try? NSRegularExpression(
-            pattern: #"\bwl_sk_[A-Za-z0-9_-]{44}\b"#,
+            pattern: #"\bwl_sk_[A-Za-z0-9_-]{32,}\b"#,
             options: []
         ) {
             result.append((.workledgerKey, regex))

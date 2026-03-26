@@ -1025,6 +1025,22 @@ final class DetectionRulesTests: XCTestCase {
                       "Should detect workledger key in Bearer header")
     }
 
+    func testWorkledgerKey43Chars() {
+        // Real workledger keygen produces 43-char base64url keys (32 bytes)
+        let content = "wl_sk_FHa8DNJ0OKoxvc8Ck9O-A5EZ-2dkAKygE-MkV0gmXFM"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .workledgerKey },
+                      "Should detect 43-char workledger key (real format)")
+    }
+
+    func testWorkledgerKeyStandalone() {
+        // Standalone key with no KEY= context
+        let key = "wl_sk_" + String(repeating: "X", count: 43)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .workledgerKey },
+                      "Should detect standalone wl_sk_ key without context")
+    }
+
     // MARK: - Protected Paths
 
     func testIsPathProtectedDefaultOpenClaw() {

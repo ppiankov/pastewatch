@@ -167,7 +167,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .shopifyToken: return ["shpat_<access token>", "shpca_<token>", "shppa_<token>"]
         case .digitaloceanToken: return ["dop_v1_<64-hex-chars>", "doo_v1_<64-hex-chars>"]
         case .perplexityKey: return ["pplx-<48-alphanumeric-chars>"]
-        case .workledgerKey: return ["wl_sk_<44-base64url-chars>"]
+        case .workledgerKey: return ["wl_sk_<32+-base64url-chars>"]
         case .oraculKey: return ["vc_admin_<32-hex-chars>", "vc_pro_<32-hex-chars>"]
         case .jdbcUrl: return ["jdbc:oracle:thin:@host:1521:SID", "jdbc:postgresql://host:5432/db"]
         case .xmlCredential: return ["<password>secret123</password>", "<secret_access_key>KEY</secret_access_key>"]
