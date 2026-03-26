@@ -89,12 +89,14 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.2.app
 
-      - name: Build Release Binaries
+      - name: Build Release Binaries (Universal)
         run: |
-          swift build -c release
+          swift build -c release --arch arm64
+          swift build -c release --arch x86_64
           mkdir -p release
-          cp .build/release/Pastewatch release/pastewatch
-          cp .build/release/PastewatchCLI release/pastewatch-cli
+          lipo -create .build/arm64-apple-macosx/release/PastewatchCLI .build/x86_64-apple-macosx/release/PastewatchCLI -output release/pastewatch-cli
+          codesign -s - -f release/pastewatch-cli
+          cp .build/arm64-apple-macosx/release/Pastewatch release/pastewatch
 
       - name: Create App Bundle
         run: |

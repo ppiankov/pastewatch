@@ -102,15 +102,20 @@ pastewatch-cli doctor    # verify installation
 
 ### CLI Manual Install (No Homebrew)
 
-For environments where Homebrew is not available (CI runners, restricted workstations, Linux):
+For environments where Homebrew is not available (CI runners, restricted workstations):
 
 ```bash
-# Download the latest release binary
+# macOS (universal binary — Apple Silicon + Intel)
 curl -L -o pastewatch-cli https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli
+
+# Linux x86_64
+curl -L -o pastewatch-cli https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli-linux-amd64
+
+# Linux arm64
+curl -L -o pastewatch-cli https://github.com/ppiankov/pastewatch/releases/latest/download/pastewatch-cli-linux-arm64
+
 chmod +x pastewatch-cli
 sudo mv pastewatch-cli /usr/local/bin/
-
-# Verify
 pastewatch-cli doctor
 ```
 
@@ -754,10 +759,12 @@ If a feature increases complexity without reducing risk, it is rejected.
 
 | Platform | Component | Status |
 |----------|-----------|--------|
-| macOS 14+ (Apple Silicon) | GUI + CLI | Supported |
+| macOS (Apple Silicon) | GUI + CLI | Supported |
+| macOS (Intel x86_64) | CLI only | Supported (universal binary) |
 | Linux x86_64 | CLI only | Supported |
+| Linux arm64 | CLI only | Supported |
 
-Intel-based Macs are not supported and there are no plans to add prebuilt binaries. Intel Mac users can compile from source (`swift build -c release`). The GUI (clipboard monitoring) is macOS-only.
+The GUI (clipboard monitoring) is macOS-only. CLI works on all platforms via Homebrew or direct download.
 
 ---
 
