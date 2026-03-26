@@ -324,7 +324,15 @@ public struct PastewatchConfig: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decode(Bool.self, forKey: .enabled)
-        enabledTypes = try container.decode([String].self, forKey: .enabledTypes)
+        var loaded = try container.decode([String].self, forKey: .enabledTypes)
+        // Auto-enable new detection types that weren't in the saved config
+        let allDefaults = SensitiveDataType.allCases
+            .filter { $0 != .highEntropyString }
+            .map { $0.rawValue }
+        for typeName in allDefaults where !loaded.contains(typeName) {
+            loaded.append(typeName)
+        }
+        enabledTypes = loaded
         showNotifications = try container.decode(Bool.self, forKey: .showNotifications)
         soundEnabled = try container.decode(Bool.self, forKey: .soundEnabled)
         allowedValues = try container.decodeIfPresent([String].self, forKey: .allowedValues) ?? []
