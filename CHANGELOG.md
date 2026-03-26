@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-03-26
+
+### Fixed
+
+- Workledger key regex now matches 32+ base64url chars (was exactly 44, real keys are 43)
+- Standalone `wl_sk_` keys without `KEY=` context now detected
+
 ## [0.24.0] - 2026-03-26
 
 ### Added
