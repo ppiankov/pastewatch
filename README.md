@@ -274,7 +274,7 @@ pastewatch-cli config check
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
 
 ```
-  Your machine                                          Cloud API
+  Your machine
   ┌──────────────────────────────────────┐
   │  Agent (any process, any tool)       │
   │           │                          │
@@ -286,7 +286,8 @@ Every tool call an AI agent makes — including internal subprocesses you don't 
   │  corporate proxy (if present)        │
   │           │                          │
   └───────────┼──────────────────────────┘
-              ▼
+              │
+              ▼  Cloud API
          api.anthropic.com (secrets never arrive)
 ```
 
@@ -326,7 +327,7 @@ Use `--audit-log` to write to a file for dashboard aggregation.
 AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**
 
 ```
-  Your machine (local only)              Cloud API
+  Your machine (local only)
   ┌────────────────────────┐
   │  pastewatch MCP server │
   │                        │   __PW_AWS_KEY_1__
