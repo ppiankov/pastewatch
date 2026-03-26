@@ -37,7 +37,12 @@ final class ConfigResolutionTests: XCTestCase {
         let decoded = try JSONDecoder().decode(PastewatchConfig.self, from: data)
 
         XCTAssertEqual(decoded.enabled, config.enabled)
-        XCTAssertEqual(decoded.enabledTypes, config.enabledTypes)
+        // Auto-enable adds new types on decode, so original types must be present
+        for t in config.enabledTypes {
+            XCTAssertTrue(decoded.enabledTypes.contains(t), "Missing originally enabled type: \(t)")
+        }
+        XCTAssertTrue(decoded.enabledTypes.contains("Workledger Key"),
+                       "New types should be auto-enabled on decode")
         XCTAssertEqual(decoded.allowedValues, config.allowedValues)
         XCTAssertEqual(decoded.customRules.count, config.customRules.count)
     }
@@ -87,7 +92,9 @@ final class ConfigResolutionTests: XCTestCase {
         }
 
         let resolved = PastewatchConfig.resolve()
-        XCTAssertEqual(resolved.enabledTypes, ["Email"])
+        XCTAssertTrue(resolved.enabledTypes.contains("Email"), "Original type must be present")
+        XCTAssertTrue(resolved.enabledTypes.contains("Workledger Key"),
+                       "New types should be auto-enabled from project config")
     }
 
     func testIsTypeEnabled() {
