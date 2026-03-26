@@ -1,7 +1,7 @@
 # Pastewatch
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 
-Detects and obfuscates sensitive data before it reaches AI systems - clipboard monitoring (macOS), CLI scanning (macOS/Linux), and MCP server for AI agent integration.
+Detects and obfuscates sensitive data before it reaches AI systems — clipboard monitoring, CLI scanner, MCP server, API proxy, shell guard hooks, and VS Code extension.
 
 It operates **before paste**, not after submission.
 
