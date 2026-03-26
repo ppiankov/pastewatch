@@ -77,43 +77,10 @@ jobs:
           name: linux-release
           path: release/
 
-  build-linux-arm64:
-    name: Build Linux ARM64 Release
-    runs-on: ubuntu-22.04
-    needs: [resolve, test]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.ref }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build CLI in arm64 container
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            swift:5.9-jammy \
-            bash -c "swift build -c release --product PastewatchCLI && mkdir -p release && cp .build/release/PastewatchCLI release/pastewatch-cli-linux-arm64"
-
-      - name: Generate SHA256
-        run: |
-          cd release
-          sha256sum pastewatch-cli-linux-arm64 > pastewatch-cli-linux-arm64.sha256
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-arm64-release
-          path: release/
-
   build:
     name: Build Release
     runs-on: macos-14
-    needs: [resolve, test, build-linux, build-linux-arm64]
+    needs: [resolve, test, build-linux]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,12 +165,6 @@ jobs:
           name: linux-release
           path: release/
 
-      - name: Download Linux arm64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-arm64-release
-          path: release/
-
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
@@ -241,8 +202,6 @@ jobs:
             release/pastewatch-cli.sha256
             release/pastewatch-cli-linux-amd64
             release/pastewatch-cli-linux-amd64.sha256
-            release/pastewatch-cli-linux-arm64
-            release/pastewatch-cli-linux-arm64.sha256
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
