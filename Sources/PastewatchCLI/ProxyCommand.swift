@@ -27,6 +27,9 @@ struct Proxy: ParsableCommand {
     @Option(name: .long, help: "Audit log file path")
     var auditLog: String?
 
+    @Flag(name: .long, inversion: .prefixedNo, help: "Inject alert into response when secrets are redacted")
+    var alert: Bool = true
+
     func run() throws {
         guard let upstreamURL = URL(string: upstream) else {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
@@ -49,7 +52,8 @@ struct Proxy: ParsableCommand {
             forwardProxy: forwardProxyURL,
             config: config,
             severity: severity,
-            auditLogPath: auditLog
+            auditLogPath: auditLog,
+            injectAlert: alert
         )
 
         FileHandle.standardError.write(Data("pastewatch proxy listening on http://127.0.0.1:\(port)\n".utf8))
@@ -58,6 +62,7 @@ struct Proxy: ParsableCommand {
             FileHandle.standardError.write(Data("forward-proxy: \(fp)\n".utf8))
         }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
+        FileHandle.standardError.write(Data("alert-injection: \(alert ? "on" : "off")\n".utf8))
         FileHandle.standardError.write(Data("\nusage:\n".utf8))
         FileHandle.standardError.write(Data("  ANTHROPIC_BASE_URL=http://127.0.0.1:\(port) claude\n".utf8))
         FileHandle.standardError.write(Data("\nctrl-c to stop\n\n".utf8))
