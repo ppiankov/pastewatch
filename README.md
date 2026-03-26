@@ -317,25 +317,60 @@ pastewatch-cli proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
 ```
 
-**Corporate environments** often require a company proxy for API access. Pastewatch chains through it:
+**Corporate proxy chaining.** Many organizations require all outbound traffic to go through a corporate proxy. Pastewatch chains transparently — it scans and redacts first, then forwards through the corporate proxy:
 
 ```bash
+# Corporate proxy at proxy.corp:8080
+# Pastewatch scans → forwards to corporate proxy → corporate proxy forwards to API
 pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
 ```
 
-Shell alias for zero-friction sessions:
-
-```bash
-# .zshrc / .bashrc
-alias claude='pastewatch-cli launch claude'
+```
+  Agent (claude)
+    │
+    ▼
+  pastewatch proxy (localhost:8443)     ← scans + redacts secrets
+    │
+    ▼
+  corporate proxy (proxy.corp:8080)     ← existing network policy
+    │
+    ▼
+  api.anthropic.com                     ← secrets never arrive
 ```
 
-The proxy logs every redaction:
+If the corporate proxy requires a specific port, match it:
+
+```bash
+# Corporate proxy expects traffic on :3456
+pastewatch-cli launch --port 3456 --forward-proxy http://127.0.0.1:3457 -- claude
+```
+
+**Resume sessions** through the proxy — all flags pass through:
+
+```bash
+pastewatch-cli launch -- claude -r
+pastewatch-cli launch -- claude --resume <session-id>
+```
+
+**Shell alias** for zero-friction protected sessions:
+
+```bash
+# .zshrc / .bashrc / config.fish
+alias claude='pastewatch-cli launch claude'
+
+# With corporate proxy
+alias claude='pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude'
+```
+
+**Audit logging.** The proxy logs every redaction to stderr. Use `--audit-log` to write to a file for dashboard aggregation:
+
+```bash
+pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
+```
+
 ```
 [2026-03-16T11:36:56Z] PROXY REDACTED 3 secret(s) in /v1/messages
 ```
-
-Use `--audit-log` to write to a file for dashboard aggregation.
 
 ### MCP Server - Redacted Read/Write
 
