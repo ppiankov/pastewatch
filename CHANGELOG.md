@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-03-26
+
+### Added
+
+- Proxy alert injection: when secrets are redacted, a `[PASTEWATCH]` alert is prepended to the API response so the agent gets immediate feedback
+- `--alert` / `--no-alert` flag on `proxy` command (default: on)
+- Type names included in alert (deduplicated, sorted)
+- Pass-through on non-JSON, error responses, or missing content array
+
 ## [0.23.3] - 2026-03-26
 
 ### Fixed
