@@ -297,27 +297,37 @@ Every tool call an AI agent makes — including internal subprocesses you don't 
 ```
 
 ```bash
-# Start the proxy
+# One command — starts proxy, launches agent, cleans up on exit
+pastewatch-cli launch claude
+
+# With options
+pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
+
+# Any agent
+pastewatch-cli launch -- codex --full-auto
+```
+
+Or start the proxy manually for more control:
+
+```bash
+# Start the proxy in one terminal
 pastewatch-cli proxy
 
-# Start your agent through the proxy
+# Start your agent in another
 ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
 ```
 
 **Corporate environments** often require a company proxy for API access. Pastewatch chains through it:
 
 ```bash
-# Company proxy on :3456 — pastewatch sits in front
-pastewatch-cli proxy --port 3456 --forward-proxy http://127.0.0.1:3457
-
-# Agent connects to :3456 as usual — pastewatch is transparent
+pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
 ```
 
-Configure port and upstream in your shell profile for zero-friction sessions:
+Shell alias for zero-friction sessions:
 
 ```bash
 # .zshrc / .bashrc
-alias claude='ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude'
+alias claude='pastewatch-cli launch claude'
 ```
 
 The proxy logs every redaction:
@@ -840,3 +850,7 @@ Do not pretend it guarantees compliance or safety.
 | Entropy-based detection | Complete |
 | VS Code extension | Complete |
 | Host/IP config (safeHosts, sensitiveHosts, sensitiveIPPrefixes) | Complete |
+| API proxy (outbound secret redaction) | Complete |
+| Proxy alert injection (agent feedback on redaction) | Complete |
+| Launch command (one-step proxy + agent) | Complete |
+| Multi-platform binaries (macOS universal, Linux amd64/arm64) | Complete |
