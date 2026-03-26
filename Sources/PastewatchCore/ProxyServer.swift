@@ -12,6 +12,7 @@ public final class ProxyServer {
     private let config: PastewatchConfig
     private let severity: Severity
     private let auditLogPath: String?
+    public private(set) var injectAlert: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
     private var running = false
@@ -38,7 +39,8 @@ public final class ProxyServer {
         forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
         severity: Severity = .high,
-        auditLogPath: String? = nil
+        auditLogPath: String? = nil,
+        injectAlert: Bool = true
     ) {
         self.port = port
         self.upstream = upstream
@@ -46,6 +48,7 @@ public final class ProxyServer {
         self.config = config
         self.severity = severity
         self.auditLogPath = auditLogPath
+        self.injectAlert = injectAlert
     }
 
     private func makeSession() -> URLSession {
@@ -158,10 +161,12 @@ public final class ProxyServer {
         // Only scan POST /v1/messages (the endpoint that carries tool results)
         var processedBody = parsed.body
         var redactionCount = 0
+        var redactedTypes: [String] = []
         if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
             let result = scanAndRedactBody(parsed.body)
             processedBody = result.body
             redactionCount = result.redacted
+            redactedTypes = result.redactedTypes
         }
 
         stats.requestsProcessed += 1
@@ -205,7 +210,12 @@ public final class ProxyServer {
             return
         }
 
-        sendResponse(to: clientSocket, status: resp.statusCode, headers: resp.allHeaderFields, body: data)
+        var finalBody = data
+        if redactionCount > 0 && injectAlert {
+            finalBody = injectAlertIntoResponse(data, redactionCount: redactionCount, types: redactedTypes)
+        }
+
+        sendResponse(to: clientSocket, status: resp.statusCode, headers: resp.allHeaderFields, body: finalBody)
     }
 
     // MARK: - Request scanning
@@ -213,28 +223,30 @@ public final class ProxyServer {
     private struct ScanResult {
         let body: String
         let redacted: Int
+        let redactedTypes: [String]
     }
 
     private func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ScanResult(body: body, redacted: 0)
+            return ScanResult(body: body, redacted: 0, redactedTypes: [])
         }
 
         var redacted = 0
-        let processed = redactContentArray(json, redacted: &redacted)
+        var types: [String] = []
+        let processed = redactContentArray(json, redacted: &redacted, types: &types)
 
         guard redacted > 0,
               let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
               let resultString = String(data: resultData, encoding: .utf8) else {
-            return ScanResult(body: body, redacted: 0)
+            return ScanResult(body: body, redacted: 0, redactedTypes: [])
         }
 
-        return ScanResult(body: resultString, redacted: redacted)
+        return ScanResult(body: resultString, redacted: redacted, redactedTypes: types)
     }
 
     /// Walk the messages array looking for tool_result content to scan.
-    private func redactContentArray(_ json: [String: Any], redacted: inout Int) -> [String: Any] {
+    private func redactContentArray(_ json: [String: Any], redacted: inout Int, types: inout [String]) -> [String: Any] {
         var result = json
 
         guard var messages = json["messages"] as? [[String: Any]] else {
@@ -258,6 +270,7 @@ public final class ProxyServer {
                             newBlock["content"] = obfuscated
                             newContent.append(newBlock)
                             redacted += filtered.count
+                            types.append(contentsOf: filtered.map { $0.displayName })
                         } else {
                             newContent.append(block)
                         }
@@ -276,6 +289,7 @@ public final class ProxyServer {
                                     newNest["text"] = obfuscated
                                     newNested.append(newNest)
                                     redacted += filtered.count
+                                    types.append(contentsOf: filtered.map { $0.displayName })
                                 } else {
                                     newNested.append(nested)
                                 }
@@ -383,6 +397,37 @@ public final class ProxyServer {
         responseData.withUnsafeBytes { ptr in
             _ = send(socket, ptr.baseAddress, ptr.count, 0)
         }
+    }
+
+    // MARK: - Alert injection
+
+    func buildAlertBlock(redactionCount: Int, types: [String]) -> [String: Any] {
+        let uniqueTypes = Array(Set(types)).sorted()
+        let typeList = uniqueTypes.joined(separator: ", ")
+        let text = "[PASTEWATCH] \(redactionCount) secret(s) redacted from your last tool call. " +
+            "Types: \(typeList). " +
+            "The original values were replaced with placeholders before reaching the API. " +
+            "Review your tool outputs for leaked credentials and recommend rotation."
+        return ["type": "text", "text": text]
+    }
+
+    func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
+        guard let json = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any],
+              var content = json["content"] as? [[String: Any]] else {
+            return responseBody
+        }
+
+        let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
+        content.insert(alert, at: 0)
+
+        var modified = json
+        modified["content"] = content
+
+        guard let resultData = try? JSONSerialization.data(withJSONObject: modified, options: []) else {
+            return responseBody
+        }
+
+        return resultData
     }
 
     // MARK: - Audit log
