@@ -7,7 +7,6 @@ final class ProxyAlertTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Use a dummy port — we only test internal methods, not the socket layer
         server = ProxyServer(port: 0, injectAlert: true)
     }
 
@@ -29,7 +28,6 @@ final class ProxyAlertTests: XCTestCase {
             types: ["AWS Key", "AWS Key", "Credential"]
         )
         let text = block["text"] as? String ?? ""
-        // Should list each type once, sorted
         XCTAssertTrue(text.contains("AWS Key, Credential"))
         XCTAssertTrue(text.contains("3 secret(s) redacted"))
     }
@@ -53,13 +51,13 @@ final class ProxyAlertTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: response)
 
         let result = server.injectAlertIntoResponse(data, redactionCount: 1, types: ["Credential"])
-        let json = try JSONSerialization.jsonObject(with: result) as! [String: Any]
-        let content = json["content"] as! [[String: Any]]
+        let json = try JSONSerialization.jsonObject(with: result) as? [String: Any]
+        let content = json?["content"] as? [[String: Any]]
 
-        XCTAssertEqual(content.count, 2, "Should have alert + original text block")
-        let alertText = content[0]["text"] as? String ?? ""
+        XCTAssertEqual(content?.count, 2, "Should have alert + original text block")
+        let alertText = content?[0]["text"] as? String ?? ""
         XCTAssertTrue(alertText.hasPrefix("[PASTEWATCH]"))
-        XCTAssertEqual(content[1]["text"] as? String, "Hello world")
+        XCTAssertEqual(content?[1]["text"] as? String, "Hello world")
     }
 
     func testInjectAlertPreservesResponseFields() throws {
@@ -73,11 +71,11 @@ final class ProxyAlertTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: response)
 
         let result = server.injectAlertIntoResponse(data, redactionCount: 1, types: ["AWS Key"])
-        let json = try JSONSerialization.jsonObject(with: result) as! [String: Any]
+        let json = try JSONSerialization.jsonObject(with: result) as? [String: Any]
 
-        XCTAssertEqual(json["id"] as? String, "msg_456")
-        XCTAssertEqual(json["model"] as? String, "claude-opus-4-6")
-        XCTAssertEqual(json["role"] as? String, "assistant")
+        XCTAssertEqual(json?["id"] as? String, "msg_456")
+        XCTAssertEqual(json?["model"] as? String, "claude-opus-4-6")
+        XCTAssertEqual(json?["role"] as? String, "assistant")
     }
 
     func testPassthroughOnErrorResponse() throws {
@@ -88,14 +86,13 @@ final class ProxyAlertTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: errorResponse)
 
         let result = server.injectAlertIntoResponse(data, redactionCount: 1, types: ["Credential"])
-        // No content array — should pass through unchanged
-        let json = try JSONSerialization.jsonObject(with: result) as! [String: Any]
-        XCTAssertEqual(json["type"] as? String, "error")
-        XCTAssertNil(json["content"], "Error response should not have content injected")
+        let json = try JSONSerialization.jsonObject(with: result) as? [String: Any]
+        XCTAssertEqual(json?["type"] as? String, "error")
+        XCTAssertNil(json?["content"], "Error response should not have content injected")
     }
 
     func testPassthroughOnNonJSON() {
-        let htmlData = "<html>Bad Gateway</html>".data(using: .utf8)!
+        let htmlData = Data("<html>Bad Gateway</html>".utf8)
 
         let result = server.injectAlertIntoResponse(htmlData, redactionCount: 1, types: ["Credential"])
         XCTAssertEqual(result, htmlData, "Non-JSON should pass through unchanged")
@@ -111,11 +108,11 @@ final class ProxyAlertTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: response)
 
         let result = server.injectAlertIntoResponse(data, redactionCount: 1, types: ["JWT"])
-        let json = try JSONSerialization.jsonObject(with: result) as! [String: Any]
-        let content = json["content"] as! [[String: Any]]
+        let json = try JSONSerialization.jsonObject(with: result) as? [String: Any]
+        let content = json?["content"] as? [[String: Any]]
 
-        XCTAssertEqual(content.count, 1, "Should have just the alert block")
-        let alertText = content[0]["text"] as? String ?? ""
+        XCTAssertEqual(content?.count, 1, "Should have just the alert block")
+        let alertText = content?[0]["text"] as? String ?? ""
         XCTAssertTrue(alertText.hasPrefix("[PASTEWATCH]"))
     }
 
@@ -123,17 +120,6 @@ final class ProxyAlertTests: XCTestCase {
 
     func testNoInjectionWhenFlagOff() throws {
         let serverNoAlert = ProxyServer(port: 0, injectAlert: false)
-        let response: [String: Any] = [
-            "id": "msg_abc",
-            "type": "message",
-            "role": "assistant",
-            "content": [["type": "text", "text": "Hello"]]
-        ]
-        let data = try JSONSerialization.data(withJSONObject: response)
-
-        // Direct call — flag is on the server, but we test the method directly
-        // The conditional check happens in handleConnection, not in injectAlertIntoResponse
-        // So we verify the flag exists and is false
         XCTAssertFalse(serverNoAlert.injectAlert)
     }
 }
