@@ -1,7 +1,8 @@
 import PastewatchCore
 import SwiftUI
 
-/// Pastewatch — Detects and obfuscates sensitive data before it reaches AI systems.
+/// Pastewatch — Detects and obfuscates sensitive data before it reaches AI systems
+/// via clipboard monitoring, CLI scanner, MCP server, API proxy, shell guard hooks, and VS Code extension.
 ///
 /// Core principle: Principiis obsta — resist the beginnings.
 /// If sensitive data never enters the prompt, the incident does not exist.
