@@ -79,22 +79,25 @@ jobs:
 
   build-linux-arm64:
     name: Build Linux ARM64 Release
-    runs-on: ubuntu-22.04-arm
+    runs-on: ubuntu-22.04
     needs: [resolve, test]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
-      - uses: swift-actions/setup-swift@v2
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
         with:
-          swift-version: "5.9"
+          platforms: arm64
 
-      - name: Build CLI
+      - name: Build CLI in arm64 container
         run: |
-          swift build -c release --product PastewatchCLI
-          mkdir -p release
-          cp .build/release/PastewatchCLI release/pastewatch-cli-linux-arm64
+          docker run --rm --platform linux/arm64 \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            swift:5.9-jammy \
+            bash -c "swift build -c release --product PastewatchCLI && mkdir -p release && cp .build/release/PastewatchCLI release/pastewatch-cli-linux-arm64"
 
       - name: Generate SHA256
         run: |
