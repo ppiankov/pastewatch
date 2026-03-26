@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-03-26
+
+### Added
+
+- `launch` command: one-step proxy + agent startup (`pastewatch-cli launch claude`)
+- Starts proxy in background, waits for TCP readiness, launches agent with `ANTHROPIC_BASE_URL` set
+- Cleans up proxy on agent exit, forwards exit codes
+- `--quiet` flag to suppress proxy messages
+- Universal macOS binary (arm64 + x86_64) in release workflow
+- Multi-platform Homebrew formula (macOS, Linux amd64, Linux arm64)
+
 ## [0.24.1] - 2026-03-26
 
 ### Fixed
