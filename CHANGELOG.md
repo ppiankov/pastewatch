@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-03-27
+
+### Added
+
+- Bash command argument scanning — guard now scans full command string for inline secrets (DSNs, API keys, tokens)
+- Bash tool handling in shell guard hook — blocks commands containing secrets before execution
+- Test credential exclusions — AWS EXAMPLE keys and Stripe `sk_test_` keys bypass guard blocking
+- CodeQL code scanning and Dependabot dependency monitoring
+
+### Fixed
+
+- VS Code extension workflow skips publish when version unchanged
+
 ## [0.25.0] - 2026-03-26
 
 ### Added
