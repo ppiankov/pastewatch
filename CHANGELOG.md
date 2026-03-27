@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5] - 2026-03-27
+
+### Added
+
+- Credential storage rules in CLAUDE.md snippet — prevents agents from echoing or storing plaintext credentials
+- Setup step added to Quick Start — `pastewatch-cli setup claude-code` is now essential, not optional
+
 ## [0.25.4] - 2026-03-27
 
 ### Fixed
