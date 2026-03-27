@@ -622,15 +622,75 @@ public struct DetectionRules {
     /// Additional validation for specific types.
     private static func isValidMatch(_ value: String, type: SensitiveDataType, config: PastewatchConfig) -> Bool {
         switch type {
-        case .ipAddress:  return isValidIP(value, config: config)
-        case .phone:      return isValidPhone(value)
-        case .creditCard: return isValidLuhn(value)
-        case .email:      return isValidEmail(value)
-        case .hostname:   return isValidHostname(value, config: config)
-        case .filePath:   return isValidFilePath(value)
-        case .uuid:       return isValidUUID(value)
-        default:          return true
+        case .ipAddress:   return isValidIP(value, config: config)
+        case .phone:       return isValidPhone(value)
+        case .creditCard:  return isValidLuhn(value)
+        case .email:       return isValidEmail(value)
+        case .hostname:    return isValidHostname(value, config: config)
+        case .filePath:    return isValidFilePath(value)
+        case .uuid:        return isValidUUID(value)
+        case .credential:  return isValidCredential(value)
+        default:           return true
         }
+    }
+
+    /// Validate credential key=value matches.
+    /// Rejects common English words, documentation labels, and placeholders.
+    private static func isValidCredential(_ fullMatch: String) -> Bool {
+        // Extract just the value part (after = or :)
+        guard let separatorRange = fullMatch.range(of: #"(?::=|[=:])\s*"#, options: .regularExpression) else {
+            return true
+        }
+        let value = String(fullMatch[separatorRange.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+
+        // Too short to be a real secret
+        if value.count < 4 { return false }
+
+        // Skip env var references ($VAR, ${VAR}, %VAR%)
+        if value.hasPrefix("$") || value.hasPrefix("%") { return false }
+
+        // Skip common documentation/prose words after credential keywords
+        let lowerValue = value.lowercased()
+        let proseWords: Set<String> = [
+            "rotated", "rotation", "required", "optional", "changed", "updated",
+            "expired", "revoked", "generated", "managed", "stored", "provided",
+            "configured", "enabled", "disabled", "deprecated", "removed",
+            "encrypted", "hashed", "salted", "secured", "protected",
+            "string", "value", "field", "method", "type", "format",
+            "authentication", "authorization", "mechanism", "provider",
+            "userpass", "kubernetes", "ldap", "oauth", "saml", "oidc",
+            "file", "path", "directory", "location", "manager",
+            "policy", "rule", "check", "validate", "verify",
+            "outside", "inside", "above", "below", "here", "there",
+            "please", "should", "would", "could", "must", "needs",
+            "based", "using", "from", "with", "that", "this",
+            "post", "get", "put", "delete", "patch", "head", "options",
+            "https://", "http://", "ftp://",
+        ]
+        // Check first word of the value
+        let firstWord = lowerValue.split(separator: " ").first.map(String.init) ?? lowerValue
+        let cleanFirstWord = firstWord.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        if proseWords.contains(cleanFirstWord) { return false }
+
+        // Skip URLs without auth (no user:pass@ segment)
+        if (lowerValue.hasPrefix("https://") || lowerValue.hasPrefix("http://"))
+            && !lowerValue.contains("@") { return false }
+
+        // Require some complexity — pure lowercase alpha words are likely prose
+        let hasDigit = value.contains(where: { $0.isNumber })
+        let hasUpper = value.contains(where: { $0.isUppercase })
+        let hasSpecial = value.contains(where: { "!@#$%^&*()_+-=[]{}|;:',.<>?/`~".contains($0) })
+        let isAllLowerAlpha = value.allSatisfy { $0.isLowercase || $0 == "-" || $0 == "_" }
+
+        // Pure lowercase word without digits or special chars is likely prose
+        if isAllLowerAlpha && !hasDigit && !hasSpecial && value.count < 20 { return false }
+
+        // At least two of: digits, uppercase, special chars → likely a real secret
+        let complexityScore = (hasDigit ? 1 : 0) + (hasUpper ? 1 : 0) + (hasSpecial ? 1 : 0)
+        if complexityScore == 0 && value.count < 20 { return false }
+
+        return true
     }
 
     private static func isValidIP(_ value: String, config: PastewatchConfig) -> Bool {

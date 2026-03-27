@@ -13,6 +13,7 @@ public final class ProxyServer {
     private let severity: Severity
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
+    private let quietLog: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
     private var running = false
@@ -40,7 +41,8 @@ public final class ProxyServer {
         config: PastewatchConfig = PastewatchConfig.resolve(),
         severity: Severity = .high,
         auditLogPath: String? = nil,
-        injectAlert: Bool = true
+        injectAlert: Bool = true,
+        quietLog: Bool = false
     ) {
         self.port = port
         self.upstream = upstream
@@ -49,6 +51,7 @@ public final class ProxyServer {
         self.severity = severity
         self.auditLogPath = auditLogPath
         self.injectAlert = injectAlert
+        self.quietLog = quietLog
     }
 
     private func makeSession() -> URLSession {
@@ -435,7 +438,9 @@ public final class ProxyServer {
     private func logRedaction(path: String, count: Int) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path)\n"
-        FileHandle.standardError.write(Data(line.utf8))
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
 
         if let logPath = auditLogPath {
             if let handle = FileHandle(forWritingAtPath: logPath) {

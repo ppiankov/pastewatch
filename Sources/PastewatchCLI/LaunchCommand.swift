@@ -65,7 +65,7 @@ struct Launch: ParsableCommand {
         let binaryPath = ProcessInfo.processInfo.arguments[0]
 
         // Build proxy arguments
-        var proxyArgs = ["proxy", "--port", "\(port)", "--upstream", upstream, "--severity", severity.rawValue]
+        var proxyArgs = ["proxy", "--port", "\(port)", "--upstream", upstream, "--severity", severity.rawValue, "--quiet"]
         if let fp = forwardProxy { proxyArgs += ["--forward-proxy", fp] }
         if let al = auditLog { proxyArgs += ["--audit-log", al] }
         if !alert { proxyArgs.append("--no-alert") }

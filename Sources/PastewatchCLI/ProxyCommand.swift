@@ -30,6 +30,9 @@ struct Proxy: ParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Inject alert into response when secrets are redacted")
     var alert: Bool = true
 
+    @Flag(name: .long, help: "Suppress redaction log to stderr (write to audit log only)")
+    var quiet: Bool = false
+
     func run() throws {
         guard let upstreamURL = URL(string: upstream) else {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
@@ -53,7 +56,8 @@ struct Proxy: ParsableCommand {
             config: config,
             severity: severity,
             auditLogPath: auditLog,
-            injectAlert: alert
+            injectAlert: alert,
+            quietLog: quiet
         )
 
         FileHandle.standardError.write(Data("pastewatch proxy listening on http://127.0.0.1:\(port)\n".utf8))
