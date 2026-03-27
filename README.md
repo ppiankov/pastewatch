@@ -100,6 +100,29 @@ The clipboard monitor scans before paste. The CLI scans files on demand. The MCP
 
 ---
 
+## Quick Start
+
+30 seconds from zero to protected AI agent session:
+
+```bash
+# Install
+brew install ppiankov/tap/pastewatch
+
+# Run claude (or any agent) through the proxy — one command, fully protected
+pastewatch-cli launch claude
+```
+
+That's it. The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs your agent. When the agent exits, the proxy stops. Every outbound API request is scanned and secrets are redacted before they leave your machine.
+
+For persistent setup, add a shell alias:
+
+```bash
+# .zshrc / .bashrc
+alias claude='pastewatch-cli launch claude'
+```
+
+---
+
 ## Installation
 
 ### From Release (Recommended)
