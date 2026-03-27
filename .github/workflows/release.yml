@@ -214,7 +214,8 @@ jobs:
         run: |
           TAG="${{ needs.resolve.outputs.tag }}"
           VERSION_NUM="${TAG#v}"
-          SHA256=$(shasum -a 256 release/pastewatch-cli | awk '{print $1}')
+          SHA_MAC=$(shasum -a 256 release/pastewatch-cli | awk '{print $1}')
+          SHA_LINUX_AMD64=$(shasum -a 256 release/pastewatch-cli-linux-amd64 | awk '{print $1}')
 
           cat > /tmp/pastewatch.rb << FORMULA
           # typed: false
@@ -226,13 +227,21 @@ jobs:
             version "${VERSION_NUM}"
             license "MIT"
 
-            depends_on :macos
-            depends_on arch: :arm64
+            on_macos do
+              url "https://github.com/ppiankov/pastewatch/releases/download/${TAG}/pastewatch-cli"
+              sha256 "${SHA_MAC}"
+            end
 
-            url "https://github.com/ppiankov/pastewatch/releases/download/${TAG}/pastewatch-cli"
-            sha256 "${SHA256}"
+            on_linux do
+              on_intel do
+                url "https://github.com/ppiankov/pastewatch/releases/download/${TAG}/pastewatch-cli-linux-amd64"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
 
             def install
+              downloaded = Dir["pastewatch-cli*"].first || "pastewatch-cli"
+              mv downloaded, "pastewatch-cli" if downloaded != "pastewatch-cli"
               bin.install "pastewatch-cli"
             end
 
