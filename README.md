@@ -105,14 +105,19 @@ The clipboard monitor scans before paste. The CLI scans files on demand. The MCP
 30 seconds from zero to protected AI agent session:
 
 ```bash
-# Install
+# 1. Install
 brew install ppiankov/tap/pastewatch
 
-# Run claude (or any agent) through the proxy — one command, fully protected
+# 2. Set up hooks and MCP server for your agent
+pastewatch-cli setup claude-code
+
+# 3. Run through the proxy — one command, fully protected
 pastewatch-cli launch claude
 ```
 
-That's it. The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs your agent. When the agent exits, the proxy stops. Every outbound API request is scanned and secrets are redacted before they leave your machine.
+The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs your agent. When the agent exits, the proxy stops. Every outbound API request is scanned and secrets are redacted before they leave your machine.
+
+**Important:** The setup step injects credential handling rules into your agent's `CLAUDE.md`. Without these rules, agents may echo passwords in shell output or store plaintext credentials in memory files — formats that bypass regex detection. The rules ensure agents use detectable keywords (`password=`, `secret=`) and never store raw values. See [docs/CLAUDE-SNIPPET.md](docs/CLAUDE-SNIPPET.md) for the full snippet.
 
 For persistent setup, add a shell alias:
 

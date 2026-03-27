@@ -108,6 +108,15 @@ public enum AgentSetup {
     - Placeholders are in-memory only — they die when the MCP server stops
     - If you see `__PW_` prefixed values, those are redacted secrets — do not treat them as real values
     - When writing files that contain `__PW_` placeholders, always use `pastewatch_write_file` — native Write will be blocked
+
+    ### NEVER echo or store credentials
+
+    - NEVER run `echo $VAR`, `printenv`, or `env | grep` on env vars containing secrets
+    - NEVER store plaintext passwords, tokens, or keys in memory files, context files, or documentation
+    - When referencing credentials, use vault paths (`vault/secret/data/...`), env var names (`$WORKLEDGER_DSN`), or secret manager references — never the actual value
+    - Use `password=` or `secret=` keywords (not `pw=`, `pass=`, `key:`) so pastewatch detection can match them
+    - If a credential accidentally appears in output, IMMEDIATELY warn: "CREDENTIAL LEAKED — rotate immediately"
+    - To verify a credential exists without exposing it: `echo "${VAR:0:5}"` (first 5 chars only)
     """
 
     /// Sentinel line used to detect existing snippet in CLAUDE.md.
