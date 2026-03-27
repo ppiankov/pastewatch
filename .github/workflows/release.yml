@@ -189,7 +189,7 @@ jobs:
           echo "$NOTES" > /tmp/release-notes.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           body_path: /tmp/release-notes.md
