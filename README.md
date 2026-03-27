@@ -207,7 +207,7 @@ If detection is ambiguous, Pastewatch does nothing.
 
 ## Obfuscation Model
 
-Detected values are replaced with stable placeholders **per paste**:
+Detected values are replaced with typed, numbered placeholders:
 
 ```
 john.doe@example.com  →  <EMAIL_1>
@@ -215,25 +215,28 @@ AKIAIOSFODNN7EXAMPLE  →  <AWS_KEY_1>
 192.168.1.100         →  <IP_1>
 ```
 
-- Mapping exists only in memory
-- Mapping is discarded immediately after paste
-- No persistence
-- No recovery mechanism
+How placeholders work depends on the layer:
 
-After paste, the system returns to rest.
+| Layer | Placeholder lifetime | Recovery |
+|-------|---------------------|----------|
+| **Clipboard** | Discarded after paste | None — one-way |
+| **CLI scan** | Output only | None — report only |
+| **MCP server** | Stored in RAM for the session | Write-back resolves originals locally |
+| **API proxy** | Replaced in-flight | None — redacted before it leaves |
+
+The MCP server is the only layer that maintains a mapping — it must, because the agent needs to write code with real values restored. The mapping lives in process memory and is lost when the session ends. No persistence, no disk, no cloud.
 
 ---
 
 ## User Experience
 
-- Default behavior is silent
-- When obfuscation occurs, a minimal notification is shown:
+- **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: Email (1), API Key (1)`
+- **CLI** — findings printed to stdout, exit code 6 if secrets found
+- **MCP** — transparent to the agent. It reads placeholders and writes them back. No user interaction needed
+- **Guard hook** — blocks with a clear message: `BLOCKED: file contains secrets. Use pastewatch_read_file instead`
+- **Proxy** — redacts silently. When secrets are caught, injects a `[PASTEWATCH]` alert into the agent's response so it can warn the user
 
-  > Pastewatch: Obfuscated: Email (1), API Key (1)
-
-No previews. No animations. No confirmations.
-
-Silence is success.
+No previews. No animations. No confirmations. Silence is success.
 
 ---
 
