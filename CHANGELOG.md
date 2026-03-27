@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.4] - 2026-03-27
+
+### Fixed
+
+- Credential false positives — documentation text like `password: rotated`, `token: POST` no longer triggers detection
+- Proxy stderr log suppressed in launch mode to prevent TUI interference with interactive CLIs
+- Added `--quiet` flag to `proxy` command
+
 ## [0.25.3] - 2026-03-27
 
 ### Fixed
