@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-03-27
+
+### Fixed
+
+- Launch command now passes TTY through to agent for interactive CLIs
+
 ## [0.25.1] - 2026-03-27
 
 ### Added
