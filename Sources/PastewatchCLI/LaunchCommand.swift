@@ -7,9 +7,12 @@ import Darwin
 import Glibc
 #endif
 
+// C-level fork — Swift marks fork() unavailable on Darwin but we need TTY inheritance
+@_silgen_name("fork") private func _pw_fork() -> pid_t
+
 // File-level refs for signal handler access
 private var launchProxyProcess: Process?
-private var launchAgentProcess: Process?
+private var launchAgentPid: pid_t = 0
 
 struct Launch: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -100,37 +103,52 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
         }
 
-        // Install signal handler to clean up both processes
-        signal(SIGINT) { _ in
-            launchAgentProcess?.terminate()
-            launchProxyProcess?.terminate()
-            _exit(130)
-        }
+        // Set ANTHROPIC_BASE_URL for the agent
+        setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:\(port)", 1)
 
-        // Launch agent with ANTHROPIC_BASE_URL set
-        let agent = Process()
-        agent.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        agent.arguments = Array(command)
-        var env = ProcessInfo.processInfo.environment
-        env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:\(port)"
-        agent.environment = env
-        // Explicitly inherit stdin/stdout/stderr for TTY passthrough
-        agent.standardInput = FileHandle.standardInput
-        agent.standardOutput = FileHandle.standardOutput
-        agent.standardError = FileHandle.standardError
-        launchAgentProcess = agent
+        // Fork: child exec's the agent (inherits TTY), parent waits and cleans up
+        // Use @_silgen_name to bypass Swift's fork() unavailability on Darwin
+        let pid = _pw_fork()
 
-        do {
-            try agent.run()
-        } catch {
+        if pid == -1 {
             proxy.terminate()
             proxy.waitUntilExit()
-            FileHandle.standardError.write(Data("error: failed to launch '\(command[0])': \(error)\n".utf8))
-            throw ExitCode(rawValue: 127)
+            FileHandle.standardError.write(Data("error: fork failed\n".utf8))
+            throw ExitCode(rawValue: 3)
         }
 
-        agent.waitUntilExit()
-        let exitCode = agent.terminationStatus
+        if pid == 0 {
+            // Child process — exec the agent command
+            // Build null-terminated C string array for execvp
+            let args = Array(command)
+            let cArgs = args.map { strdup($0) } + [nil]
+            execvp(cArgs[0]!, cArgs)
+            // execvp only returns on error
+            perror("execvp")
+            _exit(127)
+        }
+
+        // Parent process — wait for child, then clean up proxy
+        // Forward SIGINT to child instead of killing everything
+        launchAgentPid = pid
+        signal(SIGINT) { _ in
+            if launchAgentPid > 0 {
+                kill(launchAgentPid, SIGINT)
+            }
+        }
+
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+
+        // Extract exit code
+        let exitCode: Int32
+        if (status & 0x7f) == 0 {
+            // Exited normally
+            exitCode = (status >> 8) & 0xff
+        } else {
+            // Killed by signal
+            exitCode = 128 + (status & 0x7f)
+        }
 
         // Clean up proxy
         proxy.terminate()
