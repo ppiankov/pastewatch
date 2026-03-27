@@ -54,50 +54,49 @@ The agent works normally. It reads files, runs commands, writes code. It just ne
 
 ## What Pastewatch Does
 
-- Monitors clipboard content locally
-- Detects **high-confidence sensitive data**
-- Obfuscates detected values **before paste**
-- Operates fully offline
-- Shows minimal, explicit feedback when changes occur
+Pastewatch started as a clipboard monitor — scan before paste, replace secrets with placeholders. It evolved into a full secret protection stack for AI agent workflows:
 
-Nothing more.
+| Layer | What it does | How it works |
+|-------|-------------|-------------|
+| **Clipboard monitor** | Scans before paste | macOS menubar app, replaces secrets in clipboard |
+| **CLI scanner** | Scans files, directories, git diffs | `pastewatch-cli scan --dir .` |
+| **MCP server** | Redacted read/write for AI agents | Agent sees placeholders, originals stay in RAM |
+| **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor |
+| **API proxy** | Redacts secrets from outbound API traffic | Sits between agent and cloud, scans every request |
+| **VS Code extension** | Real-time detection in the editor | Highlights secrets as you type |
 
----
-
-## What Pastewatch Does Not Do
-
-Pastewatch is not:
-
-- a DLP system
-- a compliance product
-- a browser extension
-- an LLM proxy
-- a monitoring or logging tool
-- an AI-powered classifier
-- a policy engine
-
-Pastewatch does not:
-
-- block paste
-- phone home
-- store clipboard history
-- guess or infer
-- act when uncertain
+All layers share the same detection engine — 30+ pattern types, deterministic regex, no ML. Every layer operates locally. Nothing phones home.
 
 False negatives are preferred over false positives.
 
 ---
 
+## What Pastewatch is NOT
+
+- Not a DLP system — no policies, no enforcement workflows, no admin console
+- Not a compliance product — it does not certify, audit, or generate reports for regulators
+- Not an AI classifier — deterministic pattern matching only, no probabilistic scoring
+- Not a policy engine — it does not decide what you're allowed to do, it prevents structural leaks
+
+Pastewatch does not:
+
+- phone home or collect telemetry
+- require cloud connectivity
+- guess, infer, or act when uncertain
+- store clipboard history or file contents
+- make decisions — it presents evidence and lets you decide
+
+---
+
 ## How Pastewatch Works
 
-Pastewatch modifies clipboard text locally before it is pasted.
+Pastewatch scans text for sensitive patterns and replaces them with non-sensitive placeholders. The same engine powers all six layers:
 
-It scans plain text for sensitive patterns and replaces them with
-non-sensitive placeholders.
+1. **Detection** — regex-based pattern matching across 30+ secret types (API keys, DSNs, tokens, credentials, PII)
+2. **Obfuscation** — matched values are replaced with typed placeholders (`<AWS_KEY_1>`, `<DB_CONNECTION_1>`)
+3. **Resolution** — MCP server stores originals in local RAM, restores them on write-back. Secrets never leave the machine
 
-Pastewatch does not hide clipboard contents from the operating system
-or applications, and it does not provide a way to restore original values
-after paste.
+The clipboard monitor scans before paste. The CLI scans files on demand. The MCP server scans on read and resolves on write. The guard scans commands before execution. The proxy scans API requests before they leave the network. Each layer catches what the others miss.
 
 ---
 
