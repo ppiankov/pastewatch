@@ -25,18 +25,28 @@ struct Guard: ParsableCommand {
 
         let config = PastewatchConfig.resolve()
         let paths = CommandParser.extractFilePaths(from: command)
-        let inlineValues = CommandParser.extractInlineValues(from: command)
-
-        if paths.isEmpty && inlineValues.isEmpty {
-            if json {
-                printJSON(GuardResult(blocked: false, command: command, files: [], inlineFindings: []))
-            }
-            return
-        }
 
         var allFileResults: [FileResult] = []
         var allInlineResults: [InlineResult] = []
         var shouldBlock = false
+
+        // Scan the full command string for inline secrets (DSNs, API keys, tokens)
+        let commandMatches = DetectionRules.scan(command, config: config)
+        let commandFiltered = commandMatches.filter {
+            $0.effectiveSeverity >= failOnSeverity && !DetectionRules.isTestCredential($0.value)
+        }
+
+        if !commandFiltered.isEmpty {
+            shouldBlock = true
+            let bySeverity = Dictionary(grouping: commandFiltered, by: { $0.effectiveSeverity })
+            let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
+                .sorted()
+            allInlineResults.append(InlineResult(
+                findings: commandFiltered.count,
+                severityCounts: counts.joined(separator: ", "),
+                types: Set(commandFiltered.map { $0.displayName }).sorted()
+            ))
+        }
 
         // Scan referenced files
         for path in paths {
@@ -55,24 +65,6 @@ struct Guard: ParsableCommand {
                     .sorted()
                 allFileResults.append(FileResult(
                     path: path,
-                    findings: filtered.count,
-                    severityCounts: counts.joined(separator: ", "),
-                    types: Set(filtered.map { $0.displayName }).sorted()
-                ))
-            }
-        }
-
-        // Scan inline values (connection strings, passwords in command args)
-        for value in inlineValues {
-            let matches = DetectionRules.scan(value, config: config)
-            let filtered = matches.filter { $0.effectiveSeverity >= failOnSeverity }
-
-            if !filtered.isEmpty {
-                shouldBlock = true
-                let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
-                let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
-                    .sorted()
-                allInlineResults.append(InlineResult(
                     findings: filtered.count,
                     severityCounts: counts.joined(separator: ", "),
                     types: Set(filtered.map { $0.displayName }).sorted()

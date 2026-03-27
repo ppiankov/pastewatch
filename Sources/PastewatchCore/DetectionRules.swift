@@ -476,6 +476,28 @@ public struct DetectionRules {
         return patterns
     }()
 
+    /// Well-known test/example credentials that should never trigger detection.
+    /// Values ending in EXAMPLE or containing test_ prefixes are fake by convention.
+    static let testCredentials: Set<String> = [
+        // AWS example key from docs (ends in EXAMPLE — AWS convention for fake keys)
+        "AKIAIOSFODNN7EXAMPLE",
+        // AWS example secret from docs
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        // Stripe test-mode keys (sk_test_ prefix = test mode, never real)
+        "sk_test_4eC39HqLyjWDarjtT1zdp7dc",
+        "pk_test_TYooMQauvdEDq54NiTphI7jx",
+    ]
+
+    /// Check if a matched value is a known test credential.
+    public static func isTestCredential(_ value: String) -> Bool {
+        if testCredentials.contains(value) { return true }
+        // AWS keys ending in EXAMPLE are always fake
+        if value.hasPrefix("AKIA") && value.hasSuffix("EXAMPLE") { return true }
+        // Stripe test-mode keys
+        if value.hasPrefix("sk_test_") || value.hasPrefix("pk_test_") { return true }
+        return false
+    }
+
     /// Scan content for sensitive data.
     /// Returns all matches found.
     public static func scan(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {

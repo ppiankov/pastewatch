@@ -28,6 +28,26 @@ input=$(cat)
 tool=$(echo "$input" | jq -r '.tool_name // empty')
 file_path=$(echo "$input" | jq -r '.tool_input.file_path // .tool_input.filePath // empty')
 
+# --- BASH: Scan command arguments for inline secrets ---
+if [ "$tool" = "Bash" ]; then
+  bash_command=$(echo "$input" | jq -r '.tool_input.command // empty')
+  [ -z "$bash_command" ] && exit 0
+
+  # Fail-open if pastewatch-cli not installed
+  command -v pastewatch-cli &>/dev/null || exit 0
+
+  # Scan the full command string for secrets
+  pastewatch-cli guard --quiet --fail-on-severity "$PW_SEVERITY" "$bash_command" >/dev/null 2>&1
+  guard_exit=$?
+
+  if [ "$guard_exit" -ne 0 ]; then
+    echo "BLOCKED: command contains inline secrets. Do NOT paste credentials, DSNs, or API keys into shell commands. Use environment variables or config files instead."
+    echo "Blocked: inline secrets in Bash command" >&2
+    exit 2
+  fi
+  exit 0
+fi
+
 # Only check Read, Write, Edit tools
 case "$tool" in
   Read|Write|Edit) ;;
