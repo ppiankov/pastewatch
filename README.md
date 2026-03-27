@@ -21,17 +21,34 @@ Pastewatch refuses that transition.
 
 ---
 
+## Why This Matters
+
+Every AI agent sends your file contents, command outputs, and tool results to a cloud API. If those contain secrets, the secrets leave your machine — silently, irreversibly, and into infrastructure you don't control.
+
+Pastewatch makes secret leakage **structurally impossible** without breaking any agent functionality:
+
+```
+  What the agent does                What actually happens
+  ──────────────────                 ──────────────────────
+  Read a file with secrets     →    MCP returns placeholders, secrets stay in RAM
+  Run a bash command with DSN  →    Guard blocks before execution
+  Send tool results to API     →    Proxy redacts secrets from the request body
+  Write code with placeholders →    MCP resolves originals locally on write-back
+```
+
+The agent works normally. It reads files, runs commands, writes code. It just never sees the real values — and neither does the cloud.
+
+**No behavioral rules. No trust assumptions. No ML. The architecture prevents the leak.**
+
 ## Why Pastewatch
 
-No other tool does what Pastewatch does. Here's why:
-
-- **Before-paste boundary** - secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
-- **MCP server for AI agents** - no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
-- **Bash guard with deep parsing** - pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
-- **Canary honeypots** - "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
-- **Local-only, deterministic, no ML** - no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
-- **One-command agent setup** - `pastewatch-cli setup claude-code` and you're protected. MCP server, hooks, severity alignment - all configured in one step
-- **Watch mode + dashboard** - continuous file monitoring during sessions, aggregate reporting across sessions. Know what's happening, prove it's working
+- **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
+- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
+- **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
+- **API proxy** — catches everything, including subagents and tools that bypass hooks. Last line of defense before the network boundary
+- **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
+- **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
+- **One command** — `pastewatch-cli launch claude` and every layer is active. No manual setup, no env vars, no second terminal
 
 ---
 
