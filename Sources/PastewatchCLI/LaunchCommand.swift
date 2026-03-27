@@ -114,6 +114,10 @@ struct Launch: ParsableCommand {
         var env = ProcessInfo.processInfo.environment
         env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:\(port)"
         agent.environment = env
+        // Explicitly inherit stdin/stdout/stderr for TTY passthrough
+        agent.standardInput = FileHandle.standardInput
+        agent.standardOutput = FileHandle.standardOutput
+        agent.standardError = FileHandle.standardError
         launchAgentProcess = agent
 
         do {
