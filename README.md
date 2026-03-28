@@ -325,6 +325,8 @@ pastewatch-cli config check
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
 
+![Proxy alert injection — 27 secrets redacted from a tool call](assets/proxy-alert.png)
+
 ```
   Your machine
   ┌──────────────────────────────────────┐
