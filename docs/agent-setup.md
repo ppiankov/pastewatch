@@ -264,6 +264,6 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | Claude Code | Structural | Structural | PreToolUse hooks |
 | Cline | Structural | Structural | PreToolUse hooks |
 | Cursor | Advisory | Advisory | Instructions only |
-| OpenCode | Advisory | Advisory | Instructions only (no hook support yet) |
+| OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
 | Codex CLI | Advisory | Advisory | Instructions only (no hook support yet) |
 | Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |
