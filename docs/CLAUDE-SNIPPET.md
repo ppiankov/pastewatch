@@ -53,3 +53,14 @@ pastewatch-cli init                       # creates .pastewatch.json
 # or for banking/enterprise:
 pastewatch-cli init --profile banking     # JDBC, medium severity, internal host detection
 ```
+
+### Running through the proxy (recommended)
+
+The API proxy is the default way to run Claude Code with pastewatch. It catches **all** outbound secrets — including from subagents and tools that bypass hooks and MCP:
+
+```bash
+pastewatch-cli launch claude
+
+# or add a shell alias:
+alias claude='pastewatch-cli launch claude'
+```

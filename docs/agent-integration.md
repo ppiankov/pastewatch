@@ -1,6 +1,6 @@
 # Agent Integration Reference
 
-Consolidated reference for integrating pastewatch with AI coding agents. Covers enforcement levels, hook configuration, MCP setup, and anti-workaround measures.
+Consolidated reference for integrating pastewatch with AI coding agents. Covers the API proxy, enforcement levels, hook configuration, MCP setup, and anti-workaround measures.
 
 **Install first:**
 ```bash
@@ -9,7 +9,32 @@ brew install ppiankov/tap/pastewatch
 
 ---
 
-## 1. Enforcement Matrix
+## 1. API Proxy — Layer 0
+
+The proxy is the default and recommended way to run any agent. It sits between the agent and the cloud API, scanning and redacting secrets from **all** outbound requests — including subagents, tool calls, and anything else that bypasses hooks or MCP.
+
+```bash
+# One command — starts proxy, launches agent, cleans up on exit
+pastewatch-cli launch claude
+
+# Any agent
+pastewatch-cli launch -- codex --full-auto
+
+# With corporate proxy chaining
+pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
+```
+
+Shell alias for zero-friction protected sessions:
+
+```bash
+alias claude='pastewatch-cli launch claude'
+```
+
+The proxy catches what hooks and MCP cannot — it is the network boundary. MCP tools and hooks below add defense in depth.
+
+---
+
+## 2. Enforcement Matrix
 
 | Agent | Read/Write/Edit | Bash Commands | Enforcement | Hook Format |
 |-------|----------------|---------------|-------------|-------------|
@@ -24,7 +49,7 @@ brew install ppiankov/tap/pastewatch
 
 ---
 
-## 2. MCP Setup Per Agent
+## 3. MCP Setup Per Agent
 
 All agents use the same MCP server command. Only the config file location and format differ.
 
@@ -133,7 +158,7 @@ Config: `~/.qwen/settings.json`
 
 ---
 
-## 3. Hook Configuration
+## 4. Hook Configuration
 
 Hooks make enforcement structural. Without hooks, MCP tools are opt-in and agents can bypass redaction using native Read/Write or Bash commands.
 
@@ -184,7 +209,7 @@ Cursor supports `preToolUse` hooks with the same exit code protocol as Claude Co
 
 ---
 
-## 4. Anti-Workaround Enforcement
+## 5. Anti-Workaround Enforcement
 
 Agents are creative about bypassing restrictions. These measures close known bypass paths.
 
@@ -254,7 +279,7 @@ Add to `CLAUDE.md`, `AGENTS.md`, `.clinerules`, or equivalent per-agent instruct
 
 ---
 
-## 5. PW_GUARD Escape Hatch
+## 6. PW_GUARD Escape Hatch
 
 `PW_GUARD=0` disables all guard subcommands. When set, `guard`, `guard-read`, `guard-write`, and `scan --check` exit 0 immediately.
 
@@ -272,7 +297,7 @@ unset PW_GUARD       # re-enable (or restart shell)
 
 ---
 
-## 6. Upstream Hook Support Requests
+## 7. Upstream Hook Support Requests
 
 Agents without hook support can only use advisory enforcement (instruction files). When these agents add hook support, they upgrade to structural enforcement.
 
@@ -287,7 +312,7 @@ When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guar
 
 ---
 
-## 7. Configuration Files
+## 8. Configuration Files
 
 Pastewatch config resolves from the agent's working directory. When an agent runs `pastewatch-cli scan` or uses MCP tools, it picks up the project's `.pastewatch.json` automatically.
 

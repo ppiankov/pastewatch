@@ -1,6 +1,6 @@
-# Agent MCP Setup
+# Agent Setup
 
-Per-agent instructions for registering pastewatch MCP server. Once configured, the agent has 6 tools for scanning, redacted read/write, and output checking. Secrets stay on your machine - only placeholders reach the AI provider.
+Per-agent instructions for protecting AI coding sessions with pastewatch. The recommended setup is the API proxy via `launch` — it catches **all** outbound secrets including from subagents and tools that bypass hooks and MCP.
 
 **Install first:**
 ```bash
@@ -9,7 +9,37 @@ brew install ppiankov/tap/pastewatch
 
 ---
 
-## Claude Code
+## Recommended: API Proxy via Launch
+
+The proxy sits between your agent and the cloud API, scanning and redacting every outbound request. This is the default way to run any agent with pastewatch:
+
+```bash
+# One command — starts proxy, launches agent, cleans up on exit
+pastewatch-cli launch claude
+
+# Any agent
+pastewatch-cli launch -- codex --full-auto
+
+# With corporate proxy
+pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
+```
+
+For persistent setup, add a shell alias:
+
+```bash
+# .zshrc / .bashrc
+alias claude='pastewatch-cli launch claude'
+```
+
+The proxy is Layer 0 — it catches secrets that bypass hooks, MCP tools, and agent instructions. MCP and hooks below add defense in depth but the proxy is the foundation.
+
+---
+
+## MCP Server Registration
+
+Register the MCP server for redacted read/write and scanning tools. Once configured, the agent has 6 tools. Secrets stay on your machine — only placeholders reach the AI provider.
+
+### Claude Code
 
 Register via CLI:
 ```bash
