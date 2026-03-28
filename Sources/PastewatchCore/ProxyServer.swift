@@ -176,7 +176,7 @@ public final class ProxyServer {
         if redactionCount > 0 {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
-            logRedaction(path: parsed.path, count: redactionCount)
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
 
         // Forward to upstream
@@ -464,10 +464,25 @@ public final class ProxyServer {
 
     // MARK: - Audit log
 
-    private func logRedaction(path: String, count: Int) {
+    private var lastLogSignature = ""
+
+    private func logRedaction(path: String, count: Int, types: [String]) {
+        // Build type breakdown: "Credential x3, DB Connection x2"
+        var typeCounts: [String: Int] = [:]
+        for t in types { typeCounts[t, default: 0] += 1 }
+        let breakdown = typeCounts.sorted { $0.key < $1.key }
+            .map { "\($0.key) x\($0.value)" }
+            .joined(separator: ", ")
+
+        // Deduplicate: skip if same count+types as last log (conversation history re-scan)
+        let signature = "\(count):\(breakdown)"
+        let isRepeat = signature == lastLogSignature
+        lastLogSignature = signature
+
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path)\n"
-        if !quietLog {
+        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"
+
+        if !quietLog && !isRepeat {
             FileHandle.standardError.write(Data(line.utf8))
         }
 
