@@ -407,11 +407,40 @@ public final class ProxyServer {
     func buildAlertBlock(redactionCount: Int, types: [String]) -> [String: Any] {
         let uniqueTypes = Array(Set(types)).sorted()
         let typeList = uniqueTypes.joined(separator: ", ")
+        let suggestions = uniqueTypes.compactMap { fixSuggestion(for: $0) }
+        let suggestionsText = suggestions.isEmpty ? "" :
+            " Fix: " + suggestions.joined(separator: "; ") + "."
         let text = "[PASTEWATCH] \(redactionCount) secret(s) redacted from your last tool call. " +
             "Types: \(typeList). " +
             "The original values were replaced with placeholders before reaching the API. " +
-            "Review your tool outputs for leaked credentials and recommend rotation."
+            "Review your tool outputs for leaked credentials and recommend rotation." +
+            suggestionsText
         return ["type": "text", "text": text]
+    }
+
+    private func fixSuggestion(for typeName: String) -> String? {
+        switch typeName {
+        case "Credential":
+            return "use 'password=' or 'secret=' keywords (not 'pw=', 'pass=') so the guard hook catches it before the proxy"
+        case "DB Connection":
+            return "store DSN in env var and reference by name ($DBNAME_DSN) — never paste connection strings inline"
+        case "AWS Key":
+            return "use env vars ($AWS_ACCESS_KEY_ID) or IAM roles — never hardcode AWS keys"
+        case "Workledger Key":
+            return "store in ~/.openclaw/workledger.key and reference via api_key_file config"
+        case "Oracul Key":
+            return "store in env var ($ORACUL_API_KEY) — never paste vc_* keys inline"
+        case "Anthropic Key", "OpenAI Key", "Groq Key", "Perplexity Key":
+            let envName = typeName.uppercased().replacingOccurrences(of: " ", with: "_")
+            return "use env var ($\(envName)) — never paste API keys inline"
+        case "SSH Key":
+            return "use ssh-agent or file references — never paste private keys into commands or files"
+        case "JWT":
+            return "JWTs contain claims and signatures — never log or echo them"
+        default:
+            return nil
+        }
+        // swiftlint:disable:previous cyclomatic_complexity
     }
 
     func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
