@@ -25,12 +25,14 @@ This is not hypothetical. Config files, .env files, and hardcoded credentials ar
 The strongest layer. Every API call from every process — including agent subprocesses you don't control — passes through a local proxy that scans and redacts secrets before they leave your machine.
 
 ```bash
-# Start the proxy
-pastewatch-cli proxy --audit-log /tmp/pw-proxy.log
+# One command — starts proxy, launches agent, cleans up on exit
+pastewatch-cli launch claude
 
-# Start your agent through it
-ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
+# With audit logging
+pastewatch-cli launch --audit-log /tmp/pw-proxy.log -- claude
 ```
+
+This is the default way to run any agent with pastewatch. The `launch` command starts the proxy, sets `ANTHROPIC_BASE_URL`, runs the agent, and stops the proxy on exit.
 
 **Why this matters:** Agent subprocesses (subagents, background workers, parallel tasks) bypass tool-level protections like hooks and MCP. They make direct API calls with raw file contents. The proxy is the only layer that catches everything — it operates at the network boundary, not the tool boundary.
 
@@ -38,10 +40,20 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
 
 ```bash
 # Pastewatch sits between the agent and the corporate proxy
-pastewatch-cli proxy --port 3456 --forward-proxy http://127.0.0.1:3457
+pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
 ```
 
 The agent connects to pastewatch as if it were the company proxy. Pastewatch scans, redacts, and forwards to the real proxy. Transparent to both the agent and the corporate network.
+
+For manual control (separate terminals), use `pastewatch-cli proxy` directly:
+
+```bash
+# Terminal 1
+pastewatch-cli proxy --audit-log /tmp/pw-proxy.log
+
+# Terminal 2
+ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
+```
 
 ---
 
