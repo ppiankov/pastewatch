@@ -448,7 +448,7 @@ struct Scan: ParsableCommand {
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
             let pairs = findings.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.6")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.7")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             outputGitLogMarkdown(findings: findings, result: result)
@@ -466,7 +466,7 @@ struct Scan: ParsableCommand {
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
             let pairs = findings.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.6")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.7")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             outputGitLogMarkdown(findings: findings, result: result)
@@ -573,7 +573,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.6")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.7")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -606,7 +606,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
-            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.6")
+            let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: "0.25.7")
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
@@ -636,7 +636,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.25.6"
+                matches: matches, filePath: filePath, version: "0.25.7"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
@@ -661,7 +661,7 @@ struct Scan: ParsableCommand {
             }
         case .sarif:
             let data = SarifFormatter.format(
-                matches: matches, filePath: filePath, version: "0.25.6"
+                matches: matches, filePath: filePath, version: "0.25.7"
             )
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
