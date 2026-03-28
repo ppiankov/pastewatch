@@ -54,6 +54,9 @@ struct Launch: ParsableCommand {
     var command: [String] = []
 
     func run() throws {
+        // Strip leading "--" that captureForPassthrough may include
+        var command = Array(self.command.drop(while: { $0 == "--" }))
+
         guard !command.isEmpty else {
             FileHandle.standardError.write(Data("error: no command specified\n".utf8))
             FileHandle.standardError.write(Data("usage: pastewatch-cli launch <command> [args...]\n".utf8))
