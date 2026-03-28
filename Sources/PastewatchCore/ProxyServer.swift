@@ -480,10 +480,16 @@ public final class ProxyServer {
         lastLogSignature = signature
 
         let timestamp = ISO8601DateFormatter().string(from: Date())
+        let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
+        let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"
+        let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
         if !quietLog && !isRepeat {
             FileHandle.standardError.write(Data(line.utf8))
+            if !hintLine.isEmpty {
+                FileHandle.standardError.write(Data(hintLine.utf8))
+            }
         }
 
         if let logPath = auditLogPath {
