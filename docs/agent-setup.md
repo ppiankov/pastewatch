@@ -103,9 +103,38 @@ Toggle: set `"disabled": true` or use Cline UI MCP panel.
 
 ---
 
+## Roo Code (VS Code)
+
+Roo Code is a Cline fork — same MCP config format and hook protocol.
+
+Config: `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
+      "disabled": false
+    }
+  }
+}
+```
+
+Or auto-setup:
+
+```bash
+pastewatch-cli setup roo-code
+```
+
+Toggle: set `"disabled": true` or use Roo Code UI MCP panel.
+
+---
+
 ## Cursor
 
-Config: `~/.cursor/mcp.json`
+MCP config: `~/.cursor/mcp.json`
+Hooks config: `~/.cursor/hooks.json`
 
 ```json
 {
@@ -116,6 +145,12 @@ Config: `~/.cursor/mcp.json`
     }
   }
 }
+```
+
+Or auto-setup (configures MCP + hooks):
+
+```bash
+pastewatch-cli setup cursor
 ```
 
 ---
@@ -263,7 +298,8 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 |-------|----------------|---------------|-----------|
 | Claude Code | Structural | Structural | PreToolUse hooks |
 | Cline | Structural | Structural | PreToolUse hooks |
-| Cursor | Advisory | Advisory | Instructions only |
+| Roo Code | Structural | Structural | PreToolUse hooks (Cline fork) |
+| Cursor | Structural | Structural | preToolUse hooks |
 | OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
 | Codex CLI | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/openai/codex/issues/14754)) |
 | Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |

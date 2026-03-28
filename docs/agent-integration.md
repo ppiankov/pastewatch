@@ -40,7 +40,8 @@ The proxy catches what hooks and MCP cannot — it is the network boundary. MCP 
 |-------|----------------|---------------|-------------|-------------|
 | Claude Code | Structural | Structural | PreToolUse hooks | exit 0 = allow, exit 2 = block; stdout → agent |
 | Cline | Structural | Structural | PreToolUse hooks | JSON `{"cancel": true}` response |
-| Cursor | Advisory | Advisory | Instructions only | No hook support yet |
+| Roo Code | Structural | Structural | PreToolUse hooks | JSON `{"cancel": true}` response (Cline fork) |
+| Cursor | Structural | Structural | preToolUse hooks | exit 2 + JSON `{"permission": "deny"}` |
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
 | Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
@@ -306,7 +307,7 @@ Agents without hook support can only use advisory enforcement (instruction files
 | OpenCode | [anomalyco/opencode#12472](https://github.com/anomalyco/opencode/issues/12472) | Open — [PR #19519](https://github.com/anomalyco/opencode/pull/19519) submitted | thdxr |
 | Qwen Code | [QwenLM/qwen-code#268](https://github.com/QwenLM/qwen-code/issues/268) | P2 | Mingholy |
 | Codex CLI | [openai/codex#14754](https://github.com/openai/codex/issues/14754) | Open | - |
-| Cursor | Supported | Available | - |
+| Cursor | Supported | Implemented | - |
 
 When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guard` hooks following the Claude Code pattern.
 

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
+      "disabled": false
+    }
+  }
+}

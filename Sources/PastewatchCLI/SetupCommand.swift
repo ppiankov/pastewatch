@@ -7,7 +7,7 @@ struct Setup: ParsableCommand {
         abstract: "Configure AI agent integration (MCP server, hooks, severity)"
     )
 
-    @Argument(help: "Agent to configure: claude-code, cline, cursor")
+    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code")
     var agent: String
 
     @Option(name: .long, help: "Severity threshold for hook blocking and MCP redaction (default: high)")
@@ -17,7 +17,7 @@ struct Setup: ParsableCommand {
     var project = false
 
     func validate() throws {
-        let validAgents = ["claude-code", "cline", "cursor"]
+        let validAgents = ["claude-code", "cline", "cursor", "roo-code"]
         guard validAgents.contains(agent) else {
             throw ValidationError(
                 "Unknown agent '\(agent)'. Valid: \(validAgents.joined(separator: ", "))"
@@ -40,6 +40,8 @@ struct Setup: ParsableCommand {
             try setupClaudeCode()
         case "cline":
             try setupCline()
+        case "roo-code":
+            try setupRooCode()
         case "cursor":
             try setupCursor()
         default:
@@ -152,6 +154,50 @@ struct Setup: ParsableCommand {
         runDoctor()
     }
 
+    // MARK: - Roo Code
+
+    private func setupRooCode() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: roo-code\n")
+
+        // 1. Merge MCP config
+        let mcpPath = home
+            + "/Library/Application Support/Code/User/globalStorage"
+            + "/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+        AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+
+        // 2. Write hook script (reuse Cline protocol — Roo Code is a Cline fork)
+        let hooksDir = home + "/.config/pastewatch/hooks"
+        let hookPath = hooksDir + "/roo-code-hook.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.clineHookScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Summary
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("")
+        print("  next: register the hook in Roo Code settings as a PreToolUse hook.")
+        print("  path: \(hookPath)")
+        print("\ndone. restart VS Code to activate MCP server.")
+
+        runDoctor()
+    }
+
     // MARK: - Cursor
 
     private func setupCursor() throws {
@@ -163,20 +209,38 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.cursor/mcp.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var mcpJson = AgentSetup.readJSON(at: mcpPath)
         let configExisted = fm.fileExists(atPath: mcpPath)
-        AgentSetup.mergeMCPServer(into: &json, severity: severity)
-        try AgentSetup.writeJSON(json, to: mcpPath)
+        AgentSetup.mergeMCPServer(into: &mcpJson, severity: severity)
+        try AgentSetup.writeJSON(mcpJson, to: mcpPath)
 
         let configStatus = configExisted ? "updated" : "created"
         print("  mcp      \(mcpPath) (\(configStatus))")
-        print("  severity \(severity)")
-        print("")
-        print("  note: Cursor has no structural hook enforcement.")
-        print("  add to .cursorrules in your project root:")
-        print("    When reading or writing files that may contain secrets,")
-        print("    use pastewatch MCP tools (pastewatch_read_file, pastewatch_write_file).")
-        print("\ndone. restart Cursor to activate MCP server.")
+
+        // 2. Write hook script
+        let hooksDir = home + "/.cursor/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.cursorGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Merge hooks.json
+        let hooksJsonPath = home + "/.cursor/hooks.json"
+        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
+        AgentSetup.mergeCursorHooks(into: &hooksJson, hookPath: hookPath)
+        try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
+
+        let hooksStatus = hooksExisted ? "updated" : "created"
+        print("  hooks    \(hooksJsonPath) (\(hooksStatus))")
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("\ndone. restart Cursor to activate.")
 
         runDoctor()
     }

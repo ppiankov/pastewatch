@@ -15,7 +15,8 @@ brew install ppiankov/tap/pastewatch
 |-------|-------------|--------------|
 | [Claude Code](#claude-code) | Structural (PreToolUse) | [settings.json](claude-code/settings.json) + [pastewatch-guard.sh](claude-code/pastewatch-guard.sh) |
 | [Cline](#cline) | Structural (PreToolUse) | [mcp-config.json](cline/mcp-config.json) + [pastewatch-hook.sh](cline/pastewatch-hook.sh) |
-| [Cursor](#cursor) | MCP only (no hooks) | [mcp.json](cursor/mcp.json) |
+| [Roo Code](#roo-code) | Structural (PreToolUse) | [mcp-config.json](roo-code/mcp-config.json) + [pastewatch-hook.sh](roo-code/pastewatch-hook.sh) |
+| [Cursor](#cursor) | Structural (preToolUse) | [mcp.json](cursor/mcp.json) + [pastewatch-guard.sh](cursor/pastewatch-guard.sh) |
 
 **Structural** = hooks block native file access and redirect to MCP tools. The agent cannot bypass the check.
 **MCP only** = agent can use MCP tools but is not forced to. Add instructions to `.cursorrules` to request MCP usage.
@@ -107,6 +108,40 @@ The hook block itself shows as a notification - Cline should automatically retry
 
 ---
 
+## Roo Code
+
+Roo Code is a Cline fork — same MCP config format and hook protocol.
+
+### 1. Register MCP server
+
+Add to Roo Code MCP settings (`~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
+      "disabled": false
+    }
+  }
+}
+```
+
+See [roo-code/mcp-config.json](roo-code/mcp-config.json).
+
+### 2. Install the hook
+
+Copy [roo-code/pastewatch-hook.sh](roo-code/pastewatch-hook.sh) to your hooks directory and make executable. Same protocol as Cline — register as a PreToolUse hook in Roo Code settings.
+
+### Or auto-setup
+
+```bash
+pastewatch-cli setup roo-code
+```
+
+---
+
 ## Cursor
 
 ### 1. Register MCP server
@@ -126,16 +161,28 @@ Add to `~/.cursor/mcp.json`:
 
 See [cursor/mcp.json](cursor/mcp.json).
 
-### 2. Add instructions (advisory)
+### 2. Install the hook
 
-Cursor does not have structural hook enforcement. Add to `.cursorrules` in your project root:
+Copy [cursor/pastewatch-guard.sh](cursor/pastewatch-guard.sh) to `~/.cursor/hooks/` and make executable. Then add to `~/.cursor/hooks.json`:
 
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Read|Write",
+        "command": "~/.cursor/hooks/pastewatch-guard.sh"
+      }
+    ]
+  }
+}
 ```
-When reading or writing files that may contain secrets (API keys, credentials,
-connection strings, .env files, config files), use pastewatch MCP tools:
-- Use pastewatch_read_file instead of native read
-- Use pastewatch_write_file instead of native write
-- Never output raw secret values
+
+### Or auto-setup
+
+```bash
+pastewatch-cli setup cursor
 ```
 
 ---
