@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.8] - 2026-03-28
+
+### Added
+
+- Proxy log shows type breakdown per redaction (`Credential x3, DB Connection x2`)
+- Proxy log includes actionable fix suggestion for the human operator
+- Proxy log deduplicates repeated lines when conversation history re-scans same secrets
+
 ## [0.25.7] - 2026-03-28
 
 ### Fixed
