@@ -42,7 +42,7 @@ The proxy catches what hooks and MCP cannot — it is the network boundary. MCP 
 | Cline | Structural | Structural | PreToolUse hooks | JSON `{"cancel": true}` response |
 | Cursor | Advisory | Advisory | Instructions only | No hook support yet |
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
-| Codex CLI | Advisory | Advisory | Instructions only | No hook support yet |
+| Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
 
 **Structural** means the agent cannot bypass the check - hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.
@@ -305,7 +305,7 @@ Agents without hook support can only use advisory enforcement (instruction files
 |-------|-------|--------|----------|
 | OpenCode | [anomalyco/opencode#12472](https://github.com/anomalyco/opencode/issues/12472) | Open — [PR #19519](https://github.com/anomalyco/opencode/pull/19519) submitted | thdxr |
 | Qwen Code | [QwenLM/qwen-code#268](https://github.com/QwenLM/qwen-code/issues/268) | P2 | Mingholy |
-| Codex CLI | No issue filed | - | - |
+| Codex CLI | [openai/codex#14754](https://github.com/openai/codex/issues/14754) | Open | - |
 | Cursor | Supported | Available | - |
 
 When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guard` hooks following the Claude Code pattern.
