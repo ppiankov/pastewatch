@@ -440,7 +440,6 @@ public final class ProxyServer {
         default:
             return nil
         }
-        // swiftlint:disable:previous cyclomatic_complexity
     }
 
     func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
