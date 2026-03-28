@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.6] - 2026-03-28
+
+### Added
+
+- Proxy alert now includes actionable fix suggestion per secret type (use env vars, store in key file, use detectable keywords)
+
 ## [0.25.5] - 2026-03-27
 
 ### Added
