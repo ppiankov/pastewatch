@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-03-29
+
+### Added
+
+- **Agent Safety Matrix** in README — comprehensive table showing protection level for all 15 supported agents
+- **Proxy alert screenshot** in README — real-world example of 27 secrets redacted from a tool call
+- **8 new agents** in `pastewatch-cli setup`:
+  - **Cursor** — structural enforcement via `preToolUse` hooks (exit 2 + JSON deny protocol)
+  - **Roo Code** — structural enforcement, reuses Cline hook protocol (JSON cancel)
+  - **Windsurf** — structural enforcement via `pre_read_code`/`pre_write_code`/`pre_run_command` hooks
+  - **Continue** — structural enforcement via Claude Code-compatible `PreToolUse` hooks
+  - **Amazon Q** — structural enforcement via `preToolUse` hooks
+  - **GitHub Copilot** — structural enforcement via `preToolUse` hooks (`.github/hooks/` config)
+  - **Goose** — MCP setup (advisory, YAML config), upstream hook issue filed ([block/goose#8184](https://github.com/block/goose/issues/8184))
+  - **Kilo Code** — MCP setup (advisory), upstream hook issue filed ([Kilo-Org/kilocode#7859](https://github.com/Kilo-Org/kilocode/issues/7859))
+  - **Gemini Code Assist** — MCP setup (advisory, `~/.gemini/settings.json`)
+  - **Aider** — proxy-only (no MCP support yet, [aider-ai/aider#4506](https://github.com/aider-ai/aider/issues/4506))
+- Upstream hook support issue commented on [openai/codex#14754](https://github.com/openai/codex/issues/14754) for Codex CLI
+
+### Changed
+
+- API proxy (`launch`) positioned as default/recommended setup in all docs
+- Cursor upgraded from advisory to structural enforcement
+- `docs/agent-safety.md` Layer 0 section updated to use `launch` command
+- `docs/agent-setup.md` restructured: proxy first, then MCP registration
+- `docs/agent-integration.md` restructured with proxy as section 1, all sections renumbered
+- `docs/CLAUDE-SNIPPET.md` now includes proxy setup section
+
 ## [0.25.8] - 2026-03-28
 
 ### Added

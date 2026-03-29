@@ -303,7 +303,7 @@ pastewatch-cli hook install
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.25.8
+    rev: v0.26.0
     hooks:
       - id: pastewatch
 ```
