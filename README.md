@@ -761,12 +761,15 @@ Every agent is protected by the API proxy (Layer 0) — it catches all outbound 
 | Windsurf | **Structural** | pre_read/write/run (exit 2) | Yes | `pastewatch-cli setup windsurf` |
 | Continue | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup continue` |
 | Amazon Q | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup amazon-q` |
+| Copilot | **Structural** | preToolUse (`.github/hooks/`) | Yes | `pastewatch-cli setup copilot` |
 | Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
 | Kilo Code | Proxy + MCP | [Requested](https://github.com/Kilo-Org/kilocode/issues/7859) | Yes | `pastewatch-cli setup kilo-code` |
+| Gemini | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup gemini` |
 | OpenCode | Proxy + MCP | [PR pending](https://github.com/anomalyco/opencode/pull/19519) | Yes | Manual |
 | Codex CLI | Proxy only | [Requested](https://github.com/openai/codex/issues/14754) | Manual | Manual |
 | Qwen Code | Proxy only | [Requested](https://github.com/QwenLM/qwen-code/issues/268) | Manual | Manual |
 | Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
+| Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
 **Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
 **Proxy + MCP** = network-level redaction catches everything, MCP tools provide redacted access, but the agent isn't forced to use them.

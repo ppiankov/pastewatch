@@ -7,7 +7,7 @@ struct Setup: ParsableCommand {
         abstract: "Configure AI agent integration (MCP server, hooks, severity)"
     )
 
-    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code, windsurf, goose, kilo-code, continue, amazon-q, aider")
+    @Argument(help: "Agent to configure (run without args to see list)")
     var agent: String
 
     @Option(name: .long, help: "Severity threshold for hook blocking and MCP redaction (default: high)")
@@ -20,6 +20,7 @@ struct Setup: ParsableCommand {
         let validAgents = [
             "claude-code", "cline", "cursor", "roo-code", "windsurf",
             "goose", "kilo-code", "continue", "amazon-q", "aider",
+            "copilot", "gemini",
         ]
         guard validAgents.contains(agent) else {
             throw ValidationError(
@@ -59,6 +60,10 @@ struct Setup: ParsableCommand {
             try setupAmazonQ()
         case "aider":
             try setupAider()
+        case "copilot":
+            try setupCopilot()
+        case "gemini":
+            try setupGemini()
         default:
             break
         }
@@ -499,6 +504,87 @@ struct Setup: ParsableCommand {
         print("  the proxy catches all outbound secrets at the network boundary.")
         print("")
         print("  upstream: https://github.com/aider-ai/aider/issues/4506 (MCP support)")
+
+        runDoctor()
+    }
+
+    // MARK: - GitHub Copilot
+
+    private func setupCopilot() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: copilot\n")
+
+        // 1. Merge MCP config for CLI
+        let mcpPath = home + "/.copilot/mcp-config.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+
+        // Copilot CLI uses "mcpServers" key like most agents
+        AgentSetup.mergeMCPServer(into: &json, severity: severity)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+
+        // 2. Write hook script (reuse Claude Code protocol — Copilot is compatible)
+        let hooksDir = home + "/.copilot/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.claudeCodeGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Print hook registration instructions
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("")
+        print("  next: add hook config to .github/hooks/pastewatch.json in your repo:")
+        print("    {")
+        print("      \"version\": 1,")
+        print("      \"hooks\": {")
+        print("        \"preToolUse\": [{")
+        print("          \"type\": \"command\",")
+        print("          \"bash\": \"\(hookPath)\"")
+        print("        }]")
+        print("      }")
+        print("    }")
+        print("\ndone. restart Copilot to activate MCP server.")
+
+        runDoctor()
+    }
+
+    // MARK: - Gemini Code Assist
+
+    private func setupGemini() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: gemini\n")
+
+        // 1. Merge MCP config — Gemini uses ~/.gemini/settings.json
+        let mcpPath = home + "/.gemini/settings.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+        // Gemini warns: do NOT use underscores in server names
+        AgentSetup.mergeMCPServer(into: &json, severity: severity)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+        print("  severity \(severity)")
+        print("")
+        print("  note: Gemini Code Assist has no hook support — enforcement is advisory.")
+        print("  use 'pastewatch-cli launch' for proxy-level protection.")
+        print("  enable Agent mode in Gemini for MCP tools to be available.")
+        print("\ndone. restart VS Code to activate MCP server.")
 
         runDoctor()
     }

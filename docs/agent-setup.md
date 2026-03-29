@@ -284,6 +284,71 @@ pastewatch-cli setup amazon-q
 
 ---
 
+## GitHub Copilot
+
+CLI config: `~/.copilot/mcp-config.json`
+Hooks config: `.github/hooks/pastewatch.json` (per repo)
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+Hook registration (`.github/hooks/pastewatch.json`):
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "~/.copilot/hooks/pastewatch-guard.sh"
+      }
+    ]
+  }
+}
+```
+
+Or auto-setup (configures MCP + hook script):
+
+```bash
+pastewatch-cli setup copilot
+```
+
+---
+
+## Gemini Code Assist
+
+Config: `~/.gemini/settings.json`
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+Or auto-setup:
+
+```bash
+pastewatch-cli setup gemini
+```
+
+Note: Gemini has no hook support — enforcement is advisory. Enable Agent mode for MCP tools. Use `pastewatch-cli launch` for proxy-level protection.
+
+---
+
 ## Aider
 
 Aider CLI has no native MCP or hook support. Use the proxy for protection:
@@ -444,9 +509,11 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | Windsurf | Structural | Structural | pre_read_code/pre_write_code/pre_run_command hooks |
 | Continue | Structural | Structural | PreToolUse hooks (Claude Code-compatible) |
 | Amazon Q | Structural | Structural | preToolUse hooks |
+| Copilot | Structural | Structural | preToolUse hooks (`.github/hooks/`) |
 | OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
 | Goose | Advisory | Advisory | MCP only (no hook support) |
 | Kilo Code | Advisory | Advisory | MCP only (no hook support) |
 | Aider | Advisory | Advisory | Proxy only ([no MCP yet](https://github.com/aider-ai/aider/issues/4506)) |
+| Gemini | Advisory | Advisory | MCP only (no hook support) |
 | Codex CLI | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/openai/codex/issues/14754)) |
 | Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |
