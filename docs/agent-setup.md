@@ -231,6 +231,71 @@ Note: Kilo Code has no hook support — enforcement is advisory. Use `pastewatch
 
 ---
 
+## Continue (VS Code / JetBrains)
+
+MCP config: `~/.continue/mcpServers/pastewatch.yaml`
+Hooks config: `~/.continue/settings.json`
+
+Continue uses Claude Code-compatible PreToolUse hooks (exit 2 blocks).
+
+```yaml
+name: pastewatch
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: pastewatch
+    command: pastewatch-cli
+    args:
+      - mcp
+      - --audit-log
+      - /tmp/pastewatch-audit.log
+```
+
+Or auto-setup (configures MCP + hooks):
+
+```bash
+pastewatch-cli setup continue
+```
+
+---
+
+## Amazon Q Developer
+
+MCP config: `~/.aws/amazonq/mcp.json`
+
+Amazon Q supports preToolUse hooks with exit code 2 blocking, matching the Claude Code protocol.
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+Or auto-setup (configures MCP + hooks):
+
+```bash
+pastewatch-cli setup amazon-q
+```
+
+---
+
+## Aider
+
+Aider CLI has no native MCP or hook support. Use the proxy for protection:
+
+```bash
+pastewatch-cli launch -- aider
+```
+
+Upstream: [aider-ai/aider#4506](https://github.com/aider-ai/aider/issues/4506) (MCP support requested)
+
+---
+
 ## OpenCode
 
 Config: `~/.config/opencode/opencode.json`
@@ -377,8 +442,11 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | Roo Code | Structural | Structural | PreToolUse hooks (Cline fork) |
 | Cursor | Structural | Structural | preToolUse hooks |
 | Windsurf | Structural | Structural | pre_read_code/pre_write_code/pre_run_command hooks |
+| Continue | Structural | Structural | PreToolUse hooks (Claude Code-compatible) |
+| Amazon Q | Structural | Structural | preToolUse hooks |
 | OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
 | Goose | Advisory | Advisory | MCP only (no hook support) |
 | Kilo Code | Advisory | Advisory | MCP only (no hook support) |
+| Aider | Advisory | Advisory | Proxy only ([no MCP yet](https://github.com/aider-ai/aider/issues/4506)) |
 | Codex CLI | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/openai/codex/issues/14754)) |
 | Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |

@@ -61,7 +61,7 @@ Pastewatch started as a clipboard monitor — scan before paste, replace secrets
 | **Clipboard monitor** | Scans before paste | macOS menubar app, replaces secrets in clipboard |
 | **CLI scanner** | Scans files, directories, git diffs | `pastewatch-cli scan --dir .` |
 | **MCP server** | Redacted read/write for AI agents | Agent sees placeholders, originals stay in RAM |
-| **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor |
+| **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor, Windsurf, Continue, Amazon Q |
 | **API proxy** | Redacts secrets from outbound API traffic | Sits between agent and cloud, scans every request |
 | **VS Code extension** | Real-time detection in the editor | Highlights secrets as you type |
 
@@ -747,6 +747,32 @@ Define additional patterns in a JSON file:
 ---
 
 ## Agent Integration
+
+### Agent Safety Matrix
+
+Every agent is protected by the API proxy (Layer 0) — it catches all outbound secrets at the network boundary regardless of agent support. Hooks and MCP add defense in depth.
+
+| Agent | Protection | Hooks | MCP | Setup |
+|-------|-----------|-------|-----|-------|
+| Claude Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup claude-code` |
+| Cline | **Structural** | PreToolUse (JSON cancel) | Yes | `pastewatch-cli setup cline` |
+| Roo Code | **Structural** | PreToolUse (JSON cancel) | Yes | `pastewatch-cli setup roo-code` |
+| Cursor | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup cursor` |
+| Windsurf | **Structural** | pre_read/write/run (exit 2) | Yes | `pastewatch-cli setup windsurf` |
+| Continue | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup continue` |
+| Amazon Q | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup amazon-q` |
+| Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
+| Kilo Code | Proxy + MCP | [Requested](https://github.com/Kilo-Org/kilocode/issues/7859) | Yes | `pastewatch-cli setup kilo-code` |
+| OpenCode | Proxy + MCP | [PR pending](https://github.com/anomalyco/opencode/pull/19519) | Yes | Manual |
+| Codex CLI | Proxy only | [Requested](https://github.com/openai/codex/issues/14754) | Manual | Manual |
+| Qwen Code | Proxy only | [Requested](https://github.com/QwenLM/qwen-code/issues/268) | Manual | Manual |
+| Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
+
+**Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
+**Proxy + MCP** = network-level redaction catches everything, MCP tools provide redacted access, but the agent isn't forced to use them.
+**Proxy only** = all protection comes from the network proxy. Still catches 100% of outbound secrets.
+
+### Install
 
 Install via Homebrew:
 

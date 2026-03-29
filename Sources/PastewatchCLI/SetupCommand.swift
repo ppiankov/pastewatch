@@ -7,7 +7,7 @@ struct Setup: ParsableCommand {
         abstract: "Configure AI agent integration (MCP server, hooks, severity)"
     )
 
-    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code, windsurf, goose, kilo-code")
+    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code, windsurf, goose, kilo-code, continue, amazon-q, aider")
     var agent: String
 
     @Option(name: .long, help: "Severity threshold for hook blocking and MCP redaction (default: high)")
@@ -17,7 +17,10 @@ struct Setup: ParsableCommand {
     var project = false
 
     func validate() throws {
-        let validAgents = ["claude-code", "cline", "cursor", "roo-code", "windsurf", "goose", "kilo-code"]
+        let validAgents = [
+            "claude-code", "cline", "cursor", "roo-code", "windsurf",
+            "goose", "kilo-code", "continue", "amazon-q", "aider",
+        ]
         guard validAgents.contains(agent) else {
             throw ValidationError(
                 "Unknown agent '\(agent)'. Valid: \(validAgents.joined(separator: ", "))"
@@ -50,6 +53,12 @@ struct Setup: ParsableCommand {
             try setupGoose()
         case "kilo-code":
             try setupKiloCode()
+        case "continue":
+            try setupContinue()
+        case "amazon-q":
+            try setupAmazonQ()
+        case "aider":
+            try setupAider()
         default:
             break
         }
@@ -362,6 +371,134 @@ struct Setup: ParsableCommand {
         print("")
         print("  upstream: https://github.com/Kilo-Org/kilocode/issues")
         print("\ndone. restart VS Code to activate MCP server.")
+
+        runDoctor()
+    }
+
+    // MARK: - Continue
+
+    private func setupContinue() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: continue\n")
+
+        // 1. Write MCP config as YAML file in .continue/mcpServers/
+        let mcpDir = home + "/.continue/mcpServers"
+        let mcpPath = mcpDir + "/pastewatch.yaml"
+
+        if !fm.fileExists(atPath: mcpDir) {
+            try fm.createDirectory(atPath: mcpDir, withIntermediateDirectories: true)
+        }
+
+        var mcpArgs = """
+        name: pastewatch
+        version: 0.0.1
+        schema: v1
+        mcpServers:
+          - name: pastewatch
+            command: pastewatch-cli
+            args:
+              - mcp
+              - --audit-log
+              - /tmp/pastewatch-audit.log
+        """
+        if severity != "high" {
+            mcpArgs += """
+
+                  - --min-severity
+                  - \(severity)
+            """
+        }
+
+        try mcpArgs.write(toFile: mcpPath, atomically: true, encoding: .utf8)
+        print("  mcp      \(mcpPath) (created)")
+
+        // 2. Write hook script (reuse Claude Code protocol — Continue is compatible)
+        let hooksDir = home + "/.continue/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.claudeCodeGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Merge hooks into settings.json
+        let settingsPath = home + "/.continue/settings.json"
+        var json = AgentSetup.readJSON(at: settingsPath)
+        let configExisted = fm.fileExists(atPath: settingsPath)
+        AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
+        try AgentSetup.writeJSON(json, to: settingsPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  hooks    \(settingsPath) (\(configStatus))")
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("\ndone. restart Continue to activate.")
+
+        runDoctor()
+    }
+
+    // MARK: - Amazon Q
+
+    private func setupAmazonQ() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: amazon-q\n")
+
+        // 1. Merge MCP config
+        let mcpPath = home + "/.aws/amazonq/mcp.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+        AgentSetup.mergeMCPServer(into: &json, severity: severity)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+
+        // 2. Write hook script (reuse Claude Code protocol — Amazon Q is compatible)
+        let hooksDir = home + "/.aws/amazonq/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.claudeCodeGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Print hook registration instructions
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("")
+        print("  next: add to your Amazon Q config (~/.aws/amazonq/mcp.json):")
+        print("    \"hooks\": {")
+        print("      \"preToolUse\": [")
+        print("        { \"matcher\": \"fs_*\", \"command\": \"\(hookPath)\" }")
+        print("      ]")
+        print("    }")
+        print("\ndone. restart Amazon Q to activate.")
+
+        runDoctor()
+    }
+
+    // MARK: - Aider
+
+    private func setupAider() throws {
+        print("setup: aider\n")
+
+        print("  note: Aider CLI has no native MCP or hook support.")
+        print("")
+        print("  use 'pastewatch-cli launch -- aider' for proxy-level protection.")
+        print("  the proxy catches all outbound secrets at the network boundary.")
+        print("")
+        print("  upstream: https://github.com/aider-ai/aider/issues/4506 (MCP support)")
 
         runDoctor()
     }
