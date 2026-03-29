@@ -105,6 +105,35 @@ public enum AgentSetup {
         json["version"] = version
     }
 
+    /// Merge pastewatch hook entries into Windsurf hooks.json.
+    /// Windsurf uses separate hook events: pre_read_code, pre_write_code, pre_run_command.
+    public static func mergeWindsurfHooks(into json: inout [String: Any], hookPath: String) {
+        var hooks = json["hooks"] as? [String: Any] ?? [:]
+
+        let hookEvents = ["pre_read_code", "pre_write_code", "pre_run_command"]
+        for event in hookEvents {
+            var entries = hooks[event] as? [[String: Any]] ?? []
+
+            let newEntry: [String: Any] = [
+                "command": hookPath,
+                "show_output": true,
+            ]
+
+            // Find existing pastewatch entry
+            if let idx = entries.firstIndex(where: { entry in
+                (entry["command"] as? String)?.contains("pastewatch-guard") == true
+            }) {
+                entries[idx] = newEntry
+            } else {
+                entries.append(newEntry)
+            }
+
+            hooks[event] = entries
+        }
+
+        json["hooks"] = hooks
+    }
+
     // MARK: - CLAUDE.md Snippet
 
     /// The pastewatch snippet to inject into CLAUDE.md files.
@@ -300,6 +329,81 @@ public enum AgentSetup {
         fi
 
         # Clean file or scan error — allow native tool
+        exit 0
+        """
+    }
+
+    /// Generate Windsurf guard script with configured severity.
+    /// Windsurf uses separate hook events (pre_read_code, pre_write_code, pre_run_command)
+    /// and passes input as JSON via stdin. Exit 2 blocks the action.
+    public static func windsurfGuardScript(severity: String) -> String {
+        return """
+        #!/bin/bash
+        # Windsurf hook: enforce pastewatch MCP tools for files with secrets
+        #
+        # Registered for: pre_read_code, pre_write_code, pre_run_command
+        # Protocol: exit 0 = allow, exit 2 = block
+        #
+        # Configuration:
+        #   PW_SEVERITY — severity threshold for blocking (default: "\(severity)")
+
+        PW_SEVERITY="${PW_SEVERITY:-\(severity)}"
+
+        # Fail-open if pastewatch-cli not installed
+        command -v pastewatch-cli &>/dev/null || exit 0
+
+        input=$(cat)
+        action=$(echo "$input" | jq -r '.agent_action_name // empty')
+
+        case "$action" in
+          pre_read_code|pre_write_code)
+            file_path=$(echo "$input" | jq -r '.file_path // empty')
+            [ -z "$file_path" ] && exit 0
+
+            # Skip binary files
+            case "$file_path" in
+              *.png|*.jpg|*.jpeg|*.gif|*.ico|*.bmp|*.webp|*.svg) exit 0 ;;
+              *.woff|*.woff2|*.ttf|*.eot|*.otf) exit 0 ;;
+              *.zip|*.tar|*.gz|*.bz2|*.xz|*.7z|*.rar) exit 0 ;;
+              *.exe|*.dll|*.so|*.dylib|*.a|*.o|*.class|*.pyc) exit 0 ;;
+              *.pdf|*.doc|*.docx|*.xls|*.xlsx) exit 0 ;;
+              *.mp3|*.mp4|*.wav|*.avi|*.mov|*.mkv) exit 0 ;;
+              *.sqlite|*.db) exit 0 ;;
+            esac
+
+            # Skip .git internals
+            echo "$file_path" | grep -qF '/.git/' && exit 0
+
+            # Write: check for pastewatch placeholders
+            if [ "$action" = "pre_write_code" ]; then
+              content=$(echo "$input" | jq -r '.content // empty')
+              if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+                echo "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file MCP tool." >&2
+                exit 2
+              fi
+            fi
+
+            # Scan file on disk
+            [ ! -f "$file_path" ] && exit 0
+
+            pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
+            if [ $? -eq 6 ]; then
+              echo "BLOCKED: $file_path contains secrets. Use pastewatch_read_file or pastewatch_write_file MCP tool instead." >&2
+              exit 2
+            fi
+            ;;
+          pre_run_command)
+            command_str=$(echo "$input" | jq -r '.command // empty')
+            [ -z "$command_str" ] && exit 0
+
+            pastewatch-cli guard "$command_str" >/dev/null 2>&1
+            if [ $? -ne 0 ]; then
+              echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access." >&2
+              exit 2
+            fi
+            ;;
+        esac
+
         exit 0
         """
     }

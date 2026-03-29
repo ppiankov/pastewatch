@@ -42,7 +42,10 @@ The proxy catches what hooks and MCP cannot — it is the network boundary. MCP 
 | Cline | Structural | Structural | PreToolUse hooks | JSON `{"cancel": true}` response |
 | Roo Code | Structural | Structural | PreToolUse hooks | JSON `{"cancel": true}` response (Cline fork) |
 | Cursor | Structural | Structural | preToolUse hooks | exit 2 + JSON `{"permission": "deny"}` |
+| Windsurf | Structural | Structural | pre_read/write/run hooks | exit 2 blocks action |
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
+| Goose | Advisory | Advisory | MCP only | No hook support |
+| Kilo Code | Advisory | Advisory | MCP only | No hook support |
 | Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
 
@@ -308,8 +311,11 @@ Agents without hook support can only use advisory enforcement (instruction files
 | Qwen Code | [QwenLM/qwen-code#268](https://github.com/QwenLM/qwen-code/issues/268) | P2 | Mingholy |
 | Codex CLI | [openai/codex#14754](https://github.com/openai/codex/issues/14754) | Open | - |
 | Cursor | Supported | Implemented | - |
+| Windsurf | Supported | Implemented | - |
+| Goose | [block/goose#8184](https://github.com/block/goose/issues/8184) | Open | - |
+| Kilo Code | [Kilo-Org/kilocode#7859](https://github.com/Kilo-Org/kilocode/issues/7859) | Open | - |
 
-When hooks land for OpenCode and Qwen Code, add `guard-read`/`guard-write`/`guard` hooks following the Claude Code pattern.
+When hooks land for OpenCode, Qwen Code, Goose, and Kilo Code, add guard hooks following the Claude Code pattern.
 
 ---
 

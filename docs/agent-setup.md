@@ -155,6 +155,82 @@ pastewatch-cli setup cursor
 
 ---
 
+## Windsurf
+
+MCP config: `~/.codeium/windsurf/mcp_config.json`
+Hooks config: `~/.codeium/windsurf/hooks.json`
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+    }
+  }
+}
+```
+
+Or auto-setup (configures MCP + hooks):
+
+```bash
+pastewatch-cli setup windsurf
+```
+
+---
+
+## Goose
+
+Config: `~/.config/goose/config.yaml`
+
+```yaml
+extensions:
+  pastewatch:
+    cmd: pastewatch-cli
+    args:
+      - mcp
+      - --audit-log
+      - /tmp/pastewatch-audit.log
+    type: stdio
+    enabled: true
+```
+
+Or guided setup:
+
+```bash
+pastewatch-cli setup goose
+```
+
+Note: Goose has no hook support — enforcement is advisory. Use `pastewatch-cli launch -- goose` for proxy-level protection.
+
+---
+
+## Kilo Code (VS Code)
+
+Config: `~/Library/Application Support/Code/User/globalStorage/kilocode.Kilo-Code/settings/mcp_settings.json`
+
+```json
+{
+  "mcpServers": {
+    "pastewatch": {
+      "command": "pastewatch-cli",
+      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
+      "disabled": false
+    }
+  }
+}
+```
+
+Or auto-setup:
+
+```bash
+pastewatch-cli setup kilo-code
+```
+
+Note: Kilo Code has no hook support — enforcement is advisory. Use `pastewatch-cli launch` for proxy-level protection.
+
+---
+
 ## OpenCode
 
 Config: `~/.config/opencode/opencode.json`
@@ -300,6 +376,9 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | Cline | Structural | Structural | PreToolUse hooks |
 | Roo Code | Structural | Structural | PreToolUse hooks (Cline fork) |
 | Cursor | Structural | Structural | preToolUse hooks |
+| Windsurf | Structural | Structural | pre_read_code/pre_write_code/pre_run_command hooks |
 | OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
+| Goose | Advisory | Advisory | MCP only (no hook support) |
+| Kilo Code | Advisory | Advisory | MCP only (no hook support) |
 | Codex CLI | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/openai/codex/issues/14754)) |
 | Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |

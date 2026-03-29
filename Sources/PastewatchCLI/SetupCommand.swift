@@ -7,7 +7,7 @@ struct Setup: ParsableCommand {
         abstract: "Configure AI agent integration (MCP server, hooks, severity)"
     )
 
-    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code")
+    @Argument(help: "Agent to configure: claude-code, cline, cursor, roo-code, windsurf, goose, kilo-code")
     var agent: String
 
     @Option(name: .long, help: "Severity threshold for hook blocking and MCP redaction (default: high)")
@@ -17,7 +17,7 @@ struct Setup: ParsableCommand {
     var project = false
 
     func validate() throws {
-        let validAgents = ["claude-code", "cline", "cursor", "roo-code"]
+        let validAgents = ["claude-code", "cline", "cursor", "roo-code", "windsurf", "goose", "kilo-code"]
         guard validAgents.contains(agent) else {
             throw ValidationError(
                 "Unknown agent '\(agent)'. Valid: \(validAgents.joined(separator: ", "))"
@@ -44,6 +44,12 @@ struct Setup: ParsableCommand {
             try setupRooCode()
         case "cursor":
             try setupCursor()
+        case "windsurf":
+            try setupWindsurf()
+        case "goose":
+            try setupGoose()
+        case "kilo-code":
+            try setupKiloCode()
         default:
             break
         }
@@ -241,6 +247,121 @@ struct Setup: ParsableCommand {
         print("  hooks    \(hooksJsonPath) (\(hooksStatus))")
         print("  severity \(severity) (hook and MCP aligned)")
         print("\ndone. restart Cursor to activate.")
+
+        runDoctor()
+    }
+
+    // MARK: - Windsurf
+
+    private func setupWindsurf() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: windsurf\n")
+
+        // 1. Merge MCP config
+        let mcpPath = home + "/.codeium/windsurf/mcp_config.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+        AgentSetup.mergeMCPServer(into: &json, severity: severity)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+
+        // 2. Write hook script
+        let hooksDir = home + "/.codeium/windsurf/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.windsurfGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 3. Merge hooks.json
+        let hooksJsonPath = home + "/.codeium/windsurf/hooks.json"
+        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
+        AgentSetup.mergeWindsurfHooks(into: &hooksJson, hookPath: hookPath)
+        try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
+
+        let hooksStatus = hooksExisted ? "updated" : "created"
+        print("  hooks    \(hooksJsonPath) (\(hooksStatus))")
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("\ndone. restart Windsurf to activate.")
+
+        runDoctor()
+    }
+
+    // MARK: - Goose
+
+    private func setupGoose() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: goose\n")
+
+        // Goose uses YAML config — we can only set up MCP, no hooks available
+        let configPath = home + "/.config/goose/config.yaml"
+
+        print("  config   \(configPath)")
+        print("")
+        print("  add this to your config.yaml under 'extensions:'")
+        print("")
+        print("  extensions:")
+        print("    pastewatch:")
+        print("      cmd: pastewatch-cli")
+        print("      args:")
+        print("        - mcp")
+        print("        - --audit-log")
+        print("        - /tmp/pastewatch-audit.log")
+        if severity != "high" {
+            print("        - --min-severity")
+            print("        - \(severity)")
+        }
+        print("      type: stdio")
+        print("      enabled: true")
+        print("")
+        print("  note: Goose has no hook support — enforcement is advisory.")
+        print("  use 'pastewatch-cli launch -- goose' for proxy-level protection.")
+        print("")
+        print("  upstream: https://github.com/block/goose/issues")
+
+        runDoctor()
+    }
+
+    // MARK: - Kilo Code
+
+    private func setupKiloCode() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: kilo-code\n")
+
+        // 1. Merge MCP config
+        let mcpPath = home
+            + "/Library/Application Support/Code/User/globalStorage"
+            + "/kilocode.Kilo-Code/settings/mcp_settings.json"
+
+        var json = AgentSetup.readJSON(at: mcpPath)
+        let configExisted = fm.fileExists(atPath: mcpPath)
+        AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
+        try AgentSetup.writeJSON(json, to: mcpPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(configStatus))")
+        print("  severity \(severity)")
+        print("")
+        print("  note: Kilo Code has no hook support — enforcement is advisory.")
+        print("  use 'pastewatch-cli launch' for proxy-level protection.")
+        print("")
+        print("  upstream: https://github.com/Kilo-Org/kilocode/issues")
+        print("\ndone. restart VS Code to activate MCP server.")
 
         runDoctor()
     }
