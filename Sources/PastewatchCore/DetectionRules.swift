@@ -644,7 +644,23 @@ public struct DetectionRules {
         let value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
 
-        // Too short to be a real secret
+        return isValidCredentialValue(value)
+    }
+
+    /// Check if a key name (from JSON/YAML/properties) indicates a credential.
+    /// Used by DirectoryScanner for key-aware detection in structured formats.
+    public static func isCredentialKeyName(_ key: String) -> Bool {
+        let lower = key.lowercased()
+        let keywords = [
+            "password", "passwd", "secret", "token", "api_key", "apikey",
+            "auth_token", "access_key", "secret_key", "private_key",
+            "credential", "dsn", "connection_string",
+        ]
+        return keywords.contains(where: { lower.contains($0) })
+    }
+
+    /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).
+    public static func isValidCredentialValue(_ value: String) -> Bool {        // Too short to be a real secret
         if value.count < 4 { return false }
 
         // Skip env var references ($VAR, ${VAR}, %VAR%)

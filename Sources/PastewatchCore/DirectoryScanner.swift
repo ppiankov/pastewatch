@@ -211,6 +211,21 @@ public struct DirectoryScanner {
                     customRuleName: vm.customRuleName, customSeverity: vm.customSeverity
                 ))
             }
+
+            // Key-aware credential detection: if the key name contains a credential
+            // keyword and the value looks like a real secret, flag it.
+            // This catches JSON {"API_KEY": "value"} where the value alone has no pattern.
+            if let key = pv.key,
+               !matches.contains(where: { $0.line == pv.line && $0.type == .credential }),
+               DetectionRules.isCredentialKeyName(key),
+               DetectionRules.isValidCredentialValue(pv.value)
+            {
+                matches.append(DetectedMatch(
+                    type: .credential, value: pv.value,
+                    range: pv.value.startIndex..<pv.value.endIndex,
+                    line: pv.line, filePath: relativePath
+                ))
+            }
         }
 
         // XML files: also run raw detection for XML-specific tag patterns

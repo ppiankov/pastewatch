@@ -262,6 +262,19 @@ struct Scan: ParsableCommand {
                     customSeverity: vm.customSeverity
                 ))
             }
+
+            // Key-aware credential detection for structured formats
+            if let key = pv.key,
+               !collected.contains(where: { $0.line == pv.line && $0.type == .credential }),
+               DetectionRules.isCredentialKeyName(key),
+               DetectionRules.isValidCredentialValue(pv.value)
+            {
+                collected.append(DetectedMatch(
+                    type: .credential, value: pv.value,
+                    range: pv.value.startIndex..<pv.value.endIndex,
+                    line: pv.line, filePath: file
+                ))
+            }
         }
         return collected
     }
