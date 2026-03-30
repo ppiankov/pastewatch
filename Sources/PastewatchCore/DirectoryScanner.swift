@@ -218,8 +218,7 @@ public struct DirectoryScanner {
             if let key = pv.key,
                !matches.contains(where: { $0.line == pv.line && $0.type == .credential }),
                DetectionRules.isCredentialKeyName(key),
-               DetectionRules.isValidCredentialValue(pv.value)
-            {
+               DetectionRules.isValidCredentialValue(pv.value) {
                 matches.append(DetectedMatch(
                     type: .credential, value: pv.value,
                     range: pv.value.startIndex..<pv.value.endIndex,
