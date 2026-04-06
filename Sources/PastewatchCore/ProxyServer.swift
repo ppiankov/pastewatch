@@ -205,7 +205,13 @@ public final class ProxyServer {
             semaphore.signal()
         }
         task.resume()
-        semaphore.wait()
+        let timeout = semaphore.wait(timeout: .now() + 120) // 2 minute upstream timeout
+
+        guard timeout == .success else {
+            task.cancel()
+            sendError(to: clientSocket, status: 504, message: "Gateway Timeout")
+            return
+        }
 
         // Send response back to client
         guard let resp = httpResponse, let data = responseData else {
@@ -317,6 +323,14 @@ public final class ProxyServer {
 
     // MARK: - Raw socket I/O
 
+    /// Send flags: MSG_NOSIGNAL on Linux prevents per-send SIGPIPE delivery.
+    /// On macOS we rely on process-level signal(SIGPIPE, SIG_IGN) set by the caller.
+    #if canImport(Darwin)
+    private let sendFlags: Int32 = 0
+    #else
+    private let sendFlags: Int32 = Int32(MSG_NOSIGNAL)
+    #endif
+
     private func readHTTPRequest(from socket: Int32) -> String? {
         var buffer = [UInt8](repeating: 0, count: 1_048_576) // 1MB max
         var accumulated = Data()
@@ -378,8 +392,12 @@ public final class ProxyServer {
     private func sendError(to socket: Int32, status: Int, message: String) {
         let body = "{\"error\": \"\(message)\"}"
         let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        _ = response.withCString { ptr in
-            send(socket, ptr, strlen(ptr), 0)
+        response.withCString { ptr in
+            let sent = send(socket, ptr, strlen(ptr), sendFlags)
+            if sent < 0 {
+                // Client disconnected — nothing to do, connection will be closed by defer
+                return
+            }
         }
     }
 
@@ -398,7 +416,14 @@ public final class ProxyServer {
         var responseData = Data(response.utf8)
         responseData.append(body)
         responseData.withUnsafeBytes { ptr in
-            _ = send(socket, ptr.baseAddress, ptr.count, 0)
+            let sent = send(socket, ptr.baseAddress, ptr.count, sendFlags)
+            if sent < 0 {
+                // Client disconnected mid-response — logged for observability
+                let errCode = errno
+                FileHandle.standardError.write(
+                    Data("proxy: send failed (errno \(errCode)), client disconnected\n".utf8)
+                )
+            }
         }
     }
 

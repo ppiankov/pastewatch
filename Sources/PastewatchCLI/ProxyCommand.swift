@@ -71,6 +71,11 @@ struct Proxy: ParsableCommand {
         FileHandle.standardError.write(Data("  ANTHROPIC_BASE_URL=http://127.0.0.1:\(port) claude\n".utf8))
         FileHandle.standardError.write(Data("\nctrl-c to stop\n\n".utf8))
 
+        // Ignore SIGPIPE — client disconnects must not kill the proxy.
+        // Without this, send() to a closed socket delivers SIGPIPE which
+        // terminates the process silently (no error, no log).
+        signal(SIGPIPE, SIG_IGN)
+
         signal(SIGINT) { _ in
             FileHandle.standardError.write(Data("\nstopped.\n".utf8))
             _exit(0)
