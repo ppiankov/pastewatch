@@ -80,6 +80,10 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           TAG="v${{ steps.check.outputs.version }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "Tag $TAG already exists on remote — skipping"
+            exit 0
+          fi
           git tag "$TAG"
           if [ -n "$GH_TOKEN" ]; then
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
