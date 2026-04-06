@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-04-06
+
+### Fixed
+
+- **Proxy silent death on client disconnect** — ignore SIGPIPE at process level and use MSG_NOSIGNAL on Linux sends. Previously, any `send()` to a closed client socket killed the proxy instantly with no error or log
+- **Proxy send error handling** — check `send()` return values and log client disconnects instead of silently discarding
+- **Proxy upstream timeout** — add 120-second timeout on upstream semaphore wait; hung connections now return 504 instead of blocking threads indefinitely
+
 ## [0.26.0] - 2026-03-29
 
 ### Added
