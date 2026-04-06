@@ -181,20 +181,26 @@ public final class ProxyServer {
 
         // Forward to upstream
         let upstreamURL = URL(string: parsed.path, relativeTo: upstream) ?? upstream.appendingPathComponent(parsed.path)
+
+        // Build header list for both paths
+        var forwardHeaders: [(String, String)] = []
+        for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
+            forwardHeaders.append((key, value))
+        }
+        forwardHeaders.append(("Host", upstream.host ?? ""))
+        if let bodyData = processedBody.data(using: .utf8) {
+            forwardHeaders.append(("Content-Length", String(bodyData.count)))
+        }
+
+        #if canImport(Darwin)
+        // macOS: URLSession is reliable
         var upstreamRequest = URLRequest(url: upstreamURL)
         upstreamRequest.httpMethod = parsed.method
         upstreamRequest.httpBody = processedBody.data(using: .utf8)
-
-        // Copy headers (except Host, which we set to upstream)
-        for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
+        for (key, value) in forwardHeaders {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
-        upstreamRequest.setValue(upstream.host, forHTTPHeaderField: "Host")
-        if let bodyData = processedBody.data(using: .utf8) {
-            upstreamRequest.setValue(String(bodyData.count), forHTTPHeaderField: "Content-Length")
-        }
 
-        // Synchronous request to upstream
         let semaphore = DispatchSemaphore(value: 0)
         var responseData: Data?
         var httpResponse: HTTPURLResponse?
@@ -205,7 +211,7 @@ public final class ProxyServer {
             semaphore.signal()
         }
         task.resume()
-        let timeout = semaphore.wait(timeout: .now() + 120) // 2 minute upstream timeout
+        let timeout = semaphore.wait(timeout: .now() + 120)
 
         guard timeout == .success else {
             task.cancel()
@@ -213,18 +219,39 @@ public final class ProxyServer {
             return
         }
 
-        // Send response back to client
         guard let resp = httpResponse, let data = responseData else {
             sendError(to: clientSocket, status: 502, message: "Bad Gateway")
             return
         }
 
-        var finalBody = data
-        if redactionCount > 0 && injectAlert {
-            finalBody = injectAlertIntoResponse(data, redactionCount: redactionCount, types: redactedTypes)
+        let upstreamStatus = resp.statusCode
+        let upstreamHeaders = resp.allHeaderFields
+        let upstreamBody = data
+        #else
+        // Linux: URLSession/FoundationNetworking is unreliable on arm64.
+        // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
+        guard let curlResponse = CurlHTTPClient.execute(
+            method: parsed.method,
+            url: upstreamURL,
+            headers: forwardHeaders,
+            body: processedBody.data(using: .utf8),
+            timeoutSeconds: 120
+        ) else {
+            sendError(to: clientSocket, status: 502, message: "Bad Gateway")
+            return
         }
 
-        sendResponse(to: clientSocket, status: resp.statusCode, headers: resp.allHeaderFields, body: finalBody)
+        let upstreamStatus = curlResponse.statusCode
+        let upstreamHeaders = curlResponse.headers as [AnyHashable: Any]
+        let upstreamBody = curlResponse.body
+        #endif
+
+        var finalBody = upstreamBody
+        if redactionCount > 0 && injectAlert {
+            finalBody = injectAlertIntoResponse(upstreamBody, redactionCount: redactionCount, types: redactedTypes)
+        }
+
+        sendResponse(to: clientSocket, status: upstreamStatus, headers: upstreamHeaders, body: finalBody)
     }
 
     // MARK: - Request scanning
