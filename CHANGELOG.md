@@ -7,13 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.2] - 2026-04-06
+
+### Fixed
+
+- Proxy 502 Bad Gateway on Linux arm64 — `URLSession.dataTask` completion handlers silently fail on FoundationNetworking/arm64. Proxy now uses `Process` + `curl` on Linux for reliable upstream HTTP
+- Proxy handles all requests on Linux (non-streaming and streaming) without hanging
+
+### Changed
+
+- Project marked feature-complete — accepting compatibility and bug fixes only
+
 ## [0.26.1] - 2026-04-06
 
 ### Fixed
 
-- **Proxy silent death on client disconnect** — ignore SIGPIPE at process level and use MSG_NOSIGNAL on Linux sends. Previously, any `send()` to a closed client socket killed the proxy instantly with no error or log
-- **Proxy send error handling** — check `send()` return values and log client disconnects instead of silently discarding
-- **Proxy upstream timeout** — add 120-second timeout on upstream semaphore wait; hung connections now return 504 instead of blocking threads indefinitely
+- Proxy silent death on client disconnect — SIGPIPE now ignored instead of killing the process
+- Proxy upstream timeout (120s) to prevent hung connections from blocking threads indefinitely
+
+### Known Limitations
+
+- Proxy handles one session at a time — it does not multiplex multiple concurrent agent sessions
 
 ## [0.26.0] - 2026-03-29
 

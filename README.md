@@ -325,6 +325,8 @@ pastewatch-cli config check
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
 
+> **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
+
 ![Proxy alert injection — 27 secrets redacted from a tool call](assets/proxy-alert.png)
 
 ```
@@ -703,7 +705,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.26.1
+    rev: v0.26.2
     hooks:
       - id: pastewatch
 ```
@@ -889,6 +891,8 @@ If a feature increases complexity without reducing risk, it is rejected.
 
 The GUI (clipboard monitoring) is macOS-only. CLI works on all platforms via Homebrew or direct download.
 
+**Linux proxy note:** On Linux, the proxy uses `curl` (Process) for upstream HTTP requests instead of Swift's `URLSession`. This works around a known `FoundationNetworking` bug on arm64 where `dataTask` completion handlers silently fail. Requires `curl` on `PATH` (present on all standard Linux distributions).
+
 ---
 
 ## Documentation
@@ -914,7 +918,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable** · **v0.26.1** · Active development
+**Status: Stable, feature-complete** · **v0.26.2** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|

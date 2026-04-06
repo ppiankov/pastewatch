@@ -2,7 +2,9 @@
 
 ## Current State
 
-**Stable - v0.26.1**
+**Stable, feature-complete - v0.26.2**
+
+Accepting compatibility and bug fixes only. No new features planned.
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
