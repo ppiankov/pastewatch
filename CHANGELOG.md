@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.3] - 2026-05-14
+
+### Fixed
+
+- Release pipeline shipped 0.26.1 binary under the v0.26.2 Homebrew formula — tag v0.26.2 pointed to a commit before the version-bump, so every Sources/ literal still read 0.26.1. v0.26.3 corrects version literals and is tagged at the correct commit
+
 ## [0.26.2] - 2026-04-06
 
 ### Fixed
