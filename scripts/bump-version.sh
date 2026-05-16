@@ -46,11 +46,7 @@ replace_in() {
         exit 1
     fi
     perl -i -pe "s|\Q${pattern}\E|${replacement}|g" "$file"
-
-    # Track changed files (skip duplicates)
-    local already=0
-    for f in "${CHANGED[@]+"${CHANGED[@]}"}"; do [[ "$f" == "$file" ]] && already=1; done
-    [[ $already -eq 0 ]] && CHANGED+=("$file")
+    CHANGED+=("$file")
 }
 
 # Single source of truth — version number only (no surrounding quotes in pattern)
@@ -89,9 +85,7 @@ PYEOF
 CHANGED+=("CHANGELOG.md")
 
 echo "Files changed:"
-for f in "${CHANGED[@]}"; do
-    echo "  $f"
-done
+printf '%s\n' "${CHANGED[@]}" | sort -u | while read -r f; do echo "  $f"; done
 
 echo ""
 echo "Next steps:"
