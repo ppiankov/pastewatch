@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detection for ObstaLabs license keys (`ol_` prefix with Ed25519 signature payload)
 - Detection for Resend API keys (`re_` prefix, 24+ alphanumeric chars)
 - Detection for Stripe webhook secrets (`whsec_` prefix) — previously only caught in key=value context
+- `pastewatch-cli setup codex` — installs PreToolUse guard hook for Codex CLI (`~/.codex/hooks.json`); covers `Read|Write|Edit|apply_patch|Bash`
+- `pastewatch-cli setup qwen-code` — installs PreToolUse guard hook + MCP for Qwen Code (`~/.qwen/settings.json`)
+- Codex CLI and Qwen Code upgraded from Proxy only to **Structural** protection in the agent safety matrix
 
 ### Changed
 
