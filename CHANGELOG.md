@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.4] - 2026-05-16
+
+### Changed
+
+- Version is now a single constant (`PastewatchCore.AppVersion.current`) consumed by all call sites — eliminates the class of bug where a misplaced tag ships a binary with a stale version literal
+- New `scripts/bump-version.sh` and `make bump VERSION=X.Y.Z` atomically update Version.swift, README, docs, and CHANGELOG in one command
+
 ## [0.26.3] - 2026-05-14
 
 ### Fixed

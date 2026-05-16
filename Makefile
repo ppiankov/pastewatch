@@ -4,6 +4,11 @@
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
+.PHONY: bump
+bump: ## Bump version: make bump VERSION=X.Y.Z
+	@test -n "$(VERSION)" || (echo "Usage: make bump VERSION=X.Y.Z" >&2; exit 1)
+	scripts/bump-version.sh $(VERSION)
+
 .PHONY: build
 build: ## Build debug binary
 	swift build

@@ -20,7 +20,7 @@ struct Doctor: ParsableCommand {
         var checks: [CheckResult] = []
 
         // 1. CLI version and binary path
-        let version = "0.26.3"
+        let version = AppVersion.current
         let binaryPath = ProcessInfo.processInfo.arguments.first ?? "unknown"
         checks.append(CheckResult(check: "cli", status: "ok", detail: "v\(version) at \(binaryPath)"))
 
