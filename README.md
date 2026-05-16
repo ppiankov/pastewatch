@@ -768,12 +768,12 @@ Every agent is protected by the API proxy (Layer 0) — it catches all outbound 
 | Continue | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup continue` |
 | Amazon Q | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup amazon-q` |
 | Copilot | **Structural** | preToolUse (`.github/hooks/`) | Yes | `pastewatch-cli setup copilot` |
+| Codex CLI | **Structural** | PreToolUse (exit 2) | Manual | `pastewatch-cli setup codex` |
+| Qwen Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup qwen-code` |
 | Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
 | Kilo Code | Proxy + MCP | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
 | Gemini | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup gemini` |
 | OpenCode | Proxy + MCP | No hooks | Yes | Manual |
-| Codex CLI | Proxy only | [Hooks available](https://github.com/openai/codex/issues/14754) | Manual | Manual |
-| Qwen Code | Proxy only | [Hooks available](https://github.com/QwenLM/qwen-code/issues/268) | Manual | Manual |
 | Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 

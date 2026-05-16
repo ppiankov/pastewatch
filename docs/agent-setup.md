@@ -383,7 +383,26 @@ Toggle: set `"enabled": false`
 
 ## Codex CLI
 
-Config: `~/.codex/config.toml`
+Auto-setup (hooks only — writes `~/.codex/hooks.json` and guard script):
+
+```bash
+pastewatch-cli setup codex
+```
+
+Hook config written to `~/.codex/hooks.json`:
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "Read|Write|Edit|apply_patch|Bash",
+      "hooks": [{"type": "command", "command": "~/.codex/hooks/pastewatch-guard.sh"}]
+    }
+  ]
+}
+```
+
+MCP config (manual — add to `~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.pastewatch]
@@ -392,13 +411,19 @@ args = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
 enabled = true
 ```
 
-Toggle: set `enabled = false`
+Toggle hooks: set `enabled = false` in config.toml; set `PW_GUARD=0` in shell to bypass for a session.
 
 ---
 
 ## Qwen Code
 
-Config: `~/.qwen/settings.json`
+Auto-setup (writes `~/.qwen/settings.json` with MCP + PreToolUse hooks):
+
+```bash
+pastewatch-cli setup qwen-code
+```
+
+Config written to `~/.qwen/settings.json`:
 
 ```json
 {
@@ -407,11 +432,19 @@ Config: `~/.qwen/settings.json`
       "command": "pastewatch-cli",
       "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
     }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|Bash",
+        "hooks": [{"type": "command", "command": "~/.qwen/hooks/pastewatch-guard.sh"}]
+      }
+    ]
   }
 }
 ```
 
-Toggle: remove the `mcpServers.pastewatch` key.
+Toggle: remove `mcpServers.pastewatch` or `hooks.PreToolUse` entry and restart.
 
 ---
 
@@ -510,10 +543,10 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | Continue | Structural | Structural | PreToolUse hooks (Claude Code-compatible) |
 | Amazon Q | Structural | Structural | preToolUse hooks |
 | Copilot | Structural | Structural | preToolUse hooks (`.github/hooks/`) |
-| OpenCode | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/anomalyco/opencode/issues/12472)) |
+| Codex CLI | Structural | Structural | PreToolUse hooks (exit 2) |
+| Qwen Code | Structural | Structural | PreToolUse hooks (exit 2) |
+| OpenCode | Advisory | Advisory | MCP only (hook PR closed without merge) |
 | Goose | Advisory | Advisory | MCP only (no hook support) |
-| Kilo Code | Advisory | Advisory | MCP only (no hook support) |
+| Kilo Code | Advisory | Advisory | MCP only ([hooks declined](https://github.com/Kilo-Org/kilocode/issues/7859)) |
 | Aider | Advisory | Advisory | Proxy only ([no MCP yet](https://github.com/aider-ai/aider/issues/4506)) |
 | Gemini | Advisory | Advisory | MCP only (no hook support) |
-| Codex CLI | Advisory | Advisory | Instructions only ([hook support pending](https://github.com/openai/codex/issues/14754)) |
-| Qwen Code | Advisory | Advisory | Instructions only (no hook support yet) |

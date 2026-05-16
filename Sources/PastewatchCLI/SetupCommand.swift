@@ -20,7 +20,7 @@ struct Setup: ParsableCommand {
         let validAgents = [
             "claude-code", "cline", "cursor", "roo-code", "windsurf",
             "goose", "kilo-code", "continue", "amazon-q", "aider",
-            "copilot", "gemini",
+            "copilot", "gemini", "codex", "qwen-code",
         ]
         guard validAgents.contains(agent) else {
             throw ValidationError(
@@ -64,6 +64,10 @@ struct Setup: ParsableCommand {
             try setupCopilot()
         case "gemini":
             try setupGemini()
+        case "codex":
+            try setupCodex()
+        case "qwen-code":
+            try setupQwenCode()
         default:
             break
         }
@@ -585,6 +589,86 @@ struct Setup: ParsableCommand {
         print("  use 'pastewatch-cli launch' for proxy-level protection.")
         print("  enable Agent mode in Gemini for MCP tools to be available.")
         print("\ndone. restart VS Code to activate MCP server.")
+
+        runDoctor()
+    }
+
+    // MARK: - Codex CLI
+
+    private func setupCodex() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: codex\n")
+
+        // 1. Write hook script
+        let hooksDir = home + "/.codex/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.codexGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 2. Merge hooks.json (Codex hooks config — top-level event keys)
+        let hooksJsonPath = home + "/.codex/hooks.json"
+        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
+        AgentSetup.mergeCodexHooks(into: &hooksJson, hookPath: hookPath)
+        try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
+
+        let hooksStatus = hooksExisted ? "updated" : "created"
+        print("  hooks    \(hooksJsonPath) (\(hooksStatus))")
+        print("  severity \(severity) (hook blocking threshold)")
+        print("")
+        print("  note: for MCP, add to ~/.codex/config.toml:")
+        print("    [mcp_servers.pastewatch]")
+        print("    command = \"pastewatch-cli\"")
+        print("    args = [\"mcp\", \"--audit-log\", \"/tmp/pastewatch-audit.log\"]")
+        print("    enabled = true")
+        print("\ndone. restart Codex to activate.")
+
+        runDoctor()
+    }
+
+    // MARK: - Qwen Code
+
+    private func setupQwenCode() throws {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        print("setup: qwen-code\n")
+
+        // 1. Write hook script (Qwen Code uses the same protocol as Claude Code)
+        let hooksDir = home + "/.qwen/hooks"
+        let hookPath = hooksDir + "/pastewatch-guard.sh"
+
+        if !fm.fileExists(atPath: hooksDir) {
+            try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
+        }
+
+        let script = AgentSetup.claudeCodeGuardScript(severity: severity)
+        try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
+        print("  hook     \(hookPath) (created)")
+
+        // 2. Merge settings.json (MCP server + PreToolUse hooks)
+        let settingsPath = home + "/.qwen/settings.json"
+        var json = AgentSetup.readJSON(at: settingsPath)
+        let configExisted = fm.fileExists(atPath: settingsPath)
+
+        AgentSetup.mergeMCPServer(into: &json, severity: severity)
+        AgentSetup.mergeQwenCodeHooks(into: &json, hookPath: hookPath)
+        try AgentSetup.writeJSON(json, to: settingsPath)
+
+        let configStatus = configExisted ? "updated" : "created"
+        print("  config   \(settingsPath) (\(configStatus))")
+        print("  severity \(severity) (hook and MCP aligned)")
+        print("\ndone. restart Qwen Code to activate.")
 
         runDoctor()
     }
