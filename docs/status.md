@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Stable, feature-complete - v0.26.4**
+**Stable, feature-complete - v0.26.6**
 
 Accepting compatibility and bug fixes only. No new features planned.
 
