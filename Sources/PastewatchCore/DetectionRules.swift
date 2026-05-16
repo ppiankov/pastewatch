@@ -256,6 +256,24 @@ public struct DetectionRules {
             result.append((.oraculKey, regex))
         }
 
+        // ObstaLabs License Key - high confidence
+        // ol_ prefix + base64url payload + literal dot + base64url Ed25519 signature
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bol_[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{40,}"#,
+            options: []
+        ) {
+            result.append((.obstalabsKey, regex))
+        }
+
+        // Resend API Key - high confidence
+        // re_ prefix followed by 24+ alphanumeric characters
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bre_[A-Za-z0-9]{24,}\b"#,
+            options: []
+        ) {
+            result.append((.resendKey, regex))
+        }
+
         // Perplexity API Key - high confidence
         // pplx- prefix followed by 48 alphanumeric characters
         if let regex = try? NSRegularExpression(
@@ -322,6 +340,15 @@ public struct DetectionRules {
         // Stripe API Key - high confidence
         if let regex = try? NSRegularExpression(
             pattern: #"\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{24,}\b"#,
+            options: []
+        ) {
+            result.append((.genericApiKey, regex))
+        }
+
+        // Stripe Webhook Secret - high confidence
+        // whsec_ prefix not covered by the generic sk/pk/api/key/token catch-all
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#,
             options: []
         ) {
             result.append((.genericApiKey, regex))

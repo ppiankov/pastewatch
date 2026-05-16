@@ -1072,4 +1072,119 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertTrue(config.isPathProtected(home + "/.secrets/token"))
         XCTAssertFalse(config.isPathProtected(home + "/.config/safe"))
     }
+
+    // MARK: - ObstaLabs License Key Detection
+
+    func testDetectsObstalabsKey() {
+        // Real format: ol_{base64url payload}.{base64url Ed25519 sig}
+        let payload = String(repeating: "a", count: 80)
+        let sig = String(repeating: "B", count: 86)
+        let key = "ol_\(payload).\(sig)"
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .obstalabsKey },
+                      "Should detect ObstaLabs license key with ol_ prefix")
+    }
+
+    func testDetectsObstalabsKeyInEnvContext() {
+        let payload = String(repeating: "x", count: 60)
+        let sig = String(repeating: "Y", count: 86)
+        let content = "OL_LICENSE_KEY=ol_\(payload).\(sig)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .obstalabsKey },
+                      "Should detect ObstaLabs key in env var context")
+    }
+
+    func testDetectsObstalabsKeyMinimalLength() {
+        // Minimum: 20 chars payload + dot + 40 chars sig
+        let key = "ol_" + String(repeating: "a", count: 20) + "." + String(repeating: "B", count: 40)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .obstalabsKey },
+                      "Should detect ObstaLabs key at minimum length threshold")
+    }
+
+    func testObstalabsKeyPayloadTooShort() {
+        let key = "ol_" + String(repeating: "a", count: 5) + "." + String(repeating: "B", count: 86)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .obstalabsKey },
+                       "Payload shorter than 20 chars should not match")
+    }
+
+    func testObstalabsKeySigTooShort() {
+        let key = "ol_" + String(repeating: "a", count: 80) + "." + String(repeating: "B", count: 10)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .obstalabsKey },
+                       "Signature shorter than 40 chars should not match")
+    }
+
+    func testObstalabsKeyNoDot() {
+        let key = "ol_" + String(repeating: "a", count: 120)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .obstalabsKey },
+                       "ol_ key without dot separator should not match")
+    }
+
+    func testObstalabsKeySeverityIsCritical() {
+        XCTAssertEqual(SensitiveDataType.obstalabsKey.severity, .critical)
+    }
+
+    // MARK: - Resend API Key Detection
+
+    func testDetectsResendKey() {
+        let key = "re_" + String(repeating: "A", count: 32)
+        let content = "RESEND_API_KEY=\(key)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .resendKey },
+                      "Should detect Resend API key with re_ prefix")
+    }
+
+    func testDetectsResendKeyStandalone() {
+        let key = "re_" + String(repeating: "B", count: 40)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .resendKey },
+                      "Should detect standalone Resend API key")
+    }
+
+    func testDetectsResendKeyInConfig() {
+        let key = "re_" + String(repeating: "C", count: 40)
+        let content = "resend_key: \(key)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .resendKey },
+                      "Should detect Resend key in config context")
+    }
+
+    func testResendKeyTooShort() {
+        let key = "re_" + String(repeating: "A", count: 10)
+        let matches = DetectionRules.scan(key, config: config)
+        XCTAssertFalse(matches.contains { $0.type == .resendKey },
+                       "Resend key shorter than 24 chars should not match")
+    }
+
+    func testResendKeySeverityIsCritical() {
+        XCTAssertEqual(SensitiveDataType.resendKey.severity, .critical)
+    }
+
+    // MARK: - Stripe Webhook Secret Detection
+
+    func testDetectsStripeWebhookSecret() {
+        let secret = "whsec_" + String(repeating: "A", count: 32)
+        let content = "STRIPE_WEBHOOK_SECRET=\(secret)"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
+                      "Should detect Stripe webhook secret with whsec_ prefix")
+    }
+
+    func testDetectsStripeWebhookSecretStandalone() {
+        let secret = "whsec_" + String(repeating: "B", count: 40)
+        let matches = DetectionRules.scan(secret, config: config)
+        XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
+                      "Should detect standalone whsec_ secret")
+    }
+
+    func testStripeWebhookSecretTooShort() {
+        let secret = "whsec_" + String(repeating: "A", count: 10)
+        let matches = DetectionRules.scan(secret, config: config)
+        // Short value — should not be detected as genericApiKey via whsec_ rule
+        XCTAssertFalse(matches.contains { $0.type == .genericApiKey && $0.value.hasPrefix("whsec_") },
+                       "whsec_ value shorter than 24 chars should not match")
+    }
 }
