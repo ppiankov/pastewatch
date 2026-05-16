@@ -32,10 +32,42 @@ jobs:
             echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
           fi
 
+  validate-tag:
+    name: Validate Tag vs Source Version
+    runs-on: ubuntu-22.04
+    needs: resolve
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Check source version matches tag
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          EXPECTED="${TAG#v}"
+          SOURCE=$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' Sources/PastewatchCore/Version.swift | tr -d '"')
+          if [ "$SOURCE" = "$EXPECTED" ]; then
+            echo "✓ Tag ${TAG} matches source version ${SOURCE}"
+          else
+            COMMIT=$(git rev-parse HEAD)
+            echo "::error::Tag/source version mismatch — aborting release"
+            echo ""
+            echo "  Tag:            ${TAG}"
+            echo "  Source version: ${SOURCE}"
+            echo "  Tagged commit:  ${COMMIT}"
+            echo ""
+            echo "Remediation:"
+            echo "  git tag -d ${TAG} && git push --delete origin ${TAG}"
+            echo "  # ensure the bump commit (Version.current = \"${EXPECTED}\") is on main"
+            echo "  git tag ${TAG} <bump-commit-sha>"
+            echo "  git push origin ${TAG}"
+            exit 1
+          fi
+
   test:
     name: Test
     runs-on: macos-14
-    needs: resolve
+    needs: [resolve, validate-tag]
     steps:
       - uses: actions/checkout@v4
         with:
