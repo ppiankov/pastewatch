@@ -96,3 +96,14 @@ echo 'AWS_KEY=<aws-docs-example-key-redacted-from-repo>' > /tmp/wo117/fixture/se
 
 - **pastewatch/WO-115** — proved agy hooks at plugin-scoped paths (`hooks/main.json`, `hooks/hooks.json`, `plugin/hooks.json`, cwd-local `hooks.json`) DO NOT fire. Same methodology, different paths. This WO extends WO-115 to the operator-global path; partial verdict supersedes the "no path works" interpretation.
 - **workledger/WO-421** — established `~/.gemini/config/mcp_config.json` as the canonical operator-global MCP path. The analogy that drove probing `~/.gemini/config/hooks.json` was correct at the discovery layer; the schema gap is the new blocker.
+
+## Final conclusion (added 2026-05-31 after pastewatch/WO-118 closure)
+
+The follow-up WO-118 ran 10 of 12 budgeted inner-schema variants. None registered a handler. The verdict for agy v1.0.3 is:
+
+- **MCP works:** YES (workledger/WO-421 verified end-to-end; pastewatch tools auto-introspected at `~/.gemini/antigravity-cli/mcp/pastewatch/*.json`).
+- **Hooks discovery path loads:** YES at `~/.gemini/config/hooks.json` (this WO).
+- **Hook handler schema works:** NO across 10 schema variants (WO-118). agy parses entries and counts them as "named hooks" but never instantiates handlers. The blocker is upstream of any runtime call.
+- **pastewatch protection status for agy:** voluntary tool exposure via MCP only. No PreToolUse layer enforces. The operator gets `pastewatch_read_file`, `pastewatch_check_output`, `pastewatch_scan_file`, etc. as tools the model may choose to call; nothing blocks the model from calling agy's native `view_file`/`write_file` instead.
+
+See `docs/research/agy-hooks-follow-up.md` for the full WO-118 probe table.

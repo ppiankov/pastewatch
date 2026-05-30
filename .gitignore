@@ -34,3 +34,6 @@ release/
 .config/
 
 # Claude Code session files
+
+# WO-118: quarantine agy-scaffolded plugin (uses invented hook schema; do not install)
+plugins/agy-hooks/
