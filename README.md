@@ -502,6 +502,20 @@ pastewatch-cli setup claude-code --severity medium  # align hook + MCP threshold
 
 Idempotent - safe to re-run. Updates existing config without duplication.
 
+### Agent Compatibility
+
+| Agent | Hook | MCP | Proxy |
+|-------|------|-----|-------|
+| Claude Code | Yes - PreToolUse | Yes | Available |
+| Cline | Yes - PreToolUse JSON cancel | Yes | Available |
+| Cursor | Yes - preToolUse | Yes | Available |
+| Windsurf | Yes - pre_read/write/run | Yes | Available |
+| Continue | Yes - PreToolUse | Yes | Available |
+| Amazon Q | Yes - preToolUse | Yes | Available |
+| Antigravity (agy) | **NO HOOK INTEGRATION** - schema mismatch + plugin install does not load hooks; see pastewatch/WO-115 | Unverified | Not applicable (`agy` talks to `cloudcode-pa.googleapis.com`, not Anthropic) |
+
+Antigravity/agy may look config-format compatible, but pastewatch does NOT currently protect agy sessions at the hook layer.
+
 ### Session Report
 
 Generate compliance artifacts from MCP audit logs:
