@@ -512,7 +512,7 @@ Idempotent - safe to re-run. Updates existing config without duplication.
 | Windsurf | Yes - pre_read/write/run | Yes | Available |
 | Continue | Yes - PreToolUse | Yes | Available |
 | Amazon Q | Yes - preToolUse | Yes | Available |
-| Antigravity (agy) | **NO HOOK INTEGRATION** - schema mismatch + plugin install does not load hooks; see pastewatch/WO-115 | Unverified | Not applicable (`agy` talks to `cloudcode-pa.googleapis.com`, not Anthropic) |
+| Antigravity (agy) | **NO HOOK INTEGRATION** - schema mismatch + plugin install does not load hooks; see pastewatch/WO-115 | Unverified | Not applicable (`agy` does not expose an API endpoint override) |
 
 Antigravity/agy may look config-format compatible, but pastewatch does NOT currently protect agy sessions at the hook layer.
 
