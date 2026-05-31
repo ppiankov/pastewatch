@@ -512,9 +512,9 @@ Idempotent - safe to re-run. Updates existing config without duplication.
 | Windsurf | Yes - pre_read/write/run | Yes | Available |
 | Continue | Yes - PreToolUse | Yes | Available |
 | Amazon Q | Yes - preToolUse | Yes | Available |
-| Antigravity (agy) | **NO HOOK INTEGRATION** - schema mismatch + plugin install does not load hooks; see pastewatch/WO-115 | Unverified | Not applicable (`agy` does not expose an API endpoint override) |
+| Antigravity (agy) | **NO HOOK INTEGRATION** - no structural read blocking; schema/plugin hook probes failed ([discovery](docs/research/agy-hooks-discovery.md), [follow-up](docs/research/agy-hooks-follow-up.md)) | Yes - manual `~/.gemini/config/mcp_config.json` (`mcp_config.json`; workledger/WO-421) | Not applicable (`agy` does not expose an API endpoint override) |
 
-Antigravity/agy may look config-format compatible, but pastewatch does NOT currently protect agy sessions at the hook layer.
+Antigravity/agy can use pastewatch only through voluntary MCP tools today; hook probes in [discovery](docs/research/agy-hooks-discovery.md) and [follow-up](docs/research/agy-hooks-follow-up.md) found no working hook registration, so pastewatch does NOT block agy reads structurally.
 
 ### Session Report
 
@@ -787,6 +787,7 @@ Every agent is protected by the API proxy (Layer 0) — it catches all outbound 
 | Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
 | Kilo Code | Proxy + MCP | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
 | Gemini | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup gemini` |
+| Antigravity (agy) | Proxy not applicable + MCP only (voluntary tools; no Structural read blocking) | [No](docs/research/agy-hooks-follow-up.md) - handler registration fails | [Yes](docs/research/agy-hooks-discovery.md) | Not yet supported by `pastewatch-cli setup`; edit `~/.gemini/config/mcp_config.json` manually |
 | OpenCode | Proxy + MCP | No hooks | Yes | Manual |
 | Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
