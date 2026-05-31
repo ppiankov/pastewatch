@@ -512,7 +512,7 @@ Idempotent - safe to re-run. Updates existing config without duplication.
 | Windsurf | Yes - pre_read/write/run | Yes | Available |
 | Continue | Yes - PreToolUse | Yes | Available |
 | Amazon Q | Yes - preToolUse | Yes | Available |
-| Antigravity (agy) | **NO HOOK INTEGRATION** - no structural read blocking; schema/plugin hook probes failed ([discovery](docs/research/agy-hooks-discovery.md), [follow-up](docs/research/agy-hooks-follow-up.md)) | Yes - manual `~/.gemini/config/mcp_config.json` (`mcp_config.json`; workledger/WO-421) | Not applicable (`agy` does not expose an API endpoint override) |
+| Antigravity (agy) | **NO HOOK INTEGRATION** - no structural read blocking; schema/plugin hook probes failed ([discovery](docs/research/agy-hooks-discovery.md), [follow-up](docs/research/agy-hooks-follow-up.md)) | Yes - manual `~/.gemini/config/mcp_config.json` ([discovery](docs/research/agy-hooks-discovery.md)) | Not applicable (`agy` does not expose an API endpoint override) |
 
 Antigravity/agy can use pastewatch only through voluntary MCP tools today; hook probes in [discovery](docs/research/agy-hooks-discovery.md) and [follow-up](docs/research/agy-hooks-follow-up.md) found no working hook registration, so pastewatch does NOT block agy reads structurally.
 
@@ -770,7 +770,7 @@ Define additional patterns in a JSON file:
 
 ### Agent Safety Matrix
 
-Every agent is protected by the API proxy (Layer 0) — it catches all outbound secrets at the network boundary regardless of agent support. Hooks and MCP add defense in depth.
+The API proxy (Layer 0) protects agents that expose an API endpoint override; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth.
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|
