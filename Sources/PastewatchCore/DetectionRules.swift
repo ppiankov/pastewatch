@@ -593,11 +593,47 @@ public struct DetectionRules {
 
     /// WO-124: scan file IO using built-ins plus shared/generated pattern artifacts.
     public static func scanFileIO(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {
-        let sharedRules = SharedSecretPatternSource.fileIORules(for: config)
-        guard !sharedRules.isEmpty else {
+        scanFileIOResult(content, config: config).matches
+    }
+
+    /// WO-126: scan file IO while preserving configured shared-pattern load diagnostics.
+    public static func scanFileIOResult(_ content: String, config: PastewatchConfig) -> FileIOScanResult {
+        let sharedRuleSet = SharedSecretPatternSource.fileIORuleSet(for: config)
+        guard !sharedRuleSet.rules.isEmpty else {
+            return FileIOScanResult(
+                matches: scan(content, config: config),
+                sharedPatternErrors: sharedRuleSet.errors
+            )
+        }
+        return FileIOScanResult(
+            matches: scan(content, config: config, customRules: sharedRuleSet.rules),
+            sharedPatternErrors: sharedRuleSet.errors
+        )
+    }
+
+    /// WO-126: file IO scan output with fail-closed diagnostics for callers that return content.
+    public struct FileIOScanResult {
+        public let matches: [DetectedMatch]
+        public let sharedPatternErrors: [SharedSecretPatternLoadError]
+
+        public var hasSharedPatternErrors: Bool {
+            !sharedPatternErrors.isEmpty
+        }
+    }
+
+    /// WO-126: fail closed on configured shared pattern load errors.
+    public static func scanFileIOOrThrow(_ content: String, config: PastewatchConfig) throws -> [DetectedMatch] {
+        let result = scanFileIOResult(content, config: config)
+        guard !result.hasSharedPatternErrors else {
+            throw SharedSecretPatternLoadError(
+                path: "sharedPatternFiles",
+                message: result.sharedPatternErrors.map(\.localizedDescription).joined(separator: "; ")
+            )
+        }
+        guard !result.matches.isEmpty else {
             return scan(content, config: config)
         }
-        return scan(content, config: config, customRules: sharedRules)
+        return result.matches
     }
 
     /// Scan with allowlist filtering and custom rules.
@@ -625,7 +661,7 @@ public struct DetectionRules {
                 let value = String(content[range])
                 let line = lineNumber(of: range.lowerBound, in: content)
                 matches.append(DetectedMatch(
-                    type: .credential,
+                    type: rule.type,
                     value: value,
                     range: range,
                     line: line,

@@ -383,7 +383,14 @@ final class MCPServer {
             minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .high
         }
 
-        let allMatches = DetectionRules.scanFileIO(content, config: config)
+        let scanResult = DetectionRules.scanFileIOResult(content, config: config)
+        if scanResult.hasSharedPatternErrors {
+            let reason = scanResult.sharedPatternErrors.map(\.localizedDescription).joined(separator: "; ")
+            auditLogger?.log("READ  \(path)  shared-pattern-error")
+            return errorResult(id: id, text: "Shared pattern load failed: \(reason)")
+        }
+
+        let allMatches = scanResult.matches
         let matches = allMatches.filter { $0.effectiveSeverity >= minSeverity }
 
         if matches.isEmpty {

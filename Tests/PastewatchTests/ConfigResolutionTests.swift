@@ -110,4 +110,115 @@ final class ConfigResolutionTests: XCTestCase {
         XCTAssertTrue(config.isTypeEnabled(.phone))
         XCTAssertFalse(config.isTypeEnabled(.ipAddress))
     }
+
+    func testValidateRejectsMissingSharedPatternFile() throws {
+        let missingURL = temporaryJSONURL(prefix: "pastewatch-missing-shared")
+        let configURL = try writeConfig(sharedPatternFiles: [missingURL.path])
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(missingURL.path) && $0.contains("could not read") })
+    }
+
+    func testValidateRejectsMalformedSharedPatternFile() throws {
+        let artifactURL = temporaryJSONURL(prefix: "pastewatch-malformed-shared")
+        try "{".write(to: artifactURL, atomically: true, encoding: .utf8)
+        let configURL = try writeConfig(sharedPatternFiles: [artifactURL.path])
+        defer {
+            try? FileManager.default.removeItem(at: artifactURL)
+            try? FileManager.default.removeItem(at: configURL)
+        }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(artifactURL.path) && $0.contains("invalid JSON") })
+    }
+
+    func testValidateRejectsUnsupportedSharedPatternEnvelope() throws {
+        let artifactURL = temporaryJSONURL(prefix: "pastewatch-unsupported-shared")
+        try #"{"unexpected_patterns":[]}"#.write(to: artifactURL, atomically: true, encoding: .utf8)
+        let configURL = try writeConfig(sharedPatternFiles: [artifactURL.path])
+        defer {
+            try? FileManager.default.removeItem(at: artifactURL)
+            try? FileManager.default.removeItem(at: configURL)
+        }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(artifactURL.path) && $0.contains("unsupported") })
+    }
+
+    func testValidateRejectsEmptySharedPatternManifest() throws {
+        let artifactURL = temporaryJSONURL(prefix: "pastewatch-empty-shared")
+        let manifest = SharedSecretPatternManifest(patterns: [])
+        try JSONEncoder().encode(manifest).write(to: artifactURL)
+        let configURL = try writeConfig(sharedPatternFiles: [artifactURL.path])
+        defer {
+            try? FileManager.default.removeItem(at: artifactURL)
+            try? FileManager.default.removeItem(at: configURL)
+        }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(artifactURL.path) && $0.contains("no shared patterns") })
+    }
+
+    func testValidateRejectsInvalidSharedPatternRegex() throws {
+        let artifactURL = temporaryJSONURL(prefix: "pastewatch-invalid-regex-shared")
+        let patterns = [
+            SharedSecretPatternConfig(name: "broken_shared", type: "github_token", regex: "(", policy: "redact")
+        ]
+        try JSONEncoder().encode(patterns).write(to: artifactURL)
+        let configURL = try writeConfig(sharedPatternFiles: [artifactURL.path])
+        defer {
+            try? FileManager.default.removeItem(at: artifactURL)
+            try? FileManager.default.removeItem(at: configURL)
+        }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(artifactURL.path) && $0.contains("invalid regex") })
+    }
+
+    func testValidateRejectsInvalidSharedPatternPolicy() throws {
+        let artifactURL = temporaryJSONURL(prefix: "pastewatch-invalid-policy-shared")
+        let patterns = [
+            SharedSecretPatternConfig(
+                name: "bad_policy_shared",
+                type: "github_token",
+                regex: #"PW-POLICY-[A-F0-9]{12}"#,
+                policy: "quarantine"
+            )
+        ]
+        try JSONEncoder().encode(patterns).write(to: artifactURL)
+        let configURL = try writeConfig(sharedPatternFiles: [artifactURL.path])
+        defer {
+            try? FileManager.default.removeItem(at: artifactURL)
+            try? FileManager.default.removeItem(at: configURL)
+        }
+
+        let result = ConfigValidator.validate(path: configURL.path)
+
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.errors.contains { $0.contains(artifactURL.path) && $0.contains("invalid policy") })
+    }
+
+    private func writeConfig(sharedPatternFiles: [String]) throws -> URL {
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = sharedPatternFiles
+        let url = temporaryJSONURL(prefix: "pastewatch-config")
+        try JSONEncoder().encode(config).write(to: url)
+        return url
+    }
+
+    private func temporaryJSONURL(prefix: String) -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString).json")
+    }
 }

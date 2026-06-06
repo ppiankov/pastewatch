@@ -5,11 +5,18 @@ public struct CustomRule {
     public let name: String
     public let regex: NSRegularExpression
     public let severity: Severity
+    public let type: SensitiveDataType // WO-127: shared manifest category for placeholders/reporting
 
-    public init(name: String, regex: NSRegularExpression, severity: Severity = .high) {
+    public init(
+        name: String,
+        regex: NSRegularExpression,
+        severity: Severity = .high,
+        type: SensitiveDataType = .credential
+    ) {
         self.name = name
         self.regex = regex
         self.severity = severity
+        self.type = type
     }
 
     /// Load custom rules from a JSON file.

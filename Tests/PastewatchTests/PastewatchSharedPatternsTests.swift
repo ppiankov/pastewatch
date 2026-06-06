@@ -35,7 +35,7 @@ final class PastewatchSharedPatternsTests: XCTestCase {
         let (redacted, entries) = store.redact(content: content, matches: matches, filePath: tmpFile.path)
 
         XCTAssertFalse(redacted.contains(syntheticValue))
-        XCTAssertTrue(redacted.contains("__PW_CREDENTIAL_1__"))
+        XCTAssertTrue(redacted.contains("__PW_API_KEY_1__"))
         XCTAssertEqual(entries.first?.type, "wo124_synthetic_shared")
     }
 
@@ -65,6 +65,16 @@ final class PastewatchSharedPatternsTests: XCTestCase {
 
         XCTAssertEqual(sharedMatches.count, 1)
         XCTAssertEqual(sharedMatches.first?.value, token)
+        XCTAssertEqual(sharedMatches.first?.type, .genericApiKey)
+        XCTAssertEqual(sharedMatches.first?.effectiveSeverity, .high)
+
+        let store = RedactionStore()
+        let (redacted, entries) = store.redact(content: "oauth token " + token, matches: matches, filePath: "/tmp/nr.txt")
+
+        XCTAssertFalse(redacted.contains(token))
+        XCTAssertTrue(redacted.contains("__PW_API_KEY_1__"))
+        XCTAssertEqual(entries.first?.type, "github_oauth_token")
+        XCTAssertEqual(entries.first?.severity, Severity.high.rawValue)
     }
 
     func testSharedOnlyPatternRequiresArtifact() {
@@ -86,6 +96,73 @@ final class PastewatchSharedPatternsTests: XCTestCase {
 
         XCTAssertFalse(redacted.contains(token))
         XCTAssertTrue(redacted.contains("__PW_API_KEY_1__"))
+    }
+
+    func testUnknownSharedPatternTypeFallsBackToCredential() throws {
+        let secretValue = "PW" + "UNKNOWN-" + syntheticSuffix()
+        let artifactURL = try writeSharedPatternManifest(patterns: [
+            SharedSecretPatternConfig(
+                name: "unknown_shared_type",
+                type: "future_vendor_token",
+                regex: "PW" + #"UNKNOWN-[A-F0-9]{12}"#,
+                policy: "redact"
+            )
+        ])
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [artifactURL.path]
+        let content = "marker " + secretValue
+        let matches = DetectionRules.scanFileIO(content, config: config)
+        let sharedMatches = matches.filter { $0.customRuleName == "unknown_shared_type" }
+
+        XCTAssertEqual(sharedMatches.count, 1)
+        XCTAssertEqual(sharedMatches.first?.type, .credential)
+
+        let store = RedactionStore()
+        let (redacted, entries) = store.redact(content: content, matches: matches, filePath: "/tmp/unknown.txt")
+
+        XCTAssertFalse(redacted.contains(secretValue))
+        XCTAssertTrue(redacted.contains("__PW_CREDENTIAL_1__"))
+        XCTAssertEqual(entries.first?.type, "unknown_shared_type")
+    }
+
+    func testSharedPatternPolicyMappings() throws {
+        let cases: [(policy: String, expectedSeverity: Severity)] = [
+            ("block", .critical),
+            ("redact", .high),
+            ("warn", .medium)
+        ]
+
+        for testCase in cases {
+            let secretValue = "PW" + testCase.policy.uppercased() + "-" + syntheticSuffix()
+            let artifactURL = try writeSharedPatternManifest(patterns: [
+                SharedSecretPatternConfig(
+                    name: "policy_\(testCase.policy)",
+                    type: "github_token",
+                    regex: "PW" + testCase.policy.uppercased() + #"-[A-F0-9]{12}"#,
+                    policy: testCase.policy
+                )
+            ])
+            defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+            var config = PastewatchConfig.defaultConfig
+            config.sharedPatternFiles = [artifactURL.path]
+            let matches = DetectionRules.scanFileIO("marker " + secretValue, config: config)
+            let sharedMatch = matches.first { $0.customRuleName == "policy_\(testCase.policy)" }
+
+            XCTAssertEqual(sharedMatch?.effectiveSeverity, testCase.expectedSeverity)
+        }
+    }
+
+    func testFileIOScanResultSurfacesSharedPatternLoadErrorsForMCPRead() {
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = ["/tmp/pastewatch-missing-\(UUID().uuidString).json"]
+
+        let result = DetectionRules.scanFileIOResult("plain text", config: config)
+
+        XCTAssertTrue(result.hasSharedPatternErrors)
+        XCTAssertTrue(result.sharedPatternErrors.first?.localizedDescription.contains("could not read") ?? false)
     }
 
     func testPlaceholderDriftMapPreservesProxyCompatibleEnvelope() throws {

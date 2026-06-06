@@ -78,6 +78,9 @@ public enum ConfigValidator {
             errors.append("mcpMinSeverity: invalid severity '\(config.mcpMinSeverity)' (use: critical, high, medium, low)")
         }
 
+        // WO-126: configured shared pattern files must not silently disable redaction coverage.
+        errors.append(contentsOf: SharedSecretPatternSource.validationErrors(for: config))
+
         return ConfigValidationResult(errors: errors)
     }
 
