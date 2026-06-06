@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - File IO redaction can consume NR-compatible shared secret-pattern artifacts, so generated pattern
   sources cover pastewatch read/write redaction without copying detector lists.
+- Shared-pattern manifests record the NR source/provenance fields while pastewatch keeps its
+  proxy-compatible `__PW_TYPE_N__` MCP placeholders.
 
 ## [0.26.6] - 2026-05-16
 

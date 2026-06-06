@@ -701,7 +701,8 @@ public enum AgentSetup {
                 # Check for placeholder leak in write content
                 if [ "$tool_name" = "write_to_file" ]; then
                   pw_content=$(echo "$input" | jq -r '.preToolUse.parameters.content // empty')
-                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE '__PW\\{[A-Z][A-Z0-9_]*_[0-9]+\\}__'; then
+                  # WO-124: block pastewatch's active proxy-compatible placeholder envelope.
+                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
                     block "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file to resolve them."
                   fi
                 fi

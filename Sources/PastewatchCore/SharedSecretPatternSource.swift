@@ -15,6 +15,33 @@ public struct SharedSecretPatternConfig: Codable {
     }
 }
 
+/// WO-124: cross-language manifest emitted from NR's canonical SecretPatternConfig source.
+public struct SharedSecretPatternManifest: Codable {
+    public let manifestVersion: String?
+    public let source: String?
+    public let generatedFrom: String?
+    public let patterns: [SharedSecretPatternConfig]
+
+    public init(
+        manifestVersion: String? = nil,
+        source: String? = nil,
+        generatedFrom: String? = nil,
+        patterns: [SharedSecretPatternConfig]
+    ) {
+        self.manifestVersion = manifestVersion
+        self.source = source
+        self.generatedFrom = generatedFrom
+        self.patterns = patterns
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case manifestVersion = "manifest_version"
+        case source
+        case generatedFrom = "generated_from"
+        case patterns
+    }
+}
+
 /// WO-124: loads generated shared secret-pattern artifacts for file IO redaction.
 public enum SharedSecretPatternSource {
     public static func fileIORules(for config: PastewatchConfig) -> [CustomRule] {
@@ -34,8 +61,11 @@ public enum SharedSecretPatternSource {
         if let configs = try? JSONDecoder().decode([SharedSecretPatternConfig].self, from: data) {
             return compile(configs)
         }
-        if let envelope = try? JSONDecoder().decode(SharedSecretPatternEnvelope.self, from: data) {
-            return compile(envelope.patterns)
+        if let manifest = try? JSONDecoder().decode(SharedSecretPatternManifest.self, from: data) {
+            return compile(manifest.patterns)
+        }
+        if let legacyEnvelope = try? JSONDecoder().decode(SharedSecretPatternLegacyEnvelope.self, from: data) {
+            return compile(legacyEnvelope.patterns)
         }
         return []
     }
@@ -72,7 +102,7 @@ public enum SharedSecretPatternSource {
     }
 }
 
-private struct SharedSecretPatternEnvelope: Decodable {
+private struct SharedSecretPatternLegacyEnvelope: Decodable {
     let patterns: [SharedSecretPatternConfig]
 
     enum CodingKeys: String, CodingKey {
