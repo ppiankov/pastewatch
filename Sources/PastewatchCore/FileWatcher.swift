@@ -105,10 +105,22 @@ public final class FileWatcher {
         let name = (relativePath as NSString).lastPathComponent
         let parsedExt = (name == ".env" || name.hasSuffix(".env")) ? "env" : ext
 
-        var matches = DirectoryScanner.scanFileContent(
-            content: content, ext: parsedExt,
-            relativePath: relativePath, config: config
-        )
+        let matchesBeforeSeverity: [DetectedMatch]
+        do {
+            matchesBeforeSeverity = try DirectoryScanner.scanFileContentOrThrow(
+                content: content, ext: parsedExt,
+                relativePath: relativePath, config: config
+            )
+        } catch let error as SharedSecretPatternLoadError {
+            // WO-128: watch mode must surface broken shared-pattern coverage instead of reporting clean.
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            outputSharedPatternError(relativePath: relativePath, error: error, timestamp: timestamp)
+            return
+        } catch {
+            return
+        }
+
+        var matches = matchesBeforeSeverity
         matches = Allowlist.filterInlineAllow(matches: matches, content: content)
 
         // Apply severity filter
@@ -150,5 +162,28 @@ public final class FileWatcher {
                 print(str)
             }
         }
+    }
+
+    private func outputSharedPatternError(
+        relativePath: String,
+        error: SharedSecretPatternLoadError,
+        timestamp: String
+    ) {
+        if jsonOutput {
+            let obj: [String: Any] = [
+                "timestamp": timestamp,
+                "file": relativePath,
+                "error": "shared_pattern_load_failed",
+                "message": error.localizedDescription
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
+               let str = String(data: data, encoding: .utf8) {
+                print(str)
+            }
+            return
+        }
+
+        let line = "[\(timestamp)] ERROR \(relativePath): shared pattern load failed: \(error.localizedDescription)"
+        FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 }

@@ -20,7 +20,7 @@ final class PastewatchSharedPatternsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tmpFile) }
 
         let content = try String(contentsOf: tmpFile, encoding: .utf8)
-        let matches = DirectoryScanner.scanFileContent(
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
             content: content,
             ext: "txt",
             relativePath: tmpFile.lastPathComponent,
@@ -55,7 +55,7 @@ final class PastewatchSharedPatternsTests: XCTestCase {
         config.enabledTypes.removeAll { $0 == SensitiveDataType.genericApiKey.rawValue }
         config.sharedPatternFiles = [artifactURL.path]
 
-        let matches = DirectoryScanner.scanFileContent(
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
             content: "oauth token " + token,
             ext: "txt",
             relativePath: "nr-manifest.txt",
@@ -163,6 +163,50 @@ final class PastewatchSharedPatternsTests: XCTestCase {
 
         XCTAssertTrue(result.hasSharedPatternErrors)
         XCTAssertTrue(result.sharedPatternErrors.first?.localizedDescription.contains("could not read") ?? false)
+    }
+
+    // WO-128: scanner paths must not return partial results when shared patterns fail.
+    func testDirectoryScannerFailsClosedForMissingSharedPatternFile() throws {
+        let missingURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-missing-shared-\(UUID().uuidString).json")
+        let dirURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-shared-dir-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dirURL) }
+
+        let fileURL = dirURL.appendingPathComponent("config.txt")
+        try "plain text\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [missingURL.path]
+
+        XCTAssertThrowsError(try DirectoryScanner.scan(directory: dirURL.path, config: config)) { error in
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("sharedPatternFiles"))
+            XCTAssertTrue(description.contains("could not read"))
+        }
+    }
+
+    // WO-128: malformed shared artifacts must fail before file content is reported clean.
+    func testScanFileContentOrThrowFailsClosedForMalformedSharedPatternFile() throws {
+        let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-malformed-shared-\(UUID().uuidString).json")
+        try "{".write(to: artifactURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [artifactURL.path]
+
+        XCTAssertThrowsError(try DirectoryScanner.scanFileContentOrThrow(
+            content: "plain text",
+            ext: "txt",
+            relativePath: "plain.txt",
+            config: config
+        )) { error in
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("sharedPatternFiles"))
+            XCTAssertTrue(description.contains("invalid JSON"))
+        }
     }
 
     func testPlaceholderDriftMapPreservesProxyCompatibleEnvelope() throws {

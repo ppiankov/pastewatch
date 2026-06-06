@@ -3,7 +3,7 @@ import XCTest
 
 /// Tests for guard-read / guard-write scan logic.
 /// Both commands share the same scan path: format-aware scanning via
-/// DirectoryScanner.scanFileContent() + Allowlist.filterInlineAllow().
+    /// DirectoryScanner.scanFileContentOrThrow() + Allowlist.filterInlineAllow().
 final class GuardReadWriteTests: XCTestCase {
 
     private var testDir: String!
@@ -27,7 +27,7 @@ final class GuardReadWriteTests: XCTestCase {
         at path: String,
         failOnSeverity: Severity = .high,
         config: PastewatchConfig = PastewatchConfig.defaultConfig
-    ) -> [DetectedMatch] {
+    ) throws -> [DetectedMatch] {
         guard FileManager.default.fileExists(atPath: path),
               let content = try? String(contentsOfFile: path, encoding: .utf8),
               !content.isEmpty else {
@@ -38,7 +38,7 @@ final class GuardReadWriteTests: XCTestCase {
         let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
         let ext = isEnvFile ? "env" : URL(fileURLWithPath: path).pathExtension.lowercased()
 
-        var matches = DirectoryScanner.scanFileContent(
+        var matches = try DirectoryScanner.scanFileContentOrThrow(
             content: content, ext: ext,
             relativePath: path, config: config
         )
@@ -55,7 +55,7 @@ final class GuardReadWriteTests: XCTestCase {
     func testCleanFileNoFindings() throws {
         let path = testDir + "/clean.txt"
         try "Hello world, nothing sensitive".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertTrue(findings.isEmpty)
     }
 
@@ -64,7 +64,7 @@ final class GuardReadWriteTests: XCTestCase {
         let dbUrl = ["postgres://user:", "pass@host:5432/mydb"].joined()
         try "database_url: \(dbUrl)".write(
             toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertFalse(findings.isEmpty, "DB connection string should be detected")
         XCTAssertTrue(findings.contains { $0.type == .dbConnectionString })
     }
@@ -73,7 +73,7 @@ final class GuardReadWriteTests: XCTestCase {
         let path = testDir + "/hosts.txt"
         // IP address is medium severity — below default high threshold
         try "server: 10.0.1.50".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path, failOnSeverity: .high)
+        let findings = try scanFile(at: path, failOnSeverity: .high)
         XCTAssertTrue(findings.isEmpty, "Medium severity should not trigger at high threshold")
     }
 
@@ -81,7 +81,7 @@ final class GuardReadWriteTests: XCTestCase {
         let path = testDir + "/.env"
         let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
         try "AWS_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertFalse(findings.isEmpty, ".env file should detect secrets in values")
         XCTAssertTrue(findings.contains { $0.type == .awsKey })
     }
@@ -95,13 +95,13 @@ final class GuardReadWriteTests: XCTestCase {
         }
         """
         try content.write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertFalse(findings.isEmpty, "JSON file should detect secrets in values")
         XCTAssertTrue(findings.contains { $0.type == .dbConnectionString })
     }
 
-    func testNonExistentFileNoFindings() {
-        let findings = scanFile(at: testDir + "/does-not-exist.txt")
+    func testNonExistentFileNoFindings() throws {
+        let findings = try scanFile(at: testDir + "/does-not-exist.txt")
         XCTAssertTrue(findings.isEmpty, "Non-existent file should return no findings")
     }
 
@@ -110,7 +110,7 @@ final class GuardReadWriteTests: XCTestCase {
         let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
         try "AWS_KEY=\(key) # pastewatch:allow".write(
             toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertTrue(findings.isEmpty, "Inline allow should suppress the finding")
     }
 
@@ -118,7 +118,7 @@ final class GuardReadWriteTests: XCTestCase {
         let path = testDir + "/data.txt"
         // IP address is medium severity
         try "server: 10.0.1.50".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path, failOnSeverity: .low)
+        let findings = try scanFile(at: path, failOnSeverity: .low)
         XCTAssertFalse(findings.isEmpty, "Low threshold should catch medium severity findings")
     }
 
@@ -126,9 +126,23 @@ final class GuardReadWriteTests: XCTestCase {
         let path = testDir + "/key.txt"
         let key = "wl_sk_" + String(repeating: "X", count: 44)
         try "API_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = scanFile(at: path)
+        let findings = try scanFile(at: path)
         XCTAssertFalse(findings.isEmpty, "Workledger key should be detected by guard scan")
         XCTAssertTrue(findings.contains { $0.type == .workledgerKey })
+    }
+
+    // WO-128: guard scan logic must fail closed when shared patterns cannot load.
+    func testGuardScanFailsClosedForMissingSharedPatternFile() throws {
+        let path = testDir + "/clean.txt"
+        try "clean=true\n".write(toFile: path, atomically: true, encoding: .utf8)
+
+        var scanConfig = config
+        scanConfig.sharedPatternFiles = [testDir + "/missing-shared-patterns.json"]
+
+        XCTAssertThrowsError(try scanFile(at: path, config: scanConfig)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("sharedPatternFiles"))
+            XCTAssertTrue(error.localizedDescription.contains("could not read"))
+        }
     }
 
     func testPathProtectionBlocksOpenClawDir() {

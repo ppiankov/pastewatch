@@ -284,22 +284,20 @@ final class MCPServer {
             ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         }
 
-        var matches: [DetectedMatch]
-        if let parser = parserForExtension(ext) {
-            let parsedValues = parser.parseValues(from: content)
-            matches = []
-            for pv in parsedValues {
-                let valueMatches = DetectionRules.scan(pv.value, config: config)
-                for vm in valueMatches {
-                    matches.append(DetectedMatch(
-                        type: vm.type, value: vm.value, range: vm.range,
-                        line: pv.line, filePath: path, customRuleName: vm.customRuleName,
-                        customSeverity: vm.customSeverity
-                    ))
-                }
-            }
-        } else {
-            matches = DetectionRules.scan(content, config: config)
+        let matches: [DetectedMatch]
+        do {
+            // WO-129: MCP file scans must use the same shared-pattern-aware file IO path as reads.
+            matches = try DirectoryScanner.scanFileContentOrThrow(
+                content: content,
+                ext: ext,
+                relativePath: path,
+                config: config
+            )
+        } catch let error as SharedSecretPatternLoadError {
+            auditLogger?.log("SCAN  \(path)  shared-pattern-error")
+            return errorResult(id: id, text: "Shared pattern load failed: \(error.localizedDescription)")
+        } catch {
+            return errorResult(id: id, text: "Scan error: \(error.localizedDescription)")
         }
 
         auditLogger?.log("SCAN  \(path)  findings=\(matches.count)")
@@ -352,6 +350,9 @@ final class MCPServer {
                 result: .object(["content": content]),
                 error: nil
             )
+        } catch let error as SharedSecretPatternLoadError {
+            auditLogger?.log("SCAN  \(path)  shared-pattern-error")
+            return errorResult(id: id, text: "Shared pattern load failed: \(error.localizedDescription)")
         } catch {
             return errorResult(id: id, text: "Scan error: \(error.localizedDescription)")
         }

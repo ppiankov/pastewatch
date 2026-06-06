@@ -597,16 +597,21 @@ public struct DetectionRules {
     }
 
     /// WO-126: scan file IO while preserving configured shared-pattern load diagnostics.
-    public static func scanFileIOResult(_ content: String, config: PastewatchConfig) -> FileIOScanResult {
+    public static func scanFileIOResult(
+        _ content: String,
+        config: PastewatchConfig,
+        customRules: [CustomRule] = []
+    ) -> FileIOScanResult {
         let sharedRuleSet = SharedSecretPatternSource.fileIORuleSet(for: config)
-        guard !sharedRuleSet.rules.isEmpty else {
+        let fileIORules = sharedRuleSet.rules + customRules
+        guard !fileIORules.isEmpty else {
             return FileIOScanResult(
                 matches: scan(content, config: config),
                 sharedPatternErrors: sharedRuleSet.errors
             )
         }
         return FileIOScanResult(
-            matches: scan(content, config: config, customRules: sharedRuleSet.rules),
+            matches: scan(content, config: config, customRules: fileIORules),
             sharedPatternErrors: sharedRuleSet.errors
         )
     }
@@ -622,18 +627,31 @@ public struct DetectionRules {
     }
 
     /// WO-126: fail closed on configured shared pattern load errors.
-    public static func scanFileIOOrThrow(_ content: String, config: PastewatchConfig) throws -> [DetectedMatch] {
-        let result = scanFileIOResult(content, config: config)
+    public static func scanFileIOOrThrow(
+        _ content: String,
+        config: PastewatchConfig,
+        customRules: [CustomRule] = []
+    ) throws -> [DetectedMatch] {
+        let result = scanFileIOResult(content, config: config, customRules: customRules)
         guard !result.hasSharedPatternErrors else {
-            throw SharedSecretPatternLoadError(
-                path: "sharedPatternFiles",
-                message: result.sharedPatternErrors.map(\.localizedDescription).joined(separator: "; ")
-            )
-        }
-        guard !result.matches.isEmpty else {
-            return scan(content, config: config)
+            throw sharedPatternLoadError(from: result.sharedPatternErrors)
         }
         return result.matches
+    }
+
+    /// WO-128: let scanner surfaces fail before returning partial shared-pattern coverage.
+    public static func ensureSharedPatternsLoaded(config: PastewatchConfig) throws {
+        let errors = SharedSecretPatternSource.fileIORuleSet(for: config).errors
+        guard errors.isEmpty else {
+            throw sharedPatternLoadError(from: errors)
+        }
+    }
+
+    private static func sharedPatternLoadError(from errors: [SharedSecretPatternLoadError]) -> SharedSecretPatternLoadError {
+        SharedSecretPatternLoadError(
+            path: "sharedPatternFiles",
+            message: errors.map(\.localizedDescription).joined(separator: "; ")
+        )
     }
 
     /// Scan with allowlist filtering and custom rules.

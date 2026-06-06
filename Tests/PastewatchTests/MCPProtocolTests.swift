@@ -136,4 +136,116 @@ final class MCPProtocolTests: XCTestCase {
         let request = try JSONDecoder().decode(JSONRPCRequest.self, from: json)
         XCTAssertEqual(request.id, .string("req-1"))
     }
+
+    // WO-129: MCP scan_file must consume configured sharedPatternFiles.
+    func testScanFileUsesSharedPatternFiles() throws {
+        let secretValue = "PW" + "MCP-" + syntheticSuffix()
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let artifactURL = tempDir.appendingPathComponent("shared-patterns.json")
+        let patterns = [
+            SharedSecretPatternConfig(
+                name: "wo129_mcp_shared",
+                type: "github_token",
+                regex: "PW" + #"MCP-[A-F0-9]{12}"#,
+                policy: "redact"
+            )
+        ]
+        try JSONEncoder().encode(patterns).write(to: artifactURL)
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [artifactURL.path]
+        try JSONEncoder().encode(config).write(to: tempDir.appendingPathComponent(".pastewatch.json"))
+
+        let fileURL = tempDir.appendingPathComponent("scan.txt")
+        try "marker \(secretValue)\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_scan_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+
+        XCTAssertNil(response.error)
+        let responseText = try joinedMCPContentText(response)
+        XCTAssertTrue(responseText.contains(secretValue))
+        XCTAssertTrue(responseText.contains("Found 1 finding(s)."))
+    }
+
+    private func callMCPTool(
+        name: String,
+        arguments: [String: JSONValue],
+        currentDirectory: URL
+    ) throws -> JSONRPCResponse {
+        let request = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(1),
+            method: "tools/call",
+            params: .object([
+                "name": .string(name),
+                "arguments": .object(arguments)
+            ])
+        )
+        let requestData = try JSONEncoder().encode(request)
+
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = ["mcp"]
+        process.currentDirectoryURL = currentDirectory
+
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        stdin.fileHandleForWriting.write(requestData)
+        stdin.fileHandleForWriting.write(Data("\n".utf8))
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard let line = output.split(separator: "\n").first else {
+            let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTFail("Expected MCP response, stderr: \(errorOutput)")
+            throw NSError(domain: "MCPProtocolTests", code: 1)
+        }
+        return try JSONDecoder().decode(JSONRPCResponse.self, from: Data(line.utf8))
+    }
+
+    private func joinedMCPContentText(_ response: JSONRPCResponse) throws -> String {
+        guard case .object(let result) = response.result,
+              case .array(let content) = result["content"] else {
+            XCTFail("Expected MCP content array")
+            throw NSError(domain: "MCPProtocolTests", code: 2)
+        }
+
+        return content.compactMap { item in
+            guard case .object(let object) = item,
+                  case .string(let text) = object["text"] else {
+                return nil
+            }
+            return text
+        }.joined(separator: "\n")
+    }
+
+    private func pastewatchCLIURL() -> URL {
+        let productsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let bundled = productsDirectory.appendingPathComponent("PastewatchCLI")
+        if FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/PastewatchCLI")
+    }
+
+    private func syntheticSuffix() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").uppercased().prefix(12))
+    }
 }

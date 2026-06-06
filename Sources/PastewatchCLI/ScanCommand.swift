@@ -126,8 +126,15 @@ struct Scan: ParsableCommand {
         let input = try readInput()
         guard !input.isEmpty else { return }
 
-        var matches = scanInput(input, config: config,
-                                allowlist: mergedAllowlist, customRules: customRulesList)
+        var matches: [DetectedMatch]
+        do {
+            matches = try scanInput(input, config: config,
+                                    allowlist: mergedAllowlist, customRules: customRulesList)
+        } catch let error as SharedSecretPatternLoadError {
+            // WO-128: git diff scans fail closed when shared-pattern coverage is unavailable.
+            FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
         matches = Allowlist.filterInlineAllow(matches: matches, content: input)
 
         // Apply baseline filtering
@@ -228,7 +235,7 @@ struct Scan: ParsableCommand {
         config: PastewatchConfig,
         allowlist: Allowlist,
         customRules: [CustomRule]
-    ) -> [DetectedMatch] {
+    ) throws -> [DetectedMatch] {
         let sourcePath = file ?? stdinFilename
 
         guard let filePath = sourcePath else {
@@ -243,39 +250,15 @@ struct Scan: ParsableCommand {
             ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
         }
 
-        guard let parser = parserForExtension(ext) else {
-            return DetectionRules.scan(input, config: config,
-                                       allowlist: allowlist, customRules: customRules)
-        }
-
-        let parsedValues = parser.parseValues(from: input)
-        var collected: [DetectedMatch] = []
-        for pv in parsedValues {
-            let valueMatches = DetectionRules.scan(
-                pv.value, config: config,
-                allowlist: allowlist, customRules: customRules
-            )
-            for vm in valueMatches {
-                collected.append(DetectedMatch(
-                    type: vm.type, value: vm.value, range: vm.range,
-                    line: pv.line, filePath: file, customRuleName: vm.customRuleName,
-                    customSeverity: vm.customSeverity
-                ))
-            }
-
-            // Key-aware credential detection for structured formats
-            if let key = pv.key,
-               !collected.contains(where: { $0.line == pv.line && $0.type == .credential }),
-               DetectionRules.isCredentialKeyName(key),
-               DetectionRules.isValidCredentialValue(pv.value) {
-                collected.append(DetectedMatch(
-                    type: .credential, value: pv.value,
-                    range: pv.value.startIndex..<pv.value.endIndex,
-                    line: pv.line, filePath: file
-                ))
-            }
-        }
-        return collected
+        // WO-129: single-file and stdin-filename scans must consume sharedPatternFiles.
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: input,
+            ext: ext,
+            relativePath: filePath,
+            config: config,
+            customRules: customRules
+        )
+        return allowlist.filter(matches)
     }
 
     // MARK: - Directory scanning
@@ -288,11 +271,18 @@ struct Scan: ParsableCommand {
         baseline: BaselineFile? = nil
     ) throws {
         let ignoreFile = IgnoreFile.load(from: dirPath)
-        let fileResults = try DirectoryScanner.scan(
-            directory: dirPath, config: config,
-            ignoreFile: ignoreFile, extraIgnorePatterns: ignore,
-            bail: bail
-        )
+        let fileResults: [FileScanResult]
+        do {
+            fileResults = try DirectoryScanner.scan(
+                directory: dirPath, config: config,
+                ignoreFile: ignoreFile, extraIgnorePatterns: ignore,
+                bail: bail
+            )
+        } catch let error as SharedSecretPatternLoadError {
+            // WO-128: git history scans fail closed when shared-pattern coverage is unavailable.
+            FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
 
         // Apply allowlist and custom rules to each file's matches
         var filteredResults: [FileScanResult] = []
@@ -355,6 +345,9 @@ struct Scan: ParsableCommand {
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
             throw ExitCode(rawValue: 2)
+        } catch let error as SharedSecretPatternLoadError {
+            FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: 2)
         }
 
         // Apply allowlist filtering
@@ -407,6 +400,9 @@ struct Scan: ParsableCommand {
             )
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        } catch let error as SharedSecretPatternLoadError {
+            FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
 

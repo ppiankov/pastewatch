@@ -86,7 +86,7 @@ public struct GitDiffScanner {
             guard !content.isEmpty else { continue }
 
             let parsedExt = isEnvFile ? "env" : ext
-            var fileMatches = DirectoryScanner.scanFileContent(
+            var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
                 content: content, ext: parsedExt,
                 relativePath: df.path, config: config
             )

@@ -84,4 +84,49 @@ final class StdinFilenameTests: XCTestCase {
         XCTAssertEqual(dirExt, "")
         XCTAssertNil(parserForExtension(dirExt))
     }
+
+    // WO-129: stdin-filename scans must use shared pattern files through file IO scanning.
+    func testStdinFilenameEnvScanUsesSharedPatternFiles() throws {
+        let secretValue = "PW" + "STDIN-" + syntheticSuffix()
+        let artifactURL = try writeSharedPatternArtifact(
+            regex: "PW" + #"STDIN-[A-F0-9]{12}"#
+        )
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        var scanConfig = config
+        scanConfig.sharedPatternFiles = [artifactURL.path]
+
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: "TOKEN=\(secretValue)\n",
+            ext: "env",
+            relativePath: "stdin.env",
+            config: scanConfig
+        )
+        let sharedMatches = matches.filter { $0.customRuleName == "wo129_stdin_shared" }
+
+        XCTAssertEqual(sharedMatches.count, 1)
+        XCTAssertEqual(sharedMatches.first?.value, secretValue)
+        XCTAssertEqual(sharedMatches.first?.line, 1)
+        XCTAssertEqual(sharedMatches.first?.filePath, "stdin.env")
+    }
+
+    private func writeSharedPatternArtifact(regex: String) throws -> URL {
+        let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-stdin-shared-\(UUID().uuidString).json")
+        let patterns = [
+            SharedSecretPatternConfig(
+                name: "wo129_stdin_shared",
+                type: "github_token",
+                regex: regex,
+                policy: "redact"
+            )
+        ]
+        let data = try JSONEncoder().encode(patterns)
+        try data.write(to: artifactURL)
+        return artifactURL
+    }
+
+    private func syntheticSuffix() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").uppercased().prefix(12))
+    }
 }

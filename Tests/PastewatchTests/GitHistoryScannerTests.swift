@@ -208,6 +208,28 @@ final class GitHistoryScannerTests: XCTestCase {
         XCTAssertEqual(result.commitsScanned, 1)
     }
 
+    // WO-128: git history scans must fail closed when shared patterns cannot load.
+    func testScanFailsClosedForMissingSharedPatternFile() throws {
+        let tempDir = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        try "clean=true\n".write(toFile: tempDir + "/config.txt", atomically: true, encoding: .utf8)
+        try runShell("git", args: ["-C", tempDir, "add", "config.txt"])
+        try runShell("git", args: ["-C", tempDir, "commit", "--no-verify", "-m", "clean"])
+
+        let originalDir = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(tempDir)
+        defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [tempDir + "/missing-shared-patterns.json"]
+
+        XCTAssertThrowsError(try GitHistoryScanner.scan(config: config)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("sharedPatternFiles"))
+            XCTAssertTrue(error.localizedDescription.contains("could not read"))
+        }
+    }
+
     // MARK: - Helpers
 
     private func createTempGitRepo() throws -> String {

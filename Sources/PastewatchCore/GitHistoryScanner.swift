@@ -85,7 +85,7 @@ public struct GitHistoryScanner {
                 ), !content.isEmpty else { continue }
 
                 let ext = scanExtension(for: df.path)
-                var fileMatches = DirectoryScanner.scanFileContent(
+                var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
                     content: content, ext: ext,
                     relativePath: df.path, config: config
                 )

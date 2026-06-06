@@ -230,4 +230,53 @@ final class GitDiffScannerTests: XCTestCase {
         XCTAssertGreaterThan(filtered.count, 0)
         XCTAssertTrue(filtered.allSatisfy { $0.line == 2 })
     }
+
+    // WO-128: git diff scans must fail closed when shared patterns cannot load.
+    func testScanFailsClosedForMissingSharedPatternFile() throws {
+        let tempDir = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let originalDir = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(tempDir)
+        defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
+
+        try "clean=true\n".write(toFile: tempDir + "/config.txt", atomically: true, encoding: .utf8)
+        try runShell("git", args: ["-C", tempDir, "add", "config.txt"])
+        try runShell("git", args: ["-C", tempDir, "commit", "--no-verify", "-m", "initial"])
+        try "clean=false\n".write(toFile: tempDir + "/config.txt", atomically: true, encoding: .utf8)
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [tempDir + "/missing-shared-patterns.json"]
+
+        XCTAssertThrowsError(try GitDiffScanner.scan(unstaged: true, config: config)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("sharedPatternFiles"))
+            XCTAssertTrue(error.localizedDescription.contains("could not read"))
+        }
+    }
+
+    private func createTempGitRepo() throws -> String {
+        let tempDir = NSTemporaryDirectory() + "pw-diff-test-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+        try runShell("git", args: ["-C", tempDir, "init"])
+        try runShell("git", args: ["-C", tempDir, "config", "user.email", "test@test.com"])
+        try runShell("git", args: ["-C", tempDir, "config", "user.name", "Test"])
+        return tempDir
+    }
+
+    @discardableResult
+    private func runShell(_ cmd: String, args: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/\(cmd)")
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "shell", code: Int(process.terminationStatus))
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
 }

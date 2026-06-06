@@ -36,10 +36,19 @@ struct GuardRead: ParsableCommand {
         let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
         let ext = isEnvFile ? "env" : URL(fileURLWithPath: filePath).pathExtension.lowercased()
 
-        var matches = DirectoryScanner.scanFileContent(
-            content: content, ext: ext,
-            relativePath: filePath, config: config
-        )
+        var matches: [DetectedMatch]
+        do {
+            matches = try DirectoryScanner.scanFileContentOrThrow(
+                content: content, ext: ext,
+                relativePath: filePath, config: config
+            )
+        } catch let error as SharedSecretPatternLoadError {
+            // WO-128: guard reads fail closed when configured shared coverage cannot load.
+            let msg = "BLOCKED: shared pattern load failed: \(error.localizedDescription)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+            print("Fix shared pattern configuration before using Read.")
+            throw ExitCode(rawValue: 2)
+        }
         matches = Allowlist.filterInlineAllow(matches: matches, content: content)
 
         let configAllowlist = Allowlist.fromConfig(config)

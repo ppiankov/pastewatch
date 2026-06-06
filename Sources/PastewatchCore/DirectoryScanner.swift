@@ -111,7 +111,7 @@ public struct DirectoryScanner {
 
             // Format-aware scanning
             let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
-            var fileMatches = scanFileContent(
+            var fileMatches = try scanFileContentOrThrow(
                 content: content, ext: parsedExt,
                 relativePath: relativePath, config: config
             )
@@ -191,8 +191,28 @@ public struct DirectoryScanner {
         content: String, ext: String,
         relativePath: String, config: PastewatchConfig
     ) -> [DetectedMatch] {
+        (try? scanFileContentOrThrow(
+            content: content,
+            ext: ext,
+            relativePath: relativePath,
+            config: config
+        )) ?? []
+    }
+
+    /// WO-128: scan file content without hiding configured shared-pattern load failures.
+    public static func scanFileContentOrThrow(
+        content: String,
+        ext: String,
+        relativePath: String,
+        config: PastewatchConfig,
+        customRules: [CustomRule] = []
+    ) throws -> [DetectedMatch] {
         guard let parser = parserForExtension(ext, config: config) else {
-            return DetectionRules.scanFileIO(content, config: config).map { match in
+            return try DetectionRules.scanFileIOOrThrow(
+                content,
+                config: config,
+                customRules: customRules
+            ).map { match in
                 DetectedMatch(
                     type: match.type, value: match.value, range: match.range,
                     line: match.line, filePath: relativePath,
@@ -201,10 +221,17 @@ public struct DirectoryScanner {
             }
         }
 
+        // WO-128: fail once before parsed-value scanning can return partial results.
+        try DetectionRules.ensureSharedPatternsLoaded(config: config)
+
         // Format-aware: extract values and scan each
         var matches: [DetectedMatch] = []
         for pv in parser.parseValues(from: content) {
-            for vm in DetectionRules.scanFileIO(pv.value, config: config) {
+            for vm in try DetectionRules.scanFileIOOrThrow(
+                pv.value,
+                config: config,
+                customRules: customRules
+            ) {
                 matches.append(DetectedMatch(
                     type: vm.type, value: vm.value, range: vm.range,
                     line: pv.line, filePath: relativePath,
@@ -231,7 +258,11 @@ public struct DirectoryScanner {
         // (e.g., <password>plain</password> where the extracted value alone
         // wouldn't match any pattern rule)
         if ext.lowercased() == "xml" {
-            let rawMatches = DetectionRules.scanFileIO(content, config: config)
+            let rawMatches = try DetectionRules.scanFileIOOrThrow(
+                content,
+                config: config,
+                customRules: customRules
+            )
             for rm in rawMatches {
                 // Only add XML-specific types not already found
                 guard rm.type == .xmlCredential || rm.type == .xmlUsername || rm.type == .xmlHostname else {
