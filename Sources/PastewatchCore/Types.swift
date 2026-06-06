@@ -294,6 +294,7 @@ public struct PastewatchConfig: Codable {
     public var xmlSensitiveTags: [String]
     public var placeholderPrefix: String?
     public var protectedPaths: [String]
+    public var sharedPatternFiles: [String] // WO-124: NR-compatible generated pattern artifacts for file IO
 
     public init(
         enabled: Bool,
@@ -309,7 +310,8 @@ public struct PastewatchConfig: Codable {
         mcpMinSeverity: String = "high",
         xmlSensitiveTags: [String] = [],
         placeholderPrefix: String? = nil,
-        protectedPaths: [String] = ["~/.openclaw"]
+        protectedPaths: [String] = ["~/.openclaw"],
+        sharedPatternFiles: [String] = []
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -325,6 +327,7 @@ public struct PastewatchConfig: Codable {
         self.xmlSensitiveTags = xmlSensitiveTags
         self.placeholderPrefix = placeholderPrefix
         self.protectedPaths = protectedPaths
+        self.sharedPatternFiles = sharedPatternFiles
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -352,6 +355,7 @@ public struct PastewatchConfig: Codable {
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]
+        sharedPatternFiles = try container.decodeIfPresent([String].self, forKey: .sharedPatternFiles) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(

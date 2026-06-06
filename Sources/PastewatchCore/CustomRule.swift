@@ -36,6 +36,17 @@ public struct CustomRule {
             }
         }
     }
+
+    /// WO-124: compile configs when invalid generated entries should degrade to the valid subset.
+    public static func compileValid(_ configs: [CustomRuleConfig]) -> [CustomRule] {
+        configs.compactMap { config in
+            guard let regex = try? NSRegularExpression(pattern: config.pattern) else {
+                return nil
+            }
+            let severity = config.severity.flatMap(Severity.init(rawValue:)) ?? .high
+            return CustomRule(name: config.name, regex: regex, severity: severity)
+        }
+    }
 }
 
 /// Errors for custom rule loading.

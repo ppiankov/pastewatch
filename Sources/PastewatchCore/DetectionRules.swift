@@ -591,6 +591,15 @@ public struct DetectionRules {
         return matches
     }
 
+    /// WO-124: scan file IO using built-ins plus shared/generated pattern artifacts.
+    public static func scanFileIO(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {
+        let sharedRules = SharedSecretPatternSource.fileIORules(for: config)
+        guard !sharedRules.isEmpty else {
+            return scan(content, config: config)
+        }
+        return scan(content, config: config, customRules: sharedRules)
+    }
+
     /// Scan with allowlist filtering and custom rules.
     public static func scan(
         _ content: String,

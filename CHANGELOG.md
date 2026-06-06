@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- File IO redaction can consume NR-compatible shared secret-pattern artifacts, so generated pattern
+  sources cover pastewatch read/write redaction without copying detector lists.
+
 ## [0.26.6] - 2026-05-16
 
 ### Added

@@ -20,6 +20,7 @@ final class ConfigResolutionTests: XCTestCase {
     func testDefaultConfigHasEmptyCustomRules() {
         let config = PastewatchConfig.defaultConfig
         XCTAssertTrue(config.customRules.isEmpty)
+        XCTAssertTrue(config.sharedPatternFiles.isEmpty)
     }
 
     func testConfigRoundTrip() throws {
@@ -62,6 +63,7 @@ final class ConfigResolutionTests: XCTestCase {
 
         XCTAssertTrue(config.allowedValues.isEmpty)
         XCTAssertTrue(config.customRules.isEmpty)
+        XCTAssertTrue(config.sharedPatternFiles.isEmpty)
     }
 
     func testResolveReturnsDefaultWhenNoConfigFiles() {

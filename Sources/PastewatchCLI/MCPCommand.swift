@@ -383,7 +383,7 @@ final class MCPServer {
             minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .high
         }
 
-        let allMatches = DetectionRules.scan(content, config: config)
+        let allMatches = DetectionRules.scanFileIO(content, config: config)
         let matches = allMatches.filter { $0.effectiveSeverity >= minSeverity }
 
         if matches.isEmpty {
