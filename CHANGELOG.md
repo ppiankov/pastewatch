@@ -7,12 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.7] - 2026-06-07
+
 ### Added
 
 - File IO redaction can consume NR-compatible shared secret-pattern artifacts, so generated pattern
   sources cover pastewatch read/write redaction without copying detector lists.
 - Shared-pattern manifests record the NR source/provenance fields while pastewatch keeps its
   proxy-compatible `__PW_TYPE_N__` MCP placeholders.
+- Shared-pattern coverage extends to single-file CLI scans, `pastewatch_scan_file`, and the plain
+  stdin scan path.
+
+### Fixed
+
+- Fail closed when a configured `sharedPatternFiles` artifact is missing, malformed, unsupported, or
+  contains an invalid regex — scans return exit 2 instead of a false clean result. Covers directory,
+  git diff/history, file watcher, guard read/write, single-file, MCP, and empty-stdin paths.
+- The generated pre-commit hook blocks the commit on any non-zero `pastewatch-cli scan --check`
+  result, not just exit 6 for findings.
+- Shared-pattern matches preserve their manifest type and policy metadata through redaction: policy
+  `block`/`redact`/`warn` map to critical/high/medium severity, and typed rules use the matching
+  placeholder category instead of collapsing to `__PW_CREDENTIAL_N__`.
+- MCP redacted round-trip (`pastewatch_read_file` → `pastewatch_write_file`) no longer corrupts
+  content when an emoji or other astral-plane character precedes a redacted value. Placeholder
+  resolution converted a UTF-16 range with grapheme-cluster offsets, drifting after surrogate
+  pairs; it now uses an exact `Range(_:in:)` conversion so the original bytes restore faithfully.
 
 ## [0.26.6] - 2026-05-16
 
