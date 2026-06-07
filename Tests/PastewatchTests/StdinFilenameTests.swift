@@ -151,6 +151,46 @@ final class StdinFilenameTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("could not read"))
     }
 
+    // WO-131: empty plain stdin must still validate configured shared pattern files.
+    func testPlainEmptyStdinScanFailsClosedForMissingSharedPatternFile() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let missingURL = tempDir.appendingPathComponent("missing-shared-patterns.json")
+        try writeProjectConfig(sharedPatternFiles: [missingURL.path], in: tempDir)
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir
+        )
+
+        XCTAssertEqual(result.status, 2)
+        XCTAssertTrue(result.stderr.contains("shared pattern load failed"))
+        XCTAssertTrue(result.stderr.contains("could not read"))
+    }
+
+    // WO-131: empty plain stdin remains clean when shared pattern config is valid.
+    func testPlainEmptyStdinScanSucceedsWithValidSharedPatternFiles() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let artifactURL = try writeSharedPatternArtifact(
+            regex: "PW" + #"EMPTY-[A-F0-9]{12}"#
+        )
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        try writeProjectConfig(sharedPatternFiles: [artifactURL.path], in: tempDir)
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr, "")
+    }
+
     private func writeSharedPatternArtifact(regex: String) throws -> URL {
         let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pastewatch-stdin-shared-\(UUID().uuidString).json")

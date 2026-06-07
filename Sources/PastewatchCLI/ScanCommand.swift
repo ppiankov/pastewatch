@@ -124,8 +124,8 @@ struct Scan: ParsableCommand {
 
         // Single file or stdin mode
         let input = try readInput()
-        guard !input.isEmpty else { return }
 
+        // WO-131: empty stdin still needs sharedPatternFiles validation before clean success.
         var matches: [DetectedMatch]
         do {
             matches = try scanInput(input, config: config,
