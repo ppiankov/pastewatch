@@ -131,7 +131,7 @@ struct Scan: ParsableCommand {
             matches = try scanInput(input, config: config,
                                     allowlist: mergedAllowlist, customRules: customRulesList)
         } catch let error as SharedSecretPatternLoadError {
-            // WO-128: git diff scans fail closed when shared-pattern coverage is unavailable.
+            // WO-130: single-file and stdin scans fail closed when shared-pattern coverage is unavailable.
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
@@ -239,8 +239,13 @@ struct Scan: ParsableCommand {
         let sourcePath = file ?? stdinFilename
 
         guard let filePath = sourcePath else {
-            return DetectionRules.scan(input, config: config,
-                                       allowlist: allowlist, customRules: customRules)
+            // WO-130: plain stdin is the pre-commit hook path, so it must honor sharedPatternFiles.
+            let matches = try DetectionRules.scanFileIOOrThrow(
+                input,
+                config: config,
+                customRules: customRules
+            )
+            return allowlist.filter(matches)
         }
 
         let ext: String

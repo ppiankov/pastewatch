@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import PastewatchCore
 
@@ -110,6 +111,46 @@ final class StdinFilenameTests: XCTestCase {
         XCTAssertEqual(sharedMatches.first?.filePath, "stdin.env")
     }
 
+    // WO-130: plain stdin is the generated pre-commit hook path and must use shared patterns.
+    func testPlainStdinScanUsesSharedPatternFiles() throws {
+        let secretValue = "PW" + "PLAIN-" + syntheticSuffix()
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let artifactURL = try writeSharedPatternArtifact(
+            regex: "PW" + #"PLAIN-[A-F0-9]{12}"#
+        )
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        try writeProjectConfig(sharedPatternFiles: [artifactURL.path], in: tempDir)
+
+        let result = try runScanCLI(
+            input: "marker \(secretValue)\n",
+            currentDirectory: tempDir
+        )
+
+        XCTAssertEqual(result.status, 6)
+        XCTAssertTrue(result.stderr.contains("findings:"))
+    }
+
+    // WO-130: plain stdin must fail closed when configured shared coverage is broken.
+    func testPlainStdinScanFailsClosedForMissingSharedPatternFile() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let missingURL = tempDir.appendingPathComponent("missing-shared-patterns.json")
+        try writeProjectConfig(sharedPatternFiles: [missingURL.path], in: tempDir)
+
+        let result = try runScanCLI(
+            input: "plain text\n",
+            currentDirectory: tempDir
+        )
+
+        XCTAssertEqual(result.status, 2)
+        XCTAssertTrue(result.stderr.contains("shared pattern load failed"))
+        XCTAssertTrue(result.stderr.contains("could not read"))
+    }
+
     private func writeSharedPatternArtifact(regex: String) throws -> URL {
         let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pastewatch-stdin-shared-\(UUID().uuidString).json")
@@ -124,6 +165,64 @@ final class StdinFilenameTests: XCTestCase {
         let data = try JSONEncoder().encode(patterns)
         try data.write(to: artifactURL)
         return artifactURL
+    }
+
+    private func writeProjectConfig(sharedPatternFiles: [String], in directory: URL) throws {
+        var scanConfig = config
+        scanConfig.sharedPatternFiles = sharedPatternFiles
+        let configURL = directory.appendingPathComponent(".pastewatch.json")
+        try JSONEncoder().encode(scanConfig).write(to: configURL)
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-stdin-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private struct CLIResult {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+    }
+
+    private func runScanCLI(input: String, currentDirectory: URL) throws -> CLIResult {
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = ["scan", "--check"]
+        process.currentDirectoryURL = currentDirectory
+        var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "PW_GUARD")
+        process.environment = environment
+
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        stdin.fileHandleForWriting.write(Data(input.utf8))
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        return CLIResult(
+            status: process.terminationStatus,
+            stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        )
+    }
+
+    private func pastewatchCLIURL() -> URL {
+        let productsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let bundled = productsDirectory.appendingPathComponent("PastewatchCLI")
+        if FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/PastewatchCLI")
     }
 
     private func syntheticSuffix() -> String {
