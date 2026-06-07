@@ -28,12 +28,17 @@ extension HookGroup {
                 try fm.createDirectory(atPath: hooksDir, withIntermediateDirectories: true)
             }
 
+            // WO-130: generated hooks must fail closed on scan setup/shared-pattern failures.
             let hookContent = """
             # BEGIN PASTEWATCH
             git diff --cached --diff-filter=d --no-color | pastewatch-cli scan --check
             PASTEWATCH_RESULT=$?
-            if [ $PASTEWATCH_RESULT -eq 6 ]; then
+            if [ "$PASTEWATCH_RESULT" -eq 6 ]; then
                 echo "pastewatch: sensitive data detected in staged changes" >&2
+                exit 1
+            fi
+            if [ "$PASTEWATCH_RESULT" -ne 0 ]; then
+                echo "pastewatch: scan failed with exit code $PASTEWATCH_RESULT" >&2
                 exit 1
             fi
             # END PASTEWATCH
