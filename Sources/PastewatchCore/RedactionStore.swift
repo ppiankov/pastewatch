@@ -137,13 +137,19 @@ public final class RedactionStore {
         let nsContent = result as NSString
         let allMatches = regex.matches(in: result, range: NSRange(location: 0, length: nsContent.length))
 
-        // Process in reverse order to preserve indices
+        // Process in reverse order to preserve indices.
+        // WO-132: match.range is a UTF-16 NSRange; convert it with Range(_:in:)
+        // rather than offsetting String.Index by Character count, which drifts
+        // after astral-plane characters (emoji / surrogate pairs) and corrupts
+        // the surrounding bytes on resolve.
         for match in allMatches.reversed() {
             let placeholder = nsContent.substring(with: match.range)
             if let original = combined[placeholder] {
-                let startIndex = result.index(result.startIndex, offsetBy: match.range.location)
-                let endIndex = result.index(startIndex, offsetBy: match.range.length)
-                result.replaceSubrange(startIndex..<endIndex, with: original)
+                guard let swiftRange = Range(match.range, in: result) else {
+                    unresolvedPlaceholders.append(placeholder)
+                    continue
+                }
+                result.replaceSubrange(swiftRange, with: original)
                 resolvedCount += 1
             } else {
                 unresolvedPlaceholders.append(placeholder)

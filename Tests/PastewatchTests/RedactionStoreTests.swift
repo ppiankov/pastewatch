@@ -29,6 +29,41 @@ final class RedactionStoreTests: XCTestCase {
         XCTAssertEqual(result.unresolved, 0)
     }
 
+    // WO-132: round-trip must be byte-faithful even when astral-plane characters
+    // (emoji / surrogate pairs) precede a redacted value. The resolve path used
+    // Character offsets against a UTF-16 NSRange, so positions after a 2-unit
+    // emoji drifted and corrupted the surrounding bytes.
+    func testRoundTripPreservesContentWithMultibytePrefix() {
+        let secret = "sk-abc123DEF456ghi789JKL012mno345PQR"
+        let cases = [
+            "// 🔑 key=\"\(secret)\"}",
+            "café=\"\(secret)\"}",
+            "密码=\"\(secret)\"},",
+            "k=\"\(secret)\"🔒",
+            "// 🎉 header\napi=\"\(secret)\"\ntail",
+        ]
+        for text in cases {
+            let store = RedactionStore()
+            let matches = DetectionRules.scan(text, config: .defaultConfig)
+            XCTAssertFalse(matches.isEmpty, "no match for: \(text)")
+            let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/rt.txt")
+            let result = store.resolve(content: redacted, filePath: "/tmp/rt.txt")
+            XCTAssertEqual(result.content, text, "round-trip corrupted: \(text)")
+            XCTAssertEqual(result.unresolved, 0, "unresolved placeholder for: \(text)")
+        }
+    }
+
+    func testRoundTripPreservesTwoSecretsAcrossEmoji() {
+        let text = "a=\"sk-abc123DEF456ghi789JKL012mno345PQR\" 🚀 "
+            + "b=\"sk-zzz999YYY888xxx777WWW666vvv555UUU\""
+        let store = RedactionStore()
+        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/rt2.txt")
+        let result = store.resolve(content: redacted, filePath: "/tmp/rt2.txt")
+        XCTAssertEqual(result.content, text)
+        XCTAssertEqual(result.unresolved, 0)
+    }
+
     func testIdempotentReRead() {
         let store = RedactionStore()
         let text = "email: user@example.com"
