@@ -159,10 +159,12 @@ struct Launch: ParsableCommand {
     }
 
     private func normalizedCommand() throws -> [String] {
+        let hasCommandSeparator = self.command.first == "--"
         // Strip leading "--" that captureForPassthrough may include
         let command = Array(self.command.drop(while: { $0 == "--" }))
 
-        if command == ["--help"] || command == ["-h"] {
+        // WO-134: launch-level help must exit before startup sweep/proxy side effects.
+        if !hasCommandSeparator, ["--help", "-h"].contains(command.first) {
             printLaunchHelp()
             throw ExitCode.success
         }
