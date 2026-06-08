@@ -750,14 +750,27 @@ public struct DetectionRules {
     }
 
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).
-    public static func isValidCredentialValue(_ value: String) -> Bool {        // Too short to be a real secret
-        if value.count < 4 { return false }
+    public static func isValidCredentialValue(_ value: String) -> Bool {
+        // WO-122: matched shell quotes should not hide env-var references from the prefix gate.
+        let credentialValue: String
+        if value.count >= 2,
+           let first = value.first,
+           let last = value.last,
+           first == last,
+           first == "\"" || first == "'" {
+            credentialValue = String(value.dropFirst().dropLast())
+        } else {
+            credentialValue = value
+        }
+
+        // Too short to be a real secret
+        if credentialValue.count < 4 { return false }
 
         // Skip env var references ($VAR, ${VAR}, %VAR%)
-        if value.hasPrefix("$") || value.hasPrefix("%") { return false }
+        if credentialValue.hasPrefix("$") || credentialValue.hasPrefix("%") { return false }
 
         // Skip common documentation/prose words after credential keywords
-        let lowerValue = value.lowercased()
+        let lowerValue = credentialValue.lowercased()
         let proseWords: Set<String> = [
             "rotated", "rotation", "required", "optional", "changed", "updated",
             "expired", "revoked", "generated", "managed", "stored", "provided",
@@ -784,17 +797,17 @@ public struct DetectionRules {
             && !lowerValue.contains("@") { return false }
 
         // Require some complexity — pure lowercase alpha words are likely prose
-        let hasDigit = value.contains(where: { $0.isNumber })
-        let hasUpper = value.contains(where: { $0.isUppercase })
-        let hasSpecial = value.contains(where: { "!@#$%^&*()_+-=[]{}|;:',.<>?/`~".contains($0) })
-        let isAllLowerAlpha = value.allSatisfy { $0.isLowercase || $0 == "-" || $0 == "_" }
+        let hasDigit = credentialValue.contains(where: { $0.isNumber })
+        let hasUpper = credentialValue.contains(where: { $0.isUppercase })
+        let hasSpecial = credentialValue.contains(where: { "!@#$%^&*()_+-=[]{}|;:',.<>?/`~".contains($0) })
+        let isAllLowerAlpha = credentialValue.allSatisfy { $0.isLowercase || $0 == "-" || $0 == "_" }
 
         // Pure lowercase word without digits or special chars is likely prose
-        if isAllLowerAlpha && !hasDigit && !hasSpecial && value.count < 20 { return false }
+        if isAllLowerAlpha && !hasDigit && !hasSpecial && credentialValue.count < 20 { return false }
 
         // At least two of: digits, uppercase, special chars → likely a real secret
         let complexityScore = (hasDigit ? 1 : 0) + (hasUpper ? 1 : 0) + (hasSpecial ? 1 : 0)
-        if complexityScore == 0 && value.count < 20 { return false }
+        if complexityScore == 0 && credentialValue.count < 20 { return false }
 
         return true
     }

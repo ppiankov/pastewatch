@@ -266,6 +266,56 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
     }
 
+    // WO-122: matched single/double quotes around env refs must not turn refs into literals.
+    func testIgnoresQuoteWrappedCredentialEnvReferences() {
+        let cleanCases = [
+            (name: "double-quoted dollar ref", source: #"api_key="$PTOK""#, value: #""$PTOK""#),
+            (name: "double-quoted braced ref", source: #"secret="${VAULT_KEY}""#, value: #""${VAULT_KEY}""#),
+            (name: "single-quoted dollar ref", source: "token='$X'", value: "'$X'"),
+            (
+                name: "double-quoted default expansion",
+                source: #"password="${A:-fallback}""#,
+                value: #""${A:-fallback}""#
+            ),
+            (name: "double-quoted percent ref", source: #"token="%VAR%""#, value: #""%VAR%""#),
+            (name: "bare dollar ref", source: "api_key=$PTOK", value: "$PTOK"),
+            (name: "bare braced ref", source: #"secret=${A}"#, value: "${A}"),
+            (name: "bare percent ref", source: "token=%VAR%", value: "%VAR%"),
+        ]
+
+        for testCase in cleanCases {
+            XCTAssertFalse(
+                DetectionRules.isValidCredentialValue(testCase.value),
+                "Should ignore credential value: \(testCase.name)"
+            )
+            let matches = DetectionRules.scan(testCase.source, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect credential: \(testCase.name)")
+        }
+    }
+
+    // WO-122: stripping quotes must expose literals while backticks stay fail-closed.
+    func testQuoteWrappedCredentialLiteralsStillDetected() {
+        let literal = "Alpha" + String(repeating: "A1", count: 18) + "_tail"
+        let literalCases = [
+            (name: "bare literal", source: "api_key=\(literal)", value: literal),
+            (name: "double-quoted literal", source: "api_key=\"\(literal)\"", value: "\"\(literal)\""),
+            (name: "single-quoted literal", source: "api_key='\(literal)'", value: "'\(literal)'"),
+            (name: "backtick literal", source: "api_key=`\(literal)`", value: "`\(literal)`"),
+            (name: "leading-quote-only ref", source: "api_key=\"$PTOK", value: "\"$PTOK"),
+        ]
+
+        for testCase in literalCases {
+            XCTAssertTrue(
+                DetectionRules.isValidCredentialValue(testCase.value),
+                "Should keep detecting credential value: \(testCase.name)"
+            )
+            let matches = DetectionRules.scan(testCase.source, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect credential: \(testCase.name)")
+        }
+    }
+
     // MARK: - False Positive Exclusions
 
     func testIgnoresAuthBooleanValues() {
