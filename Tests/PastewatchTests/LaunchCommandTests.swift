@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 
 final class LaunchCommandTests: XCTestCase {
+    private let testStartupSweepHomeEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_HOME"
+    private let testStartupSweepCurrentDirectoryEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_CWD"
     private var tempRoots: [URL] = []
 
     override func tearDownWithError() throws {
@@ -34,10 +36,22 @@ final class LaunchCommandTests: XCTestCase {
         }
     }
 
+    // WO-135: passthrough help reaches only fixture startup files if sweep runs.
+    func testLaunchPassthroughHelpUsesFixtureStartupSweepHome() throws {
+        let result = try runCLI(arguments: ["launch", "--quiet", "--port", "65435", "--", "--help"])
+        let fixturePath = result.home.appendingPathComponent(".zshrc").path
+
+        XCTAssertTrue(result.stderr.contains(fixturePath), "missing fixture warning path: \(result.stderr)")
+        XCTAssertFalse(result.stdout.contains("OVERVIEW: Start the proxy"), "passthrough help became launch help")
+        XCTAssertFalse(result.stderr.contains(FileManager.default.homeDirectoryForCurrentUser.path))
+        XCTAssertFalse(result.stderr.contains("user:pass"))
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
         let stderr: String
+        let home: URL
     }
 
     private func runCLI(arguments: [String]) throws -> CLIResult {
@@ -54,6 +68,8 @@ final class LaunchCommandTests: XCTestCase {
         process.currentDirectoryURL = cwd
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
+        environment[testStartupSweepHomeEnvironmentKey] = home.path
+        environment[testStartupSweepCurrentDirectoryEnvironmentKey] = cwd.path
         environment.removeValue(forKey: "PW_GUARD")
         process.environment = environment
 
@@ -68,7 +84,8 @@ final class LaunchCommandTests: XCTestCase {
         return CLIResult(
             status: process.terminationStatus,
             stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+            home: home
         )
     }
 

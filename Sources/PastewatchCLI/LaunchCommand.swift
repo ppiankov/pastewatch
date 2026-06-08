@@ -15,6 +15,9 @@ private var launchProxyProcess: Process?
 private var launchAgentPid: pid_t = 0
 
 struct Launch: ParsableCommand {
+    fileprivate static let testStartupSweepHomeEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_HOME" // WO-135
+    fileprivate static let testStartupSweepCurrentDirectoryEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_CWD" // WO-135
+
     static let configuration = CommandConfiguration(
         abstract: "Start the proxy and launch an agent through it in one command",
         discussion: """
@@ -183,13 +186,35 @@ struct Launch: ParsableCommand {
         guard startupSweep else { return }
 
         // WO-121: warn before proxy/agent startup; findings never block launch.
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
-        let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let context = startupSweepContext()
+        let homeDirectory = context.homeDirectory
+        let currentDirectory = context.currentDirectory
         let cache = StartupSweepCache(url: StartupSweepCache.defaultURL(homeDirectory: homeDirectory))
         let sweep = StartupSweep(homeDirectory: homeDirectory, currentDirectory: currentDirectory)
         if let warning = StartupSweepWarningRenderer.render(sweep.run(cache: cache)) {
             FileHandle.standardError.write(Data(warning.utf8))
         }
+    }
+
+    private func startupSweepContext() -> (homeDirectory: URL, currentDirectory: URL) {
+        let environment = ProcessInfo.processInfo.environment
+
+        // WO-135: launch tests inject fixture roots without relying on HOME semantics.
+        let homeDirectory = directoryOverride(
+            environment[Self.testStartupSweepHomeEnvironmentKey],
+            fallback: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let currentDirectory = directoryOverride(
+            environment[Self.testStartupSweepCurrentDirectoryEnvironmentKey],
+            fallback: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        )
+
+        return (homeDirectory, currentDirectory)
+    }
+
+    private func directoryOverride(_ value: String?, fallback: URL) -> URL {
+        guard let value, !value.isEmpty else { return fallback }
+        return URL(fileURLWithPath: value, isDirectory: true)
     }
 
     private func printLaunchHelp() {
