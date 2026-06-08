@@ -16,6 +16,9 @@ private var launchAgentPid: pid_t = 0
 
 // WO-136/WO-137: test fixture HOME redirection must be unavailable in release builds.
 private enum StartupSweepFixtureContext {
+    static let probeEnvironmentKey = "PW_LAUNCH_FIXTURE_CONTEXT_PROBE" // WO-137: assertion-only context probe.
+    static let probeMarker = "pastewatch-startup-sweep-fixture-context" // WO-137: stable test probe marker.
+
     static let isEnabled: Bool = {
         var enabled = false
         assert({
@@ -69,6 +72,7 @@ struct Launch: ParsableCommand {
     var command: [String] = []
 
     func run() throws {
+        try runStartupSweepFixtureProbeIfNeeded()
         let command = try normalizedCommand()
         runStartupSweepIfNeeded()
 
@@ -168,6 +172,24 @@ struct Launch: ParsableCommand {
         if exitCode != 0 {
             throw ExitCode(rawValue: exitCode)
         }
+    }
+
+    private func runStartupSweepFixtureProbeIfNeeded() throws {
+        guard StartupSweepFixtureContext.isEnabled else { return }
+        guard ProcessInfo.processInfo.environment[StartupSweepFixtureContext.probeEnvironmentKey] == "1" else {
+            return
+        }
+
+        let context = startupSweepContext()
+        // WO-137: prove fixture context before any startup sweep, proxy, or fork path.
+        let output = """
+        \(StartupSweepFixtureContext.probeMarker)
+        home=\(context.homeDirectory.path)
+        cwd=\(context.currentDirectory.path)
+
+        """
+        FileHandle.standardOutput.write(Data(output.utf8))
+        throw ExitCode.success
     }
 
     private func normalizedCommand() throws -> [String] {

@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 
 final class LaunchCommandTests: XCTestCase {
+    private let fixtureContextProbeEnvironmentKey = "PW_LAUNCH_FIXTURE_CONTEXT_PROBE"
+    private let fixtureContextProbeMarker = "pastewatch-startup-sweep-fixture-context"
     private var tempRoots: [URL] = []
 
     override func tearDownWithError() throws {
@@ -45,6 +47,24 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.contains("user:pass"))
     }
 
+    // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.
+    func testLaunchFixtureContextProbeUnavailablePathIsSweepSafe() throws {
+        let fixture = try makeLaunchFixture()
+        let result = try runCLIProcess(
+            arguments: ["launch", "--no-startup-sweep"],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+        let fixturePath = fixture.home.appendingPathComponent(".zshrc").path
+
+        XCTAssertEqual(result.status, 2, "expected no-command failure when probe is unavailable")
+        XCTAssertFalse(result.stdout.contains(fixtureContextProbeMarker))
+        XCTAssertFalse(result.stderr.contains(fixturePath), "probe fallback read fixture startup file")
+        XCTAssertFalse(result.stderr.contains("startup sweep"), "probe fallback ran startup sweep")
+        XCTAssertFalse(result.stderr.contains("proxy listening"), "probe fallback started proxy")
+        XCTAssertFalse(result.stderr.contains("failed to start proxy"), "probe fallback attempted proxy startup")
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
@@ -52,24 +72,83 @@ final class LaunchCommandTests: XCTestCase {
         let home: URL
     }
 
+    private struct LaunchFixture {
+        let home: URL
+        let cwd: URL
+        let environment: [String: String]
+    }
+
+    private struct ProcessResult {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+    }
+
     private func runCLI(arguments: [String]) throws -> CLIResult {
+        let fixture = try makeLaunchFixture()
+        try assertLaunchFixtureContextProbe(fixture)
+        let result = try runCLIProcess(arguments: arguments, cwd: fixture.cwd, environment: fixture.environment)
+
+        return CLIResult(
+            status: result.status,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            home: fixture.home
+        )
+    }
+
+    private func makeLaunchFixture() throws -> LaunchFixture {
         let root = try makeTempDirectory()
         let home = root.appendingPathComponent("home", isDirectory: true)
         let cwd = root.appendingPathComponent("work", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home.path
+        environment.removeValue(forKey: "PW_GUARD")
         try writeFixtureStartupFile(in: home)
 
+        return LaunchFixture(home: home, cwd: cwd, environment: environment)
+    }
+
+    private func assertLaunchFixtureContextProbe(_ fixture: LaunchFixture) throws {
+        var environment = fixture.environment
+        environment[fixtureContextProbeEnvironmentKey] = "1"
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--no-startup-sweep"],
+            cwd: fixture.cwd,
+            environment: environment
+        )
+
+        XCTAssertEqual(result.status, 0, "fixture context probe failed; stderr: \(result.stderr)")
+        XCTAssertTrue(result.stdout.contains(fixtureContextProbeMarker), "missing fixture context probe marker")
+        XCTAssertTrue(result.stdout.contains("home=\(fixture.home.path)"), "probe did not use fixture HOME")
+        let expectedCwdPath = expectedProcessCwdPath(fixture.cwd)
+        XCTAssertTrue(
+            result.stdout.contains("cwd=\(expectedCwdPath)"),
+            "probe did not use fixture cwd; stdout: \(result.stdout)"
+        )
+        XCTAssertFalse(result.stderr.contains("startup sweep"), "fixture context probe ran startup sweep")
+        XCTAssertFalse(result.stderr.contains("proxy listening"), "fixture context probe started proxy")
+        XCTAssertFalse(result.stderr.contains("failed to start proxy"), "fixture context probe attempted proxy startup")
+    }
+
+    private func expectedProcessCwdPath(_ url: URL) -> String {
+        let path = url.path
+        #if os(macOS)
+        if path.hasPrefix("/var/") || path.hasPrefix("/tmp/") {
+            return "/private\(path)"
+        }
+        #endif
+        return url.resolvingSymlinksInPath().path
+    }
+
+    private func runCLIProcess(arguments: [String], cwd: URL, environment: [String: String]) throws -> ProcessResult {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = arguments
         process.currentDirectoryURL = cwd
-        var environment = ProcessInfo.processInfo.environment
-        environment["HOME"] = home.path
-        // WO-137: fail before subprocess launch if fixture HOME/cwd setup is unavailable.
-        XCTAssertEqual(environment["HOME"], home.path)
-        XCTAssertEqual(process.currentDirectoryURL, cwd)
-        environment.removeValue(forKey: "PW_GUARD")
         process.environment = environment
 
         let stdout = Pipe()
@@ -80,11 +159,10 @@ final class LaunchCommandTests: XCTestCase {
         try process.run()
         process.waitUntilExit()
 
-        return CLIResult(
+        return ProcessResult(
             status: process.terminationStatus,
             stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-            home: home
+            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         )
     }
 
