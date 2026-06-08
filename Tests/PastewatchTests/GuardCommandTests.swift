@@ -88,4 +88,118 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertEqual(paths.count, 1)
         XCTAssertEqual(paths[0], testFile)
     }
+
+    // WO-138: guard must exercise command-text credential scanning, not only file reads.
+    func testGuardQuietAllowsInlineEnvReferences() throws {
+        let cleanCommands = [
+            "env api_key=$PTOK gh api",
+            "env secret=${VAULT_KEY} gh api",
+            "env api_key=\"$PTOK\" gh api",
+            "env secret=\"${VAULT_KEY}\" gh api",
+            "env token='$X' gh api",
+            "env password=\"${A:-fallback}\" gh api",
+            "env token=\"%VAR%\" gh api",
+        ]
+
+        for command in cleanCommands {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 0, "env reference should not block")
+            XCTAssertTrue(result.stdout.isEmpty, "quiet mode should not write stdout")
+            XCTAssertTrue(result.stderr.isEmpty, "quiet mode should not write stderr")
+        }
+    }
+
+    // WO-138: literal env assignments in command text must block without leaking values.
+    func testGuardQuietBlocksInlineLiteralCredentials() throws {
+        let literal = syntheticCredentialLiteral()
+        let blockedCommands = [
+            "env api_key=\(literal) gh api",
+            "env api_key=\"\(literal)\" gh api",
+            "env api_key='\(literal)' gh api",
+            "env api_key=`\(literal)` gh api",
+        ]
+
+        for command in blockedCommands {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 1, "literal credential assignment should block")
+            XCTAssertTrue(result.stdout.isEmpty, "quiet mode should not write stdout")
+            XCTAssertTrue(result.stderr.isEmpty, "quiet mode should not write stderr")
+        }
+    }
+
+    // WO-138: machine-readable output must not echo inline credential literals.
+    func testGuardJSONRedactsInlineLiteralCommand() throws {
+        let literal = syntheticCredentialLiteral()
+        let command = "env api_key=\(literal) gh api"
+
+        let result = try runGuardCLI(arguments: ["guard", "--json", command])
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertFalse(result.stdout.contains(literal), "JSON output must not contain literal credential values")
+        XCTAssertTrue(result.stdout.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    // WO-138: human output should report counts/types only, never the literal value.
+    func testGuardTextOutputOmitsInlineLiteralValue() throws {
+        let literal = syntheticCredentialLiteral()
+        let command = "env api_key=\(literal) gh api"
+
+        let result = try runGuardCLI(arguments: ["guard", command])
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stdout.isEmpty)
+        XCTAssertFalse(result.stderr.contains(literal), "text output must not contain literal credential values")
+        XCTAssertTrue(result.stderr.contains("command contains inline secret"))
+    }
+
+    private struct CLIResult {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+    }
+
+    private func runGuardCLI(arguments: [String]) throws -> CLIResult {
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: testDir)
+        process.environment = testEnvironment()
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        return CLIResult(
+            status: process.terminationStatus,
+            stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+            stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        )
+    }
+
+    private func pastewatchCLIURL() -> URL {
+        let productsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let bundled = productsDirectory.appendingPathComponent("PastewatchCLI")
+        if FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/PastewatchCLI")
+    }
+
+    private func testEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = testDir
+        environment["XDG_CONFIG_HOME"] = testDir + "/.config"
+        environment["PW_GUARD"] = "1"
+        return environment
+    }
+
+    private func syntheticCredentialLiteral() -> String {
+        "Alpha" + String(repeating: "A1", count: 18) + "_tail"
+    }
 }

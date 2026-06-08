@@ -35,6 +35,8 @@ struct Guard: ParsableCommand {
         let commandFiltered = commandMatches.filter {
             $0.effectiveSeverity >= failOnSeverity && !DetectionRules.isTestCredential($0.value)
         }
+        // WO-138: JSON output must preserve command context without echoing inline credential values.
+        let redactedCommand = Obfuscator.obfuscate(command, matches: commandFiltered)
 
         if !commandFiltered.isEmpty {
             shouldBlock = true
@@ -76,7 +78,7 @@ struct Guard: ParsableCommand {
             if json {
                 let result = GuardResult(
                     blocked: true,
-                    command: command,
+                    command: redactedCommand,
                     files: allFileResults.map {
                         .init(path: $0.path, findings: $0.findings, types: $0.types)
                     },
@@ -100,7 +102,7 @@ struct Guard: ParsableCommand {
         }
 
         if json {
-            printJSON(GuardResult(blocked: false, command: command, files: [], inlineFindings: []))
+            printJSON(GuardResult(blocked: false, command: redactedCommand, files: [], inlineFindings: []))
         }
     }
 
