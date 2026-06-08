@@ -14,10 +14,19 @@ import Glibc
 private var launchProxyProcess: Process?
 private var launchAgentPid: pid_t = 0
 
-struct Launch: ParsableCommand {
-    fileprivate static let testStartupSweepHomeEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_HOME" // WO-135
-    fileprivate static let testStartupSweepCurrentDirectoryEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_CWD" // WO-135
+// WO-136/WO-137: test fixture HOME redirection must be unavailable in release builds.
+private enum StartupSweepFixtureContext {
+    static let isEnabled: Bool = {
+        var enabled = false
+        assert({
+            enabled = true
+            return true
+        }())
+        return enabled
+    }()
+}
 
+struct Launch: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start the proxy and launch an agent through it in one command",
         discussion: """
@@ -197,19 +206,20 @@ struct Launch: ParsableCommand {
     }
 
     private func startupSweepContext() -> (homeDirectory: URL, currentDirectory: URL) {
+        let realHomeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let realCurrentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+
+        guard StartupSweepFixtureContext.isEnabled else {
+            return (realHomeDirectory, realCurrentDirectory)
+        }
+
         let environment = ProcessInfo.processInfo.environment
 
-        // WO-135: launch tests inject fixture roots without relying on HOME semantics.
-        let homeDirectory = directoryOverride(
-            environment[Self.testStartupSweepHomeEnvironmentKey],
-            fallback: FileManager.default.homeDirectoryForCurrentUser
+        // WO-136: assertion-disabled release builds ignore test HOME fixture redirection.
+        return (
+            directoryOverride(environment["HOME"], fallback: realHomeDirectory),
+            realCurrentDirectory
         )
-        let currentDirectory = directoryOverride(
-            environment[Self.testStartupSweepCurrentDirectoryEnvironmentKey],
-            fallback: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        )
-
-        return (homeDirectory, currentDirectory)
     }
 
     private func directoryOverride(_ value: String?, fallback: URL) -> URL {

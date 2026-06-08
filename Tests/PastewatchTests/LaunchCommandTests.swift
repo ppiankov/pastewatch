@@ -2,8 +2,6 @@ import Foundation
 import XCTest
 
 final class LaunchCommandTests: XCTestCase {
-    private let testStartupSweepHomeEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_HOME"
-    private let testStartupSweepCurrentDirectoryEnvironmentKey = "__PASTEWATCH_TEST_STARTUP_SWEEP_CWD"
     private var tempRoots: [URL] = []
 
     override func tearDownWithError() throws {
@@ -68,8 +66,9 @@ final class LaunchCommandTests: XCTestCase {
         process.currentDirectoryURL = cwd
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
-        environment[testStartupSweepHomeEnvironmentKey] = home.path
-        environment[testStartupSweepCurrentDirectoryEnvironmentKey] = cwd.path
+        // WO-137: fail before subprocess launch if fixture HOME/cwd setup is unavailable.
+        XCTAssertEqual(environment["HOME"], home.path)
+        XCTAssertEqual(process.currentDirectoryURL, cwd)
         environment.removeValue(forKey: "PW_GUARD")
         process.environment = environment
 
