@@ -64,6 +64,7 @@ Pastewatch started as a clipboard monitor — scan before paste, replace secrets
 |-------|-------------|-------------|
 | **Clipboard monitor** | Scans before paste | macOS menubar app, replaces secrets in clipboard |
 | **CLI scanner** | Scans files, directories, git diffs | `pastewatch-cli scan --dir .` |
+| **Startup sweep** | Warns about pre-existing shell config credentials | `pastewatch-cli launch` scans common startup files once per changed finding summary |
 | **MCP server** | Redacted read/write for AI agents | Agent sees placeholders, originals stay in RAM |
 | **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor, Windsurf, Continue, Amazon Q |
 | **API proxy** | Redacts secrets from outbound API traffic | Sits between agent and cloud, scans every request |
@@ -264,6 +265,7 @@ The MCP server is the only layer that maintains a mapping — it must, because t
 
 - **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: Email (1), API Key (1)`
 - **CLI** — findings printed to stdout, exit code 6 if secrets found
+- **Startup sweep** — one stderr warning per changed shell config finding summary during `launch`; disable with `--no-startup-sweep` ([details](docs/startup-sweep.md))
 - **MCP** — transparent to the agent. It reads placeholders and writes them back. No user interaction needed
 - **Guard hook** — blocks with a clear message: `BLOCKED: file contains secrets. Use pastewatch_read_file instead`
 - **Proxy** — redacts silently. When secrets are caught, injects a `[PASTEWATCH]` alert into the agent's response so it can warn the user

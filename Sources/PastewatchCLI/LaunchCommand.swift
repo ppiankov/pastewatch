@@ -50,19 +50,15 @@ struct Launch: ParsableCommand {
     @Flag(name: .long, help: "Suppress proxy startup messages")
     var quiet: Bool = false
 
+    @Flag(name: .long, inversion: .prefixedNo, help: "Run startup sweep for pre-existing shell config credentials")
+    var startupSweep: Bool = true
+
     @Argument(parsing: .captureForPassthrough)
     var command: [String] = []
 
     func run() throws {
-        // Strip leading "--" that captureForPassthrough may include
-        var command = Array(self.command.drop(while: { $0 == "--" }))
-
-        guard !command.isEmpty else {
-            FileHandle.standardError.write(Data("error: no command specified\n".utf8))
-            FileHandle.standardError.write(Data("usage: pastewatch-cli launch <command> [args...]\n".utf8))
-            FileHandle.standardError.write(Data("       pastewatch-cli launch -- <command> [args...]\n".utf8))
-            throw ExitCode(rawValue: 2)
-        }
+        let command = try normalizedCommand()
+        runStartupSweepIfNeeded()
 
         // Resolve our own binary to spawn the proxy subprocess
         let binaryPath = ProcessInfo.processInfo.arguments[0]
@@ -160,6 +156,59 @@ struct Launch: ParsableCommand {
         if exitCode != 0 {
             throw ExitCode(rawValue: exitCode)
         }
+    }
+
+    private func normalizedCommand() throws -> [String] {
+        // Strip leading "--" that captureForPassthrough may include
+        let command = Array(self.command.drop(while: { $0 == "--" }))
+
+        if command == ["--help"] || command == ["-h"] {
+            printLaunchHelp()
+            throw ExitCode.success
+        }
+
+        guard !command.isEmpty else {
+            FileHandle.standardError.write(Data("error: no command specified\n".utf8))
+            FileHandle.standardError.write(Data("usage: pastewatch-cli launch <command> [args...]\n".utf8))
+            FileHandle.standardError.write(Data("       pastewatch-cli launch -- <command> [args...]\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+
+        return command
+    }
+
+    private func runStartupSweepIfNeeded() {
+        guard startupSweep else { return }
+
+        // WO-121: warn before proxy/agent startup; findings never block launch.
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let cache = StartupSweepCache(url: StartupSweepCache.defaultURL(homeDirectory: homeDirectory))
+        let sweep = StartupSweep(homeDirectory: homeDirectory, currentDirectory: currentDirectory)
+        if let warning = StartupSweepWarningRenderer.render(sweep.run(cache: cache)) {
+            FileHandle.standardError.write(Data(warning.utf8))
+        }
+    }
+
+    private func printLaunchHelp() {
+        let help = """
+        OVERVIEW: Start the proxy and launch an agent through it in one command
+
+        USAGE: pastewatch-cli launch [--port <port>] [--upstream <url>] [--forward-proxy <url>] [--severity <level>] [--audit-log <path>] [--no-alert] [--quiet] [--no-startup-sweep] -- <command> [args...]
+
+        OPTIONS:
+          --port <port>             Proxy listen port
+          --upstream <url>          Upstream API URL
+          --forward-proxy <url>     Forward through corporate proxy
+          --severity <level>        Minimum severity to redact: critical, high, medium, low
+          --audit-log <path>        Audit log file path
+          --no-alert                Do not inject alert into response when secrets are redacted
+          --quiet                   Suppress proxy startup messages
+          --no-startup-sweep        Disable startup sweep filesystem reads and warnings
+          -h, --help                Show help information
+
+        """
+        FileHandle.standardOutput.write(Data(help.utf8))
     }
 
     private func waitForTCP(host: String, port: UInt16, timeout: TimeInterval) -> Bool {

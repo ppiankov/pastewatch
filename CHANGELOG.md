@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `pastewatch-cli launch` now warns once per changed shell startup file finding summary when common
+  shell config files contain pre-existing credential candidates; use `--no-startup-sweep` to
+  disable the sweep.
+
 ## [0.26.7] - 2026-06-07
 
 ### Added
