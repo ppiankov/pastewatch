@@ -65,6 +65,74 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.contains("failed to start proxy"), "probe fallback attempted proxy startup")
     }
 
+    // WO-137: failed probe validation must abort before the real launch runner can start.
+    func testLaunchFixtureContextProbeFailuresStopBeforeRealLaunch() throws {
+        let testCases: [(name: String, makeProbeResult: (URL, [String: String]) -> ProcessResult)] = [
+            (
+                name: "non-zero status",
+                makeProbeResult: { _, _ in ProcessResult(status: 2, stdout: "", stderr: "") }
+            ),
+            (
+                name: "absent marker",
+                makeProbeResult: { _, environment in
+                    ProcessResult(
+                        status: 0,
+                        stdout: "home=\(environment["HOME"] ?? "")\ncwd=/tmp/missing-marker\n",
+                        stderr: ""
+                    )
+                }
+            ),
+            (
+                name: "wrong fixture home",
+                makeProbeResult: { _, _ in
+                    ProcessResult(
+                        status: 0,
+                        stdout: "\(self.fixtureContextProbeMarker)\nhome=/tmp/wrong-home\ncwd=/tmp/wrong-cwd\n",
+                        stderr: ""
+                    )
+                }
+            ),
+            (
+                name: "wrong fixture cwd",
+                makeProbeResult: { cwd, environment in
+                    ProcessResult(
+                        status: 0,
+                        stdout: """
+                        \(self.fixtureContextProbeMarker)
+                        home=\(environment["HOME"] ?? "")
+                        cwd=\(self.expectedProcessCwdPath(cwd))-wrong
+
+                        """,
+                        stderr: ""
+                    )
+                }
+            ),
+        ]
+
+        for testCase in testCases {
+            var invocations: [[String]] = []
+
+            XCTAssertThrowsError(
+                try runCLI(
+                    arguments: ["launch", "--quiet", "--port", "65435", "--", "--help"],
+                    processRunner: { arguments, cwd, environment in
+                        invocations.append(arguments)
+                        return testCase.makeProbeResult(cwd, environment)
+                    }
+                ),
+                "expected \(testCase.name) probe failure to abort launch"
+            ) { error in
+                XCTAssertTrue(error is LaunchFixtureProbeError)
+            }
+
+            XCTAssertEqual(
+                invocations,
+                [["launch", "--no-startup-sweep"]],
+                "\(testCase.name) probe failure reached the real launch runner"
+            )
+        }
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
@@ -84,10 +152,30 @@ final class LaunchCommandTests: XCTestCase {
         let stderr: String
     }
 
+    private enum LaunchFixtureProbeError: Error {
+        case unexpectedStatus
+        case missingMarker
+        case mismatchedHome
+        case mismatchedCwd
+        case unsafeSideEffect
+    }
+
+    private typealias CLIProcessRunner = (
+        _ arguments: [String],
+        _ cwd: URL,
+        _ environment: [String: String]
+    ) throws -> ProcessResult
+
     private func runCLI(arguments: [String]) throws -> CLIResult {
+        try runCLI(arguments: arguments) { arguments, cwd, environment in
+            try runCLIProcess(arguments: arguments, cwd: cwd, environment: environment)
+        }
+    }
+
+    private func runCLI(arguments: [String], processRunner: CLIProcessRunner) throws -> CLIResult {
         let fixture = try makeLaunchFixture()
-        try assertLaunchFixtureContextProbe(fixture)
-        let result = try runCLIProcess(arguments: arguments, cwd: fixture.cwd, environment: fixture.environment)
+        try requireLaunchFixtureContextProbe(fixture, processRunner: processRunner)
+        let result = try processRunner(arguments, fixture.cwd, fixture.environment)
 
         return CLIResult(
             status: result.status,
@@ -106,32 +194,46 @@ final class LaunchCommandTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment.removeValue(forKey: "PW_GUARD")
+        environment.removeValue(forKey: fixtureContextProbeEnvironmentKey)
         try writeFixtureStartupFile(in: home)
 
         return LaunchFixture(home: home, cwd: cwd, environment: environment)
     }
 
-    private func assertLaunchFixtureContextProbe(_ fixture: LaunchFixture) throws {
+    private func requireLaunchFixtureContextProbe(_ fixture: LaunchFixture, processRunner: CLIProcessRunner) throws {
         var environment = fixture.environment
         environment[fixtureContextProbeEnvironmentKey] = "1"
 
-        let result = try runCLIProcess(
-            arguments: ["launch", "--no-startup-sweep"],
-            cwd: fixture.cwd,
-            environment: environment
-        )
+        let result = try processRunner(["launch", "--no-startup-sweep"], fixture.cwd, environment)
+        try validateLaunchFixtureContextProbe(result, fixture: fixture)
+    }
 
-        XCTAssertEqual(result.status, 0, "fixture context probe failed; stderr: \(result.stderr)")
-        XCTAssertTrue(result.stdout.contains(fixtureContextProbeMarker), "missing fixture context probe marker")
-        XCTAssertTrue(result.stdout.contains("home=\(fixture.home.path)"), "probe did not use fixture HOME")
+    // WO-137: throwing validation is the preflight gate before sweep-capable launch tests.
+    private func validateLaunchFixtureContextProbe(_ result: ProcessResult, fixture: LaunchFixture) throws {
+        guard result.status == 0 else {
+            throw LaunchFixtureProbeError.unexpectedStatus
+        }
+        guard probeOutput(result.stdout, containsLine: fixtureContextProbeMarker) else {
+            throw LaunchFixtureProbeError.missingMarker
+        }
+        guard probeOutput(result.stdout, containsLine: "home=\(fixture.home.path)") else {
+            throw LaunchFixtureProbeError.mismatchedHome
+        }
         let expectedCwdPath = expectedProcessCwdPath(fixture.cwd)
-        XCTAssertTrue(
-            result.stdout.contains("cwd=\(expectedCwdPath)"),
-            "probe did not use fixture cwd; stdout: \(result.stdout)"
-        )
-        XCTAssertFalse(result.stderr.contains("startup sweep"), "fixture context probe ran startup sweep")
-        XCTAssertFalse(result.stderr.contains("proxy listening"), "fixture context probe started proxy")
-        XCTAssertFalse(result.stderr.contains("failed to start proxy"), "fixture context probe attempted proxy startup")
+        guard probeOutput(result.stdout, containsLine: "cwd=\(expectedCwdPath)") else {
+            throw LaunchFixtureProbeError.mismatchedCwd
+        }
+        guard !result.stderr.contains("startup sweep"),
+              !result.stderr.contains("proxy listening"),
+              !result.stderr.contains("failed to start proxy") else {
+            throw LaunchFixtureProbeError.unsafeSideEffect
+        }
+    }
+
+    private func probeOutput(_ output: String, containsLine expectedLine: String) -> Bool {
+        output.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            String(line) == expectedLine
+        }
     }
 
     private func expectedProcessCwdPath(_ url: URL) -> String {
