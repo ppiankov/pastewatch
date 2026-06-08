@@ -153,6 +153,66 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("command contains inline secret"))
     }
 
+    // WO-139: JSON command redaction must not depend on block threshold.
+    func testGuardJSONRedactsLowerSeverityInlineFindingBelowThreshold() throws {
+        let email = ["admin", "@", "internal-corp.com"].joined()
+        let result = try runGuardCLI(arguments: [
+            "guard", "--json", "--fail-on-severity", "critical", "echo \(email)",
+        ])
+        let payload = try guardJSON(from: result.stdout)
+        let commandText = try XCTUnwrap(payload["command"] as? String)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(payload["blocked"] as? Bool, false)
+        XCTAssertTrue(commandText.contains("<EMAIL_1>"), "JSON command should contain placeholder")
+        XCTAssertFalse(commandText.contains(email), "JSON command should redact inline values")
+        XCTAssertFalse(result.stdout.contains(email), "JSON output must redact inline values")
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    // WO-139: file blocking must not leak below-threshold inline findings in JSON command context.
+    func testGuardJSONRedactsLowerSeverityInlineFindingWhenFileBlocks() throws {
+        let email = ["admin", "@", "internal-corp.com"].joined()
+        let testFile = testDir + "/config.env"
+        try "password=\(syntheticCredentialLiteral())".write(
+            toFile: testFile, atomically: true, encoding: .utf8)
+
+        let result = try runGuardCLI(arguments: [
+            "guard", "--json", "--fail-on-severity", "critical",
+            "cat \(testFile) && echo \(email)",
+        ])
+        let payload = try guardJSON(from: result.stdout)
+        let commandText = try XCTUnwrap(payload["command"] as? String)
+        let inlineFindings = try XCTUnwrap(payload["inlineFindings"] as? [[String: Any]])
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(payload["blocked"] as? Bool, true)
+        XCTAssertTrue(commandText.contains("<EMAIL_1>"), "JSON command should contain placeholder")
+        XCTAssertFalse(commandText.contains(email), "JSON command should redact inline values")
+        XCTAssertTrue(inlineFindings.isEmpty)
+        XCTAssertFalse(result.stdout.contains(email), "JSON output must redact inline values")
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    // WO-139: display redaction must preserve the existing known-test-credential filter.
+    func testGuardJSONDoesNotRedactKnownTestCredential() throws {
+        let testKey = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+        let matches = DetectionRules.scan(testKey, config: config)
+
+        XCTAssertFalse(matches.isEmpty, "known test credential should exercise scanning")
+        XCTAssertTrue(matches.allSatisfy { DetectionRules.isTestCredential($0.value) })
+
+        let result = try runGuardCLI(arguments: ["guard", "--json", "echo \(testKey)"])
+        let payload = try guardJSON(from: result.stdout)
+        let commandText = try XCTUnwrap(payload["command"] as? String)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(payload["blocked"] as? Bool, false)
+        XCTAssertTrue(commandText.contains(testKey), "known test credential should remain visible")
+        XCTAssertFalse(commandText.contains("<AWS"), "known test credential should not be redacted")
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
@@ -197,6 +257,12 @@ final class GuardCommandTests: XCTestCase {
         environment["XDG_CONFIG_HOME"] = testDir + "/.config"
         environment["PW_GUARD"] = "1"
         return environment
+    }
+
+    private func guardJSON(from stdout: String) throws -> [String: Any] {
+        let data = Data(stdout.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try XCTUnwrap(object as? [String: Any])
     }
 
     private func syntheticCredentialLiteral() -> String {

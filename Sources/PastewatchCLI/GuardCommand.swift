@@ -32,11 +32,15 @@ struct Guard: ParsableCommand {
 
         // Scan the full command string for inline secrets (DSNs, API keys, tokens)
         let commandMatches = DetectionRules.scan(command, config: config)
-        let commandFiltered = commandMatches.filter {
-            $0.effectiveSeverity >= failOnSeverity && !DetectionRules.isTestCredential($0.value)
+        // WO-139: JSON redaction covers all non-test inline findings, even below block threshold.
+        let commandDisplayMatches = commandMatches.filter {
+            !DetectionRules.isTestCredential($0.value)
+        }
+        let commandFiltered = commandDisplayMatches.filter {
+            $0.effectiveSeverity >= failOnSeverity
         }
         // WO-138: JSON output must preserve command context without echoing inline credential values.
-        let redactedCommand = Obfuscator.obfuscate(command, matches: commandFiltered)
+        let redactedCommand = Obfuscator.obfuscate(command, matches: commandDisplayMatches)
 
         if !commandFiltered.isEmpty {
             shouldBlock = true
