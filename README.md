@@ -520,6 +520,8 @@ Antigravity/agy can use pastewatch only through voluntary MCP tools today; hook 
 
 See the version-bounded [Antigravity hook verification retrospective](docs/research/agy-hallucinated-hooks.md) for the probe methodology and current-docs caveat.
 
+See [gh CLI multi-account on macOS](docs/research/gh-multi-account-macos.md) for the directory-environment/keychain boundary behind startup-sweep guidance.
+
 ### Session Report
 
 Generate compliance artifacts from MCP audit logs:
