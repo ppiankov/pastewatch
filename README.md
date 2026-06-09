@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.26.7-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.26.7)
+[![Version](https://img.shields.io/badge/version-0.27.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.27.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -729,7 +729,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.26.7
+    rev: v0.27.0
     hooks:
       - id: pastewatch
 ```
@@ -943,7 +943,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.26.7** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.27.0** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|

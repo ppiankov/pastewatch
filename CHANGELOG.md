@@ -7,11 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-09
+
 ### Added
 
-- `pastewatch-cli launch` now warns once per changed shell startup file finding summary when common
-  shell config files contain pre-existing credential candidates; use `--no-startup-sweep` to
-  disable the sweep.
+- `pastewatch-cli launch` runs a startup sweep that warns once per changed shell startup file when
+  common shell/config files (`.zshrc`, `.zshenv`, `.bashrc`, fish config, `.envrc`, …) contain
+  pre-existing credential candidates; use `--no-startup-sweep` to disable. Findings only warn — they
+  never block launch, auto-edit files, or rotate credentials.
+
+### Fixed
+
+- `pastewatch-cli guard` no longer flags quote-wrapped environment-variable references
+  (`KEY="$VAR"`, `KEY="${VAR}"`, `KEY="${VAR:-default}"`, single-quoted, and quoted `%VAR%`) as
+  inline credentials. Literal secrets — including quoted and backtick-wrapped — still block.
+- `pastewatch-cli guard --json` redacts inline credential values in the emitted `command` field
+  instead of echoing them, covering every detected inline finding regardless of the
+  `--fail-on-severity` block threshold.
+- `pastewatch-cli launch --help` (and `-h`, in any flag order) prints help and exits without running
+  the startup sweep, starting the proxy, mutating `ANTHROPIC_BASE_URL`, or launching an agent.
 
 ## [0.26.7] - 2026-06-07
 

@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Stable, feature-complete - v0.26.7**
+**Stable, feature-complete - v0.27.0**
 
-Accepting compatibility and bug fixes only. No new features planned.
+Accepting compatibility, safety, and bug fixes only. No major new features planned.
 
 Core and CLI functionality complete:
 - Clipboard monitoring and obfuscation (GUI)
@@ -111,6 +111,7 @@ Core and CLI functionality complete:
 | Guard: redirect operators, subshell extraction | ✓ Stable |
 | Guard: inline value scanning (connection strings, passwords) | ✓ Stable |
 | Guard-read / guard-write (Read/Write tool hooks) | ✓ Stable |
+| Startup sweep (pre-existing shell-config credential warning) | ✓ Stable |
 | Fix subcommand (secret externalization) | ✓ Stable |
 | Inventory subcommand (posture reports) | ✓ Stable |
 | Doctor subcommand (health check) | ✓ Stable |

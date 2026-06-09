@@ -88,7 +88,7 @@ Your machine (local)
 │  │   file (real secrets)                 │  │
 │  │     → scan → store mapping in RAM     │  │
 │  │     → return content with             │  │
-│  │       __PW_EMAIL_1__ placeholders  ──┼──┼──► AI API (sees only placeholders)
+│  │       __PW_EMAIL_1__ placeholders   ──┼──┼──► AI API (sees only placeholders)
 │  │                                       │  │
 │  │ write_file:                           │  │
 │  │   content with placeholders         ◄─┼──┼─── AI API returns code
@@ -303,7 +303,7 @@ pastewatch-cli hook install
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.26.7
+    rev: v0.27.0
     hooks:
       - id: pastewatch
 ```
