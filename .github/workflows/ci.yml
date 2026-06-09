@@ -57,6 +57,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +76,7 @@ jobs:
           fi
 
       - name: Create and push tag
+        id: tag
         if: steps.check.outputs.should_tag == 'true'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -82,6 +84,7 @@ jobs:
           TAG="v${{ steps.check.outputs.version }}"
           if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
             echo "Tag $TAG already exists on remote — skipping"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git tag "$TAG"
@@ -89,3 +92,15 @@ jobs:
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           fi
           git push origin "$TAG"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # Tags pushed from within Actions do not re-trigger release.yml's `on: push: tags`
+      # (GitHub's recursive-workflow guard), so dispatch it explicitly for the tag we just
+      # created. Only runs on the real-push path — never on the "tag already exists" skip.
+      - name: Trigger release workflow
+        if: steps.tag.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          gh workflow run release.yml --repo "${{ github.repository }}" --ref main -f tag="$TAG"
