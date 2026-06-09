@@ -518,6 +518,8 @@ Idempotent - safe to re-run. Updates existing config without duplication.
 
 Antigravity/agy can use pastewatch only through voluntary MCP tools today; hook probes in [discovery](docs/research/agy-hooks-discovery.md) and [follow-up](docs/research/agy-hooks-follow-up.md) found no working hook registration, so pastewatch does NOT block agy reads structurally.
 
+See the version-bounded [Antigravity hook verification retrospective](docs/research/agy-hallucinated-hooks.md) for the probe methodology and current-docs caveat.
+
 ### Session Report
 
 Generate compliance artifacts from MCP audit logs:
