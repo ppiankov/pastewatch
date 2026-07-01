@@ -86,6 +86,48 @@ public final class ProxyServer {
         return URLSession(configuration: sessionConfig)
     }
 
+    /// Join the upstream base path with the agent's request target, preserving any
+    /// non-root base path on `upstream` (e.g. a gateway pass-through like
+    /// `/v1/llm-gateway`). The agent sends an absolute request target such as
+    /// `/v1/messages`; `URL(string:relativeTo:)` would discard the base path because the
+    /// target is absolute, so this joins them explicitly with exactly one slash and
+    /// preserves the request query string.
+    func resolveUpstreamURL(requestTarget: String) -> URL {
+        // Split the request target into path and query.
+        let targetPath: String
+        let targetQuery: String?
+        if let qIndex = requestTarget.firstIndex(of: "?") {
+            targetPath = String(requestTarget[..<qIndex])
+            targetQuery = String(requestTarget[requestTarget.index(after: qIndex)...])
+        } else {
+            targetPath = requestTarget
+            targetQuery = nil
+        }
+
+        var basePath = upstream.path
+        while basePath.hasSuffix("/") { basePath.removeLast() }
+        var reqPath = targetPath
+        if !reqPath.hasPrefix("/") { reqPath = "/" + reqPath }
+
+        // Avoid doubling when the request path already includes the base prefix.
+        let joinedPath: String
+        if !basePath.isEmpty && (reqPath == basePath || reqPath.hasPrefix(basePath + "/")) {
+            joinedPath = reqPath
+        } else {
+            joinedPath = basePath + reqPath
+        }
+
+        var components = URLComponents()
+        components.scheme = upstream.scheme
+        components.host = upstream.host
+        components.port = upstream.port
+        components.percentEncodedPath = joinedPath
+        components.percentEncodedQuery = targetQuery
+
+        // Fall back to the previous behavior only if component assembly fails.
+        return components.url ?? (URL(string: requestTarget, relativeTo: upstream) ?? upstream)
+    }
+
     /// Start the proxy server. Blocks until stop() is called.
     public func start() throws {
         #if canImport(Darwin)
@@ -180,7 +222,7 @@ public final class ProxyServer {
         }
 
         // Forward to upstream
-        let upstreamURL = URL(string: parsed.path, relativeTo: upstream) ?? upstream.appendingPathComponent(parsed.path)
+        let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
         // Build header list for both paths
         var forwardHeaders: [(String, String)] = []
