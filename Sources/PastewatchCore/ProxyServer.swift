@@ -14,6 +14,11 @@ public final class ProxyServer {
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
     private let quietLog: Bool
+    /// WO-143: PEM CA bundle trusted (in addition to system roots) for the
+    /// proxy's upstream TLS handshake. Governs only the proxy-to-upstream leg.
+    let caCertPath: String?
+    /// WO-143: when true, the proxy skips upstream TLS verification entirely.
+    let insecureTLS: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
     private var running = false
@@ -42,7 +47,9 @@ public final class ProxyServer {
         severity: Severity = .high,
         auditLogPath: String? = nil,
         injectAlert: Bool = true,
-        quietLog: Bool = false
+        quietLog: Bool = false,
+        caCertPath: String? = nil,
+        insecureTLS: Bool = false
     ) {
         self.port = port
         self.upstream = upstream
@@ -52,6 +59,8 @@ public final class ProxyServer {
         self.auditLogPath = auditLogPath
         self.injectAlert = injectAlert
         self.quietLog = quietLog
+        self.caCertPath = caCertPath
+        self.insecureTLS = insecureTLS
     }
 
     private func makeSession() -> URLSession {
@@ -81,6 +90,15 @@ public final class ProxyServer {
                 "HTTPSProxy": proxyHost,
                 "HTTPSPort": proxyPort
             ]
+        }
+        #endif
+        #if canImport(Darwin)
+        // WO-143: honor --ca-cert / --insecure for the upstream TLS handshake.
+        // Only attach a delegate when a flag is set; otherwise behave exactly as
+        // before (system trust store, no delegate).
+        if caCertPath != nil || insecureTLS {
+            let delegate = TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
+            return URLSession(configuration: sessionConfig, delegate: delegate, delegateQueue: nil)
         }
         #endif
         return URLSession(configuration: sessionConfig)
@@ -277,7 +295,9 @@ public final class ProxyServer {
             url: upstreamURL,
             headers: forwardHeaders,
             body: processedBody.data(using: .utf8),
-            timeoutSeconds: 120
+            timeoutSeconds: 120,
+            caCertPath: caCertPath,
+            insecure: insecureTLS
         ) else {
             sendError(to: clientSocket, status: 502, message: "Bad Gateway")
             return
@@ -612,3 +632,74 @@ public enum ProxyError: Error, CustomStringConvertible {
         }
     }
 }
+
+#if canImport(Darwin)
+import Security
+
+/// WO-143: URLSession delegate that governs the proxy's upstream TLS handshake.
+/// - `caCertPath`: PEM file whose certificates are added as trust anchors on top
+///   of the system roots (SecTrustSetAnchorCertificatesOnly(false)).
+/// - `insecure`: accept any server certificate without verification.
+/// Only instantiated when at least one option is active; the default (no flags)
+/// path uses a plain URLSession with no delegate and full system verification.
+final class TLSTrustDelegate: NSObject, URLSessionDelegate {
+    private let anchors: [SecCertificate]
+    private let insecure: Bool
+
+    init(caCertPath: String?, insecure: Bool) {
+        self.insecure = insecure
+        self.anchors = caCertPath.map(TLSTrustDelegate.loadAnchors) ?? []
+    }
+
+    /// Parse a PEM file into SecCertificate anchors. Supports concatenated PEM
+    /// blocks; skips any block that fails to decode.
+    private static func loadAnchors(from path: String) -> [SecCertificate] {
+        guard let pem = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        var certs: [SecCertificate] = []
+        let begin = "-----BEGIN CERTIFICATE-----"
+        let end = "-----END CERTIFICATE-----"
+        var searchRange = pem.startIndex..<pem.endIndex
+        while let beginRange = pem.range(of: begin, range: searchRange),
+              let endRange = pem.range(of: end, range: beginRange.upperBound..<pem.endIndex) {
+            let base64Body = pem[beginRange.upperBound..<endRange.lowerBound]
+                .components(separatedBy: .whitespacesAndNewlines)
+                .joined()
+            if let der = Data(base64Encoded: base64Body),
+               let cert = SecCertificateCreateWithData(nil, der as CFData) {
+                certs.append(cert)
+            }
+            searchRange = endRange.upperBound..<pem.endIndex
+        }
+        return certs
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        if insecure {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+
+        if !anchors.isEmpty {
+            SecTrustSetAnchorCertificates(trust, anchors as CFArray)
+            // Keep the system roots active as well, not only the custom anchors.
+            SecTrustSetAnchorCertificatesOnly(trust, false)
+            if SecTrustEvaluateWithError(trust, nil) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+        }
+
+        completionHandler(.performDefaultHandling, nil)
+    }
+}
+#endif

@@ -68,6 +68,12 @@ struct Launch: ParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Run startup sweep for pre-existing shell config credentials")
     var startupSweep: Bool = true
 
+    @Option(name: .long, help: "PEM CA bundle to trust for the upstream TLS handshake (in addition to system roots)")
+    var caCert: String?
+
+    @Flag(name: .long, help: "Skip upstream TLS verification (insecure; for private-CA gateways only)")
+    var insecure: Bool = false
+
     @Argument(parsing: .captureForPassthrough)
     var command: [String] = []
 
@@ -84,6 +90,8 @@ struct Launch: ParsableCommand {
         if let fp = forwardProxy { proxyArgs += ["--forward-proxy", fp] }
         if let al = auditLog { proxyArgs += ["--audit-log", al] }
         if !alert { proxyArgs.append("--no-alert") }
+        if let ca = caCert { proxyArgs += ["--ca-cert", ca] }
+        if insecure { proxyArgs.append("--insecure") }
 
         // Start proxy as child process
         let proxy = Process()
@@ -253,7 +261,7 @@ struct Launch: ParsableCommand {
         let help = """
         OVERVIEW: Start the proxy and launch an agent through it in one command
 
-        USAGE: pastewatch-cli launch [--port <port>] [--upstream <url>] [--forward-proxy <url>] [--severity <level>] [--audit-log <path>] [--no-alert] [--quiet] [--no-startup-sweep] -- <command> [args...]
+        USAGE: pastewatch-cli launch [--port <port>] [--upstream <url>] [--forward-proxy <url>] [--severity <level>] [--audit-log <path>] [--no-alert] [--quiet] [--no-startup-sweep] [--ca-cert <path>] [--insecure] -- <command> [args...]
 
         OPTIONS:
           --port <port>             Proxy listen port
@@ -264,6 +272,8 @@ struct Launch: ParsableCommand {
           --no-alert                Do not inject alert into response when secrets are redacted
           --quiet                   Suppress proxy startup messages
           --no-startup-sweep        Disable startup sweep filesystem reads and warnings
+          --ca-cert <path>          PEM CA bundle to trust for the upstream TLS handshake
+          --insecure                Skip upstream TLS verification (private-CA gateways only)
           -h, --help                Show help information
 
         """

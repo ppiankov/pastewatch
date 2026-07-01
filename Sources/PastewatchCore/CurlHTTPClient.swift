@@ -10,6 +10,19 @@ struct CurlHTTPClient {
         let body: Data
     }
 
+    /// WO-143: build the curl TLS-trust arguments. `--insecure` (-k) wins over
+    /// `--cacert` when both are supplied. Returns an empty array when neither is
+    /// set (default full verification). Extracted for unit testing.
+    static func tlsArgs(caCertPath: String?, insecure: Bool) -> [String] {
+        if insecure {
+            return ["-k"]
+        }
+        if let caCertPath = caCertPath {
+            return ["--cacert", caCertPath]
+        }
+        return []
+    }
+
     /// Execute an HTTP request via /usr/bin/curl.
     /// Returns nil if curl is not available or the process fails.
     static func execute(
@@ -17,7 +30,9 @@ struct CurlHTTPClient {
         url: URL,
         headers: [(String, String)],
         body: Data?,
-        timeoutSeconds: Int = 120
+        timeoutSeconds: Int = 120,
+        caCertPath: String? = nil,
+        insecure: Bool = false
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -34,6 +49,9 @@ struct CurlHTTPClient {
             "-w", "\n__HTTP_STATUS__%{http_code}", // Append status code
             url.absoluteString
         ]
+
+        // WO-143: upstream TLS trust. --insecure wins over --cacert if both set.
+        args.append(contentsOf: Self.tlsArgs(caCertPath: caCertPath, insecure: insecure))
 
         for (key, value) in headers {
             args.append(contentsOf: ["-H", "\(key): \(value)"])

@@ -33,6 +33,12 @@ struct Proxy: ParsableCommand {
     @Flag(name: .long, help: "Suppress redaction log to stderr (write to audit log only)")
     var quiet: Bool = false
 
+    @Option(name: .long, help: "PEM CA bundle to trust for the upstream TLS handshake (in addition to system roots)")
+    var caCert: String?
+
+    @Flag(name: .long, help: "Skip upstream TLS verification (insecure; for private-CA gateways only)")
+    var insecure: Bool = false
+
     func run() throws {
         guard let upstreamURL = URL(string: upstream) else {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
@@ -57,7 +63,9 @@ struct Proxy: ParsableCommand {
             severity: severity,
             auditLogPath: auditLog,
             injectAlert: alert,
-            quietLog: quiet
+            quietLog: quiet,
+            caCertPath: caCert,
+            insecureTLS: insecure
         )
 
         FileHandle.standardError.write(Data("pastewatch proxy listening on http://127.0.0.1:\(port)\n".utf8))
@@ -67,6 +75,11 @@ struct Proxy: ParsableCommand {
         }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
         FileHandle.standardError.write(Data("alert-injection: \(alert ? "on" : "off")\n".utf8))
+        if insecure {
+            FileHandle.standardError.write(Data("WARNING: --insecure set — upstream TLS verification is DISABLED\n".utf8))
+        } else if let caCert = caCert {
+            FileHandle.standardError.write(Data("upstream-ca-cert: \(caCert)\n".utf8))
+        }
         FileHandle.standardError.write(Data("\nusage:\n".utf8))
         FileHandle.standardError.write(Data("  ANTHROPIC_BASE_URL=http://127.0.0.1:\(port) claude\n".utf8))
         FileHandle.standardError.write(Data("\nctrl-c to stop\n\n".utf8))
