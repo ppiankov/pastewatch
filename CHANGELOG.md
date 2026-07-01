@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-02
+
+### Added
+
+- `proxy` and `launch` gain `--ca-cert <path>` to trust a private/corporate CA bundle for the
+  upstream TLS handshake (added on top of the system trust store), and `--insecure` to skip upstream
+  TLS verification entirely (prints a warning). These make the proxy usable in front of an LLM
+  gateway or corporate API endpoint whose certificate chains to a private CA. Both govern only the
+  proxy-to-upstream connection; default behavior is unchanged (full system-trust verification).
+
+### Fixed
+
+- The proxy now preserves a non-root upstream base path when forwarding. Pointing `--upstream` at a
+  gateway pass-through URL (e.g. `https://host/v1/passthrough`) previously dropped the base path
+  because the agent's absolute request target replaced it; the base path and request path are now
+  joined correctly.
+
 ## [0.27.0] - 2026-06-09
 
 ### Added

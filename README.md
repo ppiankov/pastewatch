@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.27.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.27.0)
+[![Version](https://img.shields.io/badge/version-0.28.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.28.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -402,6 +402,30 @@ If the corporate proxy requires a specific port, match it:
 pastewatch-cli launch --port 3456 --forward-proxy http://127.0.0.1:3457 -- claude
 ```
 
+**Custom gateway / private-CA endpoints.** To front an LLM gateway or corporate API endpoint (any pass-through proxy) instead of `api.anthropic.com`, point `--upstream` at it. The upstream base path is preserved, and any custom auth headers the agent sends are forwarded through:
+
+```bash
+# Gateway with a pass-through base path (preserved when forwarding)
+pastewatch-cli launch --upstream https://gateway.example.com/v1/passthrough -- claude
+```
+
+If the gateway's TLS certificate chains to a private/corporate CA, trust it with `--ca-cert` (added on top of the system trust store):
+
+```bash
+pastewatch-cli launch \
+  --upstream https://gateway.example.com/v1/passthrough \
+  --ca-cert /path/to/corp-ca.pem \
+  -- claude
+```
+
+As a last-resort escape hatch, `--insecure` skips upstream TLS verification entirely (prints a warning; use only for trusted private gateways):
+
+```bash
+pastewatch-cli launch --upstream https://gateway.example.com -- claude --insecure
+```
+
+Both flags govern **only** the proxy-to-upstream connection; the agent-to-proxy hop stays plain HTTP on `127.0.0.1`.
+
 **Resume sessions** through the proxy — all flags pass through:
 
 ```bash
@@ -729,7 +753,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.27.0
+    rev: v0.28.0
     hooks:
       - id: pastewatch
 ```
@@ -943,7 +967,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.27.0** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.28.0** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|
