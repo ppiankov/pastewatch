@@ -69,7 +69,7 @@
     "publish:marketplace": "npm run build && npx @vscode/vsce publish"
   },
   "devDependencies": {
-    "@types/node": "^20.17.57",
+    "@types/node": "^26.1.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.8.2"
