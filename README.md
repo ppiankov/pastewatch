@@ -426,6 +426,17 @@ pastewatch-cli launch --upstream https://gateway.example.com -- claude --insecur
 
 Both flags govern **only** the proxy-to-upstream connection; the agent-to-proxy hop stays plain HTTP on `127.0.0.1`.
 
+**Gateway reachable only through a corporate proxy.** If the upstream gateway is behind a corporate HTTP proxy (common in enterprise networks), route pastewatch's upstream connection through it with the standard `HTTPS_PROXY` / `NO_PROXY` environment variables. Keep `127.0.0.1` and your internal domains in `NO_PROXY` so the local agent-to-proxy hop and internal hosts are not sent through the corporate proxy:
+
+```bash
+HTTPS_PROXY=http://corp-proxy.example.com:8080 \
+NO_PROXY="127.0.0.1,localhost,example.com,.example.com" \
+ANTHROPIC_CUSTOM_HEADERS="x-your-gateway-key: <value>" \
+pastewatch-cli launch --upstream https://gateway.example.com/v1/passthrough -- claude
+```
+
+Set any gateway auth on the same line via `ANTHROPIC_CUSTOM_HEADERS` — the agent sends it, and the proxy forwards it to the gateway unchanged. The `HTTPS_PROXY` env-var path is the recommended way to chain through a corporate proxy to an `https://` gateway; it uses the system's native HTTP CONNECT tunneling.
+
 **Resume sessions** through the proxy — all flags pass through:
 
 ```bash
