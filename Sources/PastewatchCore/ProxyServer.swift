@@ -685,6 +685,7 @@ public final class ProxyServer {
     /// The agent's SSE consumer will receive it as an extra event after [DONE].
     func injectAlertIntoStream(clientSocket: Int32, redactionCount: Int, types: [String]) {
         let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
+        // WO-186: removed spurious alertText binding that was suppressed with _ = alertText
         guard let alertJSON = try? JSONSerialization.data(withJSONObject: alert),
               let alertStr = String(data: alertJSON, encoding: .utf8) else { return }
         let frame = "event: pastewatch_alert\ndata: \(alertStr)\n\n"
