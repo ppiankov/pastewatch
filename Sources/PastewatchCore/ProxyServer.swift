@@ -60,6 +60,26 @@ public final class ProxyServer {
         let body: String
     }
 
+    /// Bundles the per-request context passed from handleConnection to the platform-specific
+    /// forwardDarwinRequest / forwardLinuxRequest helpers, reducing parameter counts.
+    private struct ForwardContext {
+        let parsed: HTTPRequest
+        let upstreamURL: URL
+        let forwardHeaders: [(String, String)]
+        let requestWantsStream: Bool
+        let redactionCount: Int
+        let redactedTypes: [String]
+        let processedBody: String
+        let clientSocket: Int32
+    }
+
+    /// Non-streaming buffered response returned to handleConnection for the convergence tail.
+    private struct BufferedResponse {
+        let status: Int
+        let headers: [AnyHashable: Any]
+        let body: Data
+    }
+
     public private(set) var stats = RedactionStats()
 
     public init(
@@ -238,7 +258,6 @@ public final class ProxyServer {
 
         guard let request = readHTTPRequest(from: clientSocket) else { return }
 
-        // Parse the request
         guard let parsed = parseHTTPRequest(request) else {
             sendError(to: clientSocket, status: 400, message: "Bad Request")
             return
@@ -255,10 +274,8 @@ public final class ProxyServer {
             redactedTypes = result.redactedTypes
         }
 
-        // Forward to upstream
         let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
-        // Build header list for both paths
         var forwardHeaders: [(String, String)] = []
         for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
             forwardHeaders.append((key, value))
@@ -268,7 +285,6 @@ public final class ProxyServer {
             forwardHeaders.append(("Content-Length", String(bodyData.count)))
         }
 
-        // Detect whether the request is a streaming call (stream:true in body).
         let requestWantsStream = isStreamingRequest(processedBody)
 
         // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
@@ -279,138 +295,148 @@ public final class ProxyServer {
             stats.secretsRedacted += redactionCount
         }
         statsLock.unlock()
+
+        // Platform dispatch: returns a BufferedResponse for the convergence tail,
+        // or nil when the response was fully handled (streamed or error sent to client).
+        let ctx = ForwardContext(
+            parsed: parsed, upstreamURL: upstreamURL, forwardHeaders: forwardHeaders,
+            requestWantsStream: requestWantsStream, redactionCount: redactionCount,
+            redactedTypes: redactedTypes, processedBody: processedBody, clientSocket: clientSocket
+        )
+        guard let buffered = forwardRequest(ctx) else { return }
+
+        // WO-184/WO-189/WO-198: log body redactions at the convergence point for
+        // non-streaming and buffer-mode requests.
+        if redactionCount > 0 {
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
+        }
+
+        var finalBody = buffered.body
+        if redactionCount > 0 && injectAlert {
+            finalBody = injectAlertIntoResponse(buffered.body, redactionCount: redactionCount, types: redactedTypes)
+        }
+
+        sendResponse(to: clientSocket, status: buffered.status, headers: buffered.headers, body: finalBody)
+    }
+
+    /// Platform-specific upstream request dispatch. Returns a BufferedResponse for the
+    /// convergence tail, or nil when the response was fully handled (streamed or error sent).
+    private func forwardRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         #if canImport(Darwin)
-        // macOS: URLSession is reliable.
-        var upstreamRequest = URLRequest(url: upstreamURL)
-        upstreamRequest.httpMethod = parsed.method
-        upstreamRequest.httpBody = processedBody.data(using: .utf8)
-        for (key, value) in forwardHeaders {
+        return forwardDarwinRequest(ctx)
+        #else
+        return forwardLinuxRequest(ctx)
+        #endif
+    }
+
+    #if canImport(Darwin)
+    private func forwardDarwinRequest(_ ctx: ForwardContext) -> BufferedResponse? {
+        var upstreamRequest = URLRequest(url: ctx.upstreamURL)
+        upstreamRequest.httpMethod = ctx.parsed.method
+        upstreamRequest.httpBody = ctx.processedBody.data(using: .utf8)
+        for (key, value) in ctx.forwardHeaders {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
-
         let streamingMode = config.responseStreamingRedactionMode
-
-        // Use URLSessionDataDelegate for streaming; buffering dataTask for non-streaming or buffer mode.
-        if requestWantsStream && streamingMode != "buffer" {
+        if ctx.requestWantsStream && streamingMode != "buffer" {
             forwardStreamingRequest(
-                upstreamRequest,
-                to: clientSocket,
-                redactionCount: redactionCount,
-                redactedTypes: redactedTypes,
-                mode: streamingMode
+                upstreamRequest, to: ctx.clientSocket,
+                redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes, mode: streamingMode
             )
-            return
+            return nil
         }
-
         // Non-streaming / buffer mode: buffer full response, then scan+send.
         let semaphore = DispatchSemaphore(value: 0)
         var responseData: Data?
         var httpResponse: HTTPURLResponse?
-
         let task = urlSession.dataTask(with: upstreamRequest) { data, response, _ in
             responseData = data
             httpResponse = response as? HTTPURLResponse
             semaphore.signal()
         }
         task.resume()
-        let timeout = semaphore.wait(timeout: .now() + proxyNonStreamTotalTimeoutSeconds)
-
-        guard timeout == .success else {
+        guard semaphore.wait(timeout: .now() + proxyNonStreamTotalTimeoutSeconds) == .success else {
             task.cancel()
-            sendError(to: clientSocket, status: 504, message: "Gateway Timeout")
-            return
+            sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
+            return nil
         }
-
         guard let resp = httpResponse, let data = responseData else {
-            sendError(to: clientSocket, status: 502, message: "Bad Gateway")
-            return
+            sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
+            return nil
         }
-
-        let upstreamStatus = resp.statusCode
-        let upstreamHeaders = resp.allHeaderFields
-        let upstreamBody = data
-        #else
-        // Linux: URLSession/FoundationNetworking is unreliable on arm64.
-        // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
+        return BufferedResponse(status: resp.statusCode, headers: resp.allHeaderFields, body: data)
+    }
+    #else
+    private func forwardLinuxRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         // WO-192: lazy closure evaluated at [DONE] time with accumulated stream counts so
         // stream-only secrets (body-clean request) also trigger the [PASTEWATCH] alert on Linux.
-        // WO-202: [weak self] mirrors macOS closure; guards against retain cycle if the Linux
-        // path ever becomes async. Closure returns nil on dealloc rather than crashing.
-        let linuxAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = injectAlert
-            ? { [weak self] streamCount, streamTypes in
-                guard let self = self else { return nil }
-                let total = redactionCount + streamCount
-                guard total > 0 else { return nil }
-                let totalTypes = redactedTypes + streamTypes
-                let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
-                guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
-                      let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
-                return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
-            }
-            : nil
+        // WO-202: [weak self] guards against retain cycle if the Linux path ever becomes async.
+        let alertBeforeDone = buildLinuxAlertClosure(
+            redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes
+        )
         guard let curlResponse = CurlHTTPClient.execute(
-            method: parsed.method,
-            url: upstreamURL,
-            headers: forwardHeaders,
-            body: processedBody.data(using: .utf8),
-            caCertPath: caCertPath,
-            insecure: insecureTLS,
-            streaming: requestWantsStream,
-            clientSocket: clientSocket,
-            sendFlags: sendFlags,
+            method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
+            body: ctx.processedBody.data(using: .utf8), caCertPath: caCertPath,
+            insecure: insecureTLS, streaming: ctx.requestWantsStream,
+            clientSocket: ctx.clientSocket, sendFlags: sendFlags,
             streamingRedactionMode: config.responseStreamingRedactionMode,
-            proxyConfig: config,
-            proxySeverity: severity,
-            alertBeforeDone: linuxAlertBeforeDone
+            proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
         ) else {
-            sendError(to: clientSocket, status: 502, message: "Bad Gateway")
-            return
+            sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
+            return nil
         }
-
         if curlResponse.wasStreamed {
             // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
-            let streamCount = curlResponse.streamRedactionCount
-            let streamTypes = curlResponse.streamRedactionTypes
-            let totalCount = redactionCount + streamCount
-            let totalTypes = redactedTypes + streamTypes
-            if streamCount > 0 {
-                statsLock.lock()
-                // WO-174: only increment requestsRedacted when the body scan did NOT already
-                // count this request (redactionCount == 0). Body + stream secrets = 1 request.
-                if redactionCount == 0 {
-                    stats.requestsRedacted += 1
-                }
-                stats.secretsRedacted += streamCount
-                statsLock.unlock()
-            }
-            // WO-184: log combined totals here (body log was suppressed above for streaming).
-            // Guard: totalCount > 0 covers body-only, stream-only, and combined cases.
-            if totalCount > 0 {
-                logRedaction(path: parsed.path, count: totalCount, types: totalTypes)
-            }
-            // WO-182: alert was injected before [DONE] by relayBodyChunks; no trailing call.
-            return
+            recordLinuxStreamStats(
+                path: ctx.parsed.path, bodyCount: ctx.redactionCount, bodyTypes: ctx.redactedTypes,
+                streamCount: curlResponse.streamRedactionCount,
+                streamTypes: curlResponse.streamRedactionTypes
+            )
+            return nil
         }
-
-        let upstreamStatus = curlResponse.statusCode
-        let upstreamHeaders = curlResponse.headers as [AnyHashable: Any]
-        let upstreamBody = curlResponse.body
-        #endif
-
-        // WO-184/WO-189/WO-198: log body redactions here, after both platform paths converge for
-        // non-streaming and buffer-mode requests. Streaming requests return early above (macOS via
-        // forwardStreamingRequest, Linux via curlResponse.wasStreamed) and log combined totals there.
-        if redactionCount > 0 {
-            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
-        }
-
-        var finalBody = upstreamBody
-        if redactionCount > 0 && injectAlert {
-            finalBody = injectAlertIntoResponse(upstreamBody, redactionCount: redactionCount, types: redactedTypes)
-        }
-
-        sendResponse(to: clientSocket, status: upstreamStatus, headers: upstreamHeaders, body: finalBody)
+        return BufferedResponse(
+            status: curlResponse.statusCode,
+            headers: curlResponse.headers as [AnyHashable: Any],
+            body: curlResponse.body
+        )
     }
+
+    private func buildLinuxAlertClosure(
+        redactionCount: Int,
+        redactedTypes: [String]
+    ) -> ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? {
+        guard injectAlert else { return nil }
+        return { [weak self] streamCount, streamTypes in
+            guard let self = self else { return nil }
+            let total = redactionCount + streamCount
+            guard total > 0 else { return nil }
+            let totalTypes = redactedTypes + streamTypes
+            let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
+            guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+                  let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+            return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+        }
+    }
+
+    private func recordLinuxStreamStats(
+        path: String, bodyCount: Int, bodyTypes: [String],
+        streamCount: Int, streamTypes: [String]
+    ) {
+        let totalCount = bodyCount + streamCount
+        let totalTypes = bodyTypes + streamTypes
+        if streamCount > 0 {
+            statsLock.lock()
+            // WO-174: only increment requestsRedacted when body scan did NOT already count this.
+            if bodyCount == 0 { stats.requestsRedacted += 1 }
+            stats.secretsRedacted += streamCount
+            statsLock.unlock()
+        }
+        // WO-184: log combined totals (body log suppressed above for streaming).
+        if totalCount > 0 {
+            logRedaction(path: path, count: totalCount, types: totalTypes)
+        }
+    }
+    #endif
 
     // MARK: - Request scanning
 
