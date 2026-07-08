@@ -42,6 +42,8 @@ public final class ProxyServer {
     let insecureTLS: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
+    /// WO-160: guards all mutations of `stats` from concurrent connection handlers.
+    private let statsLock = NSLock()
     private var running = false
     private lazy var urlSession: URLSession = makeSession()
 
@@ -253,10 +255,15 @@ public final class ProxyServer {
             redactedTypes = result.redactedTypes
         }
 
+        // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
+        statsLock.lock()
         stats.requestsProcessed += 1
         if redactionCount > 0 {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
+        }
+        statsLock.unlock()
+        if redactionCount > 0 {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
 
@@ -348,7 +355,18 @@ public final class ProxyServer {
         }
 
         if curlResponse.wasStreamed {
-            // Streaming path already sent response directly to the client socket.
+            // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
+            let streamCount = curlResponse.streamRedactionCount
+            let streamTypes = curlResponse.streamRedactionTypes
+            if streamCount > 0 {
+                statsLock.lock()
+                stats.requestsRedacted += 1
+                stats.secretsRedacted += streamCount
+                statsLock.unlock()
+                let totalCount = redactionCount + streamCount
+                let totalTypes = redactedTypes + streamTypes
+                logRedaction(path: parsed.path, count: totalCount, types: totalTypes)
+            }
             return
         }
 
@@ -495,8 +513,10 @@ public final class ProxyServer {
         let totalCount = redactionCount + relay.streamRedactionCount
         let totalTypes = redactedTypes + relay.streamRedactionTypes
         if relay.streamRedactionCount > 0 {
+            statsLock.lock()
             stats.requestsRedacted += 1
             stats.secretsRedacted += relay.streamRedactionCount
+            statsLock.unlock()
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
         }
     }

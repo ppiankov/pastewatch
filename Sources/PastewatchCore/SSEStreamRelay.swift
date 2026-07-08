@@ -25,11 +25,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
-    /// WO-151: write-once flag protected by `headReceived` semaphore ordering.
-    /// execute() sets this on the calling thread after headReceived fires;
-    /// the delegate only sets it as a fallback in didReceive(data:) after that point,
-    /// so both accesses are serialized through the semaphore.
+    /// WO-159: write-once flag guarded by `headerLock`. Both execute() (calling thread)
+    /// and the URLSession delegate queue can race to write headers; the lock ensures
+    /// exactly one send. execute() no longer writes headers directly — it checks the flag
+    /// under lock and leaves writing to the delegate's didReceive(data:) fast path.
     private var didWriteHeaders = false
+    private let headerLock = NSLock()
 
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private(set) var streamRedactionCount = 0
@@ -79,11 +80,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             return
         }
 
-        // Write streaming response headers once.
-        if !didWriteHeaders {
-            writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
-            didWriteHeaders = true
-        }
+        // WO-159: do NOT write headers here. didReceive(data:) writes them under headerLock
+        // before relaying the first data chunk. This eliminates the race where execute() writes
+        // didWriteHeaders = true AFTER wait() returns on a different thread than the delegate
+        // queue, causing both to see false and send duplicate HTTP headers.
 
         // Wait for stream to finish (data is relayed incrementally via delegate callbacks).
         _ = streamDone.wait(timeout: .now() + 3600) // max session length
@@ -107,10 +107,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             resetIdleTimer(timer, task: dataTask)
         }
 
+        // WO-159: use headerLock to ensure exactly one header write even if multiple delegate
+        // callbacks arrive before execute() has had a chance to act on headReceived firing.
+        headerLock.lock()
         if !didWriteHeaders {
             writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
             didWriteHeaders = true
         }
+        headerLock.unlock()
 
         switch redactionMode {
         case "raw_stream":

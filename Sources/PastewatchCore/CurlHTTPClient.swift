@@ -10,12 +10,19 @@ struct CurlHTTPClient {
         let body: Data
         /// True when the response was streamed directly to a client socket (no body buffered).
         let wasStreamed: Bool
+        /// WO-158: count of secrets redacted from SSE frames during streaming (Linux path).
+        let streamRedactionCount: Int
+        /// WO-158: type names of secrets redacted during streaming (Linux path).
+        let streamRedactionTypes: [String]
 
-        init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false) {
+        init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
+             streamRedactionCount: Int = 0, streamRedactionTypes: [String] = []) {
             self.statusCode = statusCode
             self.headers = headers
             self.body = body
             self.wasStreamed = wasStreamed
+            self.streamRedactionCount = streamRedactionCount
+            self.streamRedactionTypes = streamRedactionTypes
         }
     }
 
@@ -157,10 +164,13 @@ struct CurlHTTPClient {
         // Idle floor: fail only when no bytes arrive for the speed-time window.
         args += ["--speed-limit", String(curlMinSpeedBytesPerSecond), "--speed-time", String(curlSpeedTimeSeconds)]
         if !streaming {
-            // Non-streaming: add a large total ceiling as a backstop.
+            // Non-streaming: add a large total ceiling as a backstop and a status marker for parsing.
             args += ["--max-time", String(curlMaxTimeSeconds)]
+            // WO-157: only append the status marker for non-streaming paths. The streaming relay
+            // forwards raw bytes directly to the client socket and cannot strip this trailer.
+            args += ["-w", "\n__HTTP_STATUS__%{http_code}"]
         }
-        args += ["-w", "\n__HTTP_STATUS__%{http_code}", url.absoluteString]
+        args += [url.absoluteString]
         return args
     }
 
@@ -172,28 +182,46 @@ struct CurlHTTPClient {
         let severity: Severity
     }
 
+    /// Result of per-frame redaction: output bytes + stats.
+    private struct FrameRedactionResult {
+        let data: Data
+        let count: Int
+        let types: [String]
+    }
+
     private static func relayStreamingResponse(
         process: Process,
         bodyPipe: Pipe,
         headerPipe: Pipe,
         ctx: StreamContext
     ) -> Response? {
-        let clientSocket = ctx.clientSocket
-        let sendFlags = ctx.sendFlags
-        let redactionMode = ctx.redactionMode
-        let config = ctx.config
-        let severity = ctx.severity
-
-        // WO-150: collect headers fully before sending anything to the client.
-        // headerPipe (stderr) closes when curl finishes writing them, which happens
-        // before the first body byte arrives on the body pipe.
+        // WO-156: read headers incrementally until we see the blank line that marks
+        // end-of-headers, then signal headerGroup immediately without waiting for curl to exit.
+        // The old approach used readDataToEndOfFile() on the stderr pipe, which blocks until
+        // the pipe's write-end closes — that only happens when curl exits after relaying the
+        // full body, so headers were sent AFTER the entire body had already been forwarded.
         var parsedHeaders: [String: String] = [:]
         var parsedStatus = 200
         let headerGroup = DispatchGroup()
         headerGroup.enter()
         DispatchQueue.global().async {
-            let headerData = headerPipe.fileHandleForReading.readDataToEndOfFile()
-            if let headerStr = String(data: headerData, encoding: .utf8) {
+            let fd = headerPipe.fileHandleForReading.fileDescriptor
+            var accumulated = Data()
+            var headersDone = false
+            var oneByte = [UInt8](repeating: 0, count: 1)
+            while !headersDone {
+                let n = Foundation.read(fd, &oneByte, 1)
+                guard n > 0 else { break }
+                accumulated.append(oneByte[0])
+                // HTTP headers end with \r\n\r\n
+                if accumulated.count >= 4 {
+                    let tail = accumulated.suffix(4)
+                    if tail == Data([0x0D, 0x0A, 0x0D, 0x0A]) {
+                        headersDone = true
+                    }
+                }
+            }
+            if let headerStr = String(data: accumulated, encoding: .utf8) {
                 for line in headerStr.components(separatedBy: "\r\n") {
                     if line.hasPrefix("HTTP/") {
                         let parts = line.components(separatedBy: " ")
@@ -210,106 +238,123 @@ struct CurlHTTPClient {
             headerGroup.leave()
         }
 
-        // WO-155: relay body via a blocking read loop on a background thread.
-        // readDataToEndOfFile() blocks until EOF (curl exit), eliminating the
-        // 200 wakeups/sec busy-spin from availableData + Thread.sleep.
-        var parser = SSEFrameParser()
-        let bodyHandle = bodyPipe.fileHandleForReading
+        // WO-155/WO-158: relay body on a background thread via blocking read; accumulate stats.
+        var relayRedactionCount = 0
+        var relayRedactionTypes: [String] = []
         let bodyGroup = DispatchGroup()
         bodyGroup.enter()
-
         DispatchQueue.global().async {
-            // Block until the pipe has data, then relay it in chunks.
-            // We use a chunked blocking read: read up to 64KB at a time so we
-            // forward incrementally rather than waiting for the whole body.
-            let chunkSize = 65536
-            var buf = [UInt8](repeating: 0, count: chunkSize)
-            let fd = bodyHandle.fileDescriptor
-            while true {
-                let n = Foundation.read(fd, &buf, chunkSize)
-                guard n > 0 else { break }
-                let chunk = Data(buf[0..<n])
-                let outData: Data
-                if redactionMode == "per_sse_event" {
-                    let result = parser.feed(chunk)
-                    if result.overflowFlushed {
-                        outData = result.overflowBytes
-                    } else {
-                        // WO-152: redact each parsed frame instead of forwarding frame.raw.
-                        var assembled = Data()
-                        for frame in result.frames {
-                            assembled.append(redactStreamFrame(frame, config: config, severity: severity))
-                        }
-                        outData = assembled
-                    }
-                } else {
-                    outData = chunk
-                }
-                outData.withUnsafeBytes { ptr in
-                    guard let base = ptr.baseAddress else { return }
-                    _ = send(clientSocket, base, ptr.count, sendFlags)
-                }
-            }
-
-            // Flush any partial SSE remainder at EOF.
-            if redactionMode == "per_sse_event" {
-                let rem = parser.remainingBytes
-                if !rem.isEmpty {
-                    rem.withUnsafeBytes { ptr in
-                        guard let base = ptr.baseAddress else { return }
-                        _ = send(clientSocket, base, ptr.count, sendFlags)
-                    }
-                }
-            }
+            let (count, types) = Self.relayBodyChunks(from: bodyPipe, ctx: ctx)
+            relayRedactionCount = count
+            relayRedactionTypes = types
             bodyGroup.leave()
         }
 
-        // WO-150 cont.: wait for headers before sending them; by the time headerGroup
-        // finishes, curl has already started writing the body, so there is no latency cost.
+        // WO-156 cont.: headers are ready as soon as the blank header line is read,
+        // not when curl exits. Send them before any body bytes arrive.
         headerGroup.wait()
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
         streamingHeaderStr.withCString { ptr in
-            _ = send(clientSocket, ptr, strlen(ptr), sendFlags)
+            _ = send(ctx.clientSocket, ptr, strlen(ptr), ctx.sendFlags)
         }
 
         // Wait for body relay to finish.
         bodyGroup.wait()
         process.waitUntilExit()
 
-        return Response(statusCode: parsedStatus, headers: parsedHeaders, body: Data(), wasStreamed: true)
+        return Response(
+            statusCode: parsedStatus, headers: parsedHeaders, body: Data(), wasStreamed: true,
+            streamRedactionCount: relayRedactionCount, streamRedactionTypes: relayRedactionTypes
+        )
+    }
+
+    /// WO-155: blocking read loop that relays body pipe chunks to the client socket.
+    /// Returns accumulated redaction stats (count, type names) for audit logging.
+    private static func relayBodyChunks(from bodyPipe: Pipe, ctx: StreamContext) -> (Int, [String]) {
+        var parser = SSEFrameParser()
+        let fd = bodyPipe.fileHandleForReading.fileDescriptor
+        let chunkSize = 65536
+        var buf = [UInt8](repeating: 0, count: chunkSize)
+        var totalCount = 0
+        var totalTypes: [String] = []
+
+        while true {
+            let n = Foundation.read(fd, &buf, chunkSize)
+            guard n > 0 else { break }
+            let chunk = Data(buf[0..<n])
+            let outData: Data
+            if ctx.redactionMode == "per_sse_event" {
+                let result = parser.feed(chunk)
+                if result.overflowFlushed {
+                    outData = result.overflowBytes
+                } else {
+                    var assembled = Data()
+                    for frame in result.frames {
+                        let r = redactStreamFrame(frame, config: ctx.config, severity: ctx.severity)
+                        assembled.append(r.data)
+                        totalCount += r.count
+                        totalTypes.append(contentsOf: r.types)
+                    }
+                    outData = assembled
+                }
+            } else {
+                outData = chunk
+            }
+            outData.withUnsafeBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                _ = send(ctx.clientSocket, base, ptr.count, ctx.sendFlags)
+            }
+        }
+
+        // Flush partial SSE remainder at EOF.
+        if ctx.redactionMode == "per_sse_event" {
+            let rem = parser.remainingBytes
+            if !rem.isEmpty {
+                rem.withUnsafeBytes { ptr in
+                    guard let base = ptr.baseAddress else { return }
+                    _ = send(ctx.clientSocket, base, ptr.count, ctx.sendFlags)
+                }
+            }
+        }
+        return (totalCount, totalTypes)
     }
 
     /// WO-152: per-frame redaction for the Linux curl streaming path.
+    /// WO-158: returns FrameRedactionResult with stats so callers can surface them
+    ///         in audit logs and [PASTEWATCH] alerts.
     private static func redactStreamFrame(
         _ frame: SSEFrameParser.Frame,
         config: PastewatchConfig,
         severity: Severity
-    ) -> Data {
+    ) -> FrameRedactionResult {
         guard let dataPayload = frame.data, dataPayload != "[DONE]" else {
-            return frame.raw
+            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
         }
         guard let jsonData = dataPayload.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return frame.raw
+            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
         }
         // Extract text from Anthropic SSE delta.
         guard let delta = json["delta"] as? [String: Any],
               let text = delta["text"] as? String else {
-            return frame.raw
+            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
         }
         let matches = DetectionRules.scan(text, config: config)
         let filtered = matches.filter { $0.effectiveSeverity >= severity }
-        guard !filtered.isEmpty else { return frame.raw }
+        guard !filtered.isEmpty else {
+            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
+        }
         let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
         var modifiedDelta = delta
         modifiedDelta["text"] = obfuscated
         var modifiedJson = json
         modifiedJson["delta"] = modifiedDelta
+        let types = filtered.map { $0.displayName }
         guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
               let resultStr = String(data: resultData, encoding: .utf8) else {
-            return frame.raw
+            return FrameRedactionResult(data: frame.raw, count: filtered.count, types: types)
         }
-        return frame.reserializedWith(data: resultStr)
+        return FrameRedactionResult(data: frame.reserializedWith(data: resultStr), count: filtered.count, types: types)
     }
 
     private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {

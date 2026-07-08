@@ -363,7 +363,18 @@ public struct PastewatchConfig: Codable {
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]
         sharedPatternFiles = try container.decodeIfPresent([String].self, forKey: .sharedPatternFiles) ?? []
-        responseStreamingRedactionMode = try container.decodeIfPresent(String.self, forKey: .responseStreamingRedactionMode) ?? "per_sse_event"
+        // WO-161: validate at decode time; unknown values silently fall through to the
+        // no-redaction `default:` branch. Reject and warn rather than redacting nothing.
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .responseStreamingRedactionMode) ?? "per_sse_event"
+        let validModes: Set<String> = ["per_sse_event", "raw_stream", "buffer"]
+        if validModes.contains(rawMode) {
+            responseStreamingRedactionMode = rawMode
+        } else {
+            FileHandle.standardError.write(Data(
+                "pastewatch: unknown responseStreamingRedactionMode '\(rawMode)', defaulting to 'per_sse_event'\n".utf8
+            ))
+            responseStreamingRedactionMode = "per_sse_event"
+        }
     }
 
     public static let defaultConfig = PastewatchConfig(
