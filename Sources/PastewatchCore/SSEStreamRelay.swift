@@ -21,7 +21,6 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     private var responseStatus: Int = 0
     private var responseHeaders: [AnyHashable: Any] = [:]
-    private var streamError: Error?
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
@@ -54,6 +53,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private weak var activeTask: URLSessionTask?
     /// WO-227: set to true by any EPIPE path so didCompleteWithError skips the remainder
     /// flush and drop notice — the client is gone and writing burns CPU + inflates stats.
+    /// WO-233: all writes go through socketWriteLock (same lock as didWriteHeaders/timerDidFire)
+    /// so the connection-thread write in writeToSocket() is visible to delegate-queue readers.
     private var clientEpipe = false
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — create/cancel must run here.
@@ -141,19 +142,22 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // WO-230: URLSession may buffer and deliver data chunks after cancel() is called.
-        // Guard here so post-cancel chunks do not make redundant sendAll() calls on a dead socket.
-        guard !clientEpipe else { return }
+        // WO-232: idle timer sets timerDidFire (not clientEpipe) before cancel(); check both so
+        // post-timer-cancel chunks do not write to the already-closed clientSocket fd.
+        // timerDidFire is written under socketWriteLock; capture it there.
+        socketWriteLock.lock()
+        let shouldExit = clientEpipe || timerDidFire
+        let needsHeaders = !didWriteHeaders
+        if needsHeaders && !shouldExit { didWriteHeaders = true }
+        socketWriteLock.unlock()
+        guard !shouldExit else { return }
+
         // WO-199: cancel the old timer and create a fresh one so no previously-enqueued event
         // handler can fire after this data chunk arrived. timerQueue.sync alone is insufficient:
         // a handler already enqueued on timerQueue before the sync block runs will execute after
         // the reschedule completes, producing a spurious timeout.
         resetIdleTimer(task: dataTask)
 
-        // WO-179: lock because execute() error paths also write didWriteHeaders.
-        socketWriteLock.lock()
-        let needsHeaders = !didWriteHeaders
-        if needsHeaders { didWriteHeaders = true }
-        socketWriteLock.unlock()
         // WO-222: propagate header EPIPE — if the client disconnected before we could send
         // the HTTP headers, cancel the task and skip the frame loop entirely.
         // WO-227: also set clientEpipe so didCompleteWithError skips the remainder flush.
@@ -253,8 +257,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             }
 
             if let err = error {
-                streamError = err
-                // Surface mid-stream upstream drop predictably.
+                // WO-237: streamError property removed (was write-only dead state). Surface via socket.
                 let notice = Data("[PASTEWATCH-STREAM-DROP] upstream disconnect: \(err.localizedDescription)\n\n".utf8)
                 writeToSocket(notice)
             }
@@ -312,9 +315,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// Cancel activeTask so the relay stops downloading upstream data instead of
     /// running the stream to completion and silently discarding every chunk.
     /// WO-227: set clientEpipe so didCompleteWithError skips remainder flush and drop notice.
+    /// WO-233: clientEpipe written under socketWriteLock so the connection-thread call path
+    /// (504 timeout: execute() → sendErrorDirect() → writeToSocket()) is synchronized with
+    /// the delegate-queue readers in didReceive (WO-232 snapshot) and didCompleteWithError.
     private func writeToSocket(_ data: Data) {
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
+            socketWriteLock.lock()
             clientEpipe = true
+            socketWriteLock.unlock()
             activeTask?.cancel()
         }
     }

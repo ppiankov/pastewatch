@@ -292,12 +292,10 @@ struct CurlHTTPClient {
             FileHandle.standardError.write(Data("[pastewatch-proxy] relayStreamingResponse: client socket \(ctx.clientSocket) closed before streaming headers delivered\n".utf8))
             process.terminate()
             process.waitUntilExit()
-            // WO-229: mirrors WO-213 (timeout branch). The async GCD block above holds a reference
-            // to headerPipe via closure capture. Foundation.read() inside the block blocks until
-            // the write-end FileHandle is closed, pinning the GCD thread permanently.
-            // Close it explicitly so read() returns 0 (EOF) and the block can leave headerGroup.
-            headerPipe.fileHandleForWriting.closeFile()
-            _ = headerGroup.wait(timeout: .now() + 5)
+            // WO-236: unlike the timeout branch (WO-213), the GCD header-reader block has already
+            // exited by this point. This guard is only reached after headerGroup.wait() returned
+            // .success, which requires headerGroup.leave() to have been called — meaning the block
+            // already finished Foundation.read() and returned. No thread is pinned; no cleanup needed.
             return nil
         }
 

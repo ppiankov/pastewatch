@@ -7,6 +7,10 @@ import Darwin
 import Glibc
 #endif
 
+// WO-234: global semaphore used by the SIGINT handler (C function pointer — cannot capture
+// context) to wake the shutdown thread that calls server.stop() from a normal thread.
+private let proxyShutdownSemaphore = DispatchSemaphore(value: 0)
+
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start API proxy that scans and redacts secrets from outbound requests"
@@ -89,9 +93,22 @@ struct Proxy: ParsableCommand {
         // terminates the process silently (no error, no log).
         signal(SIGPIPE, SIG_IGN)
 
-        signal(SIGINT) { _ in
+        // WO-234: the SIGINT handler must not call server.stop() directly — logQueue.sync
+        // uses pthread_mutex and is not async-signal-safe (WO-231). Signal the global
+        // semaphore (signal-safe) to wake a normal thread that calls stop(), draining
+        // pending audit log writes (WO-225) before exit.
+        DispatchQueue.global().async {
+            proxyShutdownSemaphore.wait()
             FileHandle.standardError.write(Data("\nstopped.\n".utf8))
-            _exit(0)
+            server.stop()
+            #if canImport(Darwin)
+            Darwin.exit(0)
+            #elseif canImport(Glibc)
+            Glibc.exit(0)
+            #endif
+        }
+        signal(SIGINT) { _ in
+            proxyShutdownSemaphore.signal()
         }
 
         try server.start()
