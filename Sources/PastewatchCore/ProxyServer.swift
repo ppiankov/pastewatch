@@ -279,13 +279,6 @@ public final class ProxyServer {
             stats.secretsRedacted += redactionCount
         }
         statsLock.unlock()
-        // WO-184/WO-189: suppress body-only log when streaming — stream branch logs combined
-        // body+stream totals on both platforms. macOS forwardStreamingRequest logs at stream end.
-        let suppressBodyLog = requestWantsStream
-        if redactionCount > 0 && !suppressBodyLog {
-            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
-        }
-
         #if canImport(Darwin)
         // macOS: URLSession is reliable.
         var upstreamRequest = URLRequest(url: upstreamURL)
@@ -341,8 +334,11 @@ public final class ProxyServer {
         // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
         // WO-192: lazy closure evaluated at [DONE] time with accumulated stream counts so
         // stream-only secrets (body-clean request) also trigger the [PASTEWATCH] alert on Linux.
+        // WO-202: [weak self] mirrors macOS closure; guards against retain cycle if the Linux
+        // path ever becomes async. Closure returns nil on dealloc rather than crashing.
         let linuxAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = injectAlert
-            ? { [self] streamCount, streamTypes in
+            ? { [weak self] streamCount, streamTypes in
+                guard let self = self else { return nil }
                 let total = redactionCount + streamCount
                 guard total > 0 else { return nil }
                 let totalTypes = redactedTypes + streamTypes
@@ -400,6 +396,13 @@ public final class ProxyServer {
         let upstreamHeaders = curlResponse.headers as [AnyHashable: Any]
         let upstreamBody = curlResponse.body
         #endif
+
+        // WO-184/WO-189/WO-198: log body redactions here, after both platform paths converge for
+        // non-streaming and buffer-mode requests. Streaming requests return early above (macOS via
+        // forwardStreamingRequest, Linux via curlResponse.wasStreamed) and log combined totals there.
+        if redactionCount > 0 {
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
+        }
 
         var finalBody = upstreamBody
         if redactionCount > 0 && injectAlert {
@@ -556,15 +559,19 @@ public final class ProxyServer {
         // WO-153: account for secrets redacted from SSE frames in the stream.
         let totalCount = redactionCount + relay.streamRedactionCount
         let totalTypes = redactedTypes + relay.streamRedactionTypes
-        if relay.streamRedactionCount > 0 {
-            statsLock.lock()
-            // WO-181: mirror WO-174 — only increment requestsRedacted when the body scan did
-            // NOT already count this request (redactionCount == 0). Body + stream = 1 request.
-            if redactionCount == 0 {
-                stats.requestsRedacted += 1
+        // WO-197: gate on totalCount (body + stream) so body-only streaming redactions
+        // (stream returns 0 but body had secrets) are not silently unlogged.
+        if totalCount > 0 {
+            if relay.streamRedactionCount > 0 {
+                statsLock.lock()
+                // WO-181: mirror WO-174 — only increment requestsRedacted when the body scan did
+                // NOT already count this request (redactionCount == 0). Body + stream = 1 request.
+                if redactionCount == 0 {
+                    stats.requestsRedacted += 1
+                }
+                stats.secretsRedacted += relay.streamRedactionCount
+                statsLock.unlock()
             }
-            stats.secretsRedacted += relay.streamRedactionCount
-            statsLock.unlock()
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
         }
     }

@@ -50,7 +50,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     var buildAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)?
 
     private var idleTimer: DispatchSourceTimer?
-    /// Queue owning the idle timer — schedule/cancel must run here.
+    /// Queue owning the idle timer — create/cancel must run here.
+    /// WO-199: timer is cancel-and-recreated on each data chunk so the event handler
+    /// (fired from timerQueue) can never fire after a valid chunk arrives. timerQueue.sync
+    /// alone is insufficient: if the event handler is already enqueued on timerQueue when
+    /// resetIdleTimer's sync block runs, the handler executes AFTER the reschedule completes.
     private let timerQueue = DispatchQueue(label: "com.pastewatch.sse-idle-timer")
 
     init(
@@ -121,16 +125,19 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let http = response as? HTTPURLResponse
         responseStatus = http?.statusCode ?? 200
         responseHeaders = http?.allHeaderFields ?? [:]
-        idleTimer.map { resetIdleTimer($0, task: dataTask) }
+        // WO-199: cancel-and-recreate so any event handler already enqueued before the response
+        // head arrived cannot fire spuriously.
+        resetIdleTimer(task: dataTask)
         headReceived.signal()
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        // Reset idle timer on each received chunk.
-        if let timer = idleTimer {
-            resetIdleTimer(timer, task: dataTask)
-        }
+        // WO-199: cancel the old timer and create a fresh one so no previously-enqueued event
+        // handler can fire after this data chunk arrived. timerQueue.sync alone is insufficient:
+        // a handler already enqueued on timerQueue before the sync block runs will execute after
+        // the reschedule completes, producing a spurious timeout.
+        resetIdleTimer(task: dataTask)
 
         // WO-179: lock because execute() error paths also write didWriteHeaders.
         socketWriteLock.lock()
@@ -163,6 +170,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                    let alertData = builder(streamRedactionCount, streamRedactionTypes) {
                     writeToSocket(alertData)
                 }
+                // WO-201: skip redactFrame for [DONE] — the function's first line already
+                // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
+                guard frame.data != "[DONE]" else { writeToSocket(frame.raw); continue }
                 let outData = redactFrame(frame)
                 writeToSocket(outData)
             }
@@ -327,6 +337,37 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     // MARK: - Idle timer
 
     private func startIdleTimer(task: URLSessionDataTask) {
+        idleTimer = makeIdleTimer(task: task)
+    }
+
+    /// WO-199: cancel the current timer and install a fresh one so that any event handler
+    /// already enqueued on timerQueue before this call is effectively voided — the old
+    /// DispatchSourceTimer is cancelled, and the new one starts fresh with a full deadline.
+    /// timerQueue.sync alone is insufficient (WO-187): a handler enqueued before the sync
+    /// block runs executes after the reschedule, producing a spurious timeout.
+    private func resetIdleTimer(task: URLSessionTask) {
+        timerQueue.sync { [weak self] in
+            guard let self = self else { return }
+            self.idleTimer?.cancel()
+            self.idleTimer = self.makeIdleTimerOnQueue(task: task)
+        }
+    }
+
+    /// Build a new armed DispatchSourceTimer that signals stream timeout.
+    /// Must be called from timerQueue (via resetIdleTimer) or before timerQueue is in use
+    /// (startIdleTimer, which runs before the delegate queue starts calling back).
+    private func makeIdleTimer(task: URLSessionTask) -> DispatchSourceTimer {
+        // startIdleTimer is called before any delegate callbacks; no queue requirement yet.
+        // Dispatch to timerQueue to keep all timer mutations on one serial queue.
+        var timer: DispatchSourceTimer!
+        timerQueue.sync { [weak self] in
+            guard let self = self else { return }
+            timer = self.makeIdleTimerOnQueue(task: task)
+        }
+        return timer
+    }
+
+    private func makeIdleTimerOnQueue(task: URLSessionTask) -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.schedule(deadline: .now() + idleTimeoutSeconds, repeating: .never)
         timer.setEventHandler { [weak self, weak task] in
@@ -349,19 +390,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             }
         }
         timer.resume()
-        idleTimer = timer
-    }
-
-    /// WO-154: reset must be dispatched to the timer's own queue (timerQueue),
-    /// not called directly from the URLSession delegate queue.
-    /// WO-187: use sync so the reschedule completes before returning to the delegate queue,
-    /// preventing the event handler (already queued on timerQueue at deadline) from firing
-    /// after a valid data chunk arrived just before the deadline.
-    private func resetIdleTimer(_ timer: DispatchSourceTimer, task: URLSessionTask) {
-        timerQueue.sync { [weak self] in
-            guard let self = self else { return }
-            timer.schedule(deadline: .now() + self.idleTimeoutSeconds, repeating: .never)
-        }
+        return timer
     }
 }
 

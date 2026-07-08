@@ -266,17 +266,8 @@ struct CurlHTTPClient {
         // not when curl exits. Send them before any body bytes arrive.
         headerGroup.wait()
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
-        // WO-191: retry header send until all bytes written.
-        streamingHeaderStr.withCString { ptr in
-            var remaining = Int(strlen(ptr))
-            var offset = 0
-            while remaining > 0 {
-                let sent = send(ctx.clientSocket, ptr.advanced(by: offset), remaining, ctx.sendFlags)
-                if sent <= 0 { break }
-                offset += sent
-                remaining -= sent
-            }
-        }
+        // WO-191/WO-200: retry header send until all bytes written.
+        sendAll(Data(streamingHeaderStr.utf8), to: ctx.clientSocket, flags: ctx.sendFlags)
 
         // WO-162: start body relay AFTER headers have been sent so the client always
         // receives the HTTP status line and headers before any body bytes.
@@ -342,6 +333,9 @@ struct CurlHTTPClient {
                            let alert = builder(totalCount, totalTypes) {
                             assembled.append(alert)
                         }
+                        // WO-201: skip redactStreamFrame for [DONE] — its first guard already
+                        // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
+                        guard frame.data != "[DONE]" else { assembled.append(frame.raw); continue }
                         let r = redactStreamFrame(frame, config: ctx.config, severity: ctx.severity)
                         assembled.append(r.data)
                         totalCount += r.count
@@ -352,18 +346,8 @@ struct CurlHTTPClient {
             } else {
                 outData = chunk
             }
-            // WO-191: retry until all bytes sent or hard error (EPIPE/closed socket).
-            outData.withUnsafeBytes { ptr in
-                guard let base = ptr.baseAddress else { return }
-                var remaining = ptr.count
-                var offset = 0
-                while remaining > 0 {
-                    let sent = send(ctx.clientSocket, base.advanced(by: offset), remaining, ctx.sendFlags)
-                    if sent <= 0 { break }
-                    offset += sent
-                    remaining -= sent
-                }
-            }
+            // WO-191/WO-200: retry until all bytes sent or hard error (EPIPE/closed socket).
+            sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags)
         }
 
         // Flush partial SSE remainder at EOF.
@@ -375,18 +359,8 @@ struct CurlHTTPClient {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
                 totalCount += r.count
                 totalTypes.append(contentsOf: r.types)
-                // WO-191: retry until all bytes sent.
-                r.data.withUnsafeBytes { ptr in
-                    guard let base = ptr.baseAddress else { return }
-                    var remaining = ptr.count
-                    var offset = 0
-                    while remaining > 0 {
-                        let sent = send(ctx.clientSocket, base.advanced(by: offset), remaining, ctx.sendFlags)
-                        if sent <= 0 { break }
-                        offset += sent
-                        remaining -= sent
-                    }
-                }
+                // WO-191/WO-200: retry until all bytes sent.
+                sendAll(r.data, to: ctx.clientSocket, flags: ctx.sendFlags)
             }
         }
         return (totalCount, totalTypes)
@@ -463,6 +437,26 @@ struct CurlHTTPClient {
         }
         response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
         return response
+    }
+
+    /// WO-200: shared send-all helper used by relayStreamingResponse (header) and
+    /// relayBodyChunks (body chunks, EOF remainder) to avoid 3× inline retry loops.
+    /// Returns false if a hard error (EPIPE / closed socket) terminates the loop early.
+    @discardableResult
+    private static func sendAll(_ data: Data, to socket: Int32, flags: Int32) -> Bool {
+        var sent = true
+        data.withUnsafeBytes { ptr in
+            guard let base = ptr.baseAddress else { return }
+            var remaining = ptr.count
+            var offset = 0
+            while remaining > 0 {
+                let n = send(socket, base.advanced(by: offset), remaining, flags)
+                if n <= 0 { sent = false; break }
+                offset += n
+                remaining -= n
+            }
+        }
+        return sent
     }
 
     /// WO-175: map common HTTP status codes to their canonical reason phrase.
