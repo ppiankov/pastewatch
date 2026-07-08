@@ -8,6 +8,15 @@ struct CurlHTTPClient {
         let statusCode: Int
         let headers: [String: String]
         let body: Data
+        /// True when the response was streamed directly to a client socket (no body buffered).
+        let wasStreamed: Bool
+
+        init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false) {
+            self.statusCode = statusCode
+            self.headers = headers
+            self.body = body
+            self.wasStreamed = wasStreamed
+        }
     }
 
     /// WO-143: build the curl TLS-trust arguments. `--insecure` (-k) wins over
@@ -25,14 +34,23 @@ struct CurlHTTPClient {
 
     /// Execute an HTTP request via /usr/bin/curl.
     /// Returns nil if curl is not available or the process fails.
+    ///
+    /// For non-streaming responses: uses a large total timeout ceiling.
+    /// For streaming responses: uses idle-based (--speed-time/--speed-limit) timeout
+    /// so long-but-progressing streams are not killed by a fixed total cap.
     static func execute(
         method: String,
         url: URL,
         headers: [(String, String)],
         body: Data?,
-        timeoutSeconds: Int = 120,
         caCertPath: String? = nil,
-        insecure: Bool = false
+        insecure: Bool = false,
+        streaming: Bool = false,
+        clientSocket: Int32 = -1,
+        sendFlags: Int32 = 0,
+        streamingRedactionMode: String = "per_sse_event",
+        proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
+        proxySeverity: Severity = .high
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -40,15 +58,7 @@ struct CurlHTTPClient {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: curlPath)
 
-        var args: [String] = [
-            "-s",                    // Silent (no progress)
-            "-S",                    // Show errors
-            "--max-time", String(timeoutSeconds),
-            "-X", method,
-            "-D", "/dev/stderr",     // Dump response headers to stderr
-            "-w", "\n__HTTP_STATUS__%{http_code}", // Append status code
-            url.absoluteString
-        ]
+        var args = buildBaseArgs(method: method, url: url, streaming: streaming)
 
         // WO-143: upstream TLS trust. --insecure wins over --cacert if both set.
         args.append(contentsOf: Self.tlsArgs(caCertPath: caCertPath, insecure: insecure))
@@ -83,6 +93,20 @@ struct CurlHTTPClient {
             try process.run()
         } catch {
             return nil
+        }
+
+        if streaming && clientSocket >= 0 {
+            // Streaming path: relay curl output to the client socket as it arrives.
+            // Headers arrive via the headerPipe (stderr -D /dev/stderr).
+            // We relay the body pipe chunks directly without buffering the whole response.
+            let ctx = StreamContext(
+                clientSocket: clientSocket,
+                sendFlags: sendFlags,
+                redactionMode: streamingRedactionMode,
+                config: proxyConfig,
+                severity: proxySeverity
+            )
+            return relayStreamingResponse(process: process, bodyPipe: bodyPipe, headerPipe: headerPipe, ctx: ctx)
         }
 
         process.waitUntilExit()
@@ -124,5 +148,132 @@ struct CurlHTTPClient {
         }
 
         return Response(statusCode: statusCode, headers: responseHeaders, body: responseBody)
+    }
+
+    /// Relay a streaming (SSE) curl response incrementally to the client socket.
+    /// Reads chunks from the body pipe as curl writes them, forwarding each immediately.
+    private static func buildBaseArgs(method: String, url: URL, streaming: Bool) -> [String] {
+        var args: [String] = ["-s", "-S", "-X", method, "-D", "/dev/stderr"]
+        // Idle floor: fail only when no bytes arrive for the speed-time window.
+        args += ["--speed-limit", String(curlMinSpeedBytesPerSecond), "--speed-time", String(curlSpeedTimeSeconds)]
+        if !streaming {
+            // Non-streaming: add a large total ceiling as a backstop.
+            args += ["--max-time", String(curlMaxTimeSeconds)]
+        }
+        args += ["-w", "\n__HTTP_STATUS__%{http_code}", url.absoluteString]
+        return args
+    }
+
+    struct StreamContext {
+        let clientSocket: Int32
+        let sendFlags: Int32
+        let redactionMode: String
+        let config: PastewatchConfig
+        let severity: Severity
+    }
+
+    private static func relayStreamingResponse(
+        process: Process,
+        bodyPipe: Pipe,
+        headerPipe: Pipe,
+        ctx: StreamContext
+    ) -> Response? {
+        let clientSocket = ctx.clientSocket
+        let sendFlags = ctx.sendFlags
+        let redactionMode = ctx.redactionMode
+        let config = ctx.config
+        let severity = ctx.severity
+        // Collect headers from stderr (written when curl receives the response head).
+        // We read them in a background thread while streaming the body.
+        var parsedHeaders: [String: String] = [:]
+        var parsedStatus = 200
+        let headerGroup = DispatchGroup()
+        headerGroup.enter()
+        DispatchQueue.global().async {
+            let headerData = headerPipe.fileHandleForReading.readDataToEndOfFile()
+            if let headerStr = String(data: headerData, encoding: .utf8) {
+                for line in headerStr.components(separatedBy: "\r\n") {
+                    if line.hasPrefix("HTTP/") {
+                        let parts = line.components(separatedBy: " ")
+                        if parts.count >= 2, let code = Int(parts[1]) {
+                            parsedStatus = code
+                        }
+                    } else if let colonIdx = line.firstIndex(of: ":") {
+                        let key = String(line[..<colonIdx]).trimmingCharacters(in: .whitespaces)
+                        let value = String(line[line.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                        parsedHeaders[key] = value
+                    }
+                }
+            }
+            headerGroup.leave()
+        }
+
+        // Build and send streaming response headers to client.
+        // We send them before reading the body since curl will write them to stderr
+        // before the body bytes arrive.
+        let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
+        streamingHeaderStr.withCString { ptr in
+            _ = send(clientSocket, ptr, strlen(ptr), sendFlags)
+        }
+
+        var parser = SSEFrameParser()
+        let bodyHandle = bodyPipe.fileHandleForReading
+
+        // Read chunks until curl exits.
+        while process.isRunning {
+            let chunk = bodyHandle.availableData
+            guard !chunk.isEmpty else {
+                // No data yet; yield briefly to avoid busy-spin.
+                Thread.sleep(forTimeInterval: 0.005)
+                continue
+            }
+            let outData: Data
+            if redactionMode == "per_sse_event" {
+                let result = parser.feed(chunk)
+                if result.overflowFlushed {
+                    outData = result.overflowBytes
+                } else {
+                    var assembled = Data()
+                    for frame in result.frames {
+                        assembled.append(frame.raw)
+                    }
+                    outData = assembled
+                }
+            } else {
+                outData = chunk
+            }
+            outData.withUnsafeBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                _ = send(clientSocket, base, ptr.count, sendFlags)
+            }
+        }
+
+        // Drain any remaining body bytes after process exit.
+        let remaining = bodyHandle.readDataToEndOfFile()
+        if !remaining.isEmpty {
+            remaining.withUnsafeBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                _ = send(clientSocket, base, ptr.count, sendFlags)
+            }
+        }
+
+        // Wait for header thread.
+        headerGroup.wait()
+
+        return Response(statusCode: parsedStatus, headers: parsedHeaders, body: Data(), wasStreamed: true)
+    }
+
+    private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {
+        var response = "HTTP/1.1 \(status) OK\r\n"
+        let passthrough = ["content-type", "cache-control", "x-request-id"]
+        for (key, value) in upstreamHeaders {
+            let lower = key.lowercased()
+            if lower == "content-length" { continue }
+            if passthrough.contains(lower) || lower.hasPrefix("anthropic-") {
+                response += "\(key): \(value)\r\n"
+            }
+        }
+        response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
+        return response
     }
 }

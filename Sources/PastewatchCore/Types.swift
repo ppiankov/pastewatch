@@ -295,6 +295,11 @@ public struct PastewatchConfig: Codable {
     public var placeholderPrefix: String?
     public var protectedPaths: [String]
     public var sharedPatternFiles: [String] // WO-124: NR-compatible generated pattern artifacts for file IO
+    /// WO-147: controls how the proxy redacts streaming (SSE) responses.
+    /// - per_sse_event (default): redact each SSE event's data payload before relay.
+    /// - raw_stream: relay stream unmodified (emergency fallback, no response redaction).
+    /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
+    public var responseStreamingRedactionMode: String
 
     public init(
         enabled: Bool,
@@ -311,7 +316,8 @@ public struct PastewatchConfig: Codable {
         xmlSensitiveTags: [String] = [],
         placeholderPrefix: String? = nil,
         protectedPaths: [String] = ["~/.openclaw"],
-        sharedPatternFiles: [String] = []
+        sharedPatternFiles: [String] = [],
+        responseStreamingRedactionMode: String = "per_sse_event"
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -328,6 +334,7 @@ public struct PastewatchConfig: Codable {
         self.placeholderPrefix = placeholderPrefix
         self.protectedPaths = protectedPaths
         self.sharedPatternFiles = sharedPatternFiles
+        self.responseStreamingRedactionMode = responseStreamingRedactionMode
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -356,6 +363,7 @@ public struct PastewatchConfig: Codable {
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]
         sharedPatternFiles = try container.decodeIfPresent([String].self, forKey: .sharedPatternFiles) ?? []
+        responseStreamingRedactionMode = try container.decodeIfPresent(String.self, forKey: .responseStreamingRedactionMode) ?? "per_sse_event"
     }
 
     public static let defaultConfig = PastewatchConfig(

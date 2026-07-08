@@ -3,6 +3,27 @@ import Foundation
 import FoundationNetworking
 #endif
 
+// MARK: - Timeout constants
+
+/// Default idle timeout for streaming responses (seconds). Resets on each received chunk.
+/// A truly stalled upstream will be killed after this window of silence.
+let proxyStreamIdleTimeoutSeconds: Double = 60
+
+/// Total-duration ceiling for non-streaming (buffered) responses (seconds).
+let proxyNonStreamTotalTimeoutSeconds: Double = 600
+
+/// Minimum upstream bytes-per-second for curl's speed-based idle detection.
+let curlMinSpeedBytesPerSecond = 1
+
+/// Idle window for curl's --speed-time: upstream must send at least 1 byte/s
+/// within this window or the request is aborted.
+let curlSpeedTimeSeconds = 60
+
+/// Large maximum time for curl (non-streaming path). Zero = no cap.
+let curlMaxTimeSeconds = 600
+
+// MARK: - ProxyServer
+
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
 /// Listens on localhost, forwards to upstream API after redacting sensitive data.
 public final class ProxyServer {
@@ -252,8 +273,11 @@ public final class ProxyServer {
             forwardHeaders.append(("Content-Length", String(bodyData.count)))
         }
 
+        // Detect whether the request is a streaming call (stream:true in body).
+        let requestWantsStream = isStreamingRequest(processedBody)
+
         #if canImport(Darwin)
-        // macOS: URLSession is reliable
+        // macOS: URLSession is reliable.
         var upstreamRequest = URLRequest(url: upstreamURL)
         upstreamRequest.httpMethod = parsed.method
         upstreamRequest.httpBody = processedBody.data(using: .utf8)
@@ -261,6 +285,21 @@ public final class ProxyServer {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
 
+        let streamingMode = config.responseStreamingRedactionMode
+
+        // Use URLSessionDataDelegate for streaming; buffering dataTask for non-streaming or buffer mode.
+        if requestWantsStream && streamingMode != "buffer" {
+            forwardStreamingRequest(
+                upstreamRequest,
+                to: clientSocket,
+                redactionCount: redactionCount,
+                redactedTypes: redactedTypes,
+                mode: streamingMode
+            )
+            return
+        }
+
+        // Non-streaming / buffer mode: buffer full response, then scan+send.
         let semaphore = DispatchSemaphore(value: 0)
         var responseData: Data?
         var httpResponse: HTTPURLResponse?
@@ -271,7 +310,7 @@ public final class ProxyServer {
             semaphore.signal()
         }
         task.resume()
-        let timeout = semaphore.wait(timeout: .now() + 120)
+        let timeout = semaphore.wait(timeout: .now() + proxyNonStreamTotalTimeoutSeconds)
 
         guard timeout == .success else {
             task.cancel()
@@ -295,11 +334,21 @@ public final class ProxyServer {
             url: upstreamURL,
             headers: forwardHeaders,
             body: processedBody.data(using: .utf8),
-            timeoutSeconds: 120,
             caCertPath: caCertPath,
-            insecure: insecureTLS
+            insecure: insecureTLS,
+            streaming: requestWantsStream,
+            clientSocket: clientSocket,
+            sendFlags: sendFlags,
+            streamingRedactionMode: config.responseStreamingRedactionMode,
+            proxyConfig: config,
+            proxySeverity: severity
         ) else {
             sendError(to: clientSocket, status: 502, message: "Bad Gateway")
+            return
+        }
+
+        if curlResponse.wasStreamed {
+            // Streaming path already sent response directly to the client socket.
             return
         }
 
@@ -409,6 +458,40 @@ public final class ProxyServer {
         result["messages"] = messages
         return result
     }
+
+    // MARK: - Streaming helpers
+
+    /// True if the request JSON body contains "stream":true.
+    func isStreamingRequest(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json["stream"] as? Bool == true
+    }
+
+    #if canImport(Darwin)
+    /// Forward a streaming (SSE) response to the client socket incrementally.
+    /// Uses URLSessionDataDelegate so each upstream chunk is written to the
+    /// client immediately, without buffering the full response.
+    private func forwardStreamingRequest(
+        _ request: URLRequest,
+        to clientSocket: Int32,
+        redactionCount: Int,
+        redactedTypes: [String],
+        mode: String
+    ) {
+        let relay = SSEStreamRelay(
+            clientSocket: clientSocket,
+            sendFlags: sendFlags,
+            redactionMode: mode,
+            config: config,
+            severity: severity,
+            idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds
+        )
+        relay.execute(request: request, session: urlSession)
+    }
+    #endif
 
     // MARK: - Raw socket I/O
 
