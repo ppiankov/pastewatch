@@ -140,6 +140,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // WO-230: URLSession may buffer and deliver data chunks after cancel() is called.
+        // Guard here so post-cancel chunks do not make redundant sendAll() calls on a dead socket.
+        guard !clientEpipe else { return }
         // WO-199: cancel the old timer and create a fresh one so no previously-enqueued event
         // handler can fire after this data chunk arrived. timerQueue.sync alone is insufficient:
         // a handler already enqueued on timerQueue before the sync block runs will execute after
@@ -226,9 +229,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let alreadyWritten = didWriteHeaders
         let timerFired = timerDidFire
         // WO-163: if no data chunk arrived, write headers now. WO-170/177: skip on timer fire.
+        // WO-228: check return value — on EPIPE the client is already gone; set clientEpipe so
+        // the remainder flush and drop notice below are also skipped (matches WO-222 logic).
         if !alreadyWritten && !timerFired {
-            writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
+            let ok = writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
             didWriteHeaders = true
+            if !ok { clientEpipe = true }
         }
         socketWriteLock.unlock()
 

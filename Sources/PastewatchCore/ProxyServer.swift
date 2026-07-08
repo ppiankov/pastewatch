@@ -253,7 +253,9 @@ public final class ProxyServer {
             serverSocket = -1
         }
         // WO-225: drain pending async audit log writes before returning so no log lines are
-        // dropped when the caller exits immediately after stop() (e.g. signal handler).
+        // dropped when the caller exits immediately after stop().
+        // WO-231: logQueue.sync uses pthread_mutex internally — NOT safe to call from a POSIX
+        // signal handler (risk of deadlock). stop() must only be called from a normal thread.
         logQueue.sync {}
     }
 
