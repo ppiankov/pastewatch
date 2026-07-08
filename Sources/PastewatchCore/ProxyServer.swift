@@ -490,6 +490,15 @@ public final class ProxyServer {
             idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds
         )
         relay.execute(request: request, session: urlSession)
+
+        // WO-153: account for secrets redacted from SSE frames in the stream.
+        let totalCount = redactionCount + relay.streamRedactionCount
+        let totalTypes = redactedTypes + relay.streamRedactionTypes
+        if relay.streamRedactionCount > 0 {
+            stats.requestsRedacted += 1
+            stats.secretsRedacted += relay.streamRedactionCount
+            logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
+        }
     }
     #endif
 

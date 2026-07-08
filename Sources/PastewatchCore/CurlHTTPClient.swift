@@ -183,8 +183,10 @@ struct CurlHTTPClient {
         let redactionMode = ctx.redactionMode
         let config = ctx.config
         let severity = ctx.severity
-        // Collect headers from stderr (written when curl receives the response head).
-        // We read them in a background thread while streaming the body.
+
+        // WO-150: collect headers fully before sending anything to the client.
+        // headerPipe (stderr) closes when curl finishes writing them, which happens
+        // before the first body byte arrives on the body pipe.
         var parsedHeaders: [String: String] = [:]
         var parsedStatus = 200
         let headerGroup = DispatchGroup()
@@ -208,59 +210,106 @@ struct CurlHTTPClient {
             headerGroup.leave()
         }
 
-        // Build and send streaming response headers to client.
-        // We send them before reading the body since curl will write them to stderr
-        // before the body bytes arrive.
+        // WO-155: relay body via a blocking read loop on a background thread.
+        // readDataToEndOfFile() blocks until EOF (curl exit), eliminating the
+        // 200 wakeups/sec busy-spin from availableData + Thread.sleep.
+        var parser = SSEFrameParser()
+        let bodyHandle = bodyPipe.fileHandleForReading
+        let bodyGroup = DispatchGroup()
+        bodyGroup.enter()
+
+        DispatchQueue.global().async {
+            // Block until the pipe has data, then relay it in chunks.
+            // We use a chunked blocking read: read up to 64KB at a time so we
+            // forward incrementally rather than waiting for the whole body.
+            let chunkSize = 65536
+            var buf = [UInt8](repeating: 0, count: chunkSize)
+            let fd = bodyHandle.fileDescriptor
+            while true {
+                let n = Foundation.read(fd, &buf, chunkSize)
+                guard n > 0 else { break }
+                let chunk = Data(buf[0..<n])
+                let outData: Data
+                if redactionMode == "per_sse_event" {
+                    let result = parser.feed(chunk)
+                    if result.overflowFlushed {
+                        outData = result.overflowBytes
+                    } else {
+                        // WO-152: redact each parsed frame instead of forwarding frame.raw.
+                        var assembled = Data()
+                        for frame in result.frames {
+                            assembled.append(redactStreamFrame(frame, config: config, severity: severity))
+                        }
+                        outData = assembled
+                    }
+                } else {
+                    outData = chunk
+                }
+                outData.withUnsafeBytes { ptr in
+                    guard let base = ptr.baseAddress else { return }
+                    _ = send(clientSocket, base, ptr.count, sendFlags)
+                }
+            }
+
+            // Flush any partial SSE remainder at EOF.
+            if redactionMode == "per_sse_event" {
+                let rem = parser.remainingBytes
+                if !rem.isEmpty {
+                    rem.withUnsafeBytes { ptr in
+                        guard let base = ptr.baseAddress else { return }
+                        _ = send(clientSocket, base, ptr.count, sendFlags)
+                    }
+                }
+            }
+            bodyGroup.leave()
+        }
+
+        // WO-150 cont.: wait for headers before sending them; by the time headerGroup
+        // finishes, curl has already started writing the body, so there is no latency cost.
+        headerGroup.wait()
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
         streamingHeaderStr.withCString { ptr in
             _ = send(clientSocket, ptr, strlen(ptr), sendFlags)
         }
 
-        var parser = SSEFrameParser()
-        let bodyHandle = bodyPipe.fileHandleForReading
-
-        // Read chunks until curl exits.
-        while process.isRunning {
-            let chunk = bodyHandle.availableData
-            guard !chunk.isEmpty else {
-                // No data yet; yield briefly to avoid busy-spin.
-                Thread.sleep(forTimeInterval: 0.005)
-                continue
-            }
-            let outData: Data
-            if redactionMode == "per_sse_event" {
-                let result = parser.feed(chunk)
-                if result.overflowFlushed {
-                    outData = result.overflowBytes
-                } else {
-                    var assembled = Data()
-                    for frame in result.frames {
-                        assembled.append(frame.raw)
-                    }
-                    outData = assembled
-                }
-            } else {
-                outData = chunk
-            }
-            outData.withUnsafeBytes { ptr in
-                guard let base = ptr.baseAddress else { return }
-                _ = send(clientSocket, base, ptr.count, sendFlags)
-            }
-        }
-
-        // Drain any remaining body bytes after process exit.
-        let remaining = bodyHandle.readDataToEndOfFile()
-        if !remaining.isEmpty {
-            remaining.withUnsafeBytes { ptr in
-                guard let base = ptr.baseAddress else { return }
-                _ = send(clientSocket, base, ptr.count, sendFlags)
-            }
-        }
-
-        // Wait for header thread.
-        headerGroup.wait()
+        // Wait for body relay to finish.
+        bodyGroup.wait()
+        process.waitUntilExit()
 
         return Response(statusCode: parsedStatus, headers: parsedHeaders, body: Data(), wasStreamed: true)
+    }
+
+    /// WO-152: per-frame redaction for the Linux curl streaming path.
+    private static func redactStreamFrame(
+        _ frame: SSEFrameParser.Frame,
+        config: PastewatchConfig,
+        severity: Severity
+    ) -> Data {
+        guard let dataPayload = frame.data, dataPayload != "[DONE]" else {
+            return frame.raw
+        }
+        guard let jsonData = dataPayload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return frame.raw
+        }
+        // Extract text from Anthropic SSE delta.
+        guard let delta = json["delta"] as? [String: Any],
+              let text = delta["text"] as? String else {
+            return frame.raw
+        }
+        let matches = DetectionRules.scan(text, config: config)
+        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        guard !filtered.isEmpty else { return frame.raw }
+        let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
+        var modifiedDelta = delta
+        modifiedDelta["text"] = obfuscated
+        var modifiedJson = json
+        modifiedJson["delta"] = modifiedDelta
+        guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
+              let resultStr = String(data: resultData, encoding: .utf8) else {
+            return frame.raw
+        }
+        return frame.reserializedWith(data: resultStr)
     }
 
     private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {

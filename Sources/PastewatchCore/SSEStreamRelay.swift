@@ -21,16 +21,23 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     private var responseStatus: Int = 0
     private var responseHeaders: [AnyHashable: Any] = [:]
-    private var headersSent = false
     private var streamError: Error?
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
-    /// True once the HTTP response headers have been written to the client socket.
+    /// WO-151: write-once flag protected by `headReceived` semaphore ordering.
+    /// execute() sets this on the calling thread after headReceived fires;
+    /// the delegate only sets it as a fallback in didReceive(data:) after that point,
+    /// so both accesses are serialized through the semaphore.
     private var didWriteHeaders = false
 
-    private var lastChunkTime: DispatchTime = .now()
+    /// WO-153: count and type names of secrets redacted from SSE frames.
+    private(set) var streamRedactionCount = 0
+    private(set) var streamRedactionTypes: [String] = []
+
     private var idleTimer: DispatchSourceTimer?
+    /// Queue owning the idle timer — schedule/cancel must run here.
+    private let timerQueue = DispatchQueue(label: "com.pastewatch.sse-idle-timer")
 
     init(
         clientSocket: Int32,
@@ -188,14 +195,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             return frame.raw
         }
         guard let jsonData = dataPayload.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return frame.raw
-        }
-        // Scan the JSON payload text fields for secrets.
-        var redacted = 0
-        var types: [String] = []
-        _ = scanAndRedactJSON(json, redacted: &redacted, types: &types)
-        guard redacted > 0,
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let jsonStr = extractTextFromJSON(json) else {
             return frame.raw
         }
@@ -203,6 +203,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let filtered = matches.filter { $0.effectiveSeverity >= severity }
         guard !filtered.isEmpty else { return frame.raw }
         let obfuscated = Obfuscator.obfuscate(jsonStr, matches: filtered)
+
+        // WO-153: accumulate streaming redaction stats.
+        streamRedactionCount += filtered.count
+        streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
 
         // Re-emit with the obfuscated text substituted in.
         if let modifiedPayload = substituteText(in: json, newText: obfuscated),
@@ -232,20 +236,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         return nil
     }
 
-    private func scanAndRedactJSON(_ json: [String: Any], redacted: inout Int, types: inout [String]) -> [String: Any] {
-        if let text = extractTextFromJSON(json) {
-            let matches = DetectionRules.scan(text, config: config)
-            let filtered = matches.filter { $0.effectiveSeverity >= severity }
-            redacted = filtered.count
-            types = filtered.map { $0.displayName }
-        }
-        return json
-    }
-
     // MARK: - Idle timer
 
     private func startIdleTimer(task: URLSessionDataTask) {
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.schedule(deadline: .now() + idleTimeoutSeconds, repeating: .never)
         timer.setEventHandler { [weak self, weak task] in
             task?.cancel()
@@ -255,8 +249,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         idleTimer = timer
     }
 
+    /// WO-154: reset must be dispatched to the timer's own queue (timerQueue),
+    /// not called directly from the URLSession delegate queue.
     private func resetIdleTimer(_ timer: DispatchSourceTimer, task: URLSessionTask) {
-        timer.schedule(deadline: .now() + idleTimeoutSeconds, repeating: .never)
+        timerQueue.async { [weak self] in
+            guard let self = self else { return }
+            timer.schedule(deadline: .now() + self.idleTimeoutSeconds, repeating: .never)
+        }
     }
 }
 
