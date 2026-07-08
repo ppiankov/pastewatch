@@ -328,10 +328,15 @@ struct CurlHTTPClient {
         }
 
         // Flush partial SSE remainder at EOF.
+        // WO-172: redact before sending — a partial frame may contain a mid-stream credential
+        // that was split across chunk boundaries and never reached the per-frame redaction path.
         if ctx.redactionMode == "per_sse_event" {
             let rem = parser.remainingBytes
             if !rem.isEmpty {
-                rem.withUnsafeBytes { ptr in
+                let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
+                totalCount += r.count
+                totalTypes.append(contentsOf: r.types)
+                r.data.withUnsafeBytes { ptr in
                     guard let base = ptr.baseAddress else { return }
                     _ = send(ctx.clientSocket, base, ptr.count, ctx.sendFlags)
                 }
@@ -395,7 +400,9 @@ struct CurlHTTPClient {
     }
 
     private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {
-        var response = "HTTP/1.1 \(status) OK\r\n"
+        // WO-175: use the correct reason phrase so upstream 429/502/503 reaches the client
+        // as "HTTP/1.1 429 Too Many Requests" rather than "HTTP/1.1 429 OK".
+        var response = "HTTP/1.1 \(status) \(httpReasonPhrase(for: status))\r\n"
         let passthrough = ["content-type", "cache-control", "x-request-id"]
         for (key, value) in upstreamHeaders {
             let lower = key.lowercased()
@@ -406,5 +413,31 @@ struct CurlHTTPClient {
         }
         response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
         return response
+    }
+
+    /// WO-175: map common HTTP status codes to their canonical reason phrase.
+    static func httpReasonPhrase(for status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 201: return "Created"
+        case 204: return "No Content"
+        case 206: return "Partial Content"
+        case 301: return "Moved Permanently"
+        case 302: return "Found"
+        case 304: return "Not Modified"
+        case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
+        case 404: return "Not Found"
+        case 405: return "Method Not Allowed"
+        case 408: return "Request Timeout"
+        case 409: return "Conflict"
+        case 429: return "Too Many Requests"
+        case 500: return "Internal Server Error"
+        case 502: return "Bad Gateway"
+        case 503: return "Service Unavailable"
+        case 504: return "Gateway Timeout"
+        default: return "Unknown"
+        }
     }
 }

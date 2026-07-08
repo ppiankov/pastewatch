@@ -29,6 +29,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// delegate queue, so no lock is needed (WO-159 removed the execute() write path;
     /// WO-167 removed the now-redundant NSLock).
     private var didWriteHeaders = false
+    /// WO-170: set by the idle-timer handler before signaling streamDone so that the
+    /// async didCompleteWithError callback skips writing headers to the already-closed socket.
+    private var timerDidFire = false
 
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private(set) var streamRedactionCount = 0
@@ -67,6 +70,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         guard headWait == .success else {
             task.cancel()
             sendErrorDirect(status: 504, message: "Gateway Timeout (no response head)")
+            // WO-171: mark headers written so the async didCompleteWithError callback does not
+            // overwrite our error response with a spurious "HTTP/1.1 200 OK" preamble.
+            didWriteHeaders = true
             idleTimer?.cancel()
             return
         }
@@ -74,6 +80,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         if responseStatus == 0 {
             // Error path: headReceived was signalled via urlSession(_:task:didCompleteWithError:)
             sendErrorDirect(status: 502, message: "Bad Gateway")
+            // WO-171: same guard — prevent async didCompleteWithError from corrupting the socket.
+            didWriteHeaders = true
             idleTimer?.cancel()
             return
         }
@@ -137,16 +145,20 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         // WO-163: if no data chunk ever arrived (HTTP 204, empty body, upstream drop), the
         // client socket has received nothing yet. Write headers now so the response is valid.
-        if !didWriteHeaders {
+        // WO-170: skip if the idle timer already fired — execute() has returned and the caller
+        // has closed/reused the socket; writing headers here would corrupt the next connection.
+        if !didWriteHeaders && !timerDidFire {
             writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
             didWriteHeaders = true
         }
 
         // Flush any partial SSE remainder on clean close.
+        // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
+        // credential that was split across chunk boundaries and never saw the per-frame path.
         if redactionMode == "per_sse_event" {
             let rem = parser.remainingBytes
             if !rem.isEmpty {
-                writeToSocket(rem)
+                writeToSocket(redactRawBytes(rem))
             }
         }
 
@@ -167,7 +179,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     // MARK: - Private
 
     private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) {
-        var response = "HTTP/1.1 \(status) OK\r\n"
+        // WO-175: use the correct reason phrase for the status code.
+        var response = "HTTP/1.1 \(status) \(CurlHTTPClient.httpReasonPhrase(for: status))\r\n"
         // Forward streaming-relevant headers; exclude Content-Length (unknown for SSE).
         let streamingPassthrough = ["content-type", "cache-control", "x-request-id"]
         for (key, value) in upstreamHeaders {
@@ -259,6 +272,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.schedule(deadline: .now() + idleTimeoutSeconds, repeating: .never)
         timer.setEventHandler { [weak self, weak task] in
+            // WO-170: mark timer fired BEFORE signaling streamDone so that the async
+            // didCompleteWithError callback (which runs on the URLSession delegate queue)
+            // sees the flag and skips writing headers to the already-closed socket.
+            self?.timerDidFire = true
             task?.cancel()
             self?.streamDone.signal()
         }

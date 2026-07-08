@@ -358,14 +358,22 @@ public final class ProxyServer {
             // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
             let streamCount = curlResponse.streamRedactionCount
             let streamTypes = curlResponse.streamRedactionTypes
+            let totalCount = redactionCount + streamCount
+            let totalTypes = redactedTypes + streamTypes
             if streamCount > 0 {
                 statsLock.lock()
-                stats.requestsRedacted += 1
+                // WO-174: only increment requestsRedacted when the body scan did NOT already
+                // count this request (redactionCount == 0). Body + stream secrets = 1 request.
+                if redactionCount == 0 {
+                    stats.requestsRedacted += 1
+                }
                 stats.secretsRedacted += streamCount
                 statsLock.unlock()
-                let totalCount = redactionCount + streamCount
-                let totalTypes = redactedTypes + streamTypes
                 logRedaction(path: parsed.path, count: totalCount, types: totalTypes)
+            }
+            // WO-173: inject alert as a trailing SSE event when any secrets were redacted.
+            if totalCount > 0 && injectAlert {
+                injectAlertIntoStream(clientSocket: clientSocket, redactionCount: totalCount, types: totalTypes)
             }
             return
         }
@@ -519,6 +527,11 @@ public final class ProxyServer {
             statsLock.unlock()
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
         }
+
+        // WO-173: inject alert as a trailing SSE event when secrets were redacted.
+        if totalCount > 0 && injectAlert {
+            injectAlertIntoStream(clientSocket: clientSocket, redactionCount: totalCount, types: totalTypes)
+        }
     }
     #endif
 
@@ -665,6 +678,18 @@ public final class ProxyServer {
             return "JWTs contain claims and signatures — never log or echo them"
         default:
             return nil
+        }
+    }
+
+    /// WO-173: inject a pastewatch alert as a trailing SSE event after the stream ends.
+    /// The agent's SSE consumer will receive it as an extra event after [DONE].
+    func injectAlertIntoStream(clientSocket: Int32, redactionCount: Int, types: [String]) {
+        let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
+        guard let alertJSON = try? JSONSerialization.data(withJSONObject: alert),
+              let alertStr = String(data: alertJSON, encoding: .utf8) else { return }
+        let frame = "event: pastewatch_alert\ndata: \(alertStr)\n\n"
+        frame.withCString { ptr in
+            _ = send(clientSocket, ptr, strlen(ptr), sendFlags)
         }
     }
 
