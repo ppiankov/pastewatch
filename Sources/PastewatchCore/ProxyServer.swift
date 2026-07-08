@@ -44,6 +44,9 @@ public final class ProxyServer {
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
     /// WO-160: guards all mutations of `stats` from concurrent connection handlers.
     private let statsLock = NSLock()
+    /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
+    /// statsLock so concurrent handlers do not serialize behind file operations.
+    private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
     private var running = false
     private lazy var urlSession: URLSession = makeSession()
 
@@ -673,9 +676,15 @@ public final class ProxyServer {
 
     private func sendError(to socket: Int32, status: Int, message: String) {
         let body = "{\"error\": \"\(message)\"}"
-        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        // WO-212: use sendAll() so a large error body is not silently truncated by a partial send().
-        sendAll(Data(response.utf8), to: socket, flags: sendFlags)
+        let bodyBytes = Data(body.utf8)
+        // WO-219: Content-Length must be byte count, not Swift character count (they diverge for non-ASCII).
+        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
+        var responseData = Data(response.utf8)
+        responseData.append(bodyBytes)
+        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        if !sendAll(responseData, to: socket, flags: sendFlags) {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8))
+        }
     }
 
     private func sendResponse(to socket: Int32, status: Int, headers: [AnyHashable: Any], body: Data) {
@@ -693,9 +702,10 @@ public final class ProxyServer {
 
         var responseData = Data(response.utf8)
         responseData.append(body)
-        // WO-212: use sendAll() so large responses (long JSON bodies, injected alerts) are
-        // not silently truncated by a single send() returning fewer bytes than requested.
-        sendAll(responseData, to: socket, flags: sendFlags)
+        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        if !sendAll(responseData, to: socket, flags: sendFlags) {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8))
+        }
     }
 
     // MARK: - Alert injection
@@ -796,18 +806,19 @@ public final class ProxyServer {
         }
 
         if let logPath = auditLogPath {
-            // WO-210: serialize seekToEndOfFile+write under statsLock so concurrent handlers
-            // cannot interleave their writes. FileHandle(forWritingAtPath:) opens without
-            // O_APPEND, making the seek+write non-atomic without external serialization.
-            statsLock.lock()
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write(Data(line.utf8))
-                handle.closeFile()
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+            let logLine = line + hintLine
+            // WO-210: seek+write must be serialized so concurrent handlers cannot interleave.
+            // WO-217: use a dedicated serial logQueue instead of statsLock so slow disk I/O
+            // does not block concurrent handlers from incrementing in-memory stats.
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(logLine.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(logLine.utf8))
+                }
             }
-            statsLock.unlock()
         }
     }
 }

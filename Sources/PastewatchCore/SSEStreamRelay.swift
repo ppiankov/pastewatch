@@ -49,8 +49,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-195: body-scan counts captured by the closure's own scope (no relay properties needed).
     var buildAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)?
 
-    /// WO-209: retained so writeToSocket() can cancel it on EPIPE without every call site
-    /// threading the task reference through.
+    /// WO-209/215: retained so EPIPE paths in the frame loop and writeToSocket() can cancel
+    /// the task without every call site threading the task reference through.
     private weak var activeTask: URLSessionTask?
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — create/cancel must run here.
@@ -164,7 +164,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 writeToSocket(redactRawBytes(result.overflowBytes))
                 return
             }
+            // WO-215: break out of the frame loop on EPIPE so we do not make redundant
+            // kernel send() calls and no-op cancel() calls for the remaining frames.
+            var epipe = false
             for frame in result.frames {
+                guard !epipe else { break }
                 // WO-182: inject the alert immediately before [DONE] so SSE consumers
                 // (which stop reading at [DONE]) see the alert before the stream ends.
                 // WO-182: invoke closure at [DONE] time with live stream counts.
@@ -172,13 +176,29 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 if frame.data == "[DONE]",
                    let builder = buildAlertBeforeDone,
                    let alertData = builder(streamRedactionCount, streamRedactionTypes) {
-                    writeToSocket(alertData)
+                    if !sendAll(alertData, to: clientSocket, flags: sendFlags) {
+                        activeTask?.cancel()
+                        epipe = true
+                        break
+                    }
                 }
                 // WO-201: skip redactFrame for [DONE] — the function's first line already
                 // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
-                guard frame.data != "[DONE]" else { writeToSocket(frame.raw); continue }
-                let outData = redactFrame(frame)
-                writeToSocket(outData)
+                guard frame.data != "[DONE]" else {
+                    if !sendAll(frame.raw, to: clientSocket, flags: sendFlags) {
+                        activeTask?.cancel()
+                        epipe = true
+                    }
+                    continue
+                }
+                // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
+                let r = redactSSEFrame(frame, config: config, severity: severity)
+                streamRedactionCount += r.count
+                streamRedactionTypes.append(contentsOf: r.types)
+                if !sendAll(r.data, to: clientSocket, flags: sendFlags) {
+                    activeTask?.cancel()
+                    epipe = true
+                }
             }
             // Partial remainder stays in the parser buffer and is flushed at stream end.
 
@@ -283,54 +303,6 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
         let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
         return Data(obfuscated.utf8)
-    }
-
-    private func redactFrame(_ frame: SSEFrameParser.Frame) -> Data {
-        guard let dataPayload = frame.data, dataPayload != "[DONE]" else {
-            return frame.raw
-        }
-        guard let jsonData = dataPayload.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let jsonStr = extractTextFromJSON(json) else {
-            return frame.raw
-        }
-        let matches = DetectionRules.scan(jsonStr, config: config)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
-        guard !filtered.isEmpty else { return frame.raw }
-        let obfuscated = Obfuscator.obfuscate(jsonStr, matches: filtered)
-
-        // Re-emit with the obfuscated text substituted in.
-        // WO-180: accumulate stats only after serialization succeeds — if serialization
-        // fails we fall back to the raw frame (secret still in it), so stats must not claim
-        // a redaction that did not reach the client.
-        if let modifiedPayload = substituteText(in: json, newText: obfuscated),
-           let resultData = try? JSONSerialization.data(withJSONObject: modifiedPayload),
-           let resultStr = String(data: resultData, encoding: .utf8) {
-            // WO-153: accumulate streaming redaction stats.
-            streamRedactionCount += filtered.count
-            streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
-            return frame.reserializedWith(data: resultStr)
-        }
-        return frame.raw
-    }
-
-    private func extractTextFromJSON(_ json: [String: Any]) -> String? {
-        // Anthropic SSE delta: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
-        if let delta = json["delta"] as? [String: Any],
-           let text = delta["text"] as? String {
-            return text
-        }
-        return nil
-    }
-
-    private func substituteText(in json: [String: Any], newText: String) -> [String: Any]? {
-        var result = json
-        if var delta = json["delta"] as? [String: Any], delta["text"] != nil {
-            delta["text"] = newText
-            result["delta"] = delta
-            return result
-        }
-        return nil
     }
 
     // MARK: - Idle timer

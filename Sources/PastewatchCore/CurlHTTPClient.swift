@@ -274,6 +274,14 @@ struct CurlHTTPClient {
             process.terminate()
             // WO-208: wait after terminate so the kernel reaps the child and no zombie lingers.
             process.waitUntilExit()
+            // WO-213: after curl exits, its write-end of headerPipe closes at the OS level,
+            // but the async block still holds a reference to headerPipe (and thus its write-end
+            // FileHandle) via closure capture. Foundation.read() inside the block blocks until
+            // that write-end is closed, pinning the GCD thread permanently.
+            // Close the write-end explicitly so Foundation.read() returns 0 (EOF) and the
+            // block can call headerGroup.leave() and release the thread.
+            headerPipe.fileHandleForWriting.closeFile()
+            _ = headerGroup.wait(timeout: .now() + 5)
             return nil
         }
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
@@ -330,6 +338,8 @@ struct CurlHTTPClient {
         var buf = [UInt8](repeating: 0, count: chunkSize)
         var totalCount = 0
         var totalTypes: [String] = []
+        // WO-216: track how the read loop exited so we know whether to flush the remainder.
+        var clientEpipe = false
 
         while true {
             let n = Foundation.read(fd, &buf, chunkSize)
@@ -355,10 +365,11 @@ struct CurlHTTPClient {
                            let alert = builder(totalCount, totalTypes) {
                             assembled.append(alert)
                         }
-                        // WO-201: skip redactStreamFrame for [DONE] — its first guard already
+                        // WO-201: skip redactSSEFrame for [DONE] — its first guard already
                         // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
+                        // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
                         guard frame.data != "[DONE]" else { assembled.append(frame.raw); continue }
-                        let r = redactStreamFrame(frame, config: ctx.config, severity: ctx.severity)
+                        let r = redactSSEFrame(frame, config: ctx.config, severity: ctx.severity)
                         assembled.append(r.data)
                         totalCount += r.count
                         totalTypes.append(contentsOf: r.types)
@@ -371,13 +382,18 @@ struct CurlHTTPClient {
             // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
             // WO-205: check return value — on EPIPE the client disconnected; draining the rest
             // of the upstream pipe burns CPU and blocks the connection thread unnecessarily.
-            if !sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) { break }
+            if !sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+                clientEpipe = true
+                break
+            }
         }
 
-        // Flush partial SSE remainder at EOF.
+        // Flush partial SSE remainder at EOF only — skip on EPIPE.
         // WO-172: redact before sending — a partial frame may contain a mid-stream credential
         // that was split across chunk boundaries and never reached the per-frame redaction path.
-        if ctx.redactionMode == "per_sse_event" {
+        // WO-216: on EPIPE the client is gone; scanning the remainder burns CPU and inflates
+        // stats with secrets that were never actually delivered or redacted to anyone.
+        if !clientEpipe && ctx.redactionMode == "per_sse_event" {
             let rem = parser.remainingBytes
             if !rem.isEmpty {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
@@ -404,47 +420,6 @@ struct CurlHTTPClient {
         let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
         let types = filtered.map { $0.displayName }
         return FrameRedactionResult(data: Data(obfuscated.utf8), count: filtered.count, types: types)
-    }
-
-    /// WO-152: per-frame redaction for the Linux curl streaming path.
-    /// WO-158: returns FrameRedactionResult with stats so callers can surface them
-    ///         in audit logs and [PASTEWATCH] alerts.
-    private static func redactStreamFrame(
-        _ frame: SSEFrameParser.Frame,
-        config: PastewatchConfig,
-        severity: Severity
-    ) -> FrameRedactionResult {
-        guard let dataPayload = frame.data, dataPayload != "[DONE]" else {
-            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
-        }
-        guard let jsonData = dataPayload.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
-        }
-        // Extract text from Anthropic SSE delta.
-        guard let delta = json["delta"] as? [String: Any],
-              let text = delta["text"] as? String else {
-            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
-        }
-        let matches = DetectionRules.scan(text, config: config)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
-        guard !filtered.isEmpty else {
-            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
-        }
-        let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
-        var modifiedDelta = delta
-        modifiedDelta["text"] = obfuscated
-        var modifiedJson = json
-        modifiedJson["delta"] = modifiedDelta
-        let types = filtered.map { $0.displayName }
-        // WO-188: mirror WO-180 — accumulate stats only inside the success branch.
-        // Serialization failure means frame.raw (with the credential) goes to the client;
-        // returning count > 0 would falsely claim a redaction that did not happen.
-        guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
-              let resultStr = String(data: resultData, encoding: .utf8) else {
-            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
-        }
-        return FrameRedactionResult(data: frame.reserializedWith(data: resultStr), count: filtered.count, types: types)
     }
 
     private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {
