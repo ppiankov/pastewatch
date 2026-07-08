@@ -287,7 +287,9 @@ struct CurlHTTPClient {
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
         // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
         // WO-211: check return — if the client disconnected before headers arrived, skip body relay.
+        // WO-226: emit stderr diagnostic so the disconnect is observable in proxy logs.
         guard sendAll(Data(streamingHeaderStr.utf8), to: ctx.clientSocket, flags: ctx.sendFlags) else {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] relayStreamingResponse: client socket \(ctx.clientSocket) closed before streaming headers delivered\n".utf8))
             process.terminate()
             process.waitUntilExit()
             return nil

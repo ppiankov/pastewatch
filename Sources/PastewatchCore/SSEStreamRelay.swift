@@ -52,6 +52,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-209/215: retained so EPIPE paths in the frame loop and writeToSocket() can cancel
     /// the task without every call site threading the task reference through.
     private weak var activeTask: URLSessionTask?
+    /// WO-227: set to true by any EPIPE path so didCompleteWithError skips the remainder
+    /// flush and drop notice — the client is gone and writing burns CPU + inflates stats.
+    private var clientEpipe = false
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — create/cancel must run here.
     /// WO-199: timer is cancel-and-recreated on each data chunk so the event handler
@@ -148,14 +151,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let needsHeaders = !didWriteHeaders
         if needsHeaders { didWriteHeaders = true }
         socketWriteLock.unlock()
+        // WO-222: propagate header EPIPE — if the client disconnected before we could send
+        // the HTTP headers, cancel the task and skip the frame loop entirely.
+        // WO-227: also set clientEpipe so didCompleteWithError skips the remainder flush.
         if needsHeaders {
-            writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
+            if !writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders) {
+                clientEpipe = true; activeTask?.cancel()
+                return
+            }
         }
 
         switch redactionMode {
         case "raw_stream":
             // Relay raw — no redaction.
-            writeToSocket(data)
+            // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
+            if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
 
         case "per_sse_event":
             let result = parser.feed(data)
@@ -177,7 +187,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                    let builder = buildAlertBeforeDone,
                    let alertData = builder(streamRedactionCount, streamRedactionTypes) {
                     if !sendAll(alertData, to: clientSocket, flags: sendFlags) {
-                        activeTask?.cancel()
+                        clientEpipe = true; activeTask?.cancel()
                         epipe = true
                         break
                     }
@@ -186,7 +196,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
                 guard frame.data != "[DONE]" else {
                     if !sendAll(frame.raw, to: clientSocket, flags: sendFlags) {
-                        activeTask?.cancel()
+                        clientEpipe = true; activeTask?.cancel()
                         epipe = true
                     }
                     continue
@@ -196,7 +206,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 streamRedactionCount += r.count
                 streamRedactionTypes.append(contentsOf: r.types)
                 if !sendAll(r.data, to: clientSocket, flags: sendFlags) {
-                    activeTask?.cancel()
+                    clientEpipe = true; activeTask?.cancel()
                     epipe = true
                 }
             }
@@ -204,7 +214,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         default:
             // Unknown mode: raw relay.
-            writeToSocket(data)
+            // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
+            if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
         }
     }
 
@@ -223,7 +234,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
         // fires the socket is dead; writing to it would corrupt the next connection on that fd.
-        if !timerFired {
+        // WO-227: also guard behind clientEpipe — client is gone; flush burns CPU and inflates stats.
+        if !timerFired && !clientEpipe {
             // Flush any partial SSE remainder on clean close.
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.
@@ -260,7 +272,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     // MARK: - Private
 
-    private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) {
+    /// WO-222: returns false on EPIPE so callers can cancel the task and skip body relay.
+    @discardableResult
+    private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) -> Bool {
         // WO-175: use the correct reason phrase for the status code.
         var response = "HTTP/1.1 \(status) \(CurlHTTPClient.httpReasonPhrase(for: status))\r\n"
         // Forward streaming-relevant headers; exclude Content-Length (unknown for SSE).
@@ -274,21 +288,27 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             }
         }
         response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
-        writeToSocket(Data(response.utf8))
+        return sendAll(Data(response.utf8), to: clientSocket, flags: sendFlags)
     }
 
     private func sendErrorDirect(status: Int, message: String) {
         let body = "{\"error\": \"\(message)\"}"
-        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        writeToSocket(Data(response.utf8))
+        let bodyBytes = Data(body.utf8)
+        // WO-221: Content-Length must be byte count, not Swift character count.
+        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
+        var responseData = Data(response.utf8)
+        responseData.append(bodyBytes)
+        writeToSocket(responseData)
     }
 
     /// WO-206: delegates to the shared sendAll() in SocketHelpers.swift.
     /// WO-209: check return value — on false (EPIPE) the client disconnected.
     /// Cancel activeTask so the relay stops downloading upstream data instead of
     /// running the stream to completion and silently discarding every chunk.
+    /// WO-227: set clientEpipe so didCompleteWithError skips remainder flush and drop notice.
     private func writeToSocket(_ data: Data) {
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
+            clientEpipe = true
             activeTask?.cancel()
         }
     }

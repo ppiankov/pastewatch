@@ -252,6 +252,9 @@ public final class ProxyServer {
             close(serverSocket)
             serverSocket = -1
         }
+        // WO-225: drain pending async audit log writes before returning so no log lines are
+        // dropped when the caller exits immediately after stop() (e.g. signal handler).
+        logQueue.sync {}
     }
 
     // MARK: - Connection handling
@@ -806,17 +809,18 @@ public final class ProxyServer {
         }
 
         if let logPath = auditLogPath {
-            let logLine = line + hintLine
+            // WO-224: write only the structured `line` to the audit log file — hintLine is
+            // advisory prose for the operator's terminal, not machine-readable log content.
             // WO-210: seek+write must be serialized so concurrent handlers cannot interleave.
             // WO-217: use a dedicated serial logQueue instead of statsLock so slow disk I/O
             // does not block concurrent handlers from incrementing in-memory stats.
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
                     handle.seekToEndOfFile()
-                    handle.write(Data(logLine.utf8))
+                    handle.write(Data(line.utf8))
                     handle.closeFile()
                 } else {
-                    FileManager.default.createFile(atPath: logPath, contents: Data(logLine.utf8))
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
                 }
             }
         }
