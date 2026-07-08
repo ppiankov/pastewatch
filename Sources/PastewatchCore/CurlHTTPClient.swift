@@ -207,38 +207,62 @@ struct CurlHTTPClient {
         DispatchQueue.global().async {
             let fd = headerPipe.fileHandleForReading.fileDescriptor
             var accumulated = Data()
-            var headersDone = false
             var oneByte = [UInt8](repeating: 0, count: 1)
-            while !headersDone {
-                let n = Foundation.read(fd, &oneByte, 1)
-                guard n > 0 else { break }
-                accumulated.append(oneByte[0])
-                // HTTP headers end with \r\n\r\n
-                if accumulated.count >= 4 {
-                    let tail = accumulated.suffix(4)
-                    if tail == Data([0x0D, 0x0A, 0x0D, 0x0A]) {
-                        headersDone = true
+            // WO-165/WO-166: loop over header blocks, skipping 1xx interim responses,
+            // and recognize both \r\n\r\n (CRLF) and \n\n (LF-only) terminators.
+            while true {
+                var blockDone = false
+                while !blockDone {
+                    let n = Foundation.read(fd, &oneByte, 1)
+                    guard n > 0 else { blockDone = true; break }
+                    accumulated.append(oneByte[0])
+                    let c = accumulated.count
+                    if c >= 4 {
+                        let tail4 = accumulated.suffix(4)
+                        if tail4 == Data([0x0D, 0x0A, 0x0D, 0x0A]) { blockDone = true; break }
+                    }
+                    if c >= 2 {
+                        let tail2 = accumulated.suffix(2)
+                        if tail2 == Data([0x0A, 0x0A]) { blockDone = true; break }
                     }
                 }
-            }
-            if let headerStr = String(data: accumulated, encoding: .utf8) {
-                for line in headerStr.components(separatedBy: "\r\n") {
-                    if line.hasPrefix("HTTP/") {
-                        let parts = line.components(separatedBy: " ")
-                        if parts.count >= 2, let code = Int(parts[1]) {
-                            parsedStatus = code
+                // Parse the block to extract status.
+                var blockStatus = 0
+                var blockHeaders: [String: String] = [:]
+                if let headerStr = String(data: accumulated, encoding: .utf8) {
+                    for line in headerStr.components(separatedBy: "\r\n").flatMap({ $0.components(separatedBy: "\n") }) {
+                        if line.hasPrefix("HTTP/") {
+                            let parts = line.components(separatedBy: " ")
+                            if parts.count >= 2, let code = Int(parts[1]) { blockStatus = code }
+                        } else if let colonIdx = line.firstIndex(of: ":") {
+                            let key = String(line[..<colonIdx]).trimmingCharacters(in: .whitespaces)
+                            let value = String(line[line.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                            blockHeaders[key] = value
                         }
-                    } else if let colonIdx = line.firstIndex(of: ":") {
-                        let key = String(line[..<colonIdx]).trimmingCharacters(in: .whitespaces)
-                        let value = String(line[line.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
-                        parsedHeaders[key] = value
                     }
                 }
+                // WO-165: skip 1xx interim blocks (e.g. 100 Continue) and read next block.
+                if blockStatus >= 100 && blockStatus < 200 {
+                    accumulated = Data()
+                    continue
+                }
+                parsedStatus = blockStatus == 0 ? 200 : blockStatus
+                parsedHeaders = blockHeaders
+                break
             }
             headerGroup.leave()
         }
 
-        // WO-155/WO-158: relay body on a background thread via blocking read; accumulate stats.
+        // WO-156 cont.: headers are ready as soon as the blank header line is read,
+        // not when curl exits. Send them before any body bytes arrive.
+        headerGroup.wait()
+        let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
+        streamingHeaderStr.withCString { ptr in
+            _ = send(ctx.clientSocket, ptr, strlen(ptr), ctx.sendFlags)
+        }
+
+        // WO-162: start body relay AFTER headers have been sent so the client always
+        // receives the HTTP status line and headers before any body bytes.
         var relayRedactionCount = 0
         var relayRedactionTypes: [String] = []
         let bodyGroup = DispatchGroup()
@@ -248,14 +272,6 @@ struct CurlHTTPClient {
             relayRedactionCount = count
             relayRedactionTypes = types
             bodyGroup.leave()
-        }
-
-        // WO-156 cont.: headers are ready as soon as the blank header line is read,
-        // not when curl exits. Send them before any body bytes arrive.
-        headerGroup.wait()
-        let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
-        streamingHeaderStr.withCString { ptr in
-            _ = send(ctx.clientSocket, ptr, strlen(ptr), ctx.sendFlags)
         }
 
         // Wait for body relay to finish.
@@ -286,7 +302,12 @@ struct CurlHTTPClient {
             if ctx.redactionMode == "per_sse_event" {
                 let result = parser.feed(chunk)
                 if result.overflowFlushed {
-                    outData = result.overflowBytes
+                    // WO-164: a 4MB+ frame bypassed the normal per-frame path; redact it
+                    // as raw text rather than forwarding secrets unscanned.
+                    let r = redactRawBytes(result.overflowBytes, config: ctx.config, severity: ctx.severity)
+                    totalCount += r.count
+                    totalTypes.append(contentsOf: r.types)
+                    outData = r.data
                 } else {
                     var assembled = Data()
                     for frame in result.frames {
@@ -317,6 +338,22 @@ struct CurlHTTPClient {
             }
         }
         return (totalCount, totalTypes)
+    }
+
+    /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
+    /// Treats the whole buffer as plain text, scans it, and obfuscates in-place.
+    private static func redactRawBytes(_ raw: Data, config: PastewatchConfig, severity: Severity) -> FrameRedactionResult {
+        guard let text = String(data: raw, encoding: .utf8) else {
+            return FrameRedactionResult(data: raw, count: 0, types: [])
+        }
+        let matches = DetectionRules.scan(text, config: config)
+        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        guard !filtered.isEmpty else {
+            return FrameRedactionResult(data: raw, count: 0, types: [])
+        }
+        let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
+        let types = filtered.map { $0.displayName }
+        return FrameRedactionResult(data: Data(obfuscated.utf8), count: filtered.count, types: types)
     }
 
     /// WO-152: per-frame redaction for the Linux curl streaming path.

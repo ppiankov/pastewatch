@@ -46,10 +46,22 @@ public struct SSEFrameParser {
 
         var frames: [Frame] = []
 
-        // SSE frames are terminated by a blank line (\n\n or \r\n\r\n).
-        while let (frame, remaining) = extractNextFrame(from: buffer) {
-            frames.append(frame)
-            buffer = remaining
+        // WO-168: decode the buffer once per feed() call, then extract all frames in the
+        // string domain. The old extractNextFrame() decoded the whole buffer on every frame
+        // iteration — O(N×M) for N frames in one chunk. Non-UTF-8 data falls through to the
+        // raw byte-search path as before.
+        if var remaining = String(data: buffer, encoding: .utf8) {
+            while let (frame, rest) = extractNextFrameFromString(remaining) {
+                frames.append(frame)
+                remaining = rest
+            }
+            buffer = Data(remaining.utf8)
+        } else {
+            // Non-UTF-8: use the raw byte-search path.
+            while let (frame, remaining) = extractNextFrameRaw(from: buffer) {
+                frames.append(frame)
+                buffer = remaining
+            }
         }
 
         return FeedResult(frames: frames, overflowFlushed: false, overflowBytes: Data())
@@ -60,39 +72,34 @@ public struct SSEFrameParser {
 
     // MARK: - Private
 
-    private func extractNextFrame(from data: Data) -> (Frame, Data)? {
-        guard let bytes = String(data: data, encoding: .utf8) else {
-            // Non-UTF-8: try to find the frame terminator byte-pattern and split raw.
-            return extractNextFrameRaw(from: data)
-        }
-
-        // Find the first blank-line terminator: \n\n or \r\n\r\n.
+    /// Extract the next SSE frame from an already-decoded string, returning the frame
+    /// and the unconsumed remainder. Called repeatedly from feed() without re-decoding.
+    private func extractNextFrameFromString(_ str: String) -> (Frame, String)? {
+        // Find the first blank-line terminator: \r\n\r\n preferred over \n\n.
         let terminators = ["\r\n\r\n", "\n\n"]
         var firstTermRange: Range<String.Index>?
-        var termLen = 0
         for term in terminators {
-            if let r = bytes.range(of: term) {
+            if let r = str.range(of: term) {
                 if firstTermRange == nil || r.lowerBound < firstTermRange!.lowerBound {
                     firstTermRange = r
-                    termLen = term.count
                 }
             }
         }
 
         guard let termRange = firstTermRange else { return nil }
 
-        let frameStr = String(bytes[..<termRange.lowerBound])
-        let afterTerm = String(bytes[termRange.upperBound...])
+        let frameStr = String(str[..<termRange.lowerBound])
+        let terminator = String(str[termRange])
+        let afterTerm = String(str[termRange.upperBound...])
 
-        let frameData = Data((frameStr + String(bytes[termRange])).utf8)
-        _ = termLen // suppress warning
+        let frameData = Data((frameStr + terminator).utf8)
         let frame = parseFrame(frameStr, raw: frameData)
-        let remainingData = Data(afterTerm.utf8)
 
-        return (frame, remainingData)
+        return (frame, afterTerm)
     }
 
     private func extractNextFrameRaw(from data: Data) -> (Frame, Data)? {
+        guard data.count >= 2 else { return nil }
         // Byte search for \n\n
         let nl: UInt8 = 0x0A
         for i in 0..<(data.count - 1) {

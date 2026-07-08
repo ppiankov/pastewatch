@@ -25,12 +25,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
-    /// WO-159: write-once flag guarded by `headerLock`. Both execute() (calling thread)
-    /// and the URLSession delegate queue can race to write headers; the lock ensures
-    /// exactly one send. execute() no longer writes headers directly — it checks the flag
-    /// under lock and leaves writing to the delegate's didReceive(data:) fast path.
+    /// Write-once flag. Only written from delegate callbacks on the serial URLSession
+    /// delegate queue, so no lock is needed (WO-159 removed the execute() write path;
+    /// WO-167 removed the now-redundant NSLock).
     private var didWriteHeaders = false
-    private let headerLock = NSLock()
 
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private(set) var streamRedactionCount = 0
@@ -107,14 +105,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             resetIdleTimer(timer, task: dataTask)
         }
 
-        // WO-159: use headerLock to ensure exactly one header write even if multiple delegate
-        // callbacks arrive before execute() has had a chance to act on headReceived firing.
-        headerLock.lock()
         if !didWriteHeaders {
             writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
             didWriteHeaders = true
         }
-        headerLock.unlock()
 
         switch redactionMode {
         case "raw_stream":
@@ -124,8 +118,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         case "per_sse_event":
             let result = parser.feed(data)
             if result.overflowFlushed {
-                // Oversized frame: relay raw bytes as fail-safe.
-                writeToSocket(result.overflowBytes)
+                // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
+                writeToSocket(redactRawBytes(result.overflowBytes))
                 return
             }
             for frame in result.frames {
@@ -141,6 +135,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // WO-163: if no data chunk ever arrived (HTTP 204, empty body, upstream drop), the
+        // client socket has received nothing yet. Write headers now so the response is valid.
+        if !didWriteHeaders {
+            writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
+            didWriteHeaders = true
+        }
+
         // Flush any partial SSE remainder on clean close.
         if redactionMode == "per_sse_event" {
             let rem = parser.remainingBytes
@@ -192,6 +193,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             guard let base = ptr.baseAddress else { return }
             _ = send(clientSocket, base, ptr.count, sendFlags)
         }
+    }
+
+    /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
+    private func redactRawBytes(_ raw: Data) -> Data {
+        guard let text = String(data: raw, encoding: .utf8) else { return raw }
+        let matches = DetectionRules.scan(text, config: config)
+        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        guard !filtered.isEmpty else { return raw }
+        streamRedactionCount += filtered.count
+        streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
+        let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
+        return Data(obfuscated.utf8)
     }
 
     private func redactFrame(_ frame: SSEFrameParser.Frame) -> Data {
