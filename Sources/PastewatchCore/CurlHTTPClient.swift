@@ -58,8 +58,9 @@ struct CurlHTTPClient {
         streamingRedactionMode: String = "per_sse_event",
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
         proxySeverity: Severity = .high,
-        /// WO-182: SSE frame bytes to inject before [DONE]. Nil = no alert injection.
-        alertBeforeDone: Data? = nil
+        /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
+        /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
+        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -113,10 +114,10 @@ struct CurlHTTPClient {
                 sendFlags: sendFlags,
                 redactionMode: streamingRedactionMode,
                 config: proxyConfig,
-                severity: proxySeverity,
-                alertBeforeDone: alertBeforeDone
+                severity: proxySeverity
             )
-            return relayStreamingResponse(process: process, bodyPipe: bodyPipe, headerPipe: headerPipe, ctx: ctx)
+            // WO-196: alertBeforeDone passed directly, not through StreamContext.
+            return relayStreamingResponse(process: process, bodyPipe: bodyPipe, headerPipe: headerPipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
         }
 
         process.waitUntilExit()
@@ -183,8 +184,6 @@ struct CurlHTTPClient {
         let redactionMode: String
         let config: PastewatchConfig
         let severity: Severity
-        /// WO-182: SSE frame bytes to inject before the [DONE] sentinel.
-        var alertBeforeDone: Data? = nil
     }
 
     /// Result of per-frame redaction: output bytes + stats.
@@ -194,11 +193,14 @@ struct CurlHTTPClient {
         let types: [String]
     }
 
+    /// WO-196: alertBeforeDone passed directly rather than via StreamContext to avoid
+    /// silent nil-default divergence when StreamContext is constructed without it.
     private static func relayStreamingResponse(
         process: Process,
         bodyPipe: Pipe,
         headerPipe: Pipe,
-        ctx: StreamContext
+        ctx: StreamContext,
+        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
     ) -> Response? {
         // WO-156: read headers incrementally until we see the blank line that marks
         // end-of-headers, then signal headerGroup immediately without waiting for curl to exit.
@@ -264,8 +266,16 @@ struct CurlHTTPClient {
         // not when curl exits. Send them before any body bytes arrive.
         headerGroup.wait()
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
+        // WO-191: retry header send until all bytes written.
         streamingHeaderStr.withCString { ptr in
-            _ = send(ctx.clientSocket, ptr, strlen(ptr), ctx.sendFlags)
+            var remaining = Int(strlen(ptr))
+            var offset = 0
+            while remaining > 0 {
+                let sent = send(ctx.clientSocket, ptr.advanced(by: offset), remaining, ctx.sendFlags)
+                if sent <= 0 { break }
+                offset += sent
+                remaining -= sent
+            }
         }
 
         // WO-162: start body relay AFTER headers have been sent so the client always
@@ -275,7 +285,8 @@ struct CurlHTTPClient {
         let bodyGroup = DispatchGroup()
         bodyGroup.enter()
         DispatchQueue.global().async {
-            let (count, types) = Self.relayBodyChunks(from: bodyPipe, ctx: ctx, alertBeforeDone: ctx.alertBeforeDone)
+            // WO-196: alertBeforeDone passed directly from caller scope, not from StreamContext.
+            let (count, types) = Self.relayBodyChunks(from: bodyPipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
             relayRedactionCount = count
             relayRedactionTypes = types
             bodyGroup.leave()
@@ -293,9 +304,13 @@ struct CurlHTTPClient {
 
     /// WO-155: blocking read loop that relays body pipe chunks to the client socket.
     /// Returns accumulated redaction stats (count, type names) for audit logging.
-    /// WO-182: alertBeforeDone is injected immediately before the [DONE] SSE sentinel so
-    /// SSE consumers (which stop reading at [DONE]) see the alert before the stream ends.
-    private static func relayBodyChunks(from bodyPipe: Pipe, ctx: StreamContext, alertBeforeDone: Data? = nil) -> (Int, [String]) {
+    /// WO-182/WO-192: alertBeforeDone closure is evaluated at [DONE] time with accumulated stream
+    /// counts so stream-only secrets also produce an alert. Nil = no alert injection.
+    private static func relayBodyChunks(
+        from bodyPipe: Pipe,
+        ctx: StreamContext,
+        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
+    ) -> (Int, [String]) {
         var parser = SSEFrameParser()
         let fd = bodyPipe.fileHandleForReading.fileDescriptor
         let chunkSize = 65536
@@ -320,8 +335,11 @@ struct CurlHTTPClient {
                 } else {
                     var assembled = Data()
                     for frame in result.frames {
-                        // WO-182: inject alert before [DONE] so SSE consumers see it.
-                        if frame.data == "[DONE]", let alert = alertBeforeDone {
+                        // WO-182/WO-192: evaluate alert closure at [DONE] time with live stream
+                        // counts so stream-only secrets (body-clean request) also trigger alert.
+                        if frame.data == "[DONE]",
+                           let builder = alertBeforeDone,
+                           let alert = builder(totalCount, totalTypes) {
                             assembled.append(alert)
                         }
                         let r = redactStreamFrame(frame, config: ctx.config, severity: ctx.severity)
@@ -334,9 +352,17 @@ struct CurlHTTPClient {
             } else {
                 outData = chunk
             }
+            // WO-191: retry until all bytes sent or hard error (EPIPE/closed socket).
             outData.withUnsafeBytes { ptr in
                 guard let base = ptr.baseAddress else { return }
-                _ = send(ctx.clientSocket, base, ptr.count, ctx.sendFlags)
+                var remaining = ptr.count
+                var offset = 0
+                while remaining > 0 {
+                    let sent = send(ctx.clientSocket, base.advanced(by: offset), remaining, ctx.sendFlags)
+                    if sent <= 0 { break }
+                    offset += sent
+                    remaining -= sent
+                }
             }
         }
 
@@ -349,9 +375,17 @@ struct CurlHTTPClient {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
                 totalCount += r.count
                 totalTypes.append(contentsOf: r.types)
+                // WO-191: retry until all bytes sent.
                 r.data.withUnsafeBytes { ptr in
                     guard let base = ptr.baseAddress else { return }
-                    _ = send(ctx.clientSocket, base, ptr.count, ctx.sendFlags)
+                    var remaining = ptr.count
+                    var offset = 0
+                    while remaining > 0 {
+                        let sent = send(ctx.clientSocket, base.advanced(by: offset), remaining, ctx.sendFlags)
+                        if sent <= 0 { break }
+                        offset += sent
+                        remaining -= sent
+                    }
                 }
             }
         }
@@ -405,9 +439,12 @@ struct CurlHTTPClient {
         var modifiedJson = json
         modifiedJson["delta"] = modifiedDelta
         let types = filtered.map { $0.displayName }
+        // WO-188: mirror WO-180 — accumulate stats only inside the success branch.
+        // Serialization failure means frame.raw (with the credential) goes to the client;
+        // returning count > 0 would falsely claim a redaction that did not happen.
         guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
               let resultStr = String(data: resultData, encoding: .utf8) else {
-            return FrameRedactionResult(data: frame.raw, count: filtered.count, types: types)
+            return FrameRedactionResult(data: frame.raw, count: 0, types: [])
         }
         return FrameRedactionResult(data: frame.reserializedWith(data: resultStr), count: filtered.count, types: types)
     }

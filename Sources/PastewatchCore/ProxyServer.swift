@@ -279,13 +279,9 @@ public final class ProxyServer {
             stats.secretsRedacted += redactionCount
         }
         statsLock.unlock()
-        // WO-184: on Linux streaming path, the stream branch logs combined body+stream totals,
-        // so suppress the body-only log here to avoid duplicate audit entries.
-        #if !canImport(Darwin)
+        // WO-184/WO-189: suppress body-only log when streaming — stream branch logs combined
+        // body+stream totals on both platforms. macOS forwardStreamingRequest logs at stream end.
         let suppressBodyLog = requestWantsStream
-        #else
-        let suppressBodyLog = false
-        #endif
         if redactionCount > 0 && !suppressBodyLog {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
@@ -343,16 +339,19 @@ public final class ProxyServer {
         #else
         // Linux: URLSession/FoundationNetworking is unreliable on arm64.
         // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
-        // WO-182: pre-build an alert frame for body-scan secrets; Linux relayBodyChunks injects
-        // it before [DONE]. Body-only at this point — stream secrets not yet known on Linux.
-        var linuxAlertBeforeDone: Data? = nil
-        if redactionCount > 0 && injectAlert {
-            let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: redactedTypes)
-            if let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
-               let alertStr = String(data: alertJSON, encoding: .utf8) {
-                linuxAlertBeforeDone = Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+        // WO-192: lazy closure evaluated at [DONE] time with accumulated stream counts so
+        // stream-only secrets (body-clean request) also trigger the [PASTEWATCH] alert on Linux.
+        let linuxAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = injectAlert
+            ? { [self] streamCount, streamTypes in
+                let total = redactionCount + streamCount
+                guard total > 0 else { return nil }
+                let totalTypes = redactedTypes + streamTypes
+                let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
+                guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+                      let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+                return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
             }
-        }
+            : nil
         guard let curlResponse = CurlHTTPClient.execute(
             method: parsed.method,
             url: upstreamURL,
@@ -536,16 +535,15 @@ public final class ProxyServer {
         )
 
         // WO-182: inject the alert frame immediately before [DONE] so SSE consumers
-        // (which stop reading at [DONE]) see it. The closure receives combined body+stream
-        // counts at the moment [DONE] arrives so the alert reflects all redactions to date.
-        relay.bodyRedactionCount = redactionCount
-        relay.bodyRedactionTypes = redactedTypes
+        // (which stop reading at [DONE]) see it. The closure is evaluated with stream-only
+        // counts at [DONE] time; body counts are captured from local scope.
+        // WO-195: body counts captured directly — no relay property assignment needed.
         if injectAlert {
-            relay.buildAlertBeforeDone = { [weak self] bodyCount, bodyTypes, streamCount, streamTypes in
+            relay.buildAlertBeforeDone = { [weak self] streamCount, streamTypes in
                 guard let self = self else { return nil }
-                let total = bodyCount + streamCount
+                let total = redactionCount + streamCount
                 guard total > 0 else { return nil }
-                let totalTypes = bodyTypes + streamTypes
+                let totalTypes = redactedTypes + streamTypes
                 let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
                 guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
                       let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
@@ -719,17 +717,8 @@ public final class ProxyServer {
         }
     }
 
-    /// WO-173: inject a pastewatch alert as a trailing SSE event after the stream ends.
-    /// The agent's SSE consumer will receive it as an extra event after [DONE].
-    func injectAlertIntoStream(clientSocket: Int32, redactionCount: Int, types: [String]) {
-        let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
-        guard let alertJSON = try? JSONSerialization.data(withJSONObject: alert),
-              let alertStr = String(data: alertJSON, encoding: .utf8) else { return }
-        let frame = "event: pastewatch_alert\ndata: \(alertStr)\n\n"
-        frame.withCString { ptr in
-            _ = send(clientSocket, ptr, strlen(ptr), sendFlags)
-        }
-    }
+    // WO-190: injectAlertIntoStream deleted — superseded by buildAlertBeforeDone (macOS)
+    // and the lazy alertBeforeDone closure (Linux). Zero callers as of WO-182.
 
     func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
         guard let json = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any],
