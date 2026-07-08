@@ -49,6 +49,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-195: body-scan counts captured by the closure's own scope (no relay properties needed).
     var buildAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)?
 
+    /// WO-209: retained so writeToSocket() can cancel it on EPIPE without every call site
+    /// threading the task reference through.
+    private weak var activeTask: URLSessionTask?
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — create/cancel must run here.
     /// WO-199: timer is cancel-and-recreated on each data chunk so the event handler
@@ -78,6 +81,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     func execute(request: URLRequest, session: URLSession) {
         let task = session.dataTask(with: request)
         task.delegate = self
+        activeTask = task
         task.resume()
         startIdleTimer(task: task)
 
@@ -259,11 +263,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         writeToSocket(Data(response.utf8))
     }
 
-    /// WO-206: delegates to the shared sendAll() in SocketHelpers.swift, which is also
-    /// used by CurlHTTPClient. Both paths now share one implementation; a fix in sendAll
-    /// propagates to both macOS (URLSession/SSEStreamRelay) and Linux (curl) automatically.
+    /// WO-206: delegates to the shared sendAll() in SocketHelpers.swift.
+    /// WO-209: check return value — on false (EPIPE) the client disconnected.
+    /// Cancel activeTask so the relay stops downloading upstream data instead of
+    /// running the stream to completion and silently discarding every chunk.
     private func writeToSocket(_ data: Data) {
-        sendAll(data, to: clientSocket, flags: sendFlags)
+        if !sendAll(data, to: clientSocket, flags: sendFlags) {
+            activeTask?.cancel()
+        }
     }
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).

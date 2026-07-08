@@ -674,13 +674,8 @@ public final class ProxyServer {
     private func sendError(to socket: Int32, status: Int, message: String) {
         let body = "{\"error\": \"\(message)\"}"
         let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        response.withCString { ptr in
-            let sent = send(socket, ptr, strlen(ptr), sendFlags)
-            if sent < 0 {
-                // Client disconnected — nothing to do, connection will be closed by defer
-                return
-            }
-        }
+        // WO-212: use sendAll() so a large error body is not silently truncated by a partial send().
+        sendAll(Data(response.utf8), to: socket, flags: sendFlags)
     }
 
     private func sendResponse(to socket: Int32, status: Int, headers: [AnyHashable: Any], body: Data) {
@@ -698,16 +693,9 @@ public final class ProxyServer {
 
         var responseData = Data(response.utf8)
         responseData.append(body)
-        responseData.withUnsafeBytes { ptr in
-            let sent = send(socket, ptr.baseAddress, ptr.count, sendFlags)
-            if sent < 0 {
-                // Client disconnected mid-response — logged for observability
-                let errCode = errno
-                FileHandle.standardError.write(
-                    Data("proxy: send failed (errno \(errCode)), client disconnected\n".utf8)
-                )
-            }
-        }
+        // WO-212: use sendAll() so large responses (long JSON bodies, injected alerts) are
+        // not silently truncated by a single send() returning fewer bytes than requested.
+        sendAll(responseData, to: socket, flags: sendFlags)
     }
 
     // MARK: - Alert injection
@@ -808,6 +796,10 @@ public final class ProxyServer {
         }
 
         if let logPath = auditLogPath {
+            // WO-210: serialize seekToEndOfFile+write under statsLock so concurrent handlers
+            // cannot interleave their writes. FileHandle(forWritingAtPath:) opens without
+            // O_APPEND, making the seek+write non-atomic without external serialization.
+            statsLock.lock()
             if let handle = FileHandle(forWritingAtPath: logPath) {
                 handle.seekToEndOfFile()
                 handle.write(Data(line.utf8))
@@ -815,6 +807,7 @@ public final class ProxyServer {
             } else {
                 FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
             }
+            statsLock.unlock()
         }
     }
 }

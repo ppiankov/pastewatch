@@ -272,11 +272,18 @@ struct CurlHTTPClient {
         let headerDeadline = DispatchTime.now() + .seconds(curlSpeedTimeSeconds)
         if headerGroup.wait(timeout: headerDeadline) == .timedOut {
             process.terminate()
+            // WO-208: wait after terminate so the kernel reaps the child and no zombie lingers.
+            process.waitUntilExit()
             return nil
         }
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
         // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
-        sendAll(Data(streamingHeaderStr.utf8), to: ctx.clientSocket, flags: ctx.sendFlags)
+        // WO-211: check return — if the client disconnected before headers arrived, skip body relay.
+        guard sendAll(Data(streamingHeaderStr.utf8), to: ctx.clientSocket, flags: ctx.sendFlags) else {
+            process.terminate()
+            process.waitUntilExit()
+            return nil
+        }
 
         // WO-162: start body relay AFTER headers have been sent so the client always
         // receives the HTTP status line and headers before any body bytes.
@@ -294,6 +301,12 @@ struct CurlHTTPClient {
 
         // Wait for body relay to finish.
         bodyGroup.wait()
+        // WO-207: terminate before waitUntilExit() so that an EPIPE break in relayBodyChunks
+        // (which exits the read loop early, leaving bodyPipe's write-end full) does not deadlock
+        // here: curl blocks on the full pipe, waitUntilExit() blocks on curl — cycle.
+        // terminate() sends SIGTERM so curl closes the pipe and exits cleanly.
+        // This is safe even when curl has already exited (terminate() is a no-op then).
+        process.terminate()
         process.waitUntilExit()
 
         return Response(
