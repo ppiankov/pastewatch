@@ -255,18 +255,6 @@ public final class ProxyServer {
             redactedTypes = result.redactedTypes
         }
 
-        // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
-        statsLock.lock()
-        stats.requestsProcessed += 1
-        if redactionCount > 0 {
-            stats.requestsRedacted += 1
-            stats.secretsRedacted += redactionCount
-        }
-        statsLock.unlock()
-        if redactionCount > 0 {
-            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
-        }
-
         // Forward to upstream
         let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
@@ -282,6 +270,25 @@ public final class ProxyServer {
 
         // Detect whether the request is a streaming call (stream:true in body).
         let requestWantsStream = isStreamingRequest(processedBody)
+
+        // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
+        statsLock.lock()
+        stats.requestsProcessed += 1
+        if redactionCount > 0 {
+            stats.requestsRedacted += 1
+            stats.secretsRedacted += redactionCount
+        }
+        statsLock.unlock()
+        // WO-184: on Linux streaming path, the stream branch logs combined body+stream totals,
+        // so suppress the body-only log here to avoid duplicate audit entries.
+        #if !canImport(Darwin)
+        let suppressBodyLog = requestWantsStream
+        #else
+        let suppressBodyLog = false
+        #endif
+        if redactionCount > 0 && !suppressBodyLog {
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
+        }
 
         #if canImport(Darwin)
         // macOS: URLSession is reliable.
@@ -336,6 +343,16 @@ public final class ProxyServer {
         #else
         // Linux: URLSession/FoundationNetworking is unreliable on arm64.
         // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
+        // WO-182: pre-build an alert frame for body-scan secrets; Linux relayBodyChunks injects
+        // it before [DONE]. Body-only at this point — stream secrets not yet known on Linux.
+        var linuxAlertBeforeDone: Data? = nil
+        if redactionCount > 0 && injectAlert {
+            let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: redactedTypes)
+            if let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+               let alertStr = String(data: alertJSON, encoding: .utf8) {
+                linuxAlertBeforeDone = Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+            }
+        }
         guard let curlResponse = CurlHTTPClient.execute(
             method: parsed.method,
             url: upstreamURL,
@@ -348,7 +365,8 @@ public final class ProxyServer {
             sendFlags: sendFlags,
             streamingRedactionMode: config.responseStreamingRedactionMode,
             proxyConfig: config,
-            proxySeverity: severity
+            proxySeverity: severity,
+            alertBeforeDone: linuxAlertBeforeDone
         ) else {
             sendError(to: clientSocket, status: 502, message: "Bad Gateway")
             return
@@ -369,12 +387,13 @@ public final class ProxyServer {
                 }
                 stats.secretsRedacted += streamCount
                 statsLock.unlock()
+            }
+            // WO-184: log combined totals here (body log was suppressed above for streaming).
+            // Guard: totalCount > 0 covers body-only, stream-only, and combined cases.
+            if totalCount > 0 {
                 logRedaction(path: parsed.path, count: totalCount, types: totalTypes)
             }
-            // WO-173: inject alert as a trailing SSE event when any secrets were redacted.
-            if totalCount > 0 && injectAlert {
-                injectAlertIntoStream(clientSocket: clientSocket, redactionCount: totalCount, types: totalTypes)
-            }
+            // WO-182: alert was injected before [DONE] by relayBodyChunks; no trailing call.
             return
         }
 
@@ -515,6 +534,25 @@ public final class ProxyServer {
             severity: severity,
             idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds
         )
+
+        // WO-182: inject the alert frame immediately before [DONE] so SSE consumers
+        // (which stop reading at [DONE]) see it. The closure receives combined body+stream
+        // counts at the moment [DONE] arrives so the alert reflects all redactions to date.
+        relay.bodyRedactionCount = redactionCount
+        relay.bodyRedactionTypes = redactedTypes
+        if injectAlert {
+            relay.buildAlertBeforeDone = { [weak self] bodyCount, bodyTypes, streamCount, streamTypes in
+                guard let self = self else { return nil }
+                let total = bodyCount + streamCount
+                guard total > 0 else { return nil }
+                let totalTypes = bodyTypes + streamTypes
+                let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
+                guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+                      let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+                return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+            }
+        }
+
         relay.execute(request: request, session: urlSession)
 
         // WO-153: account for secrets redacted from SSE frames in the stream.
@@ -522,15 +560,14 @@ public final class ProxyServer {
         let totalTypes = redactedTypes + relay.streamRedactionTypes
         if relay.streamRedactionCount > 0 {
             statsLock.lock()
-            stats.requestsRedacted += 1
+            // WO-181: mirror WO-174 — only increment requestsRedacted when the body scan did
+            // NOT already count this request (redactionCount == 0). Body + stream = 1 request.
+            if redactionCount == 0 {
+                stats.requestsRedacted += 1
+            }
             stats.secretsRedacted += relay.streamRedactionCount
             statsLock.unlock()
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
-        }
-
-        // WO-173: inject alert as a trailing SSE event when secrets were redacted.
-        if totalCount > 0 && injectAlert {
-            injectAlertIntoStream(clientSocket: clientSocket, redactionCount: totalCount, types: totalTypes)
         }
     }
     #endif
@@ -616,7 +653,8 @@ public final class ProxyServer {
     }
 
     private func sendResponse(to socket: Int32, status: Int, headers: [AnyHashable: Any], body: Data) {
-        var response = "HTTP/1.1 \(status) OK\r\n"
+        // WO-185: use the correct reason phrase — WO-175 fixed streaming paths but missed here.
+        var response = "HTTP/1.1 \(status) \(CurlHTTPClient.httpReasonPhrase(for: status))\r\n"
         // Forward select headers
         for (key, value) in headers {
             let k = "\(key)"
@@ -685,7 +723,6 @@ public final class ProxyServer {
     /// The agent's SSE consumer will receive it as an extra event after [DONE].
     func injectAlertIntoStream(clientSocket: Int32, redactionCount: Int, types: [String]) {
         let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
-        // WO-186: removed spurious alertText binding that was suppressed with _ = alertText
         guard let alertJSON = try? JSONSerialization.data(withJSONObject: alert),
               let alertStr = String(data: alertJSON, encoding: .utf8) else { return }
         let frame = "event: pastewatch_alert\ndata: \(alertStr)\n\n"

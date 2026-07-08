@@ -25,17 +25,30 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
-    /// Write-once flag. Only written from delegate callbacks on the serial URLSession
-    /// delegate queue, so no lock is needed (WO-159 removed the execute() write path;
-    /// WO-167 removed the now-redundant NSLock).
+    /// WO-179: guards didWriteHeaders across the caller thread (execute() error paths)
+    /// and the URLSession delegate queue (didCompleteWithError / didReceive data).
+    private let headersLock = NSLock()
     private var didWriteHeaders = false
     /// WO-170: set by the idle-timer handler before signaling streamDone so that the
     /// async didCompleteWithError callback skips writing headers to the already-closed socket.
+    /// WO-178: also gates streamDone signaling — only the first signal goes through.
     private var timerDidFire = false
+    /// WO-178: prevents double-signal on streamDone when both the idle timer and
+    /// didCompleteWithError reach the signal site.
+    private var streamDoneSignaled = false
 
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private(set) var streamRedactionCount = 0
     private(set) var streamRedactionTypes: [String] = []
+
+    /// WO-182: when non-nil, called just before [DONE] is forwarded to the client socket.
+    /// The closure returns an SSE event frame (raw bytes) to inject, or nil to skip.
+    /// Invoked on the URLSession delegate queue with the accumulated redaction counts at
+    /// that point (body-scan redactions passed in + stream redactions accumulated so far).
+    var buildAlertBeforeDone: ((_ bodyCount: Int, _ bodyTypes: [String], _ streamCount: Int, _ streamTypes: [String]) -> Data?)?
+    /// WO-182: body-scan counts passed in from the caller so the alert can include them.
+    var bodyRedactionCount: Int = 0
+    var bodyRedactionTypes: [String] = []
 
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — schedule/cancel must run here.
@@ -72,8 +85,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             sendErrorDirect(status: 504, message: "Gateway Timeout (no response head)")
             // WO-171: mark headers written so the async didCompleteWithError callback does not
             // overwrite our error response with a spurious "HTTP/1.1 200 OK" preamble.
-            didWriteHeaders = true
+            // WO-179: lock because didCompleteWithError reads this from the delegate queue.
+            headersLock.lock(); didWriteHeaders = true; headersLock.unlock()
             idleTimer?.cancel()
+            // WO-176: wait for the delegate to finish so execute() does not return while
+            // didCompleteWithError is still writing to the socket.
+            _ = streamDone.wait(timeout: .now() + 5)
             return
         }
 
@@ -81,8 +98,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // Error path: headReceived was signalled via urlSession(_:task:didCompleteWithError:)
             sendErrorDirect(status: 502, message: "Bad Gateway")
             // WO-171: same guard — prevent async didCompleteWithError from corrupting the socket.
-            didWriteHeaders = true
+            // WO-179: lock because didCompleteWithError reads this from the delegate queue.
+            headersLock.lock(); didWriteHeaders = true; headersLock.unlock()
             idleTimer?.cancel()
+            // WO-176: wait for delegate to finish before execute() returns.
+            _ = streamDone.wait(timeout: .now() + 5)
             return
         }
 
@@ -113,9 +133,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             resetIdleTimer(timer, task: dataTask)
         }
 
-        if !didWriteHeaders {
+        // WO-179: lock because execute() error paths also write didWriteHeaders.
+        headersLock.lock()
+        let needsHeaders = !didWriteHeaders
+        if needsHeaders { didWriteHeaders = true }
+        headersLock.unlock()
+        if needsHeaders {
             writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
-            didWriteHeaders = true
         }
 
         switch redactionMode {
@@ -131,6 +155,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 return
             }
             for frame in result.frames {
+                // WO-182: inject the alert immediately before [DONE] so SSE consumers
+                // (which stop reading at [DONE]) see the alert before the stream ends.
+                if frame.data == "[DONE]",
+                   let builder = buildAlertBeforeDone,
+                   let alertData = builder(bodyRedactionCount, bodyRedactionTypes, streamRedactionCount, streamRedactionTypes) {
+                    writeToSocket(alertData)
+                }
                 let outData = redactFrame(frame)
                 writeToSocket(outData)
             }
@@ -143,37 +174,51 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        // WO-163: if no data chunk ever arrived (HTTP 204, empty body, upstream drop), the
-        // client socket has received nothing yet. Write headers now so the response is valid.
-        // WO-170: skip if the idle timer already fired — execute() has returned and the caller
-        // has closed/reused the socket; writing headers here would corrupt the next connection.
-        if !didWriteHeaders && !timerDidFire {
+        // WO-177: capture timerDidFire once under the lock; all socket writes below are gated on it.
+        headersLock.lock()
+        let alreadyWritten = didWriteHeaders
+        let timerFired = timerDidFire
+        // WO-163: if no data chunk arrived, write headers now. WO-170/177: skip on timer fire.
+        if !alreadyWritten && !timerFired {
             writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
             didWriteHeaders = true
         }
+        headersLock.unlock()
 
-        // Flush any partial SSE remainder on clean close.
-        // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
-        // credential that was split across chunk boundaries and never saw the per-frame path.
-        if redactionMode == "per_sse_event" {
-            let rem = parser.remainingBytes
-            if !rem.isEmpty {
-                writeToSocket(redactRawBytes(rem))
+        // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
+        // fires the socket is dead; writing to it would corrupt the next connection on that fd.
+        if !timerFired {
+            // Flush any partial SSE remainder on clean close.
+            // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
+            // credential that was split across chunk boundaries and never saw the per-frame path.
+            if redactionMode == "per_sse_event" {
+                let rem = parser.remainingBytes
+                if !rem.isEmpty {
+                    writeToSocket(redactRawBytes(rem))
+                }
             }
-        }
 
-        if let err = error {
-            streamError = err
-            // Surface mid-stream upstream drop predictably.
-            let notice = Data("[PASTEWATCH-STREAM-DROP] upstream disconnect: \(err.localizedDescription)\n\n".utf8)
-            writeToSocket(notice)
+            if let err = error {
+                streamError = err
+                // Surface mid-stream upstream drop predictably.
+                let notice = Data("[PASTEWATCH-STREAM-DROP] upstream disconnect: \(err.localizedDescription)\n\n".utf8)
+                writeToSocket(notice)
+            }
         }
 
         // If head was never received (connection refused, DNS fail), signal head too.
         if responseStatus == 0 {
             headReceived.signal()
         }
-        streamDone.signal()
+        // WO-178: guard against double-signal when both the idle timer handler and this
+        // callback reach the signal site (timer fires mid-stream, then curl still calls back).
+        headersLock.lock()
+        let alreadySignaled = streamDoneSignaled
+        if !alreadySignaled { streamDoneSignaled = true }
+        headersLock.unlock()
+        if !alreadySignaled {
+            streamDone.signal()
+        }
     }
 
     // MARK: - Private
@@ -234,14 +279,16 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         guard !filtered.isEmpty else { return frame.raw }
         let obfuscated = Obfuscator.obfuscate(jsonStr, matches: filtered)
 
-        // WO-153: accumulate streaming redaction stats.
-        streamRedactionCount += filtered.count
-        streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
-
         // Re-emit with the obfuscated text substituted in.
+        // WO-180: accumulate stats only after serialization succeeds — if serialization
+        // fails we fall back to the raw frame (secret still in it), so stats must not claim
+        // a redaction that did not reach the client.
         if let modifiedPayload = substituteText(in: json, newText: obfuscated),
            let resultData = try? JSONSerialization.data(withJSONObject: modifiedPayload),
            let resultStr = String(data: resultData, encoding: .utf8) {
+            // WO-153: accumulate streaming redaction stats.
+            streamRedactionCount += filtered.count
+            streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
             return frame.reserializedWith(data: resultStr)
         }
         return frame.raw
@@ -275,9 +322,17 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // WO-170: mark timer fired BEFORE signaling streamDone so that the async
             // didCompleteWithError callback (which runs on the URLSession delegate queue)
             // sees the flag and skips writing headers to the already-closed socket.
-            self?.timerDidFire = true
+            guard let self = self else { return }
+            // WO-178: guard against double-signal — didCompleteWithError may also fire.
+            self.headersLock.lock()
+            self.timerDidFire = true
+            let alreadySignaled = self.streamDoneSignaled
+            if !alreadySignaled { self.streamDoneSignaled = true }
+            self.headersLock.unlock()
             task?.cancel()
-            self?.streamDone.signal()
+            if !alreadySignaled {
+                self.streamDone.signal()
+            }
         }
         timer.resume()
         idleTimer = timer

@@ -57,7 +57,9 @@ struct CurlHTTPClient {
         sendFlags: Int32 = 0,
         streamingRedactionMode: String = "per_sse_event",
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
-        proxySeverity: Severity = .high
+        proxySeverity: Severity = .high,
+        /// WO-182: SSE frame bytes to inject before [DONE]. Nil = no alert injection.
+        alertBeforeDone: Data? = nil
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -111,7 +113,8 @@ struct CurlHTTPClient {
                 sendFlags: sendFlags,
                 redactionMode: streamingRedactionMode,
                 config: proxyConfig,
-                severity: proxySeverity
+                severity: proxySeverity,
+                alertBeforeDone: alertBeforeDone
             )
             return relayStreamingResponse(process: process, bodyPipe: bodyPipe, headerPipe: headerPipe, ctx: ctx)
         }
@@ -180,6 +183,8 @@ struct CurlHTTPClient {
         let redactionMode: String
         let config: PastewatchConfig
         let severity: Severity
+        /// WO-182: SSE frame bytes to inject before the [DONE] sentinel.
+        var alertBeforeDone: Data? = nil
     }
 
     /// Result of per-frame redaction: output bytes + stats.
@@ -246,7 +251,9 @@ struct CurlHTTPClient {
                     accumulated = Data()
                     continue
                 }
-                parsedStatus = blockStatus == 0 ? 200 : blockStatus
+                // WO-183: if blockStatus==0 we hit EOF after a 1xx interim (100-Continue +
+                // upstream drop). Do not fabricate 200; surface as 502.
+                parsedStatus = (blockStatus == 0) ? 502 : blockStatus
                 parsedHeaders = blockHeaders
                 break
             }
@@ -268,7 +275,7 @@ struct CurlHTTPClient {
         let bodyGroup = DispatchGroup()
         bodyGroup.enter()
         DispatchQueue.global().async {
-            let (count, types) = Self.relayBodyChunks(from: bodyPipe, ctx: ctx)
+            let (count, types) = Self.relayBodyChunks(from: bodyPipe, ctx: ctx, alertBeforeDone: ctx.alertBeforeDone)
             relayRedactionCount = count
             relayRedactionTypes = types
             bodyGroup.leave()
@@ -286,7 +293,9 @@ struct CurlHTTPClient {
 
     /// WO-155: blocking read loop that relays body pipe chunks to the client socket.
     /// Returns accumulated redaction stats (count, type names) for audit logging.
-    private static func relayBodyChunks(from bodyPipe: Pipe, ctx: StreamContext) -> (Int, [String]) {
+    /// WO-182: alertBeforeDone is injected immediately before the [DONE] SSE sentinel so
+    /// SSE consumers (which stop reading at [DONE]) see the alert before the stream ends.
+    private static func relayBodyChunks(from bodyPipe: Pipe, ctx: StreamContext, alertBeforeDone: Data? = nil) -> (Int, [String]) {
         var parser = SSEFrameParser()
         let fd = bodyPipe.fileHandleForReading.fileDescriptor
         let chunkSize = 65536
@@ -311,6 +320,10 @@ struct CurlHTTPClient {
                 } else {
                     var assembled = Data()
                     for frame in result.frames {
+                        // WO-182: inject alert before [DONE] so SSE consumers see it.
+                        if frame.data == "[DONE]", let alert = alertBeforeDone {
+                            assembled.append(alert)
+                        }
                         let r = redactStreamFrame(frame, config: ctx.config, severity: ctx.severity)
                         assembled.append(r.data)
                         totalCount += r.count
