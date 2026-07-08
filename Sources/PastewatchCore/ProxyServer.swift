@@ -42,6 +42,11 @@ public final class ProxyServer {
     let insecureTLS: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
+    /// WO-245: cap concurrent connections so an adversarial slow upstream cannot pin an
+    /// unbounded number of threads indefinitely. Each accepted connection acquires one slot;
+    /// accept() blocks when the cap is reached. Set to 64 (well above any realistic workload
+    /// and far below the default system thread cap, which defaults to ~512).
+    private let connectionSlots = DispatchSemaphore(value: 64)
     /// WO-160: guards all mutations of `stats` from concurrent connection handlers.
     private let statsLock = NSLock()
     /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
@@ -239,7 +244,11 @@ public final class ProxyServer {
 
             guard clientSocket >= 0 else { continue }
 
+            // WO-245: acquire before dispatching so we do not exceed the connection cap.
+            // accept() resumes immediately once a handler slot frees up.
+            connectionSlots.wait()
             queue.async { [weak self] in
+                defer { self?.connectionSlots.signal() }
                 self?.handleConnection(clientSocket)
             }
         }

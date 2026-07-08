@@ -148,7 +148,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         socketWriteLock.lock()
         let shouldExit = clientEpipe || timerDidFire
         let needsHeaders = !didWriteHeaders
-        if needsHeaders && !shouldExit { didWriteHeaders = true }
+        // WO-241: set didWriteHeaders even when shouldExit=true so didCompleteWithError
+        // does not attempt a spurious sendAll() to the already-dead client socket.
+        if needsHeaders { didWriteHeaders = true }
         socketWriteLock.unlock()
         guard !shouldExit else { return }
 
@@ -179,6 +181,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             if result.overflowFlushed {
                 // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
                 writeToSocket(redactRawBytes(result.overflowBytes))
+                // WO-244: writeToSocket() may have set clientEpipe and cancelled activeTask,
+                // but the idle timer is still armed. Cancel it explicitly so execute() does not
+                // wait up to 60s for a timer that will fire against a dead connection.
+                // timerQueue.async (not sync) to avoid deadlock if this callback fires from timerQueue.
+                timerQueue.async { [weak self] in
+                    self?.idleTimer?.cancel()
+                }
                 return
             }
             // WO-215: break out of the frame loop on EPIPE so we do not make redundant
@@ -232,20 +241,35 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         socketWriteLock.lock()
         let alreadyWritten = didWriteHeaders
         let timerFired = timerDidFire
+        socketWriteLock.unlock()
+
+        // WO-242: writeStreamingHeaders() calls sendAll(), a potentially-blocking syscall.
+        // Holding socketWriteLock across it pins the lock for the full send duration, stalling
+        // the idle timer event handler (timerQueue → socketWriteLock.lock()) for that window.
+        // Move the header write outside the lock; the alreadyWritten/timerFired snapshot above
+        // is stable — this callback and didReceive run on the serial URLSession delegate queue.
         // WO-163: if no data chunk arrived, write headers now. WO-170/177: skip on timer fire.
         // WO-228: check return value — on EPIPE the client is already gone; set clientEpipe so
         // the remainder flush and drop notice below are also skipped (matches WO-222 logic).
         if !alreadyWritten && !timerFired {
             let ok = writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
+            socketWriteLock.lock()
             didWriteHeaders = true
             if !ok { clientEpipe = true }
+            socketWriteLock.unlock()
         }
+
+        // WO-239: re-snapshot clientEpipe under socketWriteLock. The connection thread
+        // (504 timeout: execute() → sendErrorDirect() → writeToSocket()) may have set it
+        // between the unlock above and this read. The bare read in the old code was the race.
+        socketWriteLock.lock()
+        let epipe = clientEpipe
         socketWriteLock.unlock()
 
         // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
         // fires the socket is dead; writing to it would corrupt the next connection on that fd.
         // WO-227: also guard behind clientEpipe — client is gone; flush burns CPU and inflates stats.
-        if !timerFired && !clientEpipe {
+        if !timerFired && !epipe {
             // Flush any partial SSE remainder on clean close.
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.

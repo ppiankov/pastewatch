@@ -358,11 +358,25 @@ struct CurlHTTPClient {
                     // WO-164: a 4MB+ frame bypassed the normal per-frame path; redact it
                     // as raw text rather than forwarding secrets unscanned.
                     let r = redactRawBytes(result.overflowBytes, config: ctx.config, severity: ctx.severity)
-                    totalCount += r.count
-                    totalTypes.append(contentsOf: r.types)
                     outData = r.data
+                    // WO-243: defer stat accumulation until after successful send.
+                    // On EPIPE the client never received the bytes; counting them inflates the
+                    // audit log and secretsRedacted with secrets that were never actually redacted
+                    // to anyone. The send check is below after outData is assembled.
+                    if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+                        totalCount += r.count
+                        totalTypes.append(contentsOf: r.types)
+                        continue
+                    } else {
+                        clientEpipe = true
+                        break
+                    }
                 } else {
+                    // WO-243: build assembled data and a parallel pending-stats buffer. Apply
+                    // stats only after sendAll() succeeds so EPIPE frames are not counted.
                     var assembled = Data()
+                    var pendingCount = 0
+                    var pendingTypes: [String] = []
                     for frame in result.frames {
                         // WO-182/WO-192: evaluate alert closure at [DONE] time with live stream
                         // counts so stream-only secrets (body-clean request) also trigger alert.
@@ -377,10 +391,18 @@ struct CurlHTTPClient {
                         guard frame.data != "[DONE]" else { assembled.append(frame.raw); continue }
                         let r = redactSSEFrame(frame, config: ctx.config, severity: ctx.severity)
                         assembled.append(r.data)
-                        totalCount += r.count
-                        totalTypes.append(contentsOf: r.types)
+                        pendingCount += r.count
+                        pendingTypes.append(contentsOf: r.types)
                     }
                     outData = assembled
+                    if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+                        totalCount += pendingCount
+                        totalTypes.append(contentsOf: pendingTypes)
+                        continue
+                    } else {
+                        clientEpipe = true
+                        break
+                    }
                 }
             } else {
                 outData = chunk
