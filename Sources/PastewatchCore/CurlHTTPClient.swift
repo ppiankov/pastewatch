@@ -264,9 +264,18 @@ struct CurlHTTPClient {
 
         // WO-156 cont.: headers are ready as soon as the blank header line is read,
         // not when curl exits. Send them before any body bytes arrive.
-        headerGroup.wait()
+        // WO-204: --speed-limit/--speed-time activate only once data flows; they do not fire
+        // during TCP-connected-but-no-headers phase, so headerGroup.wait() can block the proxy
+        // thread indefinitely against a server that accepts TCP but stalls before sending headers.
+        // Use an explicit deadline equal to curlSpeedTimeSeconds (the same idle budget curl uses
+        // once data starts); terminate curl and return nil on timeout.
+        let headerDeadline = DispatchTime.now() + .seconds(curlSpeedTimeSeconds)
+        if headerGroup.wait(timeout: headerDeadline) == .timedOut {
+            process.terminate()
+            return nil
+        }
         let streamingHeaderStr = buildStreamingResponseHeaders(status: parsedStatus, upstreamHeaders: parsedHeaders)
-        // WO-191/WO-200: retry header send until all bytes written.
+        // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
         sendAll(Data(streamingHeaderStr.utf8), to: ctx.clientSocket, flags: ctx.sendFlags)
 
         // WO-162: start body relay AFTER headers have been sent so the client always
@@ -346,8 +355,10 @@ struct CurlHTTPClient {
             } else {
                 outData = chunk
             }
-            // WO-191/WO-200: retry until all bytes sent or hard error (EPIPE/closed socket).
-            sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags)
+            // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
+            // WO-205: check return value — on EPIPE the client disconnected; draining the rest
+            // of the upstream pipe burns CPU and blocks the connection thread unnecessarily.
+            if !sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) { break }
         }
 
         // Flush partial SSE remainder at EOF.
@@ -359,8 +370,8 @@ struct CurlHTTPClient {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
                 totalCount += r.count
                 totalTypes.append(contentsOf: r.types)
-                // WO-191/WO-200: retry until all bytes sent.
-                sendAll(r.data, to: ctx.clientSocket, flags: ctx.sendFlags)
+                // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
+                _ = sendAll(r.data, to: ctx.clientSocket, flags: ctx.sendFlags)
             }
         }
         return (totalCount, totalTypes)
@@ -437,26 +448,6 @@ struct CurlHTTPClient {
         }
         response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
         return response
-    }
-
-    /// WO-200: shared send-all helper used by relayStreamingResponse (header) and
-    /// relayBodyChunks (body chunks, EOF remainder) to avoid 3× inline retry loops.
-    /// Returns false if a hard error (EPIPE / closed socket) terminates the loop early.
-    @discardableResult
-    private static func sendAll(_ data: Data, to socket: Int32, flags: Int32) -> Bool {
-        var sent = true
-        data.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            var remaining = ptr.count
-            var offset = 0
-            while remaining > 0 {
-                let n = send(socket, base.advanced(by: offset), remaining, flags)
-                if n <= 0 { sent = false; break }
-                offset += n
-                remaining -= n
-            }
-        }
-        return sent
     }
 
     /// WO-175: map common HTTP status codes to their canonical reason phrase.

@@ -259,19 +259,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         writeToSocket(Data(response.utf8))
     }
 
+    /// WO-206: delegates to the shared sendAll() in SocketHelpers.swift, which is also
+    /// used by CurlHTTPClient. Both paths now share one implementation; a fix in sendAll
+    /// propagates to both macOS (URLSession/SSEStreamRelay) and Linux (curl) automatically.
     private func writeToSocket(_ data: Data) {
-        // WO-191: retry until all bytes sent or a hard error (EPIPE/closed socket).
-        data.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            var remaining = ptr.count
-            var offset = 0
-            while remaining > 0 {
-                let sent = send(clientSocket, base.advanced(by: offset), remaining, sendFlags)
-                if sent <= 0 { break }
-                offset += sent
-                remaining -= sent
-            }
-        }
+        sendAll(data, to: clientSocket, flags: sendFlags)
     }
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).

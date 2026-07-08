@@ -759,9 +759,14 @@ public final class ProxyServer {
             .joined(separator: ", ")
 
         // Deduplicate: skip if same count+types as last log (conversation history re-scan)
+        // WO-203: lastLogSignature is read+written from logRedaction(), which is called from
+        // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
+        // concurrent connections do not race on the dedup check.
         let signature = "\(count):\(breakdown)"
+        statsLock.lock()
         let isRepeat = signature == lastLogSignature
         lastLogSignature = signature
+        statsLock.unlock()
 
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
