@@ -359,13 +359,13 @@ struct CurlHTTPClient {
                     // as raw text rather than forwarding secrets unscanned.
                     let r = redactRawBytes(result.overflowBytes, config: ctx.config, severity: ctx.severity)
                     outData = r.data
-                    // WO-243: defer stat accumulation until after successful send.
-                    // On EPIPE the client never received the bytes; counting them inflates the
-                    // audit log and secretsRedacted with secrets that were never actually redacted
-                    // to anyone. The send check is below after outData is assembled.
+                    // WO-256: record detections before sendAll() — if the client EPIPEs, the
+                    // credential was still present in the stream and was redacted from the bytes
+                    // we attempted to send. Consistent with the assembled-frames path (WO-250)
+                    // and macOS redactRawBytes(). Chosen policy: always-record on detect.
+                    totalCount += r.count
+                    totalTypes.append(contentsOf: r.types)
                     if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
-                        totalCount += r.count
-                        totalTypes.append(contentsOf: r.types)
                         continue
                     } else {
                         clientEpipe = true

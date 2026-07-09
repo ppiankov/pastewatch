@@ -245,14 +245,21 @@ public final class ProxyServer {
             guard clientSocket >= 0 else { continue }
 
             // WO-245: acquire before dispatching so we do not exceed the connection cap.
-            // accept() resumes immediately once a handler slot frees up.
-            // WO-247: re-check running after wait() — stop() signals once to unblock an
-            // in-progress wait(); without the guard the slot would dispatch a stale fd.
-            // WO-253: signal() before break so the consumed slot is returned. Without this,
-            // the semaphore count is permanently decremented — latent bug on restart paths.
-            connectionSlots.wait()
+            // WO-247: re-check running after acquiring so a stale fd is not dispatched.
+            // WO-253: signal() before break so the consumed slot is returned.
+            // WO-255: poll with a 100ms timeout instead of blocking indefinitely.
+            // A blocking wait() required stop() to signal unconditionally (WO-247), but that
+            // inflated the semaphore count when accept() returned EBADF (the common shutdown
+            // case) — the thread never called wait() at all, so the signal leaked. Polling
+            // lets the thread notice running=false within 100ms without a phantom signal.
+            var gotSlot = false
+            while running {
+                if connectionSlots.wait(timeout: .now() + 0.1) == .success {
+                    gotSlot = true; break
+                }
+            }
             guard running else {
-                connectionSlots.signal()
+                if gotSlot { connectionSlots.signal() }
                 close(clientSocket)
                 break
             }
@@ -270,10 +277,10 @@ public final class ProxyServer {
             close(serverSocket)
             serverSocket = -1
         }
-        // WO-247: unblock accept thread if it is waiting on connectionSlots (all 64 slots
-        // occupied). Without this signal, stop() returns but the accept thread stays parked
-        // indefinitely, keeping the process alive and pinning 64 connection handlers.
-        connectionSlots.signal()
+        // WO-255: no unconditional signal here. WO-247's signal was needed because the
+        // blocking wait() could park the thread forever when all 64 slots were occupied at
+        // shutdown. The WO-255 100ms poll loop handles that case: the thread sees running=false
+        // on the next tick and exits without needing an external wakeup.
         // WO-225: drain pending async audit log writes before returning so no log lines are
         // dropped when the caller exits immediately after stop().
         // WO-231: logQueue.sync uses pthread_mutex internally — NOT safe to call from a POSIX
