@@ -248,8 +248,11 @@ public final class ProxyServer {
             // accept() resumes immediately once a handler slot frees up.
             // WO-247: re-check running after wait() — stop() signals once to unblock an
             // in-progress wait(); without the guard the slot would dispatch a stale fd.
+            // WO-253: signal() before break so the consumed slot is returned. Without this,
+            // the semaphore count is permanently decremented — latent bug on restart paths.
             connectionSlots.wait()
             guard running else {
+                connectionSlots.signal()
                 close(clientSocket)
                 break
             }

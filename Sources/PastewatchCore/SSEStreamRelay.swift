@@ -199,19 +199,20 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 // (which stop reading at [DONE]) see the alert before the stream ends.
                 // WO-182: invoke closure at [DONE] time with live stream counts.
                 // WO-195: body counts are captured in the closure's own scope.
-                if frame.data == "[DONE]",
-                   let builder = buildAlertBeforeDone,
-                   let alertData = builder(streamRedactionCount, streamRedactionTypes) {
-                    if !sendAll(alertData, to: clientSocket, flags: sendFlags) {
-                        clientEpipe = true; activeTask?.cancel()
-                        epipe = true
-                        break
-                    }
-                }
                 // WO-201: skip redactFrame for [DONE] — the function's first line already
                 // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
+                // WO-251: combine alert + [DONE] into one sendAll so there is no EPIPE window
+                // between them. Two separate sendAll calls could deliver the alert then fail on
+                // [DONE], leaving SSE consumers (EventSource, openai-node) hung — they wait for
+                // [DONE] to close the stream and never receive it.
                 guard frame.data != "[DONE]" else {
-                    if !sendAll(frame.raw, to: clientSocket, flags: sendFlags) {
+                    var toSend = Data()
+                    if let builder = buildAlertBeforeDone,
+                       let alertData = builder(streamRedactionCount, streamRedactionTypes) {
+                        toSend.append(alertData)
+                    }
+                    toSend.append(frame.raw)
+                    if !sendAll(toSend, to: clientSocket, flags: sendFlags) {
                         clientEpipe = true; activeTask?.cancel()
                         epipe = true
                     }
@@ -254,8 +255,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-246: skip when responseStatus==0 (connection failure). execute() will call
         // sendErrorDirect(502) after headReceived.signal(); writing 200 headers here first
         // corrupts the HTTP framing seen by the client.
+        // WO-252: the ternary `responseStatus==0?200:responseStatus` is dead code — the guard
+        // above requires responseStatus != 0, so the condition can never be true. Simplified.
         if !alreadyWritten && !timerFired && responseStatus != 0 {
-            let ok = writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
+            let ok = writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
             socketWriteLock.lock()
             didWriteHeaders = true
             if !ok { clientEpipe = true }
@@ -276,19 +279,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // Flush any partial SSE remainder on clean close.
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.
+            var epipeAfterFlush = false
             if redactionMode == "per_sse_event" {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
                     writeToSocket(redactRawBytes(rem))
+                    // WO-249: re-snapshot clientEpipe under socketWriteLock. writeToSocket()
+                    // above may have set it — gate the drop-notice on the fresh value so we do
+                    // not fire one wasted sendAll() call against a now-dead socket.
+                    // WO-254: snapshot taken inside the flush branch only — no lock needed when
+                    // the remainder was empty (no write occurred, epipe cannot have changed).
+                    socketWriteLock.lock()
+                    epipeAfterFlush = clientEpipe
+                    socketWriteLock.unlock()
                 }
             }
-
-            // WO-249: re-snapshot clientEpipe under socketWriteLock. writeToSocket() (remainder
-            // flush above) may have set it — gate the drop-notice on the fresh value so we do
-            // not fire one wasted sendAll() call against a now-dead socket.
-            socketWriteLock.lock()
-            let epipeAfterFlush = clientEpipe
-            socketWriteLock.unlock()
 
             if let err = error, !epipeAfterFlush {
                 // WO-237: streamError property removed (was write-only dead state). Surface via socket.

@@ -404,6 +404,12 @@ struct CurlHTTPClient {
                         totalTypes.append(contentsOf: pendingTypes)
                         continue
                     } else {
+                        // WO-250: credential was detected and redacted (pendingCount > 0) even
+                        // though the send failed. Record the detection so the audit log is not
+                        // silent about secrets that were present in the stream, regardless of
+                        // whether the redacted bytes reached the client.
+                        totalCount += pendingCount
+                        totalTypes.append(contentsOf: pendingTypes)
                         clientEpipe = true
                         break
                     }
