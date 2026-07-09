@@ -80,6 +80,14 @@ public final class ProxyServer {
         let body: String
     }
 
+    // WO-273: distinct failure cases so handleConnection can send the correct HTTP status.
+    private enum ReadResult {
+        case success(String)
+        case timeout         // EAGAIN / SO_RCVTIMEO — 408 appropriate
+        case transportError  // ECONNRESET, EBADF, etc. — peer gone; no HTTP response useful
+        case encodingError   // body bytes not valid UTF-8 — 400 appropriate
+    }
+
     /// Bundles the per-request context passed from handleConnection to the platform-specific
     /// forwardDarwinRequest / forwardLinuxRequest helpers, reducing parameter counts.
     private struct ForwardContext {
@@ -353,10 +361,20 @@ public final class ProxyServer {
             return
         }
 
-        // WO-270: send 408 when readHTTPRequest returns nil (timeout or connection error)
-        // so the client gets an HTTP-level response rather than a bare TCP FIN.
-        guard let request = readHTTPRequest(from: clientSocket) else {
+        // WO-270: send appropriate HTTP error when readHTTPRequest fails.
+        // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
+        let readResult = readHTTPRequest(from: clientSocket)
+        let request: String
+        switch readResult {
+        case .success(let raw):
+            request = raw
+        case .timeout:
             sendError(to: clientSocket, status: 408, message: "Request Timeout")
+            return
+        case .transportError:
+            return  // peer already gone; HTTP response wasted and cannot be delivered
+        case .encodingError:
+            sendError(to: clientSocket, status: 400, message: "Bad Request")
             return
         }
 
@@ -720,23 +738,38 @@ public final class ProxyServer {
     private let sendFlags: Int32 = Int32(MSG_NOSIGNAL)
     #endif
 
-    private func readHTTPRequest(from socket: Int32) -> String? {
+    private func readHTTPRequest(from socket: Int32) -> ReadResult {
         var buffer = [UInt8](repeating: 0, count: 1_048_576) // 1MB max
         var accumulated = Data()
-        var contentLength = 0
+        // WO-272: nil = Content-Length header absent; 0 = "Content-Length: 0" (zero body expected).
+        // The previous Int default of 0 made bodyReceived >= contentLength always true after the
+        // separator was found, truncating the body for requests without Content-Length.
+        var contentLength: Int? = nil
         var headerEnd = false
         var headerEndIndex = 0
 
+        // WO-274: monotonic deadline bounds the total function wall-clock time regardless of
+        // how many EINTR retries occur. SO_RCVTIMEO is per-call; a signal arriving every N<30s
+        // resets the clock, allowing the handler to hold its handlerGroup entry indefinitely.
+        let deadline = DispatchTime.now() + .seconds(30)
+
         let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
         while true {
+            let prevCount = accumulated.count
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
-            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — return nil so handleConnection
+            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — return .timeout so handleConnection
             // sends 408 and exits, releasing the handlerGroup entry.
             // WO-268: EINTR means a signal interrupted recv() — the connection is healthy;
             // retry. Mirrors sendAll()'s EINTR loop (WO-214). All other negatives are errors.
             if bytesRead < 0 {
-                if errno == EINTR { continue }
-                return nil
+                if errno == EINTR {
+                    // WO-274: check cumulative deadline on every EINTR so a stream of signals
+                    // cannot hold the handlerGroup entry beyond the intended 30s window.
+                    if DispatchTime.now() > deadline { return .timeout }
+                    continue
+                }
+                // WO-273: EAGAIN = SO_RCVTIMEO expired; all other errors = transport failure.
+                return errno == EAGAIN ? .timeout : .transportError
             }
             guard bytesRead > 0 else { break }
             accumulated.append(contentsOf: buffer[0..<bytesRead])
@@ -744,26 +777,39 @@ public final class ProxyServer {
             // WO-269: search for \r\n\r\n at the byte level so headerEndIndex is a byte
             // offset consistent with accumulated.count. str.distance() counts Unicode
             // grapheme clusters — diverges from byte count for any non-ASCII header value.
-            if !headerEnd, let sepRange = accumulated.range(of: separator) {
-                headerEnd = true
-                headerEndIndex = sepRange.upperBound
-                let headerData = accumulated[..<sepRange.lowerBound]
-                if let headerStr = String(data: headerData, encoding: .utf8) {
-                    for line in headerStr.components(separatedBy: "\r\n")
-                        where line.lowercased().hasPrefix("content-length:") {
-                        let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                        contentLength = Int(val) ?? 0
+            // WO-276: windowed search — separator can only straddle the boundary between old
+            // and new bytes, so start 3 bytes before the new data (separator is 4 bytes).
+            // Reduces total scan work from O(n×chunks) to O(n).
+            if !headerEnd {
+                let searchStart = max(0, prevCount - (separator.count - 1))
+                if let sepRange = accumulated.range(of: separator, in: searchStart..<accumulated.count) {
+                    headerEnd = true
+                    headerEndIndex = sepRange.upperBound
+                    let headerData = accumulated[..<sepRange.lowerBound]
+                    if let headerStr = String(data: headerData, encoding: .utf8) {
+                        for line in headerStr.components(separatedBy: "\r\n")
+                            where line.lowercased().hasPrefix("content-length:") {
+                            let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                            contentLength = Int(val)
+                        }
                     }
                 }
             }
 
             if headerEnd {
-                let bodyReceived = accumulated.count - headerEndIndex
-                if bodyReceived >= contentLength { break }
+                // WO-272: only exit on length when Content-Length was present. If absent, read
+                // until orderly EOF (bytesRead == 0) so body bytes beyond the separator chunk
+                // are not silently dropped — credentials in those bytes would bypass redaction.
+                if let cl = contentLength {
+                    let bodyReceived = accumulated.count - headerEndIndex
+                    if bodyReceived >= cl { break }
+                }
             }
         }
 
-        return String(data: accumulated, encoding: .utf8)
+        // WO-273: distinguish encoding failure from timeout so the caller sends 400, not 408.
+        guard let raw = String(data: accumulated, encoding: .utf8) else { return .encodingError }
+        return .success(raw)
     }
 
     private func parseHTTPRequest(_ raw: String) -> HTTPRequest? {
