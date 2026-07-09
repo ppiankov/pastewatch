@@ -52,7 +52,19 @@ public final class ProxyServer {
     /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
     /// statsLock so concurrent handlers do not serialize behind file operations.
     private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
-    private var running = false
+    /// WO-234: barrier group lets stop() wait for in-flight handlers before draining logQueue.
+    /// Each dispatched handler enters the group; stop() barrier-waits so logQueue.sync sees
+    /// all handler-enqueued audit writes, not just the ones enqueued before stop() was called.
+    private let handlerGroup = DispatchGroup()
+    /// WO-258: guards cross-thread reads/writes of _running. Plain var Bool is a data race
+    /// when written by stop() and read by the accept-loop poll on different threads. NSLock is
+    /// consistent with statsLock / socketWriteLock / signalLock already in this file.
+    private let runningLock = NSLock()
+    private var _running = false
+    private var running: Bool {
+        get { runningLock.lock(); defer { runningLock.unlock() }; return _running }
+        set { runningLock.lock(); defer { runningLock.unlock() }; _running = newValue }
+    }
     private lazy var urlSession: URLSession = makeSession()
 
     public struct RedactionStats {
@@ -263,9 +275,17 @@ public final class ProxyServer {
                 close(clientSocket)
                 break
             }
-            queue.async { [weak self] in
-                defer { self?.connectionSlots.signal() }
-                self?.handleConnection(clientSocket)
+            // WO-257: capture connectionSlots directly (strong ref to the semaphore object)
+            // so signal() fires unconditionally even if ProxyServer is released during teardown.
+            // [weak self] made signal() contingent on self being non-nil — GCD teardown (XCTest)
+            // races the dispatch and permanently leaks the slot.
+            // WO-234: enter handlerGroup so stop() can barrier-wait for all in-flight handlers
+            // before draining logQueue (ensuring all handler-enqueued log writes are flushed).
+            let slots = connectionSlots
+            handlerGroup.enter()
+            queue.async { [self] in
+                defer { slots.signal(); handlerGroup.leave() }
+                handleConnection(clientSocket)
             }
         }
     }
@@ -281,10 +301,14 @@ public final class ProxyServer {
         // blocking wait() could park the thread forever when all 64 slots were occupied at
         // shutdown. The WO-255 100ms poll loop handles that case: the thread sees running=false
         // on the next tick and exits without needing an external wakeup.
-        // WO-225: drain pending async audit log writes before returning so no log lines are
-        // dropped when the caller exits immediately after stop().
+        // WO-234: wait for all in-flight handlers before draining logQueue. logQueue.sync {}
+        // alone (WO-225) only drains writes already enqueued at this point; handlers still
+        // running will enqueue more after the drain returns. handlerGroup.wait() ensures every
+        // handler has called handlerGroup.leave() — meaning all their logQueue.async enqueues
+        // have fired — before logQueue.sync {} runs the final flush.
         // WO-231: logQueue.sync uses pthread_mutex internally — NOT safe to call from a POSIX
         // signal handler (risk of deadlock). stop() must only be called from a normal thread.
+        handlerGroup.wait()
         logQueue.sync {}
     }
 
