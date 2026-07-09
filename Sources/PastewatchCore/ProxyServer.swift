@@ -270,21 +270,23 @@ public final class ProxyServer {
                     gotSlot = true; break
                 }
             }
+            // WO-261: enter handlerGroup BEFORE checking running so stop()'s handlerGroup.wait()
+            // cannot drain and return while this thread is between the running check and enter().
+            // handlerGroup.leave() is called below if we decide not to dispatch.
+            if gotSlot { handlerGroup.enter() }
             guard running else {
-                if gotSlot { connectionSlots.signal() }
+                if gotSlot { handlerGroup.leave(); connectionSlots.signal() }
                 close(clientSocket)
                 break
             }
-            // WO-257: capture connectionSlots directly (strong ref to the semaphore object)
-            // so signal() fires unconditionally even if ProxyServer is released during teardown.
-            // [weak self] made signal() contingent on self being non-nil — GCD teardown (XCTest)
-            // races the dispatch and permanently leaks the slot.
-            // WO-234: enter handlerGroup so stop() can barrier-wait for all in-flight handlers
-            // before draining logQueue (ensuring all handler-enqueued log writes are flushed).
-            let slots = connectionSlots
-            handlerGroup.enter()
+            guard gotSlot else { close(clientSocket); break }
+            // WO-257: [self] strong capture keeps connectionSlots alive so signal() fires
+            // unconditionally even if ProxyServer is released during teardown.
+            // WO-264: slots alias removed; [self] strong capture makes it redundant.
+            // WO-234: handlerGroup entered above; stop() barrier-waits for all handlers
+            // so logQueue.sync sees all handler-enqueued audit writes before draining.
             queue.async { [self] in
-                defer { slots.signal(); handlerGroup.leave() }
+                defer { connectionSlots.signal(); handlerGroup.leave() }
                 handleConnection(clientSocket)
             }
         }
@@ -292,15 +294,30 @@ public final class ProxyServer {
 
     /// Stop the proxy server.
     public func stop() {
-        running = false
-        if serverSocket >= 0 {
-            close(serverSocket)
-            serverSocket = -1
-        }
+        // WO-262+WO-263: snapshot and clear serverSocket under runningLock.
+        // Running the close() outside the lock would race with start()'s accept() thread
+        // reading the same var. Snapshotting also makes stop() idempotent: if two threads
+        // both call stop(), only the one that atomically swaps fd≥0 → -1 performs the close.
+        runningLock.lock()
+        _running = false
+        let fdToClose = serverSocket
+        serverSocket = -1
+        runningLock.unlock()
+        if fdToClose >= 0 { close(fdToClose) }
+
         // WO-255: no unconditional signal here. WO-247's signal was needed because the
         // blocking wait() could park the thread forever when all 64 slots were occupied at
         // shutdown. The WO-255 100ms poll loop handles that case: the thread sees running=false
         // on the next tick and exits without needing an external wakeup.
+
+        // WO-260: cancel in-flight URLSession tasks so their semaphore.wait(timeout:) unblocks
+        // promptly rather than sitting for up to 600 s. Without this, handlerGroup.wait() below
+        // stalls for the full non-streaming timeout on every active connection at shutdown.
+        // invalidateAndCancel() is safe to call from any thread and is idempotent.
+        #if canImport(Darwin)
+        urlSession.invalidateAndCancel()
+        #endif
+
         // WO-234: wait for all in-flight handlers before draining logQueue. logQueue.sync {}
         // alone (WO-225) only drains writes already enqueued at this point; handlers still
         // running will enqueue more after the drain returns. handlerGroup.wait() ensures every
@@ -316,6 +333,14 @@ public final class ProxyServer {
 
     private func handleConnection(_ clientSocket: Int32) {
         defer { close(clientSocket) }
+
+        // WO-259: set a send timeout on the client socket so sendAll() cannot block forever
+        // when the client half-closes the connection (TCP half-open). Without SO_SNDTIMEO,
+        // sendAll() blocks indefinitely in send(), keeping the handler alive past stop(), which
+        // prevents handlerGroup.wait() from returning and leaves logQueue un-drained on exit.
+        // 30 s is well above any realistic write-back latency to a local Claude client.
+        var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
+        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         guard let request = readHTTPRequest(from: clientSocket) else { return }
 
