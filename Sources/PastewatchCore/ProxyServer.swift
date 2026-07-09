@@ -246,7 +246,13 @@ public final class ProxyServer {
 
             // WO-245: acquire before dispatching so we do not exceed the connection cap.
             // accept() resumes immediately once a handler slot frees up.
+            // WO-247: re-check running after wait() — stop() signals once to unblock an
+            // in-progress wait(); without the guard the slot would dispatch a stale fd.
             connectionSlots.wait()
+            guard running else {
+                close(clientSocket)
+                break
+            }
             queue.async { [weak self] in
                 defer { self?.connectionSlots.signal() }
                 self?.handleConnection(clientSocket)
@@ -261,6 +267,10 @@ public final class ProxyServer {
             close(serverSocket)
             serverSocket = -1
         }
+        // WO-247: unblock accept thread if it is waiting on connectionSlots (all 64 slots
+        // occupied). Without this signal, stop() returns but the accept thread stays parked
+        // indefinitely, keeping the process alive and pinning 64 connection handlers.
+        connectionSlots.signal()
         // WO-225: drain pending async audit log writes before returning so no log lines are
         // dropped when the caller exits immediately after stop().
         // WO-231: logQueue.sync uses pthread_mutex internally — NOT safe to call from a POSIX

@@ -251,7 +251,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-163: if no data chunk arrived, write headers now. WO-170/177: skip on timer fire.
         // WO-228: check return value — on EPIPE the client is already gone; set clientEpipe so
         // the remainder flush and drop notice below are also skipped (matches WO-222 logic).
-        if !alreadyWritten && !timerFired {
+        // WO-246: skip when responseStatus==0 (connection failure). execute() will call
+        // sendErrorDirect(502) after headReceived.signal(); writing 200 headers here first
+        // corrupts the HTTP framing seen by the client.
+        if !alreadyWritten && !timerFired && responseStatus != 0 {
             let ok = writeStreamingHeaders(status: responseStatus == 0 ? 200 : responseStatus, upstreamHeaders: responseHeaders)
             socketWriteLock.lock()
             didWriteHeaders = true
@@ -280,7 +283,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 }
             }
 
-            if let err = error {
+            // WO-249: re-snapshot clientEpipe under socketWriteLock. writeToSocket() (remainder
+            // flush above) may have set it — gate the drop-notice on the fresh value so we do
+            // not fire one wasted sendAll() call against a now-dead socket.
+            socketWriteLock.lock()
+            let epipeAfterFlush = clientEpipe
+            socketWriteLock.unlock()
+
+            if let err = error, !epipeAfterFlush {
                 // WO-237: streamError property removed (was write-only dead state). Surface via socket.
                 let notice = Data("[PASTEWATCH-STREAM-DROP] upstream disconnect: \(err.localizedDescription)\n\n".utf8)
                 writeToSocket(notice)

@@ -380,9 +380,13 @@ struct CurlHTTPClient {
                     for frame in result.frames {
                         // WO-182/WO-192: evaluate alert closure at [DONE] time with live stream
                         // counts so stream-only secrets (body-clean request) also trigger alert.
+                        // WO-248: pass totalCount+pendingCount (not totalCount alone) — when the
+                        // only credential in the stream arrives in the same chunk as [DONE], it is
+                        // in pendingTypes but not yet merged into totalTypes. Passing pre-merge
+                        // totals causes builder(0, []) → guard total>0 fails → alert suppressed.
                         if frame.data == "[DONE]",
                            let builder = alertBeforeDone,
-                           let alert = builder(totalCount, totalTypes) {
+                           let alert = builder(totalCount + pendingCount, totalTypes + pendingTypes) {
                             assembled.append(alert)
                         }
                         // WO-201: skip redactSSEFrame for [DONE] — its first guard already
