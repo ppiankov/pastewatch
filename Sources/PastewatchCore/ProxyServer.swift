@@ -341,12 +341,24 @@ public final class ProxyServer {
         // WO-265: SO_RCVTIMEO is the symmetric receive-side guard. Without it, recv() in
         // readHTTPRequest blocks forever on a client that connects but stalls mid-request,
         // also preventing handlerGroup.wait() from returning. 30 s matches SO_SNDTIMEO.
+        // WO-271: check setsockopt return values — silent failure leaves recv()/sendAll()
+        // unbounded, undermining the handlerGroup.wait() shutdown guarantee.
         var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
-        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        if setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_SNDTIMEO failed: errno \(errno)\n".utf8))
+        }
         var recvTimeout = timeval(tv_sec: 30, tv_usec: 0)
-        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
+        if setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_RCVTIMEO failed: errno \(errno)\n".utf8))
+            return
+        }
 
-        guard let request = readHTTPRequest(from: clientSocket) else { return }
+        // WO-270: send 408 when readHTTPRequest returns nil (timeout or connection error)
+        // so the client gets an HTTP-level response rather than a bare TCP FIN.
+        guard let request = readHTTPRequest(from: clientSocket) else {
+            sendError(to: clientSocket, status: 408, message: "Request Timeout")
+            return
+        }
 
         guard let parsed = parseHTTPRequest(request) else {
             sendError(to: clientSocket, status: 400, message: "Bad Request")
@@ -715,24 +727,33 @@ public final class ProxyServer {
         var headerEnd = false
         var headerEndIndex = 0
 
+        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
         while true {
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
-            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — treat as connection error so
-            // readHTTPRequest returns nil and handleConnection returns, allowing the handler's
-            // defer to call handlerGroup.leave(). Plain bytesRead==0 means orderly EOF.
-            if bytesRead < 0 { return nil }
+            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — return nil so handleConnection
+            // sends 408 and exits, releasing the handlerGroup entry.
+            // WO-268: EINTR means a signal interrupted recv() — the connection is healthy;
+            // retry. Mirrors sendAll()'s EINTR loop (WO-214). All other negatives are errors.
+            if bytesRead < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
             guard bytesRead > 0 else { break }
             accumulated.append(contentsOf: buffer[0..<bytesRead])
 
-            if !headerEnd, let str = String(data: accumulated, encoding: .utf8),
-               let range = str.range(of: "\r\n\r\n") {
+            // WO-269: search for \r\n\r\n at the byte level so headerEndIndex is a byte
+            // offset consistent with accumulated.count. str.distance() counts Unicode
+            // grapheme clusters — diverges from byte count for any non-ASCII header value.
+            if !headerEnd, let sepRange = accumulated.range(of: separator) {
                 headerEnd = true
-                headerEndIndex = str.distance(from: str.startIndex, to: range.upperBound)
-                // Extract Content-Length
-                let headerStr = String(str[..<range.lowerBound])
-                for line in headerStr.components(separatedBy: "\r\n") where line.lowercased().hasPrefix("content-length:") {
-                    let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                    contentLength = Int(val) ?? 0
+                headerEndIndex = sepRange.upperBound
+                let headerData = accumulated[..<sepRange.lowerBound]
+                if let headerStr = String(data: headerData, encoding: .utf8) {
+                    for line in headerStr.components(separatedBy: "\r\n")
+                        where line.lowercased().hasPrefix("content-length:") {
+                        let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                        contentLength = Int(val) ?? 0
+                    }
                 }
             }
 
