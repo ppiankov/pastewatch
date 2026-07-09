@@ -273,13 +273,15 @@ public final class ProxyServer {
             // WO-261: enter handlerGroup BEFORE checking running so stop()'s handlerGroup.wait()
             // cannot drain and return while this thread is between the running check and enter().
             // handlerGroup.leave() is called below if we decide not to dispatch.
+            // WO-266: invariant — gotSlot=false implies running=false was observed in the poll
+            // loop above (running is monotonically false-once-set). Guard A (guard running) fires
+            // first in that case, so a separate guard gotSlot branch is unreachable dead code.
             if gotSlot { handlerGroup.enter() }
             guard running else {
                 if gotSlot { handlerGroup.leave(); connectionSlots.signal() }
                 close(clientSocket)
                 break
             }
-            guard gotSlot else { close(clientSocket); break }
             // WO-257: [self] strong capture keeps connectionSlots alive so signal() fires
             // unconditionally even if ProxyServer is released during teardown.
             // WO-264: slots alias removed; [self] strong capture makes it redundant.
@@ -334,13 +336,15 @@ public final class ProxyServer {
     private func handleConnection(_ clientSocket: Int32) {
         defer { close(clientSocket) }
 
-        // WO-259: set a send timeout on the client socket so sendAll() cannot block forever
-        // when the client half-closes the connection (TCP half-open). Without SO_SNDTIMEO,
-        // sendAll() blocks indefinitely in send(), keeping the handler alive past stop(), which
-        // prevents handlerGroup.wait() from returning and leaves logQueue un-drained on exit.
-        // 30 s is well above any realistic write-back latency to a local Claude client.
+        // WO-259: SO_SNDTIMEO bounds sendAll() so a half-closed TCP client cannot keep the
+        // handler alive indefinitely, which would stall handlerGroup.wait() in stop().
+        // WO-265: SO_RCVTIMEO is the symmetric receive-side guard. Without it, recv() in
+        // readHTTPRequest blocks forever on a client that connects but stalls mid-request,
+        // also preventing handlerGroup.wait() from returning. 30 s matches SO_SNDTIMEO.
         var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
         setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        var recvTimeout = timeval(tv_sec: 30, tv_usec: 0)
+        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         guard let request = readHTTPRequest(from: clientSocket) else { return }
 
@@ -440,9 +444,14 @@ public final class ProxyServer {
             httpResponse = response as? HTTPURLResponse
             semaphore.signal()
         }
+        // WO-267: defer cancel covers both paths. On the .timedOut path it terminates the
+        // in-flight request. On the .success path it is a no-op (task already completed).
+        // Without this, a task created between invalidateAndCancel()'s cancel sweep and
+        // task.resume() may never have its completion handler called on some OS versions,
+        // leaving semaphore.signal() unfired and blocking handlerGroup.wait() for 600 s.
+        defer { task.cancel() }
         task.resume()
         guard semaphore.wait(timeout: .now() + proxyNonStreamTotalTimeoutSeconds) == .success else {
-            task.cancel()
             sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
             return nil
         }
@@ -708,6 +717,10 @@ public final class ProxyServer {
 
         while true {
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
+            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — treat as connection error so
+            // readHTTPRequest returns nil and handleConnection returns, allowing the handler's
+            // defer to call handlerGroup.leave(). Plain bytesRead==0 means orderly EOF.
+            if bytesRead < 0 { return nil }
             guard bytesRead > 0 else { break }
             accumulated.append(contentsOf: buffer[0..<bytesRead])
 
