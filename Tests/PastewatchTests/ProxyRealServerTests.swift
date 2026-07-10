@@ -36,8 +36,8 @@ final class ProxyRealServerTests: XCTestCase {
             timeoutSeconds: 10
         )
 
-        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"))
-        XCTAssertTrue(response.contains(#"{"ok":true}"#))
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), response)
+        XCTAssertTrue(response.contains(#"{"ok":true}"#), response)
     }
 
     func testAdmissionCapRejectsFifthConcurrentConnection() throws {
