@@ -38,6 +38,9 @@ let proxyMaxActiveConnections = 4
 /// WO-323: bounded wait for a saturated admission slot before rejecting the client.
 let proxyAdmissionQueueTimeoutMilliseconds = 250
 
+/// WO-335: rejected sockets are written on the accept loop; keep that send bounded.
+let proxyRejectedSocketSendTimeoutSeconds = 2
+
 // MARK: - ProxyServer
 
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
@@ -256,6 +259,15 @@ public final class ProxyServer {
         return sessionConfig
     }
 
+    static func makeSessionDelegateQueue() -> OperationQueue {
+        let queue = OperationQueue()
+        // WO-333: URLSession's nil delegateQueue is serial; bound callback concurrency
+        // to the proxy's connection cap so one slow client write cannot stall all streams.
+        queue.name = "com.pastewatch.proxy.urlsession-delegate"
+        queue.maxConcurrentOperationCount = proxyMaxActiveConnections
+        return queue
+    }
+
     #if canImport(Darwin)
     private static func makeSession(forwardProxy: URL?, tlsTrustDelegate: TLSTrustDelegate?) -> URLSession {
         let sessionConfig = makeSessionConfiguration(forwardProxy: forwardProxy)
@@ -263,13 +275,25 @@ public final class ProxyServer {
         // Only attach a delegate when a flag is set; otherwise behave exactly as
         // before (system trust store, no delegate).
         if let delegate = tlsTrustDelegate {
-            return URLSession(configuration: sessionConfig, delegate: delegate, delegateQueue: nil)
+            return URLSession(
+                configuration: sessionConfig,
+                delegate: delegate,
+                delegateQueue: makeSessionDelegateQueue()
+            )
         }
-        return URLSession(configuration: sessionConfig)
+        return URLSession(
+            configuration: sessionConfig,
+            delegate: nil,
+            delegateQueue: makeSessionDelegateQueue()
+        )
     }
     #else
     private static func makeSession(forwardProxy: URL?) -> URLSession {
-        URLSession(configuration: makeSessionConfiguration(forwardProxy: forwardProxy))
+        URLSession(
+            configuration: makeSessionConfiguration(forwardProxy: forwardProxy),
+            delegate: nil,
+            delegateQueue: makeSessionDelegateQueue()
+        )
     }
     #endif
 
@@ -318,16 +342,16 @@ public final class ProxyServer {
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
         #if canImport(Darwin)
-        serverSocket = socket(AF_INET, SOCK_STREAM, 0)
+        let listenSocket = socket(AF_INET, SOCK_STREAM, 0)
         #else
-        serverSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        let listenSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #endif
-        guard serverSocket >= 0 else {
+        guard listenSocket >= 0 else {
             throw ProxyError.socketCreationFailed
         }
 
         var reuse: Int32 = 1
-        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -336,20 +360,25 @@ public final class ProxyServer {
 
         let bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                bind(serverSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(listenSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bindResult == 0 else {
-            close(serverSocket)
+            close(listenSocket)
             throw ProxyError.bindFailed(port: port)
         }
 
-        guard listen(serverSocket, 128) == 0 else {
-            close(serverSocket)
+        guard listen(listenSocket, 128) == 0 else {
+            close(listenSocket)
             throw ProxyError.listenFailed
         }
 
-        running = true
+        // WO-262: publish the stop-visible fd under the same lock stop() uses, then
+        // keep the accept loop on the immutable local fd to avoid a stored-property race.
+        runningLock.lock()
+        serverSocket = listenSocket
+        _running = true
+        runningLock.unlock()
         // WO-298: signal startup only after listen() succeeded and running is true.
         onListening?()
 
@@ -358,7 +387,7 @@ public final class ProxyServer {
             var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
             let clientSocket = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                    accept(serverSocket, sockPtr, &clientLen)
+                    accept(listenSocket, sockPtr, &clientLen)
                 }
             }
 
@@ -403,6 +432,16 @@ public final class ProxyServer {
         guard admissionSlots.wait(timeout: deadline) == .success else {
             if running {
                 recordRejectedConnection()
+                // WO-335: this send runs on the accept loop, before handler socket setup.
+                var sendTimeout = timeval(tv_sec: proxyRejectedSocketSendTimeoutSeconds, tv_usec: 0)
+                if setsockopt(
+                    clientSocket, SOL_SOCKET, SO_SNDTIMEO,
+                    &sendTimeout, socklen_t(MemoryLayout<timeval>.size)
+                ) != 0 {
+                    FileHandle.standardError.write(Data(
+                        "[pastewatch-proxy] rejected socket SO_SNDTIMEO failed: errno \(errno)\n".utf8
+                    ))
+                }
                 sendError(to: clientSocket, status: 503, message: "Proxy admission timeout")
             }
             return false
@@ -466,6 +505,10 @@ public final class ProxyServer {
         // invalidateAndCancel() is safe to call from any thread and is idempotent.
         #if canImport(Darwin)
         urlSession.invalidateAndCancel()
+        #else
+        // WO-338: Linux uses curl subprocesses instead of URLSession tasks; terminate
+        // active processes so handlerGroup.wait() is not bounded by curl's 600s cap.
+        CurlHTTPClient.cancelActiveProcesses()
         #endif
 
         // WO-234: wait for all in-flight handlers before draining logQueue. logQueue.sync {}
@@ -582,10 +625,14 @@ public final class ProxyServer {
             processedBody: processedBody,
             bodyData: processedBodyData
         )
+        let deferForwardedRedactionStats = shouldDeferForwardedRedactionStats(
+            requestWantsStream: requestWantsStream
+        )
 
         recordInitialRequestStats(
             redactionCount: redactionCount,
-            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding,
+            countForwardedRedaction: !deferForwardedRedactionStats
         )
 
         if shouldLogBodyRedactionBeforeForwarding(
@@ -621,6 +668,14 @@ public final class ProxyServer {
                     redactionCount: redactionCount,
                     types: redactedTypes
                 )
+            } else if shouldInjectAlertIntoBufferedSSEResponse(headers: buffered.headers),
+                      let comment = buildAlertSSECommentData(redactionCount: redactionCount, types: redactedTypes) {
+                // WO-334: buffered SSE responses cannot use JSON alert injection, but
+                // an SSE comment preserves protocol framing and operator-visible alert bytes.
+                var bodyWithComment = comment
+                bodyWithComment.append(buffered.body)
+                finalBody = bodyWithComment
+                logAlertInjectedAsSSEComment(path: parsed.path)
             } else {
                 logAlertInjectionSkipped(path: parsed.path, contentType: responseContentType(buffered.headers))
             }
@@ -963,15 +1018,37 @@ public final class ProxyServer {
         return !(requestWantsStream && config.responseStreamingRedactionMode != .buffer)
     }
 
-    func recordInitialRequestStats(redactionCount: Int, shouldBlockNonUTF8Forwarding: Bool) {
+    func shouldDeferForwardedRedactionStats(requestWantsStream: Bool) -> Bool {
+        #if canImport(Darwin)
+        // WO-340: Darwin streaming can still reject before URLSession task creation
+        // when stop() has begun; count forwarded redactions only after task acceptance.
+        return requestWantsStream && config.responseStreamingRedactionMode != .buffer
+        #else
+        return false
+        #endif
+    }
+
+    func recordInitialRequestStats(
+        redactionCount: Int,
+        shouldBlockNonUTF8Forwarding: Bool,
+        countForwardedRedaction: Bool = true
+    ) {
         // WO-317: a fail-closed malformed body is audited but was never forwarded
         // with redacted bytes, so it must not inflate requestsRedacted/secretsRedacted.
         statsLock.lock()
         stats.requestsProcessed += 1
-        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding {
+        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding && countForwardedRedaction {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
         }
+        statsLock.unlock()
+    }
+
+    func recordForwardedBodyRedactionStats(redactionCount: Int) {
+        guard redactionCount > 0 else { return }
+        statsLock.lock()
+        stats.requestsRedacted += 1
+        stats.secretsRedacted += redactionCount
         statsLock.unlock()
     }
 
@@ -985,6 +1062,10 @@ public final class ProxyServer {
     func shouldInjectAlertIntoBufferedResponse(headers: [AnyHashable: Any]) -> Bool {
         // WO-331: injectAlertIntoResponse parses JSON; only call it for JSON response bodies.
         responseContentType(headers).lowercased().contains("application/json")
+    }
+
+    func shouldInjectAlertIntoBufferedSSEResponse(headers: [AnyHashable: Any]) -> Bool {
+        responseContentType(headers).lowercased().contains("text/event-stream")
     }
 
     public static func upstreamHostHeader(for upstream: URL) -> String? {
@@ -1031,6 +1112,7 @@ public final class ProxyServer {
             sendError(to: clientSocket, status: 503, message: "Service Unavailable")
             return
         }
+        recordForwardedBodyRedactionStats(redactionCount: redactionCount)
 
         let relay = SSEStreamRelay(
             clientSocket: clientSocket,
@@ -1399,6 +1481,14 @@ public final class ProxyServer {
         return Data("event: pastewatch_advisory\ndata: \(alertStr)\n\n".utf8)
     }
 
+    func buildAlertSSECommentData(redactionCount: Int, types: [String]) -> Data? {
+        // WO-334: buffer-mode SSE bodies cannot be JSON-mutated, so prepend a
+        // valid SSE comment that clients ignore but operators can inspect.
+        let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: types)
+        guard let text = alertBlock["text"] as? String else { return nil }
+        return Data(": \(text)\n\n".utf8)
+    }
+
     private func fixSuggestion(for typeName: String) -> String? {
         switch typeName {
         case "Credential":
@@ -1502,6 +1592,22 @@ public final class ProxyServer {
         let timestamp = formatAuditTimestamp(Date())
         let normalizedType = contentType.isEmpty ? "missing" : contentType
         let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(path) (non-json response: \(normalizedType))\n"
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    func logAlertInjectedAsSSEComment(path: String) {
+        let timestamp = formatAuditTimestamp(Date())
+        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(path) (sse-comment)\n"
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {

@@ -153,6 +153,72 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.data, result.frames[0].raw)
     }
 
+    func testInvalidUTF8RawFrameWithCredentialIsRedacted() {
+        let credential = "password=s3cr3t-hunter2"
+        var raw = Data([0xFF, 0xFE])
+        raw.append(Data("data: \(credential)\n\n".utf8))
+        let frame = SSEFrameParser.Frame(raw: raw, eventType: nil, data: nil)
+
+        let redaction = redactSSEFrame(
+            frame,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        let redacted = String(bytes: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
+    func testRawStreamFallbackPreservesInvalidBytesWithoutCriticalMatch() {
+        let raw = Data([0xFF, 0xFE, 0x41])
+
+        let redaction = redactRawStreamBytes(
+            raw,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertEqual(redaction.data, raw)
+    }
+
+    func testRawStreamFallbackRedactsCredentialWithMalformedUTF8() {
+        let credential = "password=s3cr3t-hunter2"
+        var raw = Data([0xFF, 0xFE])
+        raw.append(Data(" \(credential)".utf8))
+
+        let redaction = redactRawStreamBytes(
+            raw,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        let redacted = String(bytes: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
+    func testRawDoneInsertionPlacesAlertBeforeDoneFrame() {
+        let alert = Data("event: pastewatch_advisory\ndata: {}\n\n".utf8)
+        let stream = Data("data: one\n\nevent: message_stop\ndata: [DONE]\n\n".utf8)
+
+        let output = insertingSSEDataBeforeDone(alert, into: stream)
+        let text = String(data: output, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains("data: one\n\nevent: pastewatch_advisory"))
+        XCTAssertTrue(text.contains("data: {}\n\nevent: message_stop\ndata: [DONE]"))
+    }
+
+    func testRawDoneInsertionWithoutAlertIsByteIdentical() {
+        let stream = Data("data: one\n\ndata: [DONE]\n\n".utf8)
+
+        XCTAssertEqual(insertingSSEDataBeforeDone(nil, into: stream), stream)
+    }
+
     func testLuhnValidCardMutatesStreamBytes() {
         let card = "4111111111111111"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"card \#(card)"}}"#

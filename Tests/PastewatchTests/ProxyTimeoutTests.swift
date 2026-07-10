@@ -92,6 +92,44 @@ final class ProxyTimeoutTests: XCTestCase {
     }
 
     #if canImport(Darwin)
+    func testSSEStreamRelayConnectionFailureStartsWithHTTP502() {
+        FailingStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1],
+            sendFlags: 0,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high,
+            idleTimeoutSeconds: 5,
+            maxSessionSeconds: 1
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FailingStreamURLProtocol.self]
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: delegateQueue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "relay returns after connection failure")
+        let request = URLRequest(url: URL(string: "https://example.test/stream")!)
+        DispatchQueue.global().async {
+            relay.execute(request: request, session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        let response = readSocketString(from: sockets[0])
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 502 Bad Gateway"), response)
+        XCTAssertFalse(response.hasPrefix("[PASTEWATCH-STREAM-DROP]"), response)
+    }
+
     func testSSEStreamRelayHardCeilingCancelsHangingTaskWithoutWritingHeaders() {
         HangingStreamURLProtocol.reset()
         var sockets = [Int32](repeating: 0, count: 2)
@@ -129,6 +167,52 @@ final class ProxyTimeoutTests: XCTestCase {
         assertNoDataAvailable(on: sockets[0])
     }
 
+    func testSSEStreamRelayRawStreamInjectsAlertBeforeSplitDone() {
+        SplitDoneStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1],
+            sendFlags: 0,
+            redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high,
+            idleTimeoutSeconds: 5,
+            maxSessionSeconds: 1
+        )
+        relay.buildAlertBeforeDone = { _, _, _, _ in
+            Data("event: pastewatch_advisory\ndata: {}\n\n".utf8)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SplitDoneStreamURLProtocol.self]
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: delegateQueue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "relay returns after split done")
+        let request = URLRequest(url: URL(string: "https://example.test/stream")!)
+        DispatchQueue.global().async {
+            relay.execute(request: request, session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        let response = readSocketString(from: sockets[0])
+        guard let advisoryRange = response.range(of: "event: pastewatch_advisory"),
+              let doneRange = response.range(of: "data: [DONE]") else {
+            XCTFail(response)
+            return
+        }
+        XCTAssertLessThan(advisoryRange.lowerBound, doneRange.lowerBound)
+        XCTAssertTrue(response.contains("data: one\n\n"))
+    }
+
     private func assertNoDataAvailable(
         on socket: Int32,
         file: StaticString = #filePath,
@@ -144,10 +228,47 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(readCount, -1, file: file, line: line)
         XCTAssertTrue(errno == EAGAIN || errno == EWOULDBLOCK, file: file, line: line)
     }
+
+    private func readSocketString(
+        from socket: Int32,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> String {
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        XCTAssertEqual(
+            setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)),
+            0,
+            file: file,
+            line: line
+        )
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let count = recv(socket, &buffer, buffer.count, 0)
+        XCTAssertGreaterThan(count, 0, file: file, line: line)
+        guard count > 0 else { return "" }
+        return String(bytes: buffer[..<count], encoding: .utf8) ?? ""
+    }
     #endif
 }
 
 #if canImport(Darwin)
+private class FailingStreamURLProtocol: URLProtocol {
+    static func reset() {}
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    override func stopLoading() {}
+}
+
 private class HangingStreamURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var stopSemaphore = DispatchSemaphore(value: 0)
@@ -186,5 +307,35 @@ private class HangingStreamURLProtocol: URLProtocol {
     override func stopLoading() {
         Self.stopSemaphore.signal()
     }
+}
+
+private class SplitDoneStreamURLProtocol: URLProtocol {
+    static func reset() {}
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+              ) else {
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("data: one\n\ndata: [DO".utf8))
+        client?.urlProtocol(self, didLoad: Data("NE]\n\n".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 #endif

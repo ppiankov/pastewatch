@@ -84,6 +84,41 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertTrue(buffered.isEmpty)
     }
 
+    func testCurlResponseHeaderReaderRejectsEOFWithPartialHeaders() {
+        var fds = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(pipe(&fds), 0)
+        defer { close(fds[0]) }
+
+        let partial = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n".utf8)
+        writePipeData(partial, to: fds[1], file: #filePath, line: #line)
+        close(fds[1])
+
+        var buffered = Data()
+        let block = CurlHTTPClient.readResponseHeaderBlock(from: fds[0], buffered: &buffered)
+
+        XCTAssertNil(block)
+        XCTAssertTrue(buffered.isEmpty)
+    }
+
+    func testCurlResponseHeaderReaderLeavesBodyBytesBufferedAfterCompleteHeaders() {
+        var fds = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(pipe(&fds), 0)
+        defer { close(fds[0]) }
+
+        let response = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nbody".utf8)
+        writePipeData(response, to: fds[1], file: #filePath, line: #line)
+        close(fds[1])
+
+        var buffered = Data()
+        let block = CurlHTTPClient.readResponseHeaderBlock(from: fds[0], buffered: &buffered)
+
+        XCTAssertEqual(
+            String(data: block ?? Data(), encoding: .utf8),
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+        )
+        XCTAssertEqual(buffered, Data("body".utf8))
+    }
+
     func testNegativeContentLengthIsMalformed() {
         let body = Data(#"{"messages":[{"content":"password=s3cr3t-hunter2"}]}"#.utf8)
         let result = readRequest(

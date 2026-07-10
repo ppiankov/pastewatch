@@ -121,6 +121,21 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertFalse(server.shouldInjectAlertIntoBufferedResponse(headers: [:]))
     }
 
+    func testBufferedSSEAlertInjectionUsesCommentFallback() throws {
+        let comment = try XCTUnwrap(server.buildAlertSSECommentData(
+            redactionCount: 1,
+            types: ["Credential"]
+        ))
+        let text = String(data: comment, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(server.shouldInjectAlertIntoBufferedSSEResponse(
+            headers: ["Content-Type": "text/event-stream; charset=utf-8"]
+        ))
+        XCTAssertTrue(text.hasPrefix(": [PASTEWATCH]"))
+        XCTAssertTrue(text.hasSuffix("\n\n"))
+        XCTAssertTrue(text.contains("1 secret(s) redacted"))
+    }
+
     func testAlertInjectionSkippedAuditLineForNonJSONBufferedResponse() throws {
         let path = NSTemporaryDirectory() + "pastewatch-alert-skip-\(UUID().uuidString).log"
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -133,6 +148,20 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("PROXY ALERT SKIPPED"))
         XCTAssertTrue(log.contains("/v1/messages"))
         XCTAssertTrue(log.contains("text/event-stream"))
+    }
+
+    func testAlertInjectedAsSSECommentAuditLine() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-alert-sse-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let auditServer = ProxyServer(port: 0, auditLogPath: path)
+
+        auditServer.logAlertInjectedAsSSEComment(path: "/v1/messages")
+        auditServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY ALERT INJECTED"))
+        XCTAssertTrue(log.contains("sse-comment"))
+        XCTAssertTrue(log.contains("/v1/messages"))
     }
 
     func testAdvisorySSEDataUsesDistinctEventFrame() throws {
@@ -237,6 +266,40 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(forwardedServer.stats.requestsProcessed, 1)
         XCTAssertEqual(forwardedServer.stats.requestsRedacted, 1)
         XCTAssertEqual(forwardedServer.stats.secretsRedacted, 2)
+    }
+
+    func testDeferredStreamingBodyRedactionDoesNotCountUntilAccepted() {
+        let streamingServer = ProxyServer(port: 0)
+
+        streamingServer.recordInitialRequestStats(
+            redactionCount: 1,
+            shouldBlockNonUTF8Forwarding: false,
+            countForwardedRedaction: false
+        )
+
+        XCTAssertEqual(streamingServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(streamingServer.stats.requestsRedacted, 0)
+        XCTAssertEqual(streamingServer.stats.secretsRedacted, 0)
+
+        streamingServer.recordForwardedBodyRedactionStats(redactionCount: 1)
+
+        XCTAssertEqual(streamingServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(streamingServer.stats.secretsRedacted, 1)
+    }
+
+    func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
+        var bufferConfig = PastewatchConfig.defaultConfig
+        bufferConfig.responseStreamingRedactionMode = .buffer
+        let bufferServer = ProxyServer(port: 0, config: bufferConfig)
+        let streamServer = ProxyServer(port: 0)
+
+        XCTAssertFalse(bufferServer.shouldDeferForwardedRedactionStats(requestWantsStream: true))
+        XCTAssertFalse(streamServer.shouldDeferForwardedRedactionStats(requestWantsStream: false))
+        #if canImport(Darwin)
+        XCTAssertTrue(streamServer.shouldDeferForwardedRedactionStats(requestWantsStream: true))
+        #else
+        XCTAssertFalse(streamServer.shouldDeferForwardedRedactionStats(requestWantsStream: true))
+        #endif
     }
 
     func testBufferModeWarningHonorsQuietFlag() {

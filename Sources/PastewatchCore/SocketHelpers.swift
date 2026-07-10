@@ -63,6 +63,66 @@ func streamAdvisoryMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
     matches.filter { $0.effectiveSeverity != .critical }
 }
 
+/// WO-291: raw streaming fallback redaction must not become a strict-UTF-8 bypass.
+/// Invalid bytes with no critical match are forwarded byte-identical; when a
+/// critical ASCII fixture is present, the lossy view is redacted before relay.
+func redactRawStreamBytes(
+    _ raw: Data,
+    config: PastewatchConfig,
+    severity: Severity
+) -> SSEFrameRedactionResult {
+    guard !raw.isEmpty else {
+        return SSEFrameRedactionResult(data: raw, count: 0, types: [])
+    }
+    // swiftlint:disable:next optional_data_string_conversion
+    let text = String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
+    let matches = DetectionRules.scan(text, config: config)
+    let filtered = streamRedactionMatches(matches)
+    let advisories = streamAdvisoryMatches(matches)
+    let advisoryTypes = advisories.map { $0.displayName }
+    guard !filtered.isEmpty else {
+        return SSEFrameRedactionResult(
+            data: raw, count: 0, types: [],
+            advisoryCount: advisories.count,
+            advisoryTypes: advisoryTypes
+        )
+    }
+    let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
+    return SSEFrameRedactionResult(
+        data: Data(obfuscated.utf8),
+        count: filtered.count,
+        types: filtered.map { $0.displayName },
+        advisoryCount: advisories.count,
+        advisoryTypes: advisoryTypes
+    )
+}
+
+/// WO-336/WO-337: insert a synthetic alert/advisory frame immediately before
+/// the raw SSE `[DONE]` frame while preserving all preceding raw bytes.
+func insertingSSEDataBeforeDone(_ inserted: Data?, into data: Data) -> Data {
+    guard let inserted, !inserted.isEmpty,
+          let frameStart = rawSSEDoneFrameStart(in: data) else {
+        return data
+    }
+    var result = Data()
+    result.append(contentsOf: data[..<frameStart])
+    result.append(inserted)
+    result.append(contentsOf: data[frameStart...])
+    return result
+}
+
+private func rawSSEDoneFrameStart(in data: Data) -> Data.Index? {
+    let doneLine = Data("data: [DONE]".utf8)
+    guard let doneRange = data.range(of: doneLine) else { return nil }
+    let beforeDone = Data(data[..<doneRange.lowerBound])
+    let crlfTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
+    let lfTerminator = Data([0x0A, 0x0A])
+    let crlfStart = beforeDone.range(of: crlfTerminator, options: .backwards)?.upperBound
+    let lfStart = beforeDone.range(of: lfTerminator, options: .backwards)?.upperBound
+    let startOffset = max(crlfStart ?? 0, lfStart ?? 0)
+    return data.index(data.startIndex, offsetBy: startOffset)
+}
+
 /// WO-220: shared per-SSE-event frame redaction used by both the macOS URLSession path
 /// (SSEStreamRelay) and the Linux curl path (CurlHTTPClient).
 /// Extracts text-bearing string fields from an Anthropic SSE JSON delta, scans for
@@ -75,13 +135,16 @@ func redactSSEFrame(
     config: PastewatchConfig,
     severity: Severity
 ) -> SSEFrameRedactionResult {
-    guard let dataPayload = frame.data, dataPayload != "[DONE]" else {
+    guard let dataPayload = frame.data else {
+        return redactRawStreamBytes(frame.raw, config: config, severity: severity)
+    }
+    guard dataPayload != "[DONE]" else {
         return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
     }
     guard let jsonData = dataPayload.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
           let delta = json["delta"] as? [String: Any] else {
-        return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
+        return redactRawStreamBytes(frame.raw, config: config, severity: severity)
     }
     var modifiedDelta = delta
     var redacted = 0

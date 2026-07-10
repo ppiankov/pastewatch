@@ -246,9 +246,43 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     private func relayRawRedactedData(_ data: Data) {
+        guard buildAlertBeforeDone == nil else {
+            relayRawRedactedFrames(data)
+            return
+        }
         let redaction = redactRawBytes(data)
         recordStreamScan(redaction)
-        if !sendAll(redaction.data, to: clientSocket, flags: sendFlags) {
+        let output = insertingAlertBeforeDoneIfNeeded(redaction.data)
+        if !sendAll(output, to: clientSocket, flags: sendFlags) {
+            markClientEpipeAndCancelTask()
+        }
+    }
+
+    private func relayRawRedactedFrames(_ data: Data) {
+        let result = parser.feed(data)
+        if result.overflowFlushed {
+            let redaction = redactRawBytes(result.overflowBytes)
+            recordStreamScan(redaction)
+            let output = insertingAlertBeforeDoneIfNeeded(redaction.data)
+            if !sendAll(output, to: clientSocket, flags: sendFlags) {
+                markClientEpipeAndCancelTask()
+            }
+            return
+        }
+
+        var output = Data()
+        for frame in result.frames {
+            let redaction = redactRawBytes(frame.raw)
+            recordStreamScan(redaction)
+            // WO-337: raw_stream preserves raw frame bytes, but still needs a frame-aware
+            // [DONE] hook so alert/advisory events survive arbitrary URLSession chunking.
+            if frame.data == "[DONE]", let alert = buildAlertBeforeDoneFrameIfNeeded() {
+                output.append(alert)
+            }
+            output.append(redaction.data)
+        }
+        guard !output.isEmpty else { return }
+        if !sendAll(output, to: clientSocket, flags: sendFlags) {
             markClientEpipeAndCancelTask()
         }
     }
@@ -384,9 +418,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                     epipeAfterFlush = clientEpipe
                     socketWriteLock.unlock()
                 }
+            } else if redactionMode == .rawStream, buildAlertBeforeDone != nil {
+                let rem = parser.remainingBytes
+                if !rem.isEmpty {
+                    let redaction = redactRawBytes(rem)
+                    recordStreamScan(redaction)
+                    writeToSocket(insertingAlertBeforeDoneIfNeeded(redaction.data))
+                    socketWriteLock.lock()
+                    epipeAfterFlush = clientEpipe
+                    socketWriteLock.unlock()
+                }
             }
 
-            if let err = error, !epipeAfterFlush {
+            if let err = error, !epipeAfterFlush, responseStatus != 0 {
+                // WO-332: a connection failure with no upstream response head must let
+                // execute() send the HTTP 502 status line before any diagnostic body bytes.
                 // WO-237: streamError property removed (was write-only dead state). Surface via socket.
                 let notice = Data("[PASTEWATCH-STREAM-DROP] upstream disconnect: \(err.localizedDescription)\n\n".utf8)
                 writeToSocket(notice)
@@ -460,29 +506,23 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         drain.waitUntilFinished()
     }
 
+    private func insertingAlertBeforeDoneIfNeeded(_ data: Data) -> Data {
+        insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(), into: data)
+    }
+
+    private func buildAlertBeforeDoneFrameIfNeeded() -> Data? {
+        guard let builder = buildAlertBeforeDone else { return nil }
+        return builder(
+            streamRedactionCount,
+            streamRedactionTypes,
+            streamAdvisoryCount,
+            streamAdvisoryTypes
+        )
+    }
+
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
     private func redactRawBytes(_ raw: Data) -> SSEFrameRedactionResult {
-        guard let text = String(data: raw, encoding: .utf8) else {
-            return SSEFrameRedactionResult(data: raw, count: 0, types: [])
-        }
-        let matches = DetectionRules.scan(text, config: config)
-        let filtered = streamRedactionMatches(matches)
-        let advisories = streamAdvisoryMatches(matches)
-        guard !filtered.isEmpty else {
-            return SSEFrameRedactionResult(
-                data: raw, count: 0, types: [],
-                advisoryCount: advisories.count,
-                advisoryTypes: advisories.map { $0.displayName }
-            )
-        }
-        let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
-        return SSEFrameRedactionResult(
-            data: Data(obfuscated.utf8),
-            count: filtered.count,
-            types: filtered.map { $0.displayName },
-            advisoryCount: advisories.count,
-            advisoryTypes: advisories.map { $0.displayName }
-        )
+        redactRawStreamBytes(raw, config: config, severity: severity)
     }
 
     // MARK: - Idle timer

@@ -81,6 +81,14 @@ final class ProxyStreamingTests: XCTestCase {
         XCTAssertFalse(headers.lowercased().contains("content-length:"))
     }
 
+    func testProxyURLSessionDelegateQueueIsConcurrentAndBounded() {
+        let queue = ProxyServer.makeSessionDelegateQueue()
+
+        XCTAssertEqual(queue.maxConcurrentOperationCount, proxyMaxActiveConnections)
+        XCTAssertEqual(queue.name, "com.pastewatch.proxy.urlsession-delegate")
+        XCTAssertGreaterThan(queue.maxConcurrentOperationCount, 1)
+    }
+
     func testForwardHeadersForceIdentityAcceptEncoding() {
         let server = ProxyServer(
             port: 0,

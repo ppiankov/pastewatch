@@ -188,8 +188,9 @@ private final class StubHTTPServer {
         listenSocket = try TCPTestSocket.listenOnLoopback(port: 0)
         port = try TCPTestSocket.boundPort(for: listenSocket)
         isRunning = true
+        let acceptSocket = listenSocket
         runDetached {
-            self.acceptLoop()
+            self.acceptLoop(listenSocket: acceptSocket)
         }
     }
 
@@ -206,7 +207,9 @@ private final class StubHTTPServer {
         }
     }
 
-    private func acceptLoop() {
+    private func acceptLoop(listenSocket: Int32) {
+        // WO-262: mirror ProxyServer.start(); stop() owns the mutable property,
+        // while the accept loop uses an immutable fd captured at listener startup.
         while running {
             var addr = sockaddr_in()
             var len = socklen_t(MemoryLayout<sockaddr_in>.size)
