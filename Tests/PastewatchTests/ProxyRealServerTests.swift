@@ -32,7 +32,8 @@ final class ProxyRealServerTests: XCTestCase {
 
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: TCPTestSocket.postRequest(path: "/v1/messages")
+            request: TCPTestSocket.postRequest(path: "/v1/messages"),
+            timeoutSeconds: 10
         )
 
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"))
