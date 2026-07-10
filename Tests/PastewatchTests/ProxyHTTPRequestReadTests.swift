@@ -155,6 +155,18 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(request.bodyData, body)
     }
 
+    func testContentLengthReadsLargeBodyAcrossRecvChunks() {
+        let body = Data(repeating: 0x61, count: 500 * 1024)
+        let result = readRequestWithAsyncWriter(
+            header: "POST /v1/messages HTTP/1.1\r\nHost: example.test\r\nContent-Length: \(body.count)\r\n\r\n",
+            body: body
+        )
+
+        let request = assertSuccess(result)
+        XCTAssertEqual(request.bodyData.count, body.count)
+        XCTAssertEqual(request.bodyData, body)
+    }
+
     func testLFOnlyPostHeadersReadBodyWithoutTimeout() {
         let result = readRequest(
             header: "POST /v1/messages HTTP/1.1\nHost: example.test\nContent-Length: 5\n\n",
@@ -196,6 +208,35 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
 
         let server = ProxyServer(port: 0)
         return server.readHTTPRequest(from: sockets[1])
+    }
+
+    private func readRequestWithAsyncWriter(
+        header: String,
+        body: Data,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> ProxyServer.ReadResult {
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, socketStreamType, 0, &sockets), 0, file: file, line: line)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        setReceiveTimeout(on: sockets[1], file: file, line: line)
+
+        var data = Data(header.utf8)
+        data.append(body)
+        let writeFinished = expectation(description: "large request written")
+        DispatchQueue.global().async {
+            self.writeAll(data, to: sockets[0], file: file, line: line)
+            writeFinished.fulfill()
+        }
+
+        let server = ProxyServer(port: 0)
+        let result = server.readHTTPRequest(from: sockets[1])
+        wait(for: [writeFinished], timeout: 5)
+        return result
     }
 
     private func assertSuccess(

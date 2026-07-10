@@ -153,4 +153,41 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(result.redactedTypes, [])
         XCTAssertFalse(result.shouldBlockForwarding)
     }
+
+    func testBodyRedactionAuditIsDeferredForStreamingRequests() {
+        XCTAssertFalse(server.shouldLogBodyRedactionBeforeForwarding(
+            redactionCount: 1,
+            requestWantsStream: true,
+            shouldBlockNonUTF8Forwarding: false
+        ))
+    }
+
+    func testBodyRedactionAuditIsNotDeferredWhenMalformedBodyBlocksForwarding() {
+        XCTAssertTrue(server.shouldLogBodyRedactionBeforeForwarding(
+            redactionCount: 1,
+            requestWantsStream: true,
+            shouldBlockNonUTF8Forwarding: true
+        ))
+    }
+
+    func testBodyRedactionAuditIsNotDeferredInBufferMode() {
+        var config = PastewatchConfig.defaultConfig
+        config.responseStreamingRedactionMode = .buffer
+        let bufferModeServer = ProxyServer(port: 0, config: config)
+
+        XCTAssertTrue(bufferModeServer.shouldLogBodyRedactionBeforeForwarding(
+            redactionCount: 1,
+            requestWantsStream: true,
+            shouldBlockNonUTF8Forwarding: false
+        ))
+    }
+
+    func testAuditTimestampIncludesFractionalSeconds() {
+        let first = server.formatAuditTimestamp(Date(timeIntervalSince1970: 1_704_067_200.123))
+        let second = server.formatAuditTimestamp(Date(timeIntervalSince1970: 1_704_067_200.124))
+
+        XCTAssertTrue(first.contains(".123"))
+        XCTAssertTrue(first.hasSuffix("Z"))
+        XCTAssertNotEqual(first, second)
+    }
 }

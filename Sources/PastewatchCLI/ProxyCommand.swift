@@ -10,6 +10,8 @@ import Glibc
 // WO-234: global semaphore used by the SIGINT handler (C function pointer — cannot capture
 // context) to wake the shutdown thread that calls server.stop() from a normal thread.
 private let proxyShutdownSemaphore = DispatchSemaphore(value: 0)
+// WO-308: brief SIGINT grace for the running=true -> onListening startup window.
+private let proxyStartupSignalGraceMilliseconds = 100
 
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -46,6 +48,11 @@ struct Proxy: ParsableCommand {
     func run() throws {
         guard let upstreamURL = URL(string: upstream) else {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
+        guard ProxyServer.upstreamHostHeader(for: upstreamURL) != nil else {
+            // WO-310: fail fast instead of starting a proxy that forwards `Host: `.
+            FileHandle.standardError.write(Data("error: upstream URL has no host component: \(upstream)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
 
@@ -103,8 +110,9 @@ struct Proxy: ParsableCommand {
         let startedGate = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             proxyShutdownSemaphore.wait()
-            // Non-blocking check: if start() hasn't been called yet, skip stop().
-            if startedGate.wait(timeout: .now()) == .success {
+            // WO-308: cover the tiny running=true -> onListening signal window without
+            // calling stop() when listen() never completed.
+            if startedGate.wait(timeout: .now() + .milliseconds(proxyStartupSignalGraceMilliseconds)) == .success {
                 FileHandle.standardError.write(Data("\nstopped.\n".utf8))
                 server.stop()
             }

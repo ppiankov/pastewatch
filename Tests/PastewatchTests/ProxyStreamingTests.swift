@@ -29,6 +29,24 @@ final class ProxyStreamingTests: XCTestCase {
         XCTAssertFalse(server.isStreamingRequest("not json"))
     }
 
+    func testNonUTF8StreamingBodyUsesLossyRoutingDecision() {
+        let server = ProxyServer(port: 0)
+        var body = Data(#"{"model":"claude-3-5-sonnet-20241022","stream":true,"messages":[{"content":""#.utf8)
+        body.append(Data([0xFF, 0xFE]))
+        body.append(Data(#""}]}"#.utf8))
+
+        XCTAssertTrue(server.requestWantsStreamingResponse(processedBody: nil, bodyData: body))
+    }
+
+    func testNonUTF8BodyWithoutStreamFlagStaysBuffered() {
+        let server = ProxyServer(port: 0)
+        var body = Data(#"{"model":"claude-3-5-sonnet-20241022","messages":[{"content":""#.utf8)
+        body.append(Data([0xFF, 0xFE]))
+        body.append(Data(#""}]}"#.utf8))
+
+        XCTAssertFalse(server.requestWantsStreamingResponse(processedBody: nil, bodyData: body))
+    }
+
     // MARK: - resolveUpstreamURL (regression: existing behavior preserved)
 
     func testResolveUpstreamURLPreservesBasePath() {
@@ -77,7 +95,7 @@ final class ProxyStreamingTests: XCTestCase {
                 ("Anthropic-Version", "2023-06-01")
             ],
             bodyLength: 42
-        )
+        ) ?? []
         let lowerNames = headers.map { $0.0.lowercased() }
 
         XCTAssertEqual(headers.filter { $0.0.lowercased() == "accept-encoding" }.map { $0.1 }, ["identity"])
@@ -85,5 +103,15 @@ final class ProxyStreamingTests: XCTestCase {
         XCTAssertEqual(headers.filter { $0.0.lowercased() == "content-length" }.map { $0.1 }, ["42"])
         XCTAssertTrue(headers.contains { $0.0 == "Anthropic-Version" && $0.1 == "2023-06-01" })
         XCTAssertEqual(lowerNames.filter { $0 == "accept-encoding" }.count, 1)
+    }
+
+    func testForwardHeadersRejectMissingUpstreamHost() {
+        let server = ProxyServer(
+            port: 0,
+            upstream: URL(fileURLWithPath: "/tmp/no-host")
+        )
+
+        XCTAssertNil(ProxyServer.upstreamHostHeader(for: URL(fileURLWithPath: "/tmp/no-host")))
+        XCTAssertNil(server.buildForwardHeaders(from: [], bodyLength: 0))
     }
 }

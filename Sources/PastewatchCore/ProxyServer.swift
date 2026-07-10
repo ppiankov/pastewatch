@@ -12,6 +12,10 @@ let proxyStreamIdleTimeoutSeconds: Double = 60
 /// Total-duration ceiling for non-streaming (buffered) responses (seconds).
 let proxyNonStreamTotalTimeoutSeconds: Double = 600
 
+/// WO-267: while waiting on a non-streaming URLSession completion, poll shutdown
+/// state so stop() cannot wait for the full 600s ceiling if a task misses cancellation.
+let proxyNonStreamShutdownPollMilliseconds = 100
+
 /// Minimum upstream bytes-per-second for curl's speed-based idle detection.
 let curlMinSpeedBytesPerSecond = 1
 
@@ -24,6 +28,9 @@ let curlMaxTimeSeconds = 600
 
 /// WO-280: shared per-call recv/send timeout for client sockets (seconds).
 let proxyClientSocketTimeoutSeconds = 30
+
+/// WO-312: per-recv scratch buffer; accumulated request bytes grow separately.
+let proxyHTTPRequestReadBufferBytes = 64 * 1024
 
 // MARK: - ProxyServer
 
@@ -55,8 +62,12 @@ public final class ProxyServer {
     /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
     /// statsLock so concurrent handlers do not serialize behind file operations.
     private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
-    /// WO-302: reuse the formatter instead of constructing one for every redacted request.
-    private let iso8601Formatter = ISO8601DateFormatter()
+    /// WO-302/WO-311: reuse one formatter and include fractional seconds for audit ordering.
+    private let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
     /// WO-234: barrier group lets stop() wait for in-flight handlers before draining logQueue.
     /// Each dispatched handler enters the group; stop() barrier-waits so logQueue.sync sees
     /// all handler-enqueued audit writes, not just the ones enqueued before stop() was called.
@@ -71,14 +82,12 @@ public final class ProxyServer {
         set { runningLock.lock(); defer { runningLock.unlock() }; _running = newValue }
     }
     #if canImport(Darwin)
-    /// WO-305: share the TLS trust policy between buffered URLSession tasks and
-    /// streaming tasks that install SSEStreamRelay as the per-task delegate.
-    private lazy var tlsTrustDelegate: TLSTrustDelegate? = {
-        guard caCertPath != nil || insecureTLS else { return nil }
-        return TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
-    }()
+    /// WO-305/WO-306: share the TLS trust policy between buffered URLSession
+    /// tasks and streaming tasks without lazy initialization races on the
+    /// concurrent connection queue.
+    private let tlsTrustDelegate: TLSTrustDelegate?
     #endif
-    private lazy var urlSession: URLSession = makeSession()
+    private let urlSession: URLSession
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
@@ -137,6 +146,14 @@ public final class ProxyServer {
         let body: Data
     }
 
+    // WO-267: typed wait result lets shutdown and timeout paths avoid sharing
+    // the same 600s semaphore branch.
+    enum NonStreamingTaskWaitResult: Equatable {
+        case completed
+        case timedOut
+        case shutdown
+    }
+
     public private(set) var stats = RedactionStats()
 
     public init(
@@ -161,9 +178,18 @@ public final class ProxyServer {
         self.quietLog = quietLog
         self.caCertPath = caCertPath
         self.insecureTLS = insecureTLS
+        #if canImport(Darwin)
+        let delegate: TLSTrustDelegate? = (caCertPath != nil || insecureTLS)
+            ? TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
+            : nil
+        self.tlsTrustDelegate = delegate
+        self.urlSession = Self.makeSession(forwardProxy: forwardProxy, tlsTrustDelegate: delegate)
+        #else
+        self.urlSession = Self.makeSession(forwardProxy: forwardProxy)
+        #endif
     }
 
-    private func makeSession() -> URLSession {
+    private static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
         let sessionConfig = URLSessionConfiguration.default
         #if canImport(Darwin)
         if let proxy = forwardProxy {
@@ -192,16 +218,25 @@ public final class ProxyServer {
             ]
         }
         #endif
-        #if canImport(Darwin)
+        return sessionConfig
+    }
+
+    #if canImport(Darwin)
+    private static func makeSession(forwardProxy: URL?, tlsTrustDelegate: TLSTrustDelegate?) -> URLSession {
+        let sessionConfig = makeSessionConfiguration(forwardProxy: forwardProxy)
         // WO-143: honor --ca-cert / --insecure for the upstream TLS handshake.
         // Only attach a delegate when a flag is set; otherwise behave exactly as
         // before (system trust store, no delegate).
         if let delegate = tlsTrustDelegate {
             return URLSession(configuration: sessionConfig, delegate: delegate, delegateQueue: nil)
         }
-        #endif
         return URLSession(configuration: sessionConfig)
     }
+    #else
+    private static func makeSession(forwardProxy: URL?) -> URLSession {
+        URLSession(configuration: makeSessionConfiguration(forwardProxy: forwardProxy))
+    }
+    #endif
 
     /// Join the upstream base path with the agent's request target, preserving any
     /// non-root base path on `upstream` (e.g. a gateway pass-through like
@@ -439,9 +474,16 @@ public final class ProxyServer {
 
         let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
-        let forwardHeaders = buildForwardHeaders(from: parsed.headers, bodyLength: processedBodyData.count)
+        guard let forwardHeaders = buildForwardHeaders(from: parsed.headers, bodyLength: processedBodyData.count) else {
+            // WO-310: malformed upstream URL must not silently forward `Host: `.
+            sendError(to: clientSocket, status: 503, message: "Invalid upstream URL")
+            return
+        }
 
-        let requestWantsStream = processedBody.map(isStreamingRequest) ?? false
+        let requestWantsStream = requestWantsStreamingResponse(
+            processedBody: processedBody,
+            bodyData: processedBodyData
+        )
 
         // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
         statsLock.lock()
@@ -452,10 +494,11 @@ public final class ProxyServer {
         }
         statsLock.unlock()
 
-        // WO-304: non-streaming and buffer-mode body redactions must be logged even
-        // if upstream forwarding later fails and returns nil after a 502/504.
-        let bodyLogDeferredToStreaming = requestWantsStream && config.responseStreamingRedactionMode != .buffer
-        if redactionCount > 0 && !bodyLogDeferredToStreaming {
+        if shouldLogBodyRedactionBeforeForwarding(
+            redactionCount: redactionCount,
+            requestWantsStream: requestWantsStream,
+            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+        ) {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
         if shouldBlockNonUTF8Forwarding {
@@ -525,8 +568,13 @@ public final class ProxyServer {
         // leaving semaphore.signal() unfired and blocking handlerGroup.wait() for 600 s.
         defer { task.cancel() }
         task.resume()
-        guard semaphore.wait(timeout: .now() + proxyNonStreamTotalTimeoutSeconds) == .success else {
+        switch waitForNonStreamingTaskCompletion(semaphore: semaphore, task: task) {
+        case .completed:
+            break
+        case .timedOut:
             sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
+            return nil
+        case .shutdown:
             return nil
         }
         guard let resp = httpResponse, let data = responseData else {
@@ -534,6 +582,36 @@ public final class ProxyServer {
             return nil
         }
         return BufferedResponse(status: resp.statusCode, headers: resp.allHeaderFields, body: data)
+    }
+
+    func waitForNonStreamingTaskCompletion(
+        semaphore: DispatchSemaphore,
+        task: URLSessionTask,
+        totalTimeoutSeconds: Double = proxyNonStreamTotalTimeoutSeconds,
+        pollMilliseconds: Int = proxyNonStreamShutdownPollMilliseconds
+    ) -> NonStreamingTaskWaitResult {
+        let deadline = DispatchTime.now() + totalTimeoutSeconds
+        let pollNanoseconds = UInt64(max(1, pollMilliseconds)) * 1_000_000
+        while true {
+            guard running else {
+                // WO-267: stop() may invalidate before this task reaches URLSession's
+                // outstanding-task registry. Cancel and return instead of parking 600s.
+                task.cancel()
+                return .shutdown
+            }
+
+            let now = DispatchTime.now()
+            guard now.uptimeNanoseconds < deadline.uptimeNanoseconds else {
+                task.cancel()
+                return .timedOut
+            }
+
+            let remainingNanoseconds = deadline.uptimeNanoseconds - now.uptimeNanoseconds
+            let waitNanoseconds = min(remainingNanoseconds, pollNanoseconds)
+            if semaphore.wait(timeout: now + .nanoseconds(Int(waitNanoseconds))) == .success {
+                return .completed
+            }
+        }
     }
     #else
     private func forwardLinuxRequest(_ ctx: ForwardContext) -> BufferedResponse? {
@@ -738,7 +816,45 @@ public final class ProxyServer {
         return json["stream"] as? Bool == true
     }
 
-    func buildForwardHeaders(from headers: [(String, String)], bodyLength: Int) -> [(String, String)] {
+    func requestWantsStreamingResponse(processedBody: String?, bodyData: Data) -> Bool {
+        if let processedBody {
+            return isStreamingRequest(processedBody)
+        }
+        guard !bodyData.isEmpty else { return false }
+        // WO-307: malformed UTF-8 can still be structurally valid JSON after
+        // replacement; use the same lossy view as redaction so stream routing
+        // does not fall back to the 600s buffered path.
+        // swiftlint:disable:next optional_data_string_conversion
+        let lossyBody = String(decoding: bodyData, as: UTF8.self)
+        return isStreamingRequest(lossyBody)
+    }
+
+    func shouldLogBodyRedactionBeforeForwarding(
+        redactionCount: Int,
+        requestWantsStream: Bool,
+        shouldBlockNonUTF8Forwarding: Bool
+    ) -> Bool {
+        guard redactionCount > 0 else { return false }
+        // WO-304/WO-307: if malformed bytes caused a fail-closed request, no
+        // streaming relay will run later, so the request-body redaction must be
+        // audited before returning 400.
+        if shouldBlockNonUTF8Forwarding {
+            return true
+        }
+
+        // WO-304: non-streaming and buffer-mode body redactions must be logged
+        // before forwarding so upstream failures cannot hide them. Streaming
+        // mode defers the body count so body + SSE redactions are logged once.
+        return !(requestWantsStream && config.responseStreamingRedactionMode != .buffer)
+    }
+
+    public static func upstreamHostHeader(for upstream: URL) -> String? {
+        guard let host = upstream.host, !host.isEmpty else { return nil }
+        return host
+    }
+
+    func buildForwardHeaders(from headers: [(String, String)], bodyLength: Int) -> [(String, String)]? {
+        guard let upstreamHost = Self.upstreamHostHeader(for: upstream) else { return nil }
         var forwardHeaders: [(String, String)] = []
         for (key, value) in headers {
             let lower = key.lowercased()
@@ -749,9 +865,13 @@ public final class ProxyServer {
         }
         // WO-303: force identity encoding so SSE redaction sees plaintext bytes.
         forwardHeaders.append(("Accept-Encoding", "identity"))
-        forwardHeaders.append(("Host", upstream.host ?? ""))
+        forwardHeaders.append(("Host", upstreamHost))
         forwardHeaders.append(("Content-Length", String(bodyLength)))
         return forwardHeaders
+    }
+
+    func formatAuditTimestamp(_ date: Date) -> String {
+        iso8601Formatter.string(from: date)
     }
 
     #if canImport(Darwin)
@@ -827,7 +947,7 @@ public final class ProxyServer {
     #endif
 
     func readHTTPRequest(from socket: Int32) -> ReadResult {
-        var buffer = [UInt8](repeating: 0, count: 1_048_576) // 1MB max
+        var buffer = [UInt8](repeating: 0, count: proxyHTTPRequestReadBufferBytes)
         var accumulated = Data()
         // WO-272: nil = Content-Length header absent; 0 = "Content-Length: 0" (zero body expected).
         // The previous Int default of 0 made bodyReceived >= contentLength always true after the
@@ -1154,7 +1274,7 @@ public final class ProxyServer {
         lastLogSignature = signature
         statsLock.unlock()
 
-        let timestamp = iso8601Formatter.string(from: Date())
+        let timestamp = formatAuditTimestamp(Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"

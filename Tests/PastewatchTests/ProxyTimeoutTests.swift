@@ -53,6 +53,27 @@ final class ProxyTimeoutTests: XCTestCase {
                           "Non-streaming timeout must not be the old 120s fixed cap")
     }
 
+    #if canImport(Darwin)
+    func testNonStreamingTaskWaitReturnsOnShutdownWithoutFullTimeout() {
+        let server = ProxyServer(port: 0)
+        let semaphore = DispatchSemaphore(value: 0)
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.dataTask(with: URL(string: "https://example.test/messages")!)
+        let start = Date()
+
+        let result = server.waitForNonStreamingTaskCompletion(
+            semaphore: semaphore,
+            task: task,
+            totalTimeoutSeconds: proxyNonStreamTotalTimeoutSeconds,
+            pollMilliseconds: 1
+        )
+
+        XCTAssertEqual(result, .shutdown)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+    }
+    #endif
+
     // MARK: - CurlHTTPClient TLS args (regression: existing behavior preserved)
 
     func testTLSArgsInsecureWins() {

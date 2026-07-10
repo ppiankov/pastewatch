@@ -49,12 +49,15 @@ public struct SSEFrameParser {
         // WO-291: keep the fast string-domain path for all-UTF-8 buffers, but make the
         // raw fallback parse each complete frame independently. A valid frame followed by
         // invalid UTF-8 must still expose frame.data to redactSSEFrame().
-        if var remaining = String(data: buffer, encoding: .utf8) {
-            while let (frame, rest) = extractNextFrameFromString(remaining) {
+        if let remaining = String(data: buffer, encoding: .utf8) {
+            var cursor = remaining.startIndex
+            while let (frame, nextCursor) = extractNextFrameFromString(remaining, from: cursor) {
                 frames.append(frame)
-                remaining = rest
+                cursor = nextCursor
             }
-            buffer = Data(remaining.utf8)
+            // WO-309: one tail copy per feed() call, not one full remaining-buffer
+            // copy per parsed frame.
+            buffer = Data(remaining[cursor...].utf8)
         } else {
             while let (frame, remaining) = extractNextFrameRaw(from: buffer) {
                 frames.append(frame)
@@ -71,13 +74,16 @@ public struct SSEFrameParser {
     // MARK: - Private
 
     /// Extract the next SSE frame from an already-decoded string, returning the frame
-    /// and the unconsumed remainder. Called repeatedly from feed() without re-decoding.
-    private func extractNextFrameFromString(_ str: String) -> (Frame, String)? {
+    /// and the next scan cursor. Called repeatedly from feed() without re-decoding.
+    private func extractNextFrameFromString(
+        _ str: String,
+        from cursor: String.Index
+    ) -> (Frame, String.Index)? {
         // Find the first blank-line terminator: \r\n\r\n preferred over \n\n.
         let terminators = ["\r\n\r\n", "\n\n"]
         var firstTermRange: Range<String.Index>?
         for term in terminators {
-            if let r = str.range(of: term) {
+            if let r = str.range(of: term, range: cursor..<str.endIndex) {
                 if firstTermRange == nil || r.lowerBound < firstTermRange!.lowerBound {
                     firstTermRange = r
                 }
@@ -86,14 +92,11 @@ public struct SSEFrameParser {
 
         guard let termRange = firstTermRange else { return nil }
 
-        let frameStr = String(str[..<termRange.lowerBound])
-        let terminator = String(str[termRange])
-        let afterTerm = String(str[termRange.upperBound...])
-
-        let frameData = Data((frameStr + terminator).utf8)
+        let frameStr = String(str[cursor..<termRange.lowerBound])
+        let frameData = Data(str[cursor..<termRange.upperBound].utf8)
         let frame = parseFrame(frameStr, raw: frameData)
 
-        return (frame, afterTerm)
+        return (frame, termRange.upperBound)
     }
 
     private func extractNextFrameRaw(from data: Data) -> (Frame, Data)? {

@@ -26,6 +26,22 @@ final class SSEFrameParserTests: XCTestCase {
         XCTAssertEqual(result.frames[2].data, "three")
     }
 
+    func testManyFramesInOneChunkPreservesTrailingPartial() {
+        var parser = SSEFrameParser()
+        var stream = ""
+        for i in 0..<1_000 {
+            stream += "data: frame-\(i)\n\n"
+        }
+        stream += "data: partial"
+
+        let result = parser.feed(Data(stream.utf8))
+
+        XCTAssertEqual(result.frames.count, 1_000)
+        XCTAssertEqual(result.frames.first?.data, "frame-0")
+        XCTAssertEqual(result.frames.last?.data, "frame-999")
+        XCTAssertEqual(parser.remainingBytes, Data("data: partial".utf8))
+    }
+
     func testPartialFrameRetained() {
         var parser = SSEFrameParser()
         let chunk1 = Data("data: hel".utf8)
