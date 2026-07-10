@@ -16,6 +16,38 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertFalse(args.contains("-d"))
     }
 
+    func testCurlTemporaryBodyPathsArePerCallUnique() {
+        let paths = Set((0..<100).map { _ in CurlHTTPClient.temporaryBodyPath() })
+
+        XCTAssertEqual(paths.count, 100)
+        XCTAssertTrue(paths.allSatisfy {
+            $0.hasPrefix("/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-")
+        })
+    }
+
+    func testCurlResponseHeaderReaderPreservesBufferedInterimBlocks() {
+        var fds = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(pipe(&fds), 0)
+        defer { close(fds[0]) }
+
+        let headers = Data(
+            "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".utf8
+        )
+        writePipeData(headers, to: fds[1], file: #filePath, line: #line)
+        close(fds[1])
+
+        var buffered = Data()
+        let first = CurlHTTPClient.readResponseHeaderBlock(from: fds[0], buffered: &buffered)
+        let second = CurlHTTPClient.readResponseHeaderBlock(from: fds[0], buffered: &buffered)
+
+        XCTAssertEqual(String(data: first ?? Data(), encoding: .utf8), "HTTP/1.1 100 Continue\r\n\r\n")
+        XCTAssertEqual(
+            String(data: second ?? Data(), encoding: .utf8),
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+        )
+        XCTAssertTrue(buffered.isEmpty)
+    }
+
     func testNegativeContentLengthIsMalformed() {
         let body = Data(#"{"messages":[{"content":"password=s3cr3t-hunter2"}]}"#.utf8)
         let result = readRequest(
@@ -209,6 +241,21 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
                     return
                 }
                 offset += sent
+            }
+        }
+    }
+
+    private func writePipeData(_ data: Data, to fd: Int32, file: StaticString, line: UInt) {
+        data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < data.count {
+                let written = Foundation.write(fd, base.advanced(by: offset), data.count - offset)
+                guard written > 0 else {
+                    XCTFail("write failed with errno \(errno)", file: file, line: line)
+                    return
+                }
+                offset += written
             }
         }
     }

@@ -55,6 +55,8 @@ public final class ProxyServer {
     /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
     /// statsLock so concurrent handlers do not serialize behind file operations.
     private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
+    /// WO-302: reuse the formatter instead of constructing one for every redacted request.
+    private let iso8601Formatter = ISO8601DateFormatter()
     /// WO-234: barrier group lets stop() wait for in-flight handlers before draining logQueue.
     /// Each dispatched handler enters the group; stop() barrier-waits so logQueue.sync sees
     /// all handler-enqueued audit writes, not just the ones enqueued before stop() was called.
@@ -68,6 +70,14 @@ public final class ProxyServer {
         get { runningLock.lock(); defer { runningLock.unlock() }; return _running }
         set { runningLock.lock(); defer { runningLock.unlock() }; _running = newValue }
     }
+    #if canImport(Darwin)
+    /// WO-305: share the TLS trust policy between buffered URLSession tasks and
+    /// streaming tasks that install SSEStreamRelay as the per-task delegate.
+    private lazy var tlsTrustDelegate: TLSTrustDelegate? = {
+        guard caCertPath != nil || insecureTLS else { return nil }
+        return TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
+    }()
+    #endif
     private lazy var urlSession: URLSession = makeSession()
 
     public struct RedactionStats {
@@ -186,8 +196,7 @@ public final class ProxyServer {
         // WO-143: honor --ca-cert / --insecure for the upstream TLS handshake.
         // Only attach a delegate when a flag is set; otherwise behave exactly as
         // before (system trust store, no delegate).
-        if caCertPath != nil || insecureTLS {
-            let delegate = TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
+        if let delegate = tlsTrustDelegate {
             return URLSession(configuration: sessionConfig, delegate: delegate, delegateQueue: nil)
         }
         #endif
@@ -237,7 +246,7 @@ public final class ProxyServer {
     }
 
     /// Start the proxy server. Blocks until stop() is called.
-    public func start() throws {
+    public func start(onListening: (() -> Void)? = nil) throws {
         #if canImport(Darwin)
         serverSocket = socket(AF_INET, SOCK_STREAM, 0)
         #else
@@ -271,6 +280,8 @@ public final class ProxyServer {
         }
 
         running = true
+        // WO-298: signal startup only after listen() succeeded and running is true.
+        onListening?()
 
         while running {
             var clientAddr = sockaddr_in()
@@ -374,11 +385,15 @@ public final class ProxyServer {
         var sendTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
         if setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
             FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_SNDTIMEO failed: errno \(errno)\n".utf8))
+            // WO-297: return a diagnosable HTTP error before closing the client socket.
+            sendError(to: clientSocket, status: 503, message: "Proxy configuration error")
             return
         }
         var recvTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
         if setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
             FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_RCVTIMEO failed: errno \(errno)\n".utf8))
+            // WO-297: return a diagnosable HTTP error before closing the client socket.
+            sendError(to: clientSocket, status: 503, message: "Proxy configuration error")
             return
         }
 
@@ -404,22 +419,27 @@ public final class ProxyServer {
         var processedBodyData = parsed.bodyData
         var redactionCount = 0
         var redactedTypes: [String] = []
-        if parsed.method == "POST" && parsed.path.contains("/v1/messages"), let body = parsed.body {
-            let result = scanAndRedactBody(body)
-            processedBody = result.body
-            processedBodyData = Data(result.body.utf8)
-            redactionCount = result.redacted
-            redactedTypes = result.redactedTypes
+        var shouldBlockNonUTF8Forwarding = false
+        if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
+            if let body = parsed.body {
+                let result = scanAndRedactBody(body)
+                processedBody = result.body
+                processedBodyData = Data(result.body.utf8)
+                redactionCount = result.redacted
+                redactedTypes = result.redactedTypes
+            } else {
+                // WO-296: scan a lossy text view of non-UTF-8 bodies for audit
+                // coverage, then fail closed if a secret is detected.
+                let result = scanNonUTF8BodyForRedactions(processedBodyData)
+                redactionCount = result.redacted
+                redactedTypes = result.redactedTypes
+                shouldBlockNonUTF8Forwarding = result.shouldBlockForwarding
+            }
         }
 
         let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
-        var forwardHeaders: [(String, String)] = []
-        for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
-            forwardHeaders.append((key, value))
-        }
-        forwardHeaders.append(("Host", upstream.host ?? ""))
-        forwardHeaders.append(("Content-Length", String(processedBodyData.count)))
+        let forwardHeaders = buildForwardHeaders(from: parsed.headers, bodyLength: processedBodyData.count)
 
         let requestWantsStream = processedBody.map(isStreamingRequest) ?? false
 
@@ -432,6 +452,20 @@ public final class ProxyServer {
         }
         statsLock.unlock()
 
+        // WO-304: non-streaming and buffer-mode body redactions must be logged even
+        // if upstream forwarding later fails and returns nil after a 502/504.
+        let bodyLogDeferredToStreaming = requestWantsStream && config.responseStreamingRedactionMode != .buffer
+        if redactionCount > 0 && !bodyLogDeferredToStreaming {
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
+        }
+        if shouldBlockNonUTF8Forwarding {
+            // WO-296: /v1/messages bodies are UTF-8 JSON by contract; if a lossy
+            // scan finds a secret in malformed bytes, fail closed instead of
+            // forwarding the original credential upstream.
+            sendError(to: clientSocket, status: 400, message: "Bad Request")
+            return
+        }
+
         // Platform dispatch: returns a BufferedResponse for the convergence tail,
         // or nil when the response was fully handled (streamed or error sent to client).
         let ctx = ForwardContext(
@@ -440,12 +474,6 @@ public final class ProxyServer {
             redactedTypes: redactedTypes, processedBodyData: processedBodyData, clientSocket: clientSocket
         )
         guard let buffered = forwardRequest(ctx) else { return }
-
-        // WO-184/WO-189/WO-198: log body redactions at the convergence point for
-        // non-streaming and buffer-mode requests.
-        if redactionCount > 0 {
-            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
-        }
 
         var finalBody = buffered.body
         if redactionCount > 0 && injectAlert {
@@ -526,6 +554,11 @@ public final class ProxyServer {
             streamingRedactionMode: streamingMode,
             proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
         ) else {
+            // WO-304: Linux streaming can fail before CurlHTTPClient returns stream
+            // stats; log body redactions here so the audit trail is not silent.
+            if shouldStream && ctx.redactionCount > 0 {
+                logRedaction(path: ctx.parsed.path, count: ctx.redactionCount, types: ctx.redactedTypes)
+            }
             sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
             return nil
         }
@@ -587,6 +620,12 @@ public final class ProxyServer {
         let redactedTypes: [String]
     }
 
+    struct RedactionDetectionSummary {
+        let redacted: Int
+        let redactedTypes: [String]
+        let shouldBlockForwarding: Bool
+    }
+
     private func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -604,6 +643,21 @@ public final class ProxyServer {
         }
 
         return ScanResult(body: resultString, redacted: redacted, redactedTypes: types)
+    }
+
+    func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
+        guard !bodyData.isEmpty else {
+            return RedactionDetectionSummary(redacted: 0, redactedTypes: [], shouldBlockForwarding: false)
+        }
+        // swiftlint:disable:next optional_data_string_conversion
+        let lossyBody = String(decoding: bodyData, as: UTF8.self)
+        let matches = DetectionRules.scan(lossyBody, config: config)
+        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        return RedactionDetectionSummary(
+            redacted: filtered.count,
+            redactedTypes: filtered.map { $0.displayName },
+            shouldBlockForwarding: !filtered.isEmpty
+        )
     }
 
     /// Walk the messages array looking for tool_result content to scan.
@@ -684,6 +738,22 @@ public final class ProxyServer {
         return json["stream"] as? Bool == true
     }
 
+    func buildForwardHeaders(from headers: [(String, String)], bodyLength: Int) -> [(String, String)] {
+        var forwardHeaders: [(String, String)] = []
+        for (key, value) in headers {
+            let lower = key.lowercased()
+            guard lower != "host", lower != "content-length", lower != "accept-encoding" else {
+                continue
+            }
+            forwardHeaders.append((key, value))
+        }
+        // WO-303: force identity encoding so SSE redaction sees plaintext bytes.
+        forwardHeaders.append(("Accept-Encoding", "identity"))
+        forwardHeaders.append(("Host", upstream.host ?? ""))
+        forwardHeaders.append(("Content-Length", String(bodyLength)))
+        return forwardHeaders
+    }
+
     #if canImport(Darwin)
     /// Forward a streaming (SSE) response to the client socket incrementally.
     /// Uses URLSessionDataDelegate so each upstream chunk is written to the
@@ -701,7 +771,12 @@ public final class ProxyServer {
             redactionMode: mode,
             config: config,
             severity: severity,
-            idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds
+            idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds,
+            tlsChallengeHandler: tlsTrustDelegate.map { delegate in
+                { _, challenge, completionHandler in
+                    delegate.handle(challenge: challenge, completionHandler: completionHandler)
+                }
+            }
         )
 
         // WO-182: inject the alert frame immediately before [DONE] so SSE consumers
@@ -1079,7 +1154,7 @@ public final class ProxyServer {
         lastLogSignature = signature
         statsLock.unlock()
 
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let timestamp = iso8601Formatter.string(from: Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"
@@ -1170,6 +1245,15 @@ final class TLSTrustDelegate: NSObject, URLSessionDelegate {
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handle(challenge: challenge, completionHandler: completionHandler)
+    }
+
+    /// WO-305: reusable trust handler for streaming tasks whose per-task delegate
+    /// would otherwise shadow the URLSession delegate's auth-challenge callback.
+    func handle(
+        challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,

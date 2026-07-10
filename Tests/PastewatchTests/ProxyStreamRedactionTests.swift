@@ -100,6 +100,28 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(parser.remainingBytes, Data([0xFF]))
     }
 
+    func testThinkingDeltaSecretIsRedacted() {
+        let credential = "password=s3cr3t-hunter2"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"\#(credential)"}}"#
+        let redaction = redactFirstFrame(payload: payload)
+
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
+    func testInputJSONDeltaSecretIsRedacted() {
+        let credential = "password=s3cr3t-hunter2"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"\#(credential)"}}"#
+        let redaction = redactFirstFrame(payload: payload)
+
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
     /// A frame with no secret is passed through byte-identical.
     func testSSEFrameWithoutSecretPassesThroughUnchanged() {
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello, world!"}}"#
@@ -112,6 +134,13 @@ final class ProxyStreamRedactionTests: XCTestCase {
         // No redaction needed — raw should contain the original text.
         let rawStr = String(data: result.frames[0].raw, encoding: .utf8) ?? ""
         XCTAssertTrue(rawStr.contains("Hello, world!"))
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.data, result.frames[0].raw)
     }
 
     /// Terminal [DONE] frames are preserved unchanged.
@@ -148,5 +177,16 @@ final class ProxyStreamRedactionTests: XCTestCase {
         lines.append("")
         lines.append("")
         return Data(lines.joined(separator: "\n").utf8)
+    }
+
+    private func redactFirstFrame(payload: String) -> SSEFrameRedactionResult {
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+        return redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
     }
 }

@@ -4,6 +4,11 @@ import Foundation
 /// is unreliable (arm64 dataTask completion handler never fires).
 /// On macOS this file compiles but is not used — ProxyServer uses URLSession there.
 struct CurlHTTPClient {
+    private static let responseHeaderReadChunkSize = 256
+    private static let maxHeaderTerminatorOverlapBytes = 3
+    private static let crlfHeaderTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
+    private static let lfHeaderTerminator = Data([0x0A, 0x0A])
+
     struct Response {
         let statusCode: Int
         let headers: [String: String]
@@ -80,7 +85,7 @@ struct CurlHTTPClient {
         // Write body to a temp file to avoid argument length limits
         var tempFile: String?
         if let body = body {
-            let path = "/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-\(Thread.current.hash).body"
+            let path = Self.temporaryBodyPath()
             FileManager.default.createFile(atPath: path, contents: body)
             args.append(contentsOf: Self.bodyUploadArgs(forTempFile: path))
             tempFile = path
@@ -183,6 +188,11 @@ struct CurlHTTPClient {
         ["--data-binary", "@\(path)"]
     }
 
+    /// WO-294: per-call unique path so concurrent curl uploads cannot share a body file.
+    static func temporaryBodyPath() -> String {
+        "/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).body"
+    }
+
     struct StreamContext {
         let clientSocket: Int32
         let sendFlags: Int32
@@ -218,30 +228,21 @@ struct CurlHTTPClient {
         headerGroup.enter()
         DispatchQueue.global().async {
             let fd = headerPipe.fileHandleForReading.fileDescriptor
-            var accumulated = Data()
-            var oneByte = [UInt8](repeating: 0, count: 1)
+            var bufferedHeaderBytes = Data()
             // WO-165/WO-166: loop over header blocks, skipping 1xx interim responses,
             // and recognize both \r\n\r\n (CRLF) and \n\n (LF-only) terminators.
             while true {
-                var blockDone = false
-                while !blockDone {
-                    let n = Foundation.read(fd, &oneByte, 1)
-                    guard n > 0 else { blockDone = true; break }
-                    accumulated.append(oneByte[0])
-                    let c = accumulated.count
-                    if c >= 4 {
-                        let tail4 = accumulated.suffix(4)
-                        if tail4 == Data([0x0D, 0x0A, 0x0D, 0x0A]) { blockDone = true; break }
-                    }
-                    if c >= 2 {
-                        let tail2 = accumulated.suffix(2)
-                        if tail2 == Data([0x0A, 0x0A]) { blockDone = true; break }
-                    }
+                // WO-300: read in chunks and search the appended window instead of
+                // issuing one syscall and Data.suffix allocation per header byte.
+                guard let headerBlock = Self.readResponseHeaderBlock(from: fd, buffered: &bufferedHeaderBytes) else {
+                    parsedStatus = 502
+                    parsedHeaders = [:]
+                    break
                 }
                 // Parse the block to extract status.
                 var blockStatus = 0
                 var blockHeaders: [String: String] = [:]
-                if let headerStr = String(data: accumulated, encoding: .utf8) {
+                if let headerStr = String(data: headerBlock, encoding: .utf8) {
                     for line in headerStr.components(separatedBy: "\r\n").flatMap({ $0.components(separatedBy: "\n") }) {
                         if line.hasPrefix("HTTP/") {
                             let parts = line.components(separatedBy: " ")
@@ -255,7 +256,6 @@ struct CurlHTTPClient {
                 }
                 // WO-165: skip 1xx interim blocks (e.g. 100 Continue) and read next block.
                 if blockStatus >= 100 && blockStatus < 200 {
-                    accumulated = Data()
                     continue
                 }
                 // WO-183: if blockStatus==0 we hit EOF after a 1xx interim (100-Continue +
@@ -332,6 +332,40 @@ struct CurlHTTPClient {
             statusCode: parsedStatus, headers: parsedHeaders, body: Data(), wasStreamed: true,
             streamRedactionCount: relayRedactionCount, streamRedactionTypes: relayRedactionTypes
         )
+    }
+
+    static func readResponseHeaderBlock(from fd: Int32, buffered: inout Data) -> Data? {
+        while true {
+            if let range = headerTerminatorRange(in: buffered, searchRange: 0..<buffered.count) {
+                let block = Data(buffered[..<range.upperBound])
+                buffered.removeSubrange(..<range.upperBound)
+                return block
+            }
+
+            var readBuffer = [UInt8](repeating: 0, count: responseHeaderReadChunkSize)
+            let previousCount = buffered.count
+            let n = Foundation.read(fd, &readBuffer, readBuffer.count)
+            guard n > 0 else {
+                guard !buffered.isEmpty else { return nil }
+                let block = buffered
+                buffered = Data()
+                return block
+            }
+
+            buffered.append(contentsOf: readBuffer[..<n])
+            let searchStart = max(0, previousCount - maxHeaderTerminatorOverlapBytes)
+            let searchRange = searchStart..<buffered.count
+            if let range = headerTerminatorRange(in: buffered, searchRange: searchRange) {
+                let block = Data(buffered[..<range.upperBound])
+                buffered.removeSubrange(..<range.upperBound)
+                return block
+            }
+        }
+    }
+
+    private static func headerTerminatorRange(in data: Data, searchRange: Range<Data.Index>) -> Range<Data.Index>? {
+        data.range(of: crlfHeaderTerminator, options: [], in: searchRange) ??
+            data.range(of: lfHeaderTerminator, options: [], in: searchRange)
     }
 
     /// WO-155: blocking read loop that relays body pipe chunks to the client socket.

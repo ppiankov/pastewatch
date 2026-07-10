@@ -9,6 +9,11 @@ let sseStreamMaxSessionSeconds: Double = 3600
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
+    typealias TLSChallengeHandler = (
+        URLSession,
+        URLAuthenticationChallenge,
+        @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) -> Void
 
     private let clientSocket: Int32
     private let sendFlags: Int32
@@ -17,6 +22,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let severity: Severity
     private let idleTimeoutSeconds: Double
     private let maxSessionSeconds: Double // WO-292: hard ceiling before cancelling active stream task
+    private let tlsChallengeHandler: TLSChallengeHandler? // WO-305: preserve custom TLS trust policy.
 
     /// Signals that the upstream response head has been received.
     private let headReceived = DispatchSemaphore(value: 0)
@@ -61,12 +67,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// so the connection-thread write in writeToSocket() is visible to delegate-queue readers.
     private var clientEpipe = false
     private var idleTimer: DispatchSourceTimer?
-    /// Queue owning the idle timer — create/cancel must run here.
-    /// WO-199: timer is cancel-and-recreated on each data chunk so the event handler
-    /// (fired from timerQueue) can never fire after a valid chunk arrives. timerQueue.sync
-    /// alone is insufficient: if the event handler is already enqueued on timerQueue when
-    /// resetIdleTimer's sync block runs, the handler executes AFTER the reschedule completes.
+    /// Queue owning the idle timer — create/cancel/reschedule must run here.
     private let timerQueue = DispatchQueue(label: "com.pastewatch.sse-idle-timer")
+    /// WO-301: guards against stale callbacks from an earlier timer deadline.
+    private var idleDeadline: DispatchTime?
 
     init(
         clientSocket: Int32,
@@ -75,7 +79,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         config: PastewatchConfig,
         severity: Severity,
         idleTimeoutSeconds: Double,
-        maxSessionSeconds: Double = sseStreamMaxSessionSeconds
+        maxSessionSeconds: Double = sseStreamMaxSessionSeconds,
+        tlsChallengeHandler: TLSChallengeHandler? = nil
     ) {
         self.clientSocket = clientSocket
         self.sendFlags = sendFlags
@@ -84,6 +89,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         self.severity = severity
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.maxSessionSeconds = maxSessionSeconds
+        self.tlsChallengeHandler = tlsChallengeHandler
     }
 
     /// Execute the upstream request and relay the response to `clientSocket`.
@@ -189,6 +195,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         switch redactionMode {
         case .rawStream:
+            // WO-299: raw_stream is a true passthrough on macOS, matching Linux.
             relayRawData(data)
 
         case .perSSEEvent:
@@ -197,6 +204,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         case .buffer:
             relayRawData(data)
         }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard let tlsChallengeHandler else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // WO-305: the per-task data delegate receives task-level TLS challenges;
+        // forward them to the same trust evaluator used by buffered URLSession tasks.
+        tlsChallengeHandler(session, challenge, completionHandler)
     }
 
     private func relayRawData(_ data: Data) {
@@ -417,16 +439,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         idleTimer = makeIdleTimer(task: task)
     }
 
-    /// WO-199: cancel the current timer and install a fresh one so that any event handler
-    /// already enqueued on timerQueue before this call is effectively voided — the old
-    /// DispatchSourceTimer is cancelled, and the new one starts fresh with a full deadline.
-    /// timerQueue.sync alone is insufficient (WO-187): a handler enqueued before the sync
-    /// block runs executes after the reschedule, producing a spurious timeout.
+    /// WO-301: reschedule the current timer in place instead of canceling and allocating
+    /// a fresh DispatchSourceTimer on every received upstream chunk.
     private func resetIdleTimer(task: URLSessionTask) {
         timerQueue.sync { [weak self] in
             guard let self = self else { return }
-            self.idleTimer?.cancel()
-            self.idleTimer = self.makeIdleTimerOnQueue(task: task)
+            let deadline = DispatchTime.now() + self.idleTimeoutSeconds
+            self.idleDeadline = deadline
+            if let idleTimer = self.idleTimer {
+                idleTimer.schedule(deadline: deadline, repeating: .never)
+            } else {
+                self.idleTimer = self.makeIdleTimerOnQueue(task: task)
+            }
         }
     }
 
@@ -446,12 +470,20 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     private func makeIdleTimerOnQueue(task: URLSessionTask) -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
-        timer.schedule(deadline: .now() + idleTimeoutSeconds, repeating: .never)
+        let deadline = DispatchTime.now() + idleTimeoutSeconds
+        idleDeadline = deadline
+        timer.schedule(deadline: deadline, repeating: .never)
         timer.setEventHandler { [weak self, weak task] in
             // WO-170: mark timer fired BEFORE signaling streamDone so that the async
             // didCompleteWithError callback (which runs on the URLSession delegate queue)
             // sees the flag and skips writing headers to the already-closed socket.
             guard let self = self else { return }
+            if let idleDeadline = self.idleDeadline,
+               DispatchTime.now().uptimeNanoseconds < idleDeadline.uptimeNanoseconds {
+                // WO-301: a timer callback queued before a later chunk rescheduled
+                // the deadline is stale; the active timer remains armed for the new deadline.
+                return
+            }
             // WO-194: timerDidFire under socketWriteLock (coupled with didWriteHeaders check
             // in didCompleteWithError). streamDoneSignaled under its own signalLock.
             self.socketWriteLock.lock()

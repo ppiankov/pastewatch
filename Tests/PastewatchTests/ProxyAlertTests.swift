@@ -132,4 +132,25 @@ final class ProxyAlertTests: XCTestCase {
         let serverNoAlert = ProxyServer(port: 0, injectAlert: false)
         XCTAssertFalse(serverNoAlert.injectAlert)
     }
+
+    func testNonUTF8RequestBodyStillScansLossyTextForAudit() {
+        var body = Data([0xFF, 0xFE, 0x00])
+        body.append(Data("password=s3cr3t-hunter2".utf8))
+
+        let result = server.scanNonUTF8BodyForRedactions(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.redactedTypes, ["Credential"])
+        XCTAssertTrue(result.shouldBlockForwarding)
+    }
+
+    func testNonUTF8RequestBodyWithoutSecretDoesNotBlockForwarding() {
+        let body = Data([0xFF, 0xFE, 0x00, 0x41])
+
+        let result = server.scanNonUTF8BodyForRedactions(body)
+
+        XCTAssertEqual(result.redacted, 0)
+        XCTAssertEqual(result.redactedTypes, [])
+        XCTAssertFalse(result.shouldBlockForwarding)
+    }
 }

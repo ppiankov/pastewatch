@@ -97,12 +97,9 @@ struct Proxy: ParsableCommand {
         // uses pthread_mutex and is not async-signal-safe (WO-231). Signal the global
         // semaphore (signal-safe) to wake a normal thread that calls stop(), draining
         // pending audit log writes (WO-225) before exit.
-        // WO-240: SIGINT can arrive in the ~4-instruction window between signal() installation
-        // and listen() completing inside server.start(). Use a second semaphore (startedGate)
-        // that the shutdown thread waits on briefly before deciding whether to print "stopped."
-        // and call stop(). The gate is signaled just before server.start() — if SIGINT fires
-        // before that, the shutdown thread races to wake and sees the gate still closed, so it
-        // skips stop() and exits cleanly. If SIGINT fires after, the gate is open and stop() runs.
+        // WO-240/WO-298: SIGINT can arrive between signal() installation and listen()
+        // completing inside server.start(). Use a second semaphore that opens only after
+        // listen() succeeds, so early SIGINT does not call stop() on an unstarted server.
         let startedGate = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             proxyShutdownSemaphore.wait()
@@ -121,7 +118,8 @@ struct Proxy: ParsableCommand {
             proxyShutdownSemaphore.signal()
         }
 
-        startedGate.signal()
-        try server.start()
+        try server.start {
+            startedGate.signal()
+        }
     }
 }

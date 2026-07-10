@@ -62,4 +62,28 @@ final class ProxyStreamingTests: XCTestCase {
         XCTAssertFalse(headers.lowercased().contains("transfer-encoding: chunked"))
         XCTAssertFalse(headers.lowercased().contains("content-length:"))
     }
+
+    func testForwardHeadersForceIdentityAcceptEncoding() {
+        let server = ProxyServer(
+            port: 0,
+            upstream: URL(string: "https://api.anthropic.com/v1")!
+        )
+
+        let headers = server.buildForwardHeaders(
+            from: [
+                ("Host", "127.0.0.1"),
+                ("Accept-Encoding", "gzip, br"),
+                ("Content-Length", "999"),
+                ("Anthropic-Version", "2023-06-01")
+            ],
+            bodyLength: 42
+        )
+        let lowerNames = headers.map { $0.0.lowercased() }
+
+        XCTAssertEqual(headers.filter { $0.0.lowercased() == "accept-encoding" }.map { $0.1 }, ["identity"])
+        XCTAssertEqual(headers.filter { $0.0.lowercased() == "host" }.map { $0.1 }, ["api.anthropic.com"])
+        XCTAssertEqual(headers.filter { $0.0.lowercased() == "content-length" }.map { $0.1 }, ["42"])
+        XCTAssertTrue(headers.contains { $0.0 == "Anthropic-Version" && $0.1 == "2023-06-01" })
+        XCTAssertEqual(lowerNames.filter { $0 == "accept-encoding" }.count, 1)
+    }
 }

@@ -36,9 +36,10 @@ struct SSEFrameRedactionResult {
 
 /// WO-220: shared per-SSE-event frame redaction used by both the macOS URLSession path
 /// (SSEStreamRelay) and the Linux curl path (CurlHTTPClient).
-/// Extracts delta.text from an Anthropic SSE JSON payload, scans for secrets, and
-/// re-serializes the frame with obfuscated text. Returns the original frame on any
-/// parse failure so secrets are never silently dropped (though they remain in the frame).
+/// Extracts text-bearing string fields from an Anthropic SSE JSON delta, scans for
+/// secrets, and re-serializes the frame with obfuscated values. Returns the original
+/// frame on any parse failure so secrets are never silently dropped, though they
+/// remain in the frame.
 /// Accumulates stats only when re-serialization succeeds (mirrors WO-180/WO-188).
 func redactSSEFrame(
     _ frame: SSEFrameParser.Frame,
@@ -50,16 +51,28 @@ func redactSSEFrame(
     }
     guard let jsonData = dataPayload.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-          let delta = json["delta"] as? [String: Any],
-          let text = delta["text"] as? String else {
+          let delta = json["delta"] as? [String: Any] else {
         return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
     }
-    let matches = DetectionRules.scan(text, config: config)
-    let filtered = matches.filter { $0.effectiveSeverity >= severity }
-    guard !filtered.isEmpty else { return SSEFrameRedactionResult(data: frame.raw, count: 0, types: []) }
-    let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
     var modifiedDelta = delta
-    modifiedDelta["text"] = obfuscated
+    var redacted = 0
+    var types: [String] = []
+
+    for (field, value) in delta {
+        guard field != "type", let text = value as? String else { continue }
+        let matches = DetectionRules.scan(text, config: config)
+        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        guard !filtered.isEmpty else { continue }
+        // WO-295: redact thinking_delta/input_json_delta and future text-bearing
+        // delta string fields, not only text_delta's `text` field.
+        modifiedDelta[field] = Obfuscator.obfuscate(text, matches: filtered)
+        redacted += filtered.count
+        types.append(contentsOf: filtered.map { $0.displayName })
+    }
+
+    guard redacted > 0 else {
+        return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
+    }
     var modifiedJson = json
     modifiedJson["delta"] = modifiedDelta
     guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
@@ -68,7 +81,7 @@ func redactSSEFrame(
     }
     return SSEFrameRedactionResult(
         data: frame.reserializedWith(data: resultStr),
-        count: filtered.count,
-        types: filtered.map { $0.displayName }
+        count: redacted,
+        types: types
     )
 }
