@@ -39,6 +39,16 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(text.contains("Workledger Key"))
     }
 
+    func testAlertSSEDataUsesSingleEventFrameFormat() throws {
+        let data = try XCTUnwrap(server.buildAlertSSEData(redactionCount: 1, types: ["Credential"]))
+        let frame = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(frame.hasPrefix("event: pastewatch_alert\ndata: "))
+        XCTAssertTrue(frame.hasSuffix("\n\n"))
+        XCTAssertTrue(frame.contains(#""type":"text""#))
+        XCTAssertTrue(frame.contains("[PASTEWATCH]"))
+    }
+
     // MARK: - injectAlertIntoResponse
 
     func testInjectAlertIntoValidResponse() throws {

@@ -277,6 +277,13 @@ public struct CustomRuleConfig: Codable {
     }
 }
 
+/// WO-286: closed set of proxy streaming response redaction modes.
+public enum StreamingRedactionMode: String, Codable, CaseIterable, Equatable {
+    case perSSEEvent = "per_sse_event"
+    case rawStream = "raw_stream"
+    case buffer
+}
+
 /// Configuration for Pastewatch.
 /// Loaded from ~/.config/pastewatch/config.json if present.
 public struct PastewatchConfig: Codable {
@@ -299,7 +306,7 @@ public struct PastewatchConfig: Codable {
     /// - per_sse_event (default): redact each SSE event's data payload before relay.
     /// - raw_stream: relay stream unmodified (emergency fallback, no response redaction).
     /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
-    public var responseStreamingRedactionMode: String
+    public var responseStreamingRedactionMode: StreamingRedactionMode // WO-286: enum prevents typo-to-raw fallback
 
     public init(
         enabled: Bool,
@@ -317,7 +324,7 @@ public struct PastewatchConfig: Codable {
         placeholderPrefix: String? = nil,
         protectedPaths: [String] = ["~/.openclaw"],
         sharedPatternFiles: [String] = [],
-        responseStreamingRedactionMode: String = "per_sse_event"
+        responseStreamingRedactionMode: StreamingRedactionMode = .perSSEEvent
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -363,17 +370,17 @@ public struct PastewatchConfig: Codable {
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]
         sharedPatternFiles = try container.decodeIfPresent([String].self, forKey: .sharedPatternFiles) ?? []
-        // WO-161: validate at decode time; unknown values silently fall through to the
-        // no-redaction `default:` branch. Reject and warn rather than redacting nothing.
-        let rawMode = try container.decodeIfPresent(String.self, forKey: .responseStreamingRedactionMode) ?? "per_sse_event"
-        let validModes: Set<String> = ["per_sse_event", "raw_stream", "buffer"]
-        if validModes.contains(rawMode) {
-            responseStreamingRedactionMode = rawMode
+        // WO-161/WO-286: validate via the enum raw value. Unknown config values default
+        // to per-event redaction instead of reaching a raw-stream fallback branch.
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .responseStreamingRedactionMode)
+            ?? StreamingRedactionMode.perSSEEvent.rawValue
+        if let mode = StreamingRedactionMode(rawValue: rawMode) {
+            responseStreamingRedactionMode = mode
         } else {
             FileHandle.standardError.write(Data(
-                "pastewatch: unknown responseStreamingRedactionMode '\(rawMode)', defaulting to 'per_sse_event'\n".utf8
+                "pastewatch: unknown responseStreamingRedactionMode '\(rawMode)', defaulting to '\(StreamingRedactionMode.perSSEEvent.rawValue)'\n".utf8
             ))
-            responseStreamingRedactionMode = "per_sse_event"
+            responseStreamingRedactionMode = .perSSEEvent
         }
     }
 

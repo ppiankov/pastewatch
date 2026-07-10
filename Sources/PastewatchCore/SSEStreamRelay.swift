@@ -9,7 +9,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     private let clientSocket: Int32
     private let sendFlags: Int32
-    private let redactionMode: String
+    private let redactionMode: StreamingRedactionMode
     private let config: PastewatchConfig
     private let severity: Severity
     private let idleTimeoutSeconds: Double
@@ -67,7 +67,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     init(
         clientSocket: Int32,
         sendFlags: Int32,
-        redactionMode: String,
+        redactionMode: StreamingRedactionMode,
         config: PastewatchConfig,
         severity: Severity,
         idleTimeoutSeconds: Double
@@ -102,6 +102,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // WO-176: wait for the delegate to finish so execute() does not return while
             // didCompleteWithError is still writing to the socket.
             _ = streamDone.wait(timeout: .now() + 5)
+            drainDelegateQueue(session)
             return
         }
 
@@ -114,6 +115,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             idleTimer?.cancel()
             // WO-176: wait for delegate to finish before execute() returns.
             _ = streamDone.wait(timeout: .now() + 5)
+            drainDelegateQueue(session)
             return
         }
 
@@ -124,6 +126,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         // Wait for stream to finish (data is relayed incrementally via delegate callbacks).
         _ = streamDone.wait(timeout: .now() + 3600) // max session length
+        // WO-284: streamDone can be signaled by the idle timer while didReceive is still
+        // finishing on the delegate queue. Drain it before callers read streamRedactionCount.
+        drainDelegateQueue(session)
         idleTimer?.cancel()
     }
 
@@ -165,19 +170,20 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-227: also set clientEpipe so didCompleteWithError skips the remainder flush.
         if needsHeaders {
             if !writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders) {
-                clientEpipe = true; activeTask?.cancel()
+                // WO-283: clientEpipe is shared with writeToSocket() on the connection thread.
+                markClientEpipeAndCancelTask()
                 return
             }
         }
 
         switch redactionMode {
-        case "raw_stream":
+        case .rawStream:
             relayRawData(data)
 
-        case "per_sse_event":
+        case .perSSEEvent:
             relaySSEEventData(data)
 
-        default:
+        case .buffer:
             relayRawData(data)
         }
     }
@@ -185,7 +191,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private func relayRawData(_ data: Data) {
         // Relay raw — no redaction.
         // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
-        if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
+        if !sendAll(data, to: clientSocket, flags: sendFlags) {
+            markClientEpipeAndCancelTask()
+        }
     }
 
     private func relaySSEEventData(_ data: Data) {
@@ -204,10 +212,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
         // WO-215: break out of the frame loop on EPIPE so we do not make redundant
         // kernel send() calls and no-op cancel() calls for the remaining frames.
-        var epipe = false
         for frame in result.frames {
-            guard !epipe else { break }
-            epipe = relaySSEFrame(frame)
+            guard relaySSEFrame(frame) else { break }
         }
         // Partial remainder stays in the parser buffer and is flushed at stream end.
     }
@@ -240,11 +246,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     private func relayFrameData(_ data: Data) -> Bool {
-        if !sendAll(data, to: clientSocket, flags: sendFlags) {
-            clientEpipe = true
-            activeTask?.cancel()
+        // WO-289: match sendAll() polarity: true = success, false = EPIPE.
+        if sendAll(data, to: clientSocket, flags: sendFlags) {
             return true
         }
+        markClientEpipeAndCancelTask()
         return false
     }
 
@@ -292,7 +298,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.
             var epipeAfterFlush = false
-            if redactionMode == "per_sse_event" {
+            if redactionMode == .perSSEEvent {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
                     writeToSocket(redactRawBytes(rem))
@@ -371,11 +377,23 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// the delegate-queue readers in didReceive (WO-232 snapshot) and didCompleteWithError.
     private func writeToSocket(_ data: Data) {
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
-            socketWriteLock.lock()
-            clientEpipe = true
-            socketWriteLock.unlock()
-            activeTask?.cancel()
+            markClientEpipeAndCancelTask()
         }
+    }
+
+    private func markClientEpipeAndCancelTask() {
+        // WO-283: all clientEpipe mutations are lock-protected to synchronize delegate
+        // queue callbacks with the connection thread's timeout/error send path.
+        socketWriteLock.lock()
+        clientEpipe = true
+        socketWriteLock.unlock()
+        activeTask?.cancel()
+    }
+
+    private func drainDelegateQueue(_ session: URLSession) {
+        let drain = BlockOperation {}
+        session.delegateQueue.addOperation(drain)
+        drain.waitUntilFinished()
     }
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).

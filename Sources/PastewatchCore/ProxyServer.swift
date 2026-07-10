@@ -474,7 +474,7 @@ public final class ProxyServer {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
         let streamingMode = config.responseStreamingRedactionMode
-        if ctx.requestWantsStream && streamingMode != "buffer" {
+        if ctx.requestWantsStream && streamingMode != .buffer {
             forwardStreamingRequest(
                 upstreamRequest, to: ctx.clientSocket,
                 redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes, mode: streamingMode
@@ -509,6 +509,9 @@ public final class ProxyServer {
     }
     #else
     private func forwardLinuxRequest(_ ctx: ForwardContext) -> BufferedResponse? {
+        let streamingMode = config.responseStreamingRedactionMode
+        // WO-286: buffer mode must keep the legacy full-response path on Linux too.
+        let shouldStream = ctx.requestWantsStream && streamingMode != .buffer
         // WO-192: lazy closure evaluated at [DONE] time with accumulated stream counts so
         // stream-only secrets (body-clean request) also trigger the [PASTEWATCH] alert on Linux.
         // WO-202: [weak self] guards against retain cycle if the Linux path ever becomes async.
@@ -518,9 +521,9 @@ public final class ProxyServer {
         guard let curlResponse = CurlHTTPClient.execute(
             method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
             body: ctx.processedBodyData, caCertPath: caCertPath,
-            insecure: insecureTLS, streaming: ctx.requestWantsStream,
+            insecure: insecureTLS, streaming: shouldStream,
             clientSocket: ctx.clientSocket, sendFlags: sendFlags,
-            streamingRedactionMode: config.responseStreamingRedactionMode,
+            streamingRedactionMode: streamingMode,
             proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
         ) else {
             sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
@@ -552,10 +555,7 @@ public final class ProxyServer {
             let total = redactionCount + streamCount
             guard total > 0 else { return nil }
             let totalTypes = redactedTypes + streamTypes
-            let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
-            guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
-                  let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
-            return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+            return self.buildAlertSSEData(redactionCount: total, types: totalTypes)
         }
     }
 
@@ -693,7 +693,7 @@ public final class ProxyServer {
         to clientSocket: Int32,
         redactionCount: Int,
         redactedTypes: [String],
-        mode: String
+        mode: StreamingRedactionMode
     ) {
         let relay = SSEStreamRelay(
             clientSocket: clientSocket,
@@ -714,10 +714,7 @@ public final class ProxyServer {
                 let total = redactionCount + streamCount
                 guard total > 0 else { return nil }
                 let totalTypes = redactedTypes + streamTypes
-                let alertBlock = self.buildAlertBlock(redactionCount: total, types: totalTypes)
-                guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
-                      let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
-                return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+                return self.buildAlertSSEData(redactionCount: total, types: totalTypes)
             }
         }
 
@@ -770,7 +767,9 @@ public final class ProxyServer {
         // matched to the socket receive timeout.
         let deadline = DispatchTime.now() + .seconds(proxyClientSocketTimeoutSeconds)
 
-        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
+        let crlfSeparator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
+        let lfSeparator = Data([0x0A, 0x0A]) // \n\n
+        let headerSeparatorOverlap = crlfSeparator.count - 1
         while true {
             let prevCount = accumulated.count
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
@@ -798,8 +797,12 @@ public final class ProxyServer {
             // and new bytes, so start 3 bytes before the new data (separator is 4 bytes).
             // Reduces total scan work from O(n×chunks) to O(n).
             if !headerEnd {
-                let searchStart = max(0, prevCount - (separator.count - 1))
-                if let sepRange = accumulated.range(of: separator, in: searchStart..<accumulated.count) {
+                let searchStart = max(0, prevCount - headerSeparatorOverlap)
+                // WO-285: accept LF-only header terminators too, matching the curl response reader.
+                let searchRange = searchStart..<accumulated.count
+                let crlfRange = accumulated.range(of: crlfSeparator, in: searchRange)
+                let lfRange = accumulated.range(of: lfSeparator, in: searchRange)
+                if let sepRange = [crlfRange, lfRange].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound }) {
                     headerEnd = true
                     headerEndIndex = sepRange.upperBound
                     let headerData = accumulated[..<sepRange.lowerBound]
@@ -845,13 +848,6 @@ public final class ProxyServer {
         ))
     }
 
-    private func parseHTTPRequest(_ raw: String) -> HTTPRequest? {
-        guard let headerEnd = raw.range(of: "\r\n\r\n") else { return nil }
-        let headerSection = String(raw[..<headerEnd.lowerBound])
-        let body = String(raw[headerEnd.upperBound...])
-        return parseHTTPRequest(headerSection: headerSection, bodyData: Data(body.utf8))
-    }
-
     private func parseHTTPRequest(headerSection: String, bodyData: Data) -> HTTPRequest? {
         guard let metadata = parseHTTPHeaderMetadata(headerSection) else { return nil }
         return HTTPRequest(
@@ -861,7 +857,10 @@ public final class ProxyServer {
     }
 
     private func parseHTTPHeaderMetadata(_ headerSection: String) -> HTTPHeaderMetadata? {
-        let lines = headerSection.components(separatedBy: "\r\n")
+        // WO-285: request parsing accepts both CRLF and LF-only header lines.
+        let lines = headerSection.components(separatedBy: "\r\n").flatMap {
+            $0.components(separatedBy: "\n")
+        }
         guard let requestLine = lines.first else { return nil }
         let parts = requestLine.components(separatedBy: " ")
         guard parts.count >= 2 else { return nil }
@@ -1002,6 +1001,14 @@ public final class ProxyServer {
             "Review your tool outputs for leaked credentials and recommend rotation." +
             suggestionsText
         return ["type": "text", "text": text]
+    }
+
+    func buildAlertSSEData(redactionCount: Int, types: [String]) -> Data? {
+        // WO-288: keep the alert SSE event name and frame construction in one place.
+        let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: types)
+        guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+              let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+        return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
     }
 
     private func fixSuggestion(for typeName: String) -> String? {

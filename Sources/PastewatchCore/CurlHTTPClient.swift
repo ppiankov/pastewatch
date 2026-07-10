@@ -55,7 +55,7 @@ struct CurlHTTPClient {
         streaming: Bool = false,
         clientSocket: Int32 = -1,
         sendFlags: Int32 = 0,
-        streamingRedactionMode: String = "per_sse_event",
+        streamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
         proxySeverity: Severity = .high,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
@@ -181,7 +181,7 @@ struct CurlHTTPClient {
     struct StreamContext {
         let clientSocket: Int32
         let sendFlags: Int32
-        let redactionMode: String
+        let redactionMode: StreamingRedactionMode
         let config: PastewatchConfig
         let severity: Severity
     }
@@ -352,7 +352,8 @@ struct CurlHTTPClient {
             guard n > 0 else { break }
             let chunk = Data(buf[0..<n])
             let outData: Data
-            if ctx.redactionMode == "per_sse_event" {
+            switch ctx.redactionMode {
+            case .perSSEEvent:
                 let result = parser.feed(chunk)
                 if result.overflowFlushed {
                     // WO-164: a 4MB+ frame bypassed the normal per-frame path; redact it
@@ -414,7 +415,7 @@ struct CurlHTTPClient {
                         break
                     }
                 }
-            } else {
+            case .rawStream, .buffer:
                 outData = chunk
             }
             // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
@@ -431,7 +432,7 @@ struct CurlHTTPClient {
         // that was split across chunk boundaries and never reached the per-frame redaction path.
         // WO-216: on EPIPE the client is gone; scanning the remainder burns CPU and inflates
         // stats with secrets that were never actually delivered or redacted to anyone.
-        if !clientEpipe && ctx.redactionMode == "per_sse_event" {
+        if !clientEpipe && ctx.redactionMode == .perSSEEvent {
             let rem = parser.remainingBytes
             if !rem.isEmpty {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)

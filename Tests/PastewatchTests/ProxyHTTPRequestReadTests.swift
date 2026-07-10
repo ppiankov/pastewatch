@@ -116,6 +116,26 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(request.bodyData, body)
     }
 
+    func testLFOnlyPostHeadersReadBodyWithoutTimeout() {
+        let result = readRequest(
+            header: "POST /v1/messages HTTP/1.1\nHost: example.test\nContent-Length: 5\n\n",
+            body: Data("hello".utf8)
+        )
+
+        let request = assertSuccess(result)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.body, "hello")
+        XCTAssertEqual(request.bodyData, Data("hello".utf8))
+    }
+
+    func testLFOnlyGetWithoutContentLengthCompletesWithEmptyBody() {
+        let result = readRequest(header: "GET /health HTTP/1.1\nHost: example.test\n\n")
+
+        let request = assertSuccess(result)
+        XCTAssertEqual(request.method, "GET")
+        XCTAssertTrue(request.bodyData.isEmpty)
+    }
+
     private func readRequest(
         header: String,
         body: Data = Data(),

@@ -8,16 +8,16 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
     func testDefaultRedactionModeIsPerSSEEvent() {
         let config = PastewatchConfig.defaultConfig
-        XCTAssertEqual(config.responseStreamingRedactionMode, "per_sse_event")
+        XCTAssertEqual(config.responseStreamingRedactionMode, .perSSEEvent)
     }
 
     func testRedactionModeRoundTripsViaCoding() throws {
         var config = PastewatchConfig.defaultConfig
-        config.responseStreamingRedactionMode = "raw_stream"
+        config.responseStreamingRedactionMode = .rawStream
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(PastewatchConfig.self, from: data)
-        XCTAssertEqual(decoded.responseStreamingRedactionMode, "raw_stream")
+        XCTAssertEqual(decoded.responseStreamingRedactionMode, .rawStream)
     }
 
     func testRedactionModeFallsBackToDefaultOnMissingKey() throws {
@@ -32,16 +32,35 @@ final class ProxyStreamRedactionTests: XCTestCase {
         """
         let data = Data(json.utf8)
         let decoded = try JSONDecoder().decode(PastewatchConfig.self, from: data)
-        XCTAssertEqual(decoded.responseStreamingRedactionMode, "per_sse_event")
+        XCTAssertEqual(decoded.responseStreamingRedactionMode, .perSSEEvent)
     }
 
     func testAllThreeModesAreValid() {
-        let modes = ["per_sse_event", "raw_stream", "buffer"]
-        for mode in modes {
+        for mode in StreamingRedactionMode.allCases {
             var config = PastewatchConfig.defaultConfig
             config.responseStreamingRedactionMode = mode
             XCTAssertEqual(config.responseStreamingRedactionMode, mode)
         }
+    }
+
+    func testRedactionModesUseStableConfigStrings() {
+        XCTAssertEqual(StreamingRedactionMode.perSSEEvent.rawValue, "per_sse_event")
+        XCTAssertEqual(StreamingRedactionMode.rawStream.rawValue, "raw_stream")
+        XCTAssertEqual(StreamingRedactionMode.buffer.rawValue, "buffer")
+    }
+
+    func testInvalidRedactionModeFallsBackToPerSSEEvent() throws {
+        let json = """
+        {
+            "enabled": true,
+            "enabledTypes": ["Credential"],
+            "showNotifications": false,
+            "soundEnabled": false,
+            "responseStreamingRedactionMode": "per_sse_frame"
+        }
+        """
+        let decoded = try JSONDecoder().decode(PastewatchConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.responseStreamingRedactionMode, .perSSEEvent)
     }
 
     // MARK: - SSE frame redaction
