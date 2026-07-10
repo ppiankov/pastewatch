@@ -36,8 +36,9 @@ final class ProxyRealServerTests: XCTestCase {
             timeoutSeconds: 10
         )
 
-        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), response)
-        XCTAssertTrue(response.contains(#"{"ok":true}"#), response)
+        let diagnostic = TCPTestSocket.describeResponse(response)
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertTrue(response.contains(#"{"ok":true}"#), diagnostic)
     }
 
     func testAdmissionCapRejectsFifthConcurrentConnection() throws {
@@ -329,6 +330,15 @@ private enum TCPTestSocket {
         try writeAll(Data(request.utf8), to: fd)
         let data = try readToEOF(from: fd, timeoutSeconds: timeoutSeconds)
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    static func describeResponse(_ response: String) -> String {
+        // WO-319: Linux XCTest logs multiline assertion messages poorly; keep
+        // real-socket harness failures as a single escaped line with length.
+        let escaped = response
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "response_bytes=\(response.utf8.count) response=\(escaped)"
     }
 
     static func readHTTPMessage(from fd: Int32, timeoutSeconds: Int) throws -> Data {
