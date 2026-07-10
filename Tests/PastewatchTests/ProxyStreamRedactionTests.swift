@@ -78,6 +78,28 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(rawStr.contains("password=s3cr3t-hunter2"), "Sanity: raw frame must contain the credential")
     }
 
+    func testFrameBeforeInvalidUTF8RemainderCanBeRedacted() {
+        let credential = "password=s3cr3t-hunter2"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
+        var frame = sseFrame(eventType: "content_block_delta", data: payload)
+        frame.append(contentsOf: [0xFF])
+
+        var parser = SSEFrameParser()
+        let result = parser.feed(frame)
+        XCTAssertEqual(result.frames.count, 1)
+        XCTAssertNotNil(result.frames[0].data)
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertEqual(parser.remainingBytes, Data([0xFF]))
+    }
+
     /// A frame with no secret is passed through byte-identical.
     func testSSEFrameWithoutSecretPassesThroughUnchanged() {
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello, world!"}}"#

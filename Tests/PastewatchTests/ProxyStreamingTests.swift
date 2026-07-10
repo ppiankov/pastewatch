@@ -42,4 +42,24 @@ final class ProxyStreamingTests: XCTestCase {
         let url = server.resolveUpstreamURL(requestTarget: "/v1/messages")
         XCTAssertEqual(url.path, "/v1/messages")
     }
+
+    // MARK: - streaming response framing
+
+    func testStreamingHeadersUseCloseDelimitedFraming() {
+        let headers = CurlHTTPClient.buildStreamingResponseHeaders(
+            status: 200,
+            upstreamHeaders: [
+                "Content-Type": "text/event-stream",
+                "Content-Length": "999",
+                "Cache-Control": "no-cache"
+            ]
+        )
+
+        XCTAssertTrue(headers.hasPrefix("HTTP/1.1 200 OK\r\n"))
+        XCTAssertTrue(headers.contains("Content-Type: text/event-stream\r\n"))
+        XCTAssertTrue(headers.contains("Cache-Control: no-cache\r\n"))
+        XCTAssertTrue(headers.contains("Connection: close\r\n\r\n"))
+        XCTAssertFalse(headers.lowercased().contains("transfer-encoding: chunked"))
+        XCTAssertFalse(headers.lowercased().contains("content-length:"))
+    }
 }

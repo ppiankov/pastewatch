@@ -9,6 +9,13 @@ import Glibc
 
 final class ProxyHTTPRequestReadTests: XCTestCase {
 
+    func testCurlBodyUploadArgsUseDataBinaryFileUpload() {
+        let args = CurlHTTPClient.bodyUploadArgs(forTempFile: "/tmp/pw-body")
+
+        XCTAssertEqual(args, ["--data-binary", "@/tmp/pw-body"])
+        XCTAssertFalse(args.contains("-d"))
+    }
+
     func testNegativeContentLengthIsMalformed() {
         let body = Data(#"{"messages":[{"content":"password=s3cr3t-hunter2"}]}"#.utf8)
         let result = readRequest(

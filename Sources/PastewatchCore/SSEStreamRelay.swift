@@ -1,6 +1,9 @@
 import Foundation
 #if canImport(Darwin)
 
+/// WO-292: hard ceiling for an otherwise-progressing stream session.
+let sseStreamMaxSessionSeconds: Double = 3600
+
 /// WO-146/147: URLSession-based SSE streaming relay for the macOS proxy path.
 /// Replaces the buffering dataTask+semaphore for streaming responses.
 /// Each incoming data chunk is immediately forwarded to the client socket,
@@ -13,6 +16,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let config: PastewatchConfig
     private let severity: Severity
     private let idleTimeoutSeconds: Double
+    private let maxSessionSeconds: Double // WO-292: hard ceiling before cancelling active stream task
 
     /// Signals that the upstream response head has been received.
     private let headReceived = DispatchSemaphore(value: 0)
@@ -70,7 +74,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         redactionMode: StreamingRedactionMode,
         config: PastewatchConfig,
         severity: Severity,
-        idleTimeoutSeconds: Double
+        idleTimeoutSeconds: Double,
+        maxSessionSeconds: Double = sseStreamMaxSessionSeconds
     ) {
         self.clientSocket = clientSocket
         self.sendFlags = sendFlags
@@ -78,6 +83,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         self.config = config
         self.severity = severity
         self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.maxSessionSeconds = maxSessionSeconds
     }
 
     /// Execute the upstream request and relay the response to `clientSocket`.
@@ -125,7 +131,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // queue, causing both to see false and send duplicate HTTP headers.
 
         // Wait for stream to finish (data is relayed incrementally via delegate callbacks).
-        _ = streamDone.wait(timeout: .now() + 3600) // max session length
+        let streamWait = streamDone.wait(timeout: .now() + maxSessionSeconds)
+        if streamWait == .timedOut {
+            // WO-292: the caller will close clientSocket after execute() returns. Mark it
+            // dead and cancel the task first so late delegate callbacks cannot write to it.
+            markClientEpipeAndCancelTask()
+        }
         // WO-284: streamDone can be signaled by the idle timer while didReceive is still
         // finishing on the delegate queue. Drain it before callers read streamRedactionCount.
         drainDelegateQueue(session)
@@ -260,6 +271,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         socketWriteLock.lock()
         let alreadyWritten = didWriteHeaders
         let timerFired = timerDidFire
+        let clientAlreadyDead = clientEpipe
         socketWriteLock.unlock()
 
         // WO-242: writeStreamingHeaders() calls sendAll(), a potentially-blocking syscall.
@@ -275,7 +287,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // corrupts the HTTP framing seen by the client.
         // WO-252: the ternary `responseStatus==0?200:responseStatus` is dead code — the guard
         // above requires responseStatus != 0, so the condition can never be true. Simplified.
-        if !alreadyWritten && !timerFired && responseStatus != 0 {
+        if !alreadyWritten && !timerFired && !clientAlreadyDead && responseStatus != 0 {
             let ok = writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
             socketWriteLock.lock()
             didWriteHeaders = true
@@ -287,7 +299,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // (504 timeout: execute() → sendErrorDirect() → writeToSocket()) may have set it
         // between the unlock above and this read. The bare read in the old code was the race.
         socketWriteLock.lock()
-        let epipe = clientEpipe
+        let epipe = clientAlreadyDead || clientEpipe
         socketWriteLock.unlock()
 
         // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
@@ -341,19 +353,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-222: returns false on EPIPE so callers can cancel the task and skip body relay.
     @discardableResult
     private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) -> Bool {
-        // WO-175: use the correct reason phrase for the status code.
-        var response = "HTTP/1.1 \(status) \(CurlHTTPClient.httpReasonPhrase(for: status))\r\n"
-        // Forward streaming-relevant headers; exclude Content-Length (unknown for SSE).
-        let streamingPassthrough = ["content-type", "cache-control", "x-request-id"]
-        for (key, value) in upstreamHeaders {
-            let k = "\(key)"
-            let lower = k.lowercased()
-            if lower == "content-length" { continue } // invalid on a streaming response
-            if streamingPassthrough.contains(lower) || lower.hasPrefix("anthropic-") {
-                response += "\(k): \(value)\r\n"
-            }
-        }
-        response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
+        let response = CurlHTTPClient.buildStreamingResponseHeaders(
+            status: status,
+            upstreamHeaders: upstreamHeaders
+        )
         return sendAll(Data(response.utf8), to: clientSocket, flags: sendFlags)
     }
 

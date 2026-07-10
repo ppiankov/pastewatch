@@ -46,10 +46,9 @@ public struct SSEFrameParser {
 
         var frames: [Frame] = []
 
-        // WO-168: decode the buffer once per feed() call, then extract all frames in the
-        // string domain. The old extractNextFrame() decoded the whole buffer on every frame
-        // iteration — O(N×M) for N frames in one chunk. Non-UTF-8 data falls through to the
-        // raw byte-search path as before.
+        // WO-291: keep the fast string-domain path for all-UTF-8 buffers, but make the
+        // raw fallback parse each complete frame independently. A valid frame followed by
+        // invalid UTF-8 must still expose frame.data to redactSSEFrame().
         if var remaining = String(data: buffer, encoding: .utf8) {
             while let (frame, rest) = extractNextFrameFromString(remaining) {
                 frames.append(frame)
@@ -57,7 +56,6 @@ public struct SSEFrameParser {
             }
             buffer = Data(remaining.utf8)
         } else {
-            // Non-UTF-8: use the raw byte-search path.
             while let (frame, remaining) = extractNextFrameRaw(from: buffer) {
                 frames.append(frame)
                 buffer = remaining
@@ -100,17 +98,41 @@ public struct SSEFrameParser {
 
     private func extractNextFrameRaw(from data: Data) -> (Frame, Data)? {
         guard data.count >= 2 else { return nil }
-        // Byte search for \n\n
+        let cr: UInt8 = 0x0D
         let nl: UInt8 = 0x0A
         for i in 0..<(data.count - 1) {
+            if i + 3 < data.count,
+               data[i] == cr, data[i + 1] == nl,
+               data[i + 2] == cr, data[i + 3] == nl {
+                let frameData = data.prefix(i + 4)
+                let remaining = data.dropFirst(i + 4)
+                let frame = parseFrameData(Data(frameData))
+                return (frame, Data(remaining))
+            }
             if data[i] == nl && data[i + 1] == nl {
-                let frameData = data[0...i+1]
-                let remaining = i + 2 < data.count ? data[(i + 2)...] : Data()
-                let frame = Frame(raw: Data(frameData), eventType: nil, data: nil)
+                let frameData = data.prefix(i + 2)
+                let remaining = data.dropFirst(i + 2)
+                let frame = parseFrameData(Data(frameData))
                 return (frame, Data(remaining))
             }
         }
         return nil
+    }
+
+    private func parseFrameData(_ raw: Data) -> Frame {
+        // WO-291: strip terminators by byte count; String.dropLast() treats CRLF as graphemes.
+        let bodyBytes: Data
+        if raw.suffix(4) == Data([0x0D, 0x0A, 0x0D, 0x0A]) {
+            bodyBytes = raw.dropLast(4)
+        } else if raw.suffix(2) == Data([0x0A, 0x0A]) {
+            bodyBytes = raw.dropLast(2)
+        } else {
+            bodyBytes = raw
+        }
+        guard let text = String(data: bodyBytes, encoding: .utf8) else {
+            return Frame(raw: raw, eventType: nil, data: nil)
+        }
+        return parseFrame(text, raw: raw)
     }
 
     private func parseFrame(_ text: String, raw: Data) -> Frame {

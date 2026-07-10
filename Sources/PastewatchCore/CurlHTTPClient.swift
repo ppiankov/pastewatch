@@ -82,7 +82,7 @@ struct CurlHTTPClient {
         if let body = body {
             let path = "/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-\(Thread.current.hash).body"
             FileManager.default.createFile(atPath: path, contents: body)
-            args.append(contentsOf: ["-d", "@\(path)"])
+            args.append(contentsOf: Self.bodyUploadArgs(forTempFile: path))
             tempFile = path
         }
 
@@ -176,6 +176,11 @@ struct CurlHTTPClient {
         }
         args += [url.absoluteString]
         return args
+    }
+
+    /// WO-293: preserve request body bytes exactly; curl -d treats @file as form data.
+    static func bodyUploadArgs(forTempFile path: String) -> [String] {
+        ["--data-binary", "@\(path)"]
     }
 
     struct StreamContext {
@@ -461,7 +466,22 @@ struct CurlHTTPClient {
         return FrameRedactionResult(data: Data(obfuscated.utf8), count: filtered.count, types: types)
     }
 
-    private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {
+    /// WO-290: shared close-delimited streaming headers for Linux and macOS relay paths.
+    static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [String: String]) -> String {
+        buildStreamingResponseHeaders(
+            status: status,
+            upstreamHeaders: upstreamHeaders.map { ($0.key, $0.value) }
+        )
+    }
+
+    static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) -> String {
+        buildStreamingResponseHeaders(
+            status: status,
+            upstreamHeaders: upstreamHeaders.map { ("\($0.key)", "\($0.value)") }
+        )
+    }
+
+    private static func buildStreamingResponseHeaders(status: Int, upstreamHeaders: [(String, String)]) -> String {
         // WO-175: use the correct reason phrase so upstream 429/502/503 reaches the client
         // as "HTTP/1.1 429 Too Many Requests" rather than "HTTP/1.1 429 OK".
         var response = "HTTP/1.1 \(status) \(httpReasonPhrase(for: status))\r\n"
@@ -473,7 +493,9 @@ struct CurlHTTPClient {
                 response += "\(key): \(value)\r\n"
             }
         }
-        response += "Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
+        // WO-290: body bytes are relayed raw, not chunk-encoded. Use close-delimited
+        // streaming and let the caller close the client socket when upstream ends.
+        response += "Connection: close\r\n\r\n"
         return response
     }
 

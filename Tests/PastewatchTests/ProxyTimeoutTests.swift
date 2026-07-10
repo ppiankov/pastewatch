@@ -1,6 +1,10 @@
 import XCTest
 @testable import PastewatchCore
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 /// WO-148: Verifies timeout constant values and CurlHTTPClient idle-based timeout args.
 final class ProxyTimeoutTests: XCTestCase {
 
@@ -65,4 +69,101 @@ final class ProxyTimeoutTests: XCTestCase {
         let args = CurlHTTPClient.tlsArgs(caCertPath: nil, insecure: false)
         XCTAssertTrue(args.isEmpty)
     }
+
+    #if canImport(Darwin)
+    func testSSEStreamRelayHardCeilingCancelsHangingTaskWithoutWritingHeaders() {
+        HangingStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1],
+            sendFlags: 0,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high,
+            idleTimeoutSeconds: 5,
+            maxSessionSeconds: 0.05
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HangingStreamURLProtocol.self]
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: delegateQueue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "relay returns after hard ceiling")
+        let request = URLRequest(url: URL(string: "https://example.test/stream")!)
+        DispatchQueue.global().async {
+            relay.execute(request: request, session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        XCTAssertTrue(HangingStreamURLProtocol.waitForStop(timeout: 1))
+        assertNoDataAvailable(on: sockets[0])
+    }
+
+    private func assertNoDataAvailable(
+        on socket: Int32,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let originalFlags = fcntl(socket, F_GETFL, 0)
+        XCTAssertGreaterThanOrEqual(originalFlags, 0, file: file, line: line)
+        XCTAssertEqual(fcntl(socket, F_SETFL, originalFlags | O_NONBLOCK), 0, file: file, line: line)
+        defer { _ = fcntl(socket, F_SETFL, originalFlags) }
+
+        var byte: UInt8 = 0
+        let readCount = recv(socket, &byte, 1, 0)
+        XCTAssertEqual(readCount, -1, file: file, line: line)
+        XCTAssertTrue(errno == EAGAIN || errno == EWOULDBLOCK, file: file, line: line)
+    }
+    #endif
 }
+
+#if canImport(Darwin)
+private class HangingStreamURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var stopSemaphore = DispatchSemaphore(value: 0)
+
+    static func reset() {
+        lock.lock()
+        stopSemaphore = DispatchSemaphore(value: 0)
+        lock.unlock()
+    }
+
+    static func waitForStop(timeout: TimeInterval) -> Bool {
+        stopSemaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+              ) else {
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    }
+
+    override func stopLoading() {
+        Self.stopSemaphore.signal()
+    }
+}
+#endif

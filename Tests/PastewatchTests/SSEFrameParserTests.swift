@@ -61,6 +61,34 @@ final class SSEFrameParserTests: XCTestCase {
         XCTAssertEqual(result.frames[0].data, "hello")
     }
 
+    func testCompleteFrameBeforeInvalidUTF8RemainderStillParsesData() {
+        var parser = SSEFrameParser()
+        let payload = #"{"delta":{"text":"hello"}}"#
+        var input = Data("event: content_block_delta\ndata: \(payload)\n\n".utf8)
+        let invalidRemainder = Data([0xFF, 0xFE])
+        input.append(invalidRemainder)
+
+        let result = parser.feed(input)
+
+        XCTAssertEqual(result.frames.count, 1)
+        XCTAssertEqual(result.frames[0].eventType, "content_block_delta")
+        XCTAssertEqual(result.frames[0].data, payload)
+        XCTAssertEqual(parser.remainingBytes, invalidRemainder)
+    }
+
+    func testInvalidUTF8FramePassesThroughUnparsed() {
+        var parser = SSEFrameParser()
+        let input = Data([0xFF, 0xFE, 0x0A, 0x0A])
+
+        let result = parser.feed(input)
+
+        XCTAssertEqual(result.frames.count, 1)
+        XCTAssertNil(result.frames[0].eventType)
+        XCTAssertNil(result.frames[0].data)
+        XCTAssertEqual(result.frames[0].raw, input)
+        XCTAssertTrue(parser.remainingBytes.isEmpty)
+    }
+
     func testTerminalDoneFrame() {
         var parser = SSEFrameParser()
         let input = Data("data: [DONE]\n\n".utf8)
