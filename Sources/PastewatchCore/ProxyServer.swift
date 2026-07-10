@@ -22,6 +22,9 @@ let curlSpeedTimeSeconds = 60
 /// Large maximum time for curl (non-streaming path). Zero = no cap.
 let curlMaxTimeSeconds = 600
 
+/// WO-280: shared per-call recv/send timeout for client sockets (seconds).
+let proxyClientSocketTimeoutSeconds = 30
+
 // MARK: - ProxyServer
 
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
@@ -73,19 +76,35 @@ public final class ProxyServer {
         public var secretsRedacted: Int = 0
     }
 
-    private struct HTTPRequest {
+    struct HTTPRequest {
         let method: String
         let path: String
         let headers: [(String, String)]
-        let body: String
+        let body: String?
+        let bodyData: Data
+    }
+
+    private struct HTTPHeaderMetadata {
+        let method: String
+        let path: String
+        let headers: [(String, String)]
+        let contentLength: Int?
+        let hasInvalidContentLength: Bool
+        let hasChunkedTransferEncoding: Bool
+    }
+
+    private enum BodyFraming {
+        case length(Int)
+        case malformed
     }
 
     // WO-273: distinct failure cases so handleConnection can send the correct HTTP status.
-    private enum ReadResult {
-        case success(String)
+    enum ReadResult {
+        case success(HTTPRequest)
         case timeout         // EAGAIN / SO_RCVTIMEO — 408 appropriate
         case transportError  // ECONNRESET, EBADF, etc. — peer gone; no HTTP response useful
-        case encodingError   // body bytes not valid UTF-8 — 400 appropriate
+        case encodingError   // header bytes not valid UTF-8 — 400 appropriate
+        case malformedRequest
     }
 
     /// Bundles the per-request context passed from handleConnection to the platform-specific
@@ -97,7 +116,7 @@ public final class ProxyServer {
         let requestWantsStream: Bool
         let redactionCount: Int
         let redactedTypes: [String]
-        let processedBody: String
+        let processedBodyData: Data
         let clientSocket: Int32
     }
 
@@ -348,14 +367,16 @@ public final class ProxyServer {
         // handler alive indefinitely, which would stall handlerGroup.wait() in stop().
         // WO-265: SO_RCVTIMEO is the symmetric receive-side guard. Without it, recv() in
         // readHTTPRequest blocks forever on a client that connects but stalls mid-request,
-        // also preventing handlerGroup.wait() from returning. 30 s matches SO_SNDTIMEO.
+        // also preventing handlerGroup.wait() from returning. WO-280 keeps this matched to
+        // the cumulative EINTR deadline in readHTTPRequest.
         // WO-271: check setsockopt return values — silent failure leaves recv()/sendAll()
         // unbounded, undermining the handlerGroup.wait() shutdown guarantee.
-        var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
+        var sendTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
         if setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
             FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_SNDTIMEO failed: errno \(errno)\n".utf8))
+            return
         }
-        var recvTimeout = timeval(tv_sec: 30, tv_usec: 0)
+        var recvTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
         if setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
             FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_RCVTIMEO failed: errno \(errno)\n".utf8))
             return
@@ -364,32 +385,29 @@ public final class ProxyServer {
         // WO-270: send appropriate HTTP error when readHTTPRequest fails.
         // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
         let readResult = readHTTPRequest(from: clientSocket)
-        let request: String
+        let parsed: HTTPRequest
         switch readResult {
-        case .success(let raw):
-            request = raw
+        case .success(let request):
+            parsed = request
         case .timeout:
             sendError(to: clientSocket, status: 408, message: "Request Timeout")
             return
         case .transportError:
             return  // peer already gone; HTTP response wasted and cannot be delivered
-        case .encodingError:
-            sendError(to: clientSocket, status: 400, message: "Bad Request")
-            return
-        }
-
-        guard let parsed = parseHTTPRequest(request) else {
+        case .encodingError, .malformedRequest:
             sendError(to: clientSocket, status: 400, message: "Bad Request")
             return
         }
 
         // Only scan POST /v1/messages (the endpoint that carries tool results)
         var processedBody = parsed.body
+        var processedBodyData = parsed.bodyData
         var redactionCount = 0
         var redactedTypes: [String] = []
-        if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
-            let result = scanAndRedactBody(parsed.body)
+        if parsed.method == "POST" && parsed.path.contains("/v1/messages"), let body = parsed.body {
+            let result = scanAndRedactBody(body)
             processedBody = result.body
+            processedBodyData = Data(result.body.utf8)
             redactionCount = result.redacted
             redactedTypes = result.redactedTypes
         }
@@ -401,11 +419,9 @@ public final class ProxyServer {
             forwardHeaders.append((key, value))
         }
         forwardHeaders.append(("Host", upstream.host ?? ""))
-        if let bodyData = processedBody.data(using: .utf8) {
-            forwardHeaders.append(("Content-Length", String(bodyData.count)))
-        }
+        forwardHeaders.append(("Content-Length", String(processedBodyData.count)))
 
-        let requestWantsStream = isStreamingRequest(processedBody)
+        let requestWantsStream = processedBody.map(isStreamingRequest) ?? false
 
         // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
         statsLock.lock()
@@ -421,7 +437,7 @@ public final class ProxyServer {
         let ctx = ForwardContext(
             parsed: parsed, upstreamURL: upstreamURL, forwardHeaders: forwardHeaders,
             requestWantsStream: requestWantsStream, redactionCount: redactionCount,
-            redactedTypes: redactedTypes, processedBody: processedBody, clientSocket: clientSocket
+            redactedTypes: redactedTypes, processedBodyData: processedBodyData, clientSocket: clientSocket
         )
         guard let buffered = forwardRequest(ctx) else { return }
 
@@ -453,7 +469,7 @@ public final class ProxyServer {
     private func forwardDarwinRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         var upstreamRequest = URLRequest(url: ctx.upstreamURL)
         upstreamRequest.httpMethod = ctx.parsed.method
-        upstreamRequest.httpBody = ctx.processedBody.data(using: .utf8)
+        upstreamRequest.httpBody = ctx.processedBodyData
         for (key, value) in ctx.forwardHeaders {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
@@ -501,7 +517,7 @@ public final class ProxyServer {
         )
         guard let curlResponse = CurlHTTPClient.execute(
             method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
-            body: ctx.processedBody.data(using: .utf8), caCertPath: caCertPath,
+            body: ctx.processedBodyData, caCertPath: caCertPath,
             insecure: insecureTLS, streaming: ctx.requestWantsStream,
             clientSocket: ctx.clientSocket, sendFlags: sendFlags,
             streamingRedactionMode: config.responseStreamingRedactionMode,
@@ -738,20 +754,21 @@ public final class ProxyServer {
     private let sendFlags: Int32 = Int32(MSG_NOSIGNAL)
     #endif
 
-    private func readHTTPRequest(from socket: Int32) -> ReadResult {
+    func readHTTPRequest(from socket: Int32) -> ReadResult {
         var buffer = [UInt8](repeating: 0, count: 1_048_576) // 1MB max
         var accumulated = Data()
         // WO-272: nil = Content-Length header absent; 0 = "Content-Length: 0" (zero body expected).
         // The previous Int default of 0 made bodyReceived >= contentLength always true after the
         // separator was found, truncating the body for requests without Content-Length.
-        var contentLength: Int? = nil
+        var contentLength: Int?
         var headerEnd = false
         var headerEndIndex = 0
+        var headerMetadata: HTTPHeaderMetadata?
 
         // WO-274: monotonic deadline bounds the total function wall-clock time regardless of
-        // how many EINTR retries occur. SO_RCVTIMEO is per-call; a signal arriving every N<30s
-        // resets the clock, allowing the handler to hold its handlerGroup entry indefinitely.
-        let deadline = DispatchTime.now() + .seconds(30)
+        // how many EINTR retries occur. SO_RCVTIMEO is per-call; WO-280 keeps this deadline
+        // matched to the socket receive timeout.
+        let deadline = DispatchTime.now() + .seconds(proxyClientSocketTimeoutSeconds)
 
         let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
         while true {
@@ -786,20 +803,27 @@ public final class ProxyServer {
                     headerEnd = true
                     headerEndIndex = sepRange.upperBound
                     let headerData = accumulated[..<sepRange.lowerBound]
-                    if let headerStr = String(data: headerData, encoding: .utf8) {
-                        for line in headerStr.components(separatedBy: "\r\n")
-                            where line.lowercased().hasPrefix("content-length:") {
-                            let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                            contentLength = Int(val)
-                        }
+                    guard let headerStr = String(data: headerData, encoding: .utf8) else {
+                        return .encodingError
+                    }
+                    guard let metadata = parseHTTPHeaderMetadata(headerStr) else {
+                        return .malformedRequest
+                    }
+                    headerMetadata = metadata
+
+                    switch bodyFraming(for: metadata) {
+                    case .length(let length):
+                        contentLength = length
+                    case .malformed:
+                        return .malformedRequest
                     }
                 }
             }
 
             if headerEnd {
-                // WO-272: only exit on length when Content-Length was present. If absent, read
-                // until orderly EOF (bytesRead == 0) so body bytes beyond the separator chunk
-                // are not silently dropped — credentials in those bytes would bypass redaction.
+                // WO-272/WO-282: exit only after the expected body length is known. Absent
+                // Content-Length is resolved at header parse time: body-less methods use 0,
+                // and body-carrying methods are rejected instead of waiting for keep-alive EOF.
                 if let cl = contentLength {
                     let bodyReceived = accumulated.count - headerEndIndex
                     if bodyReceived >= cl { break }
@@ -807,16 +831,36 @@ public final class ProxyServer {
             }
         }
 
-        // WO-273: distinguish encoding failure from timeout so the caller sends 400, not 408.
-        guard let raw = String(data: accumulated, encoding: .utf8) else { return .encodingError }
-        return .success(raw)
+        guard let metadata = headerMetadata else {
+            return accumulated.isEmpty ? .transportError : .malformedRequest
+        }
+        let receivedBody = accumulated[headerEndIndex...]
+        let bodyData = contentLength.map { Data(receivedBody.prefix($0)) } ?? Data(receivedBody)
+
+        // WO-279: body bytes are allowed to be non-UTF-8. Keep the original bytes for
+        // forwarding and decode only as an optional scan input.
+        return .success(HTTPRequest(
+            method: metadata.method, path: metadata.path, headers: metadata.headers,
+            body: String(data: bodyData, encoding: .utf8), bodyData: bodyData
+        ))
     }
 
     private func parseHTTPRequest(_ raw: String) -> HTTPRequest? {
         guard let headerEnd = raw.range(of: "\r\n\r\n") else { return nil }
         let headerSection = String(raw[..<headerEnd.lowerBound])
         let body = String(raw[headerEnd.upperBound...])
+        return parseHTTPRequest(headerSection: headerSection, bodyData: Data(body.utf8))
+    }
 
+    private func parseHTTPRequest(headerSection: String, bodyData: Data) -> HTTPRequest? {
+        guard let metadata = parseHTTPHeaderMetadata(headerSection) else { return nil }
+        return HTTPRequest(
+            method: metadata.method, path: metadata.path, headers: metadata.headers,
+            body: String(data: bodyData, encoding: .utf8), bodyData: bodyData
+        )
+    }
+
+    private func parseHTTPHeaderMetadata(_ headerSection: String) -> HTTPHeaderMetadata? {
         let lines = headerSection.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else { return nil }
         let parts = requestLine.components(separatedBy: " ")
@@ -826,15 +870,88 @@ public final class ProxyServer {
         let path = parts[1]
 
         var headers: [(String, String)] = []
+        var contentLength: Int?
+        var hasInvalidContentLength = false
+        var hasChunkedTransferEncoding = false
         for line in lines.dropFirst() {
             if let colonIndex = line.firstIndex(of: ":") {
                 let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces)
                 let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
                 headers.append((key, value))
+
+                let lowerKey = key.lowercased()
+                if lowerKey == "content-length", contentLength == nil {
+                    // WO-278: first valid Content-Length wins; malformed duplicates after it
+                    // cannot overwrite the length and force the EOF timeout path.
+                    if let length = Int(value), length >= 0 {
+                        contentLength = length
+                    } else {
+                        hasInvalidContentLength = true
+                    }
+                } else if lowerKey == "transfer-encoding" {
+                    let encodings = value.split(separator: ",").map {
+                        $0.trimmingCharacters(in: .whitespaces).lowercased()
+                    }
+                    if encodings.contains("chunked") {
+                        hasChunkedTransferEncoding = true
+                    }
+                }
             }
         }
 
-        return HTTPRequest(method: method, path: path, headers: headers, body: body)
+        return HTTPHeaderMetadata(
+            method: method, path: path, headers: headers, contentLength: contentLength,
+            hasInvalidContentLength: hasInvalidContentLength,
+            hasChunkedTransferEncoding: hasChunkedTransferEncoding
+        )
+    }
+
+    private func bodyFraming(for metadata: HTTPHeaderMetadata) -> BodyFraming {
+        // WO-277: a negative or otherwise invalid sole Content-Length must not become a nil
+        // length that silently falls into EOF-based body reads.
+        if metadata.hasInvalidContentLength && metadata.contentLength == nil {
+            return .malformed
+        }
+
+        // WO-282: chunked request bodies are not parsed by this minimal proxy. Reject
+        // deterministically instead of waiting for HTTP/1.1 keep-alive EOF.
+        if metadata.hasChunkedTransferEncoding {
+            return .malformed
+        }
+
+        if let length = metadata.contentLength {
+            return .length(length)
+        }
+
+        // WO-282: body-less HTTP/1.1 requests without Content-Length are complete at the
+        // header separator and must not wait for EOF.
+        if methodHasNoBody(metadata.method) {
+            return .length(0)
+        }
+
+        if methodRequiresExplicitBodyLength(metadata.method) {
+            return .malformed
+        }
+
+        return .length(0)
+    }
+
+    private func methodHasNoBody(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "GET", "HEAD", "OPTIONS", "DELETE":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func methodRequiresExplicitBodyLength(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "POST", "PUT", "PATCH":
+            return true
+        default:
+            return false
+        }
     }
 
     private func sendError(to socket: Int32, status: Int, message: String) {

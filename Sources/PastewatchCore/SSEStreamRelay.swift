@@ -172,68 +172,80 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         switch redactionMode {
         case "raw_stream":
-            // Relay raw — no redaction.
-            // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
-            if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
+            relayRawData(data)
 
         case "per_sse_event":
-            let result = parser.feed(data)
-            if result.overflowFlushed {
-                // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
-                writeToSocket(redactRawBytes(result.overflowBytes))
-                // WO-244: writeToSocket() may have set clientEpipe and cancelled activeTask,
-                // but the idle timer is still armed. Cancel it explicitly so execute() does not
-                // wait up to 60s for a timer that will fire against a dead connection.
-                // timerQueue.async (not sync) to avoid deadlock if this callback fires from timerQueue.
-                timerQueue.async { [weak self] in
-                    self?.idleTimer?.cancel()
-                }
-                return
-            }
-            // WO-215: break out of the frame loop on EPIPE so we do not make redundant
-            // kernel send() calls and no-op cancel() calls for the remaining frames.
-            var epipe = false
-            for frame in result.frames {
-                guard !epipe else { break }
-                // WO-182: inject the alert immediately before [DONE] so SSE consumers
-                // (which stop reading at [DONE]) see the alert before the stream ends.
-                // WO-182: invoke closure at [DONE] time with live stream counts.
-                // WO-195: body counts are captured in the closure's own scope.
-                // WO-201: skip redactFrame for [DONE] — the function's first line already
-                // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
-                // WO-251: combine alert + [DONE] into one sendAll so there is no EPIPE window
-                // between them. Two separate sendAll calls could deliver the alert then fail on
-                // [DONE], leaving SSE consumers (EventSource, openai-node) hung — they wait for
-                // [DONE] to close the stream and never receive it.
-                guard frame.data != "[DONE]" else {
-                    var toSend = Data()
-                    if let builder = buildAlertBeforeDone,
-                       let alertData = builder(streamRedactionCount, streamRedactionTypes) {
-                        toSend.append(alertData)
-                    }
-                    toSend.append(frame.raw)
-                    if !sendAll(toSend, to: clientSocket, flags: sendFlags) {
-                        clientEpipe = true; activeTask?.cancel()
-                        epipe = true
-                    }
-                    continue
-                }
-                // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
-                let r = redactSSEFrame(frame, config: config, severity: severity)
-                streamRedactionCount += r.count
-                streamRedactionTypes.append(contentsOf: r.types)
-                if !sendAll(r.data, to: clientSocket, flags: sendFlags) {
-                    clientEpipe = true; activeTask?.cancel()
-                    epipe = true
-                }
-            }
-            // Partial remainder stays in the parser buffer and is flushed at stream end.
+            relaySSEEventData(data)
 
         default:
-            // Unknown mode: raw relay.
-            // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
-            if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
+            relayRawData(data)
         }
+    }
+
+    private func relayRawData(_ data: Data) {
+        // Relay raw — no redaction.
+        // WO-223/227: propagate EPIPE; set clientEpipe so didCompleteWithError skips remainder.
+        if !sendAll(data, to: clientSocket, flags: sendFlags) { clientEpipe = true; activeTask?.cancel() }
+    }
+
+    private func relaySSEEventData(_ data: Data) {
+        let result = parser.feed(data)
+        if result.overflowFlushed {
+            // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
+            writeToSocket(redactRawBytes(result.overflowBytes))
+            // WO-244: writeToSocket() may have set clientEpipe and cancelled activeTask,
+            // but the idle timer is still armed. Cancel it explicitly so execute() does not
+            // wait up to 60s for a timer that will fire against a dead connection.
+            // timerQueue.async (not sync) to avoid deadlock if this callback fires from timerQueue.
+            timerQueue.async { [weak self] in
+                self?.idleTimer?.cancel()
+            }
+            return
+        }
+        // WO-215: break out of the frame loop on EPIPE so we do not make redundant
+        // kernel send() calls and no-op cancel() calls for the remaining frames.
+        var epipe = false
+        for frame in result.frames {
+            guard !epipe else { break }
+            epipe = relaySSEFrame(frame)
+        }
+        // Partial remainder stays in the parser buffer and is flushed at stream end.
+    }
+
+    private func relaySSEFrame(_ frame: SSEFrameParser.Frame) -> Bool {
+        // WO-182: inject the alert immediately before [DONE] so SSE consumers
+        // (which stop reading at [DONE]) see the alert before the stream ends.
+        // WO-182: invoke closure at [DONE] time with live stream counts.
+        // WO-195: body counts are captured in the closure's own scope.
+        // WO-201: skip redactFrame for [DONE] — the function's first line already
+        // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
+        // WO-251: combine alert + [DONE] into one sendAll so there is no EPIPE window
+        // between them. Two separate sendAll calls could deliver the alert then fail on
+        // [DONE], leaving SSE consumers (EventSource, openai-node) hung — they wait for
+        // [DONE] to close the stream and never receive it.
+        guard frame.data != "[DONE]" else {
+            var toSend = Data()
+            if let builder = buildAlertBeforeDone,
+               let alertData = builder(streamRedactionCount, streamRedactionTypes) {
+                toSend.append(alertData)
+            }
+            toSend.append(frame.raw)
+            return relayFrameData(toSend)
+        }
+        // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
+        let redaction = redactSSEFrame(frame, config: config, severity: severity)
+        streamRedactionCount += redaction.count
+        streamRedactionTypes.append(contentsOf: redaction.types)
+        return relayFrameData(redaction.data)
+    }
+
+    private func relayFrameData(_ data: Data) -> Bool {
+        if !sendAll(data, to: clientSocket, flags: sendFlags) {
+            clientEpipe = true
+            activeTask?.cancel()
+            return true
+        }
+        return false
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

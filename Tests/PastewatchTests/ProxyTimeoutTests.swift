@@ -25,6 +25,11 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertGreaterThan(curlMaxTimeSeconds, 120)
     }
 
+    func testClientSocketTimeoutConstantIsNamedThirtySecondWindow() {
+        XCTAssertEqual(proxyClientSocketTimeoutSeconds, 30)
+        XCTAssertGreaterThan(proxyClientSocketTimeoutSeconds, 0)
+    }
+
     // MARK: - CurlHTTPClient idle-based args
 
     func testStreamingCurlArgsContainSpeedBasedIdle() {
