@@ -32,7 +32,7 @@ final class ProxyRealServerTests: XCTestCase {
 
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            request: TCPTestSocket.postRequest(path: "/v1/messages")
         )
 
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"))
@@ -71,7 +71,7 @@ final class ProxyRealServerTests: XCTestCase {
             DispatchQueue.global().async {
                 let response = (try? TCPTestSocket.roundTrip(
                     port: proxyPort,
-                    request: "GET /hold-\(index) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                    request: TCPTestSocket.postRequest(path: "/hold-\(index)"),
                     timeoutSeconds: 5
                 )) ?? ""
                 responseLock.lock()
@@ -90,7 +90,7 @@ final class ProxyRealServerTests: XCTestCase {
 
         let rejected = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: "GET /rejected HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            request: TCPTestSocket.postRequest(path: "/rejected"),
             timeoutSeconds: 3
         )
         XCTAssertTrue(rejected.contains("HTTP/1.1 503"))
@@ -230,6 +230,18 @@ private final class StubHTTPServer {
 }
 
 private enum TCPTestSocket {
+    static func postRequest(path: String, body: String = "{}") -> String {
+        let bodyData = Data(body.utf8)
+        return """
+        POST \(path) HTTP/1.1\r
+        Host: 127.0.0.1\r
+        Content-Type: application/json\r
+        Content-Length: \(bodyData.count)\r
+        \r
+        \(body)
+        """
+    }
+
     static func reserveLoopbackPort() throws -> UInt16 {
         let fd = try listenOnLoopback(port: 0)
         defer { close(fd) }
