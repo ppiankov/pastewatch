@@ -464,6 +464,8 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 [2026-03-16T11:36:56Z] PROXY REDACTED 3 secret(s) in /v1/messages
 ```
 
+**Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode for full-response buffering. It does not scan buffered response bodies for secrets; use the default `per_sse_event` mode when response redaction is required.
+
 ### MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**

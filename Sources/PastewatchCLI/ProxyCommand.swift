@@ -86,6 +86,9 @@ struct Proxy: ParsableCommand {
         }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
         FileHandle.standardError.write(Data("alert-injection: \(alert ? "on" : "off")\n".utf8))
+        if let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) {
+            FileHandle.standardError.write(Data(warning.utf8))
+        }
         if insecure {
             FileHandle.standardError.write(Data("WARNING: --insecure set — upstream TLS verification is DISABLED\n".utf8))
         } else if let caCert = caCert {

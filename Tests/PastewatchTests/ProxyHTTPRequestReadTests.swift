@@ -25,6 +25,26 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         })
     }
 
+    func testCurlNonStreamingOutputParserPreservesNonUTF8Body() {
+        var output = Data([0xFF, 0xFE, 0x00])
+        output.append(Data("\n__HTTP_STATUS__200".utf8))
+
+        let parsed = CurlHTTPClient.parseNonStreamingOutput(output)
+
+        XCTAssertEqual(parsed?.statusCode, 200)
+        XCTAssertEqual(parsed?.body, Data([0xFF, 0xFE, 0x00]))
+    }
+
+    func testCurlNonStreamingOutputParserUsesLastStatusMarker() {
+        var output = Data("body\n__HTTP_STATUS__inside".utf8)
+        output.append(Data("\n__HTTP_STATUS__429".utf8))
+
+        let parsed = CurlHTTPClient.parseNonStreamingOutput(output)
+
+        XCTAssertEqual(parsed?.statusCode, 429)
+        XCTAssertEqual(parsed?.body, Data("body\n__HTTP_STATUS__inside".utf8))
+    }
+
     func testCurlResponseHeaderReaderPreservesBufferedInterimBlocks() {
         var fds = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(pipe(&fds), 0)
@@ -185,6 +205,36 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         let request = assertSuccess(result)
         XCTAssertEqual(request.method, "GET")
         XCTAssertTrue(request.bodyData.isEmpty)
+    }
+
+    func testCRLFTerminatorWinsOverEarlierBareLFPair() {
+        let result = readRequest(
+            header: "POST /v1/messages HTTP/1.1\r\n" +
+                "Host: example.test\r\n" +
+                "X-Debug: first\n\nstill-header\r\n" +
+                "Content-Length: 5\r\n\r\n",
+            body: Data("hello".utf8)
+        )
+
+        let request = assertSuccess(result)
+        XCTAssertEqual(request.body, "hello")
+        XCTAssertEqual(request.bodyData, Data("hello".utf8))
+    }
+
+    func testCRLFTerminatorWinsWhenBareLFPairArrivesBeforeFinalCRLF() {
+        let padding = String(repeating: "a", count: proxyHTTPRequestReadBufferBytes + 100)
+        let result = readRequestWithAsyncWriter(
+            header: "POST /v1/messages HTTP/1.1\r\n" +
+                "Host: example.test\r\n" +
+                "X-Debug: first\n\nstill-header\r\n" +
+                "X-Pad: \(padding)\r\n" +
+                "Content-Length: 5\r\n\r\n",
+            body: Data("hello".utf8)
+        )
+
+        let request = assertSuccess(result)
+        XCTAssertEqual(request.body, "hello")
+        XCTAssertEqual(request.bodyData, Data("hello".utf8))
     }
 
     private func readRequest(

@@ -182,6 +182,38 @@ final class ProxyAlertTests: XCTestCase {
         ))
     }
 
+    func testBlockedNonUTF8RedactionDoesNotCountAsForwardedRedaction() {
+        let blockedServer = ProxyServer(port: 0)
+
+        blockedServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: true)
+
+        XCTAssertEqual(blockedServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(blockedServer.stats.requestsRedacted, 0)
+        XCTAssertEqual(blockedServer.stats.secretsRedacted, 0)
+    }
+
+    func testForwardedBodyRedactionStillCountsAsForwardedRedaction() {
+        let forwardedServer = ProxyServer(port: 0)
+
+        forwardedServer.recordInitialRequestStats(redactionCount: 2, shouldBlockNonUTF8Forwarding: false)
+
+        XCTAssertEqual(forwardedServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(forwardedServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(forwardedServer.stats.secretsRedacted, 2)
+    }
+
+    func testBufferModeWarningHonorsQuietFlag() {
+        var config = PastewatchConfig.defaultConfig
+        config.responseStreamingRedactionMode = .buffer
+
+        XCTAssertEqual(
+            ProxyServer.bufferModeWarning(config: config, quiet: false),
+            "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+        )
+        XCTAssertNil(ProxyServer.bufferModeWarning(config: config, quiet: true))
+        XCTAssertNil(ProxyServer.bufferModeWarning(config: PastewatchConfig.defaultConfig, quiet: false))
+    }
+
     func testAuditTimestampIncludesFractionalSeconds() {
         let first = server.formatAuditTimestamp(Date(timeIntervalSince1970: 1_704_067_200.123))
         let second = server.formatAuditTimestamp(Date(timeIntervalSince1970: 1_704_067_200.124))

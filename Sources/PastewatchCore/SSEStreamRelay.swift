@@ -96,6 +96,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// Blocks until the stream ends, the idle timer fires, or the task fails.
     func execute(request: URLRequest, session: URLSession) {
         let task = session.dataTask(with: request)
+        execute(task: task, session: session)
+    }
+
+    /// WO-314: let ProxyServer create the task under its shutdown lock, then hand
+    /// it here before resume so streaming setup remains otherwise unchanged.
+    func execute(task: URLSessionDataTask, session: URLSession) {
         task.delegate = self
         activeTask = task
         task.resume()
@@ -143,10 +149,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // dead and cancel the task first so late delegate callbacks cannot write to it.
             markClientEpipeAndCancelTask()
         }
+        // WO-318: cancel the idle timer before draining the delegate queue on the
+        // max-session path, so a late timer fire cannot race the shutdown drain.
+        idleTimer?.cancel()
         // WO-284: streamDone can be signaled by the idle timer while didReceive is still
         // finishing on the delegate queue. Drain it before callers read streamRedactionCount.
         drainDelegateQueue(session)
-        idleTimer?.cancel()
     }
 
     // MARK: - URLSessionDataDelegate

@@ -8,6 +8,8 @@ struct CurlHTTPClient {
     private static let maxHeaderTerminatorOverlapBytes = 3
     private static let crlfHeaderTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
     private static let lfHeaderTerminator = Data([0x0A, 0x0A])
+    // WO-313: byte marker for curl's appended non-streaming status trailer.
+    private static let nonStreamingStatusMarker = Data("\n__HTTP_STATUS__".utf8)
 
     struct Response {
         let statusCode: Int
@@ -29,6 +31,12 @@ struct CurlHTTPClient {
             self.streamRedactionCount = streamRedactionCount
             self.streamRedactionTypes = streamRedactionTypes
         }
+    }
+
+    /// WO-313: byte-preserving parsed curl output for non-streaming responses.
+    struct ParsedNonStreamingOutput {
+        let statusCode: Int
+        let body: Data
     }
 
     /// WO-143: build the curl TLS-trust arguments. `--insecure` (-k) wins over
@@ -132,24 +140,14 @@ struct CurlHTTPClient {
         let rawOutput = bodyPipe.fileHandleForReading.readDataToEndOfFile()
         let headerData = headerPipe.fileHandleForReading.readDataToEndOfFile()
 
-        // Parse status code from the appended marker
-        guard let outputStr = String(data: rawOutput, encoding: .utf8) else { return nil }
-        let marker = "__HTTP_STATUS__"
-        guard let markerRange = outputStr.range(of: marker, options: .backwards) else { return nil }
-
-        let statusStr = String(outputStr[markerRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let statusCode = Int(statusStr) else { return nil }
-
-        // Body is everything before the marker (minus the preceding newline)
-        var bodyEnd = markerRange.lowerBound
-        if bodyEnd > outputStr.startIndex {
-            let before = outputStr.index(before: bodyEnd)
-            if outputStr[before] == "\n" {
-                bodyEnd = before
-            }
+        // WO-313: parse the curl status trailer at the byte level so a binary
+        // upstream body is forwarded unchanged instead of failing the whole request.
+        guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { return nil }
+        if String(data: parsedOutput.body, encoding: .utf8) == nil, !parsedOutput.body.isEmpty {
+            FileHandle.standardError.write(Data(
+                "[pastewatch-proxy] non-UTF-8 response body, forwarding unscanned\n".utf8
+            ))
         }
-        let bodyStr = String(outputStr[..<bodyEnd])
-        let responseBody = bodyStr.data(using: .utf8) ?? Data()
 
         // Parse response headers from stderr
         var responseHeaders: [String: String] = [:]
@@ -163,7 +161,7 @@ struct CurlHTTPClient {
             }
         }
 
-        return Response(statusCode: statusCode, headers: responseHeaders, body: responseBody)
+        return Response(statusCode: parsedOutput.statusCode, headers: responseHeaders, body: parsedOutput.body)
     }
 
     /// Relay a streaming (SSE) curl response incrementally to the client socket.
@@ -191,6 +189,27 @@ struct CurlHTTPClient {
     /// WO-294: per-call unique path so concurrent curl uploads cannot share a body file.
     static func temporaryBodyPath() -> String {
         "/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).body"
+    }
+
+    static func parseNonStreamingOutput(_ rawOutput: Data) -> ParsedNonStreamingOutput? {
+        // WO-313: curl appends "\n__HTTP_STATUS__NNN"; search backward so the
+        // same byte sequence in the response body is preserved as body data.
+        guard let markerRange = rawOutput.range(
+            of: nonStreamingStatusMarker,
+            options: .backwards,
+            in: rawOutput.startIndex..<rawOutput.endIndex
+        ) else {
+            return nil
+        }
+        let statusBytes = rawOutput[markerRange.upperBound...]
+        guard let statusString = String(data: statusBytes, encoding: .utf8),
+              let statusCode = Int(statusString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return ParsedNonStreamingOutput(
+            statusCode: statusCode,
+            body: Data(rawOutput[..<markerRange.lowerBound])
+        )
     }
 
     struct StreamContext {

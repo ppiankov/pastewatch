@@ -37,6 +37,11 @@ let proxyHTTPRequestReadBufferBytes = 64 * 1024
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
 /// Listens on localhost, forwards to upstream API after redacting sensitive data.
 public final class ProxyServer {
+    // WO-315: request header terminators used by the CRLF-first parser.
+    private static let requestCRLFHeaderTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
+    private static let requestCRLFLineSeparator = Data([0x0D, 0x0A]) // \r\n
+    private static let requestLFHeaderTerminator = Data([0x0A, 0x0A]) // \n\n
+
     private let port: UInt16
     private let upstream: URL
     private let forwardProxy: URL?
@@ -187,6 +192,13 @@ public final class ProxyServer {
         #else
         self.urlSession = Self.makeSession(forwardProxy: forwardProxy)
         #endif
+    }
+
+    public static func bufferModeWarning(config: PastewatchConfig, quiet: Bool) -> String? {
+        // WO-316: buffer mode is a compatibility path; response-body redaction is
+        // not yet implemented there, so surface the limitation at startup.
+        guard !quiet, config.responseStreamingRedactionMode == .buffer else { return nil }
+        return "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
     }
 
     private static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
@@ -485,14 +497,10 @@ public final class ProxyServer {
             bodyData: processedBodyData
         )
 
-        // WO-160: statsLock guards concurrent mutations from the .concurrent queue.
-        statsLock.lock()
-        stats.requestsProcessed += 1
-        if redactionCount > 0 {
-            stats.requestsRedacted += 1
-            stats.secretsRedacted += redactionCount
-        }
-        statsLock.unlock()
+        recordInitialRequestStats(
+            redactionCount: redactionCount,
+            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+        )
 
         if shouldLogBodyRedactionBeforeForwarding(
             redactionCount: redactionCount,
@@ -848,6 +856,18 @@ public final class ProxyServer {
         return !(requestWantsStream && config.responseStreamingRedactionMode != .buffer)
     }
 
+    func recordInitialRequestStats(redactionCount: Int, shouldBlockNonUTF8Forwarding: Bool) {
+        // WO-317: a fail-closed malformed body is audited but was never forwarded
+        // with redacted bytes, so it must not inflate requestsRedacted/secretsRedacted.
+        statsLock.lock()
+        stats.requestsProcessed += 1
+        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding {
+            stats.requestsRedacted += 1
+            stats.secretsRedacted += redactionCount
+        }
+        statsLock.unlock()
+    }
+
     public static func upstreamHostHeader(for upstream: URL) -> String? {
         guard let host = upstream.host, !host.isEmpty else { return nil }
         return host
@@ -885,6 +905,14 @@ public final class ProxyServer {
         redactedTypes: [String],
         mode: StreamingRedactionMode
     ) {
+        guard let task = makeStreamingTaskIfRunning(for: request) else {
+            // WO-314: stop() may invalidate the shared URLSession while a handler is
+            // about to create its streaming task; return a shutdown status instead
+            // of calling dataTask() on an invalidated session.
+            sendError(to: clientSocket, status: 503, message: "Service Unavailable")
+            return
+        }
+
         let relay = SSEStreamRelay(
             clientSocket: clientSocket,
             sendFlags: sendFlags,
@@ -913,7 +941,7 @@ public final class ProxyServer {
             }
         }
 
-        relay.execute(request: request, session: urlSession)
+        relay.execute(task: task, session: urlSession)
 
         // WO-153: account for secrets redacted from SSE frames in the stream.
         let totalCount = redactionCount + relay.streamRedactionCount
@@ -933,6 +961,15 @@ public final class ProxyServer {
             }
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
         }
+    }
+
+    private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
+        // WO-314: serialize the running check with stop()'s _running=false write so
+        // task creation cannot happen after invalidateAndCancel() has been reached.
+        runningLock.lock()
+        defer { runningLock.unlock() }
+        guard _running else { return nil }
+        return urlSession.dataTask(with: request)
     }
     #endif
 
@@ -962,9 +999,8 @@ public final class ProxyServer {
         // matched to the socket receive timeout.
         let deadline = DispatchTime.now() + .seconds(proxyClientSocketTimeoutSeconds)
 
-        let crlfSeparator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
-        let lfSeparator = Data([0x0A, 0x0A]) // \n\n
-        let headerSeparatorOverlap = crlfSeparator.count - 1
+        let headerSeparatorOverlap = Self.requestCRLFHeaderTerminator.count - 1
+        var sawCRLFHeaderLine = false
         while true {
             let prevCount = accumulated.count
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
@@ -993,11 +1029,13 @@ public final class ProxyServer {
             // Reduces total scan work from O(n×chunks) to O(n).
             if !headerEnd {
                 let searchStart = max(0, prevCount - headerSeparatorOverlap)
-                // WO-285: accept LF-only header terminators too, matching the curl response reader.
                 let searchRange = searchStart..<accumulated.count
-                let crlfRange = accumulated.range(of: crlfSeparator, in: searchRange)
-                let lfRange = accumulated.range(of: lfSeparator, in: searchRange)
-                if let sepRange = [crlfRange, lfRange].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound }) {
+                let sepRange = requestHeaderTerminatorRange(
+                    in: accumulated,
+                    searchRange: searchRange,
+                    sawCRLFHeaderLine: &sawCRLFHeaderLine
+                )
+                if let sepRange {
                     headerEnd = true
                     headerEndIndex = sepRange.upperBound
                     let headerData = accumulated[..<sepRange.lowerBound]
@@ -1041,6 +1079,24 @@ public final class ProxyServer {
             method: metadata.method, path: metadata.path, headers: metadata.headers,
             body: String(data: bodyData, encoding: .utf8), bodyData: bodyData
         ))
+    }
+
+    private func requestHeaderTerminatorRange(
+        in data: Data,
+        searchRange: Range<Data.Index>,
+        sawCRLFHeaderLine: inout Bool
+    ) -> Range<Data.Index>? {
+        // WO-315: prefer the HTTP-standard CRLF terminator whenever present
+        // in the current buffer. LF-only is a compatibility fallback, not an
+        // earlier-match override inside a CRLF-framed request.
+        if data.range(of: Self.requestCRLFLineSeparator, in: searchRange) != nil {
+            sawCRLFHeaderLine = true
+        }
+        if let crlfRange = data.range(of: Self.requestCRLFHeaderTerminator, in: searchRange) {
+            return crlfRange
+        }
+        guard !sawCRLFHeaderLine else { return nil }
+        return data.range(of: Self.requestLFHeaderTerminator, in: searchRange)
     }
 
     private func parseHTTPRequest(headerSection: String, bodyData: Data) -> HTTPRequest? {
