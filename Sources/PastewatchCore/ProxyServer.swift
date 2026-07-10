@@ -450,7 +450,10 @@ public final class ProxyServer {
         let fdToClose = serverSocket
         serverSocket = -1
         runningLock.unlock()
-        if fdToClose >= 0 { close(fdToClose) }
+        if fdToClose >= 0 {
+            wakeAcceptLoop(port: port)
+            close(fdToClose)
+        }
 
         // WO-255: no unconditional signal here. WO-247's signal was needed because the
         // blocking wait() could park the thread forever when all 64 slots were occupied at
@@ -474,6 +477,29 @@ public final class ProxyServer {
         // signal handler (risk of deadlock). stop() must only be called from a normal thread.
         handlerGroup.wait()
         logQueue.sync {}
+    }
+
+    private func wakeAcceptLoop(port: UInt16) {
+        // WO-330: Linux does not reliably interrupt a blocking accept() when another
+        // thread closes the listening fd, so connect once after running=false to
+        // make the accept loop observe shutdown deterministically.
+        #if canImport(Darwin)
+        let wakeSocket = socket(AF_INET, SOCK_STREAM, 0)
+        #else
+        let wakeSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #endif
+        guard wakeSocket >= 0 else { return }
+        defer { close(wakeSocket) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        _ = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(wakeSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
     }
 
     // MARK: - Connection handling

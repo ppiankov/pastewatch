@@ -186,9 +186,13 @@ private final class StubHTTPServer {
         lock.lock()
         isRunning = false
         let fd = listenSocket
+        let portToWake = port
         listenSocket = -1
         lock.unlock()
-        if fd >= 0 { close(fd) }
+        if fd >= 0 {
+            TCPTestSocket.wakeLoopbackListener(port: portToWake)
+            close(fd)
+        }
     }
 
     private func acceptLoop() {
@@ -201,6 +205,10 @@ private final class StubHTTPServer {
                 }
             }
             guard client >= 0 else { continue }
+            guard running else {
+                close(client)
+                break
+            }
             runDetached {
                 self.handle(client)
             }
@@ -285,6 +293,23 @@ private enum TCPTestSocket {
         }
         guard result == 0 else { throw ProxyHarnessError.systemError("getsockname") }
         return UInt16(bigEndian: addr.sin_port)
+    }
+
+    static func wakeLoopbackListener(port: UInt16) {
+        // WO-330: mirror ProxyServer.stop() so Linux CI does not leak blocked
+        // accept-loop threads between real-socket harness tests.
+        let fd = socket(AF_INET, testSocketStreamType, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        _ = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
     }
 
     static func roundTrip(port: UInt16, request: String, timeoutSeconds: Int = 3) throws -> String {
