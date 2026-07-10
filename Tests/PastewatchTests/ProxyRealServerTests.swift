@@ -36,7 +36,11 @@ final class ProxyRealServerTests: XCTestCase {
             timeoutSeconds: 10
         )
 
-        let diagnostic = TCPTestSocket.describeResponse(response)
+        let admission = proxy.connectionAdmissionStats
+        let diagnostic = TCPTestSocket.describeResponse(response) +
+            " proxy_processed=\(proxy.stats.requestsProcessed)" +
+            " proxy_rejected=\(admission.rejected)" +
+            " upstream_requests=\(upstream.requestCount)"
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
         XCTAssertTrue(response.contains(#"{"ok":true}"#), diagnostic)
     }
@@ -167,8 +171,14 @@ private final class StubHTTPServer {
     private let lock = NSLock()
     private var listenSocket: Int32 = -1
     private var isRunning = false
+    private var handledRequests = 0
 
     private(set) var port: UInt16 = 0
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return handledRequests
+    }
 
     init(handler: @escaping Handler) throws {
         self.handler = handler
@@ -227,6 +237,9 @@ private final class StubHTTPServer {
         guard let request = try? TCPTestSocket.readHTTPMessage(from: client, timeoutSeconds: 5) else {
             return
         }
+        lock.lock()
+        handledRequests += 1
+        lock.unlock()
         let response = handler(request)
         var head = "HTTP/1.1 \(response.status) \(CurlHTTPClient.httpReasonPhrase(for: response.status))\r\n"
         for (key, value) in response.headers {
