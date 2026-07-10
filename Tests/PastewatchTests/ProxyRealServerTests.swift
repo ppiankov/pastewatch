@@ -68,7 +68,7 @@ final class ProxyRealServerTests: XCTestCase {
         var heldResponses = Array(repeating: "", count: proxyMaxActiveConnections)
         for index in 0..<proxyMaxActiveConnections {
             group.enter()
-            DispatchQueue.global().async {
+            runDetached {
                 let response = (try? TCPTestSocket.roundTrip(
                     port: proxyPort,
                     request: TCPTestSocket.postRequest(path: "/hold-\(index)"),
@@ -129,7 +129,7 @@ private final class RunningProxy {
     }
 
     func start() throws {
-        DispatchQueue.global().async {
+        runDetached {
             do {
                 try self.server.start {
                     self.started.signal()
@@ -176,7 +176,7 @@ private final class StubHTTPServer {
         listenSocket = try TCPTestSocket.listenOnLoopback(port: 0)
         port = try TCPTestSocket.boundPort(for: listenSocket)
         isRunning = true
-        DispatchQueue.global().async {
+        runDetached {
             self.acceptLoop()
         }
     }
@@ -200,7 +200,7 @@ private final class StubHTTPServer {
                 }
             }
             guard client >= 0 else { continue }
-            DispatchQueue.global().async {
+            runDetached {
                 self.handle(client)
             }
         }
@@ -359,6 +359,12 @@ private enum TCPTestSocket {
         var timeout = timeval(tv_sec: seconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
+}
+
+private func runDetached(_ work: @escaping () -> Void) {
+    // WO-319: use real threads for blocking sockets so Linux CI does not rely on
+    // DispatchQueue.global() overcommit behavior while clients wait for EOF.
+    Thread.detachNewThread(work)
 }
 
 private enum ProxyHarnessError: Error, CustomStringConvertible {
