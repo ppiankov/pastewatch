@@ -356,10 +356,25 @@ private enum TCPTestSocket {
 
     static func readHTTPMessage(from fd: Int32, timeoutSeconds: Int) throws -> Data {
         setReceiveTimeout(on: fd, seconds: timeoutSeconds)
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let n = recv(fd, &buffer, buffer.count, 0)
+            if n < 0 {
+                if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    // WO-319: a recv timeout is not EOF; keep the harness deadline explicit.
+                    guard Date() < deadline else {
+                        throw ProxyHarnessError.timeout("timed out reading HTTP message")
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                    continue
+                }
+                // WO-319: reset after bytes is an EOF-equivalent for the socket harness.
+                if errno == ECONNRESET && !data.isEmpty { break }
+                throw ProxyHarnessError.systemError("recv")
+            }
             guard n > 0 else { break }
             data.append(contentsOf: buffer[0..<n])
             if let headerEnd = data.range(of: Data("\r\n\r\n".utf8))?.upperBound {
@@ -379,15 +394,28 @@ private enum TCPTestSocket {
 
     static func readToEOF(from fd: Int32, timeoutSeconds: Int) throws -> Data {
         setReceiveTimeout(on: fd, seconds: timeoutSeconds)
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let n = recv(fd, &buffer, buffer.count, 0)
             if n > 0 {
                 data.append(contentsOf: buffer[0..<n])
-            } else {
-                break
+                continue
             }
+            if n == 0 { break }
+            if errno == EINTR { continue }
+            if errno == EAGAIN || errno == EWOULDBLOCK {
+                // WO-319: Linux CI can report EAGAIN before proxy bytes arrive.
+                guard Date() < deadline else {
+                    throw ProxyHarnessError.timeout("timed out reading response")
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
+            // WO-319: reset after a response body is still a completed round trip.
+            if errno == ECONNRESET && !data.isEmpty { break }
+            throw ProxyHarnessError.systemError("recv")
         }
         return data
     }
