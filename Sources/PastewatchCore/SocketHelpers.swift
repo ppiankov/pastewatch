@@ -30,8 +30,37 @@ func sendAll(_ data: Data, to socket: Int32, flags: Int32) -> Bool {
 /// WO-220: result from shared SSE frame redaction.
 struct SSEFrameRedactionResult {
     let data: Data
-    let count: Int
-    let types: [String]
+    let redactionCount: Int
+    let redactionTypes: [String]
+    let advisoryCount: Int
+    let advisoryTypes: [String]
+
+    init(
+        data: Data,
+        count: Int,
+        types: [String],
+        advisoryCount: Int = 0,
+        advisoryTypes: [String] = []
+    ) {
+        self.data = data
+        self.redactionCount = count
+        self.redactionTypes = types
+        self.advisoryCount = advisoryCount
+        self.advisoryTypes = advisoryTypes
+    }
+
+    var count: Int { redactionCount }
+    var types: [String] { redactionTypes }
+}
+
+/// WO-324: stream bytes are mutated only for deterministic critical matches.
+func streamRedactionMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
+    matches.filter { $0.effectiveSeverity == .critical }
+}
+
+/// WO-324: ambiguous stream matches stay byte-identical and are surfaced as advisories.
+func streamAdvisoryMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
+    matches.filter { $0.effectiveSeverity != .critical }
 }
 
 /// WO-220: shared per-SSE-event frame redaction used by both the macOS URLSession path
@@ -57,11 +86,16 @@ func redactSSEFrame(
     var modifiedDelta = delta
     var redacted = 0
     var types: [String] = []
+    var advisoryCount = 0
+    var advisoryTypes: [String] = []
 
     for (field, value) in delta {
         guard field != "type", let text = value as? String else { continue }
         let matches = DetectionRules.scan(text, config: config)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        let filtered = streamRedactionMatches(matches)
+        let advisories = streamAdvisoryMatches(matches)
+        advisoryCount += advisories.count
+        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
         guard !filtered.isEmpty else { continue }
         // WO-295: redact thinking_delta/input_json_delta and future text-bearing
         // delta string fields, not only text_delta's `text` field.
@@ -71,17 +105,25 @@ func redactSSEFrame(
     }
 
     guard redacted > 0 else {
-        return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
+        return SSEFrameRedactionResult(
+            data: frame.raw, count: 0, types: [],
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+        )
     }
     var modifiedJson = json
     modifiedJson["delta"] = modifiedDelta
     guard let resultData = try? JSONSerialization.data(withJSONObject: modifiedJson),
           let resultStr = String(data: resultData, encoding: .utf8) else {
-        return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
+        return SSEFrameRedactionResult(
+            data: frame.raw, count: 0, types: [],
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+        )
     }
     return SSEFrameRedactionResult(
         data: frame.reserializedWith(data: resultStr),
         count: redacted,
-        types: types
+        types: types,
+        advisoryCount: advisoryCount,
+        advisoryTypes: advisoryTypes
     )
 }

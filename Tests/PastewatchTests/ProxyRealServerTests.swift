@@ -1,0 +1,374 @@
+import XCTest
+@testable import PastewatchCore
+
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
+/// WO-319/WO-322: real TCP proxy harness tests for admission and forwarding behavior.
+final class ProxyRealServerTests: XCTestCase {
+
+    func testRealProxyRoundTripsBufferedResponse() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        )
+
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"))
+        XCTAssertTrue(response.contains(#"{"ok":true}"#))
+    }
+
+    func testAdmissionCapRejectsFifthConcurrentConnection() throws {
+        let upstreamEntered = DispatchSemaphore(value: 0)
+        let upstreamRelease = DispatchSemaphore(value: 0)
+        let upstream = try StubHTTPServer { _ in
+            upstreamEntered.signal()
+            _ = upstreamRelease.wait(timeout: .now() + 5)
+            return StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"held":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let group = DispatchGroup()
+        let responseLock = NSLock()
+        var heldResponses = Array(repeating: "", count: proxyMaxActiveConnections)
+        for index in 0..<proxyMaxActiveConnections {
+            group.enter()
+            DispatchQueue.global().async {
+                let response = (try? TCPTestSocket.roundTrip(
+                    port: proxyPort,
+                    request: "GET /hold-\(index) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                    timeoutSeconds: 5
+                )) ?? ""
+                responseLock.lock()
+                heldResponses[index] = response
+                responseLock.unlock()
+                group.leave()
+            }
+        }
+
+        for _ in 0..<proxyMaxActiveConnections {
+            XCTAssertEqual(upstreamEntered.wait(timeout: .now() + 3), .success)
+        }
+        eventually(timeout: 3) {
+            proxy.connectionAdmissionStats.active == proxyMaxActiveConnections
+        }
+
+        let rejected = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: "GET /rejected HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            timeoutSeconds: 3
+        )
+        XCTAssertTrue(rejected.contains("HTTP/1.1 503"))
+        XCTAssertGreaterThanOrEqual(proxy.connectionAdmissionStats.rejected, 1)
+
+        for _ in 0..<proxyMaxActiveConnections {
+            upstreamRelease.signal()
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(heldResponses.allSatisfy { $0.contains("HTTP/1.1 200 OK") })
+    }
+
+    private func eventually(
+        timeout: TimeInterval,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTFail("condition not satisfied before timeout", file: file, line: line)
+    }
+}
+
+private final class RunningProxy {
+    private let server: ProxyServer
+    private let started = DispatchSemaphore(value: 0)
+    private let stopped = DispatchSemaphore(value: 0)
+    private var startError: Error?
+
+    init(server: ProxyServer) {
+        self.server = server
+    }
+
+    func start() throws {
+        DispatchQueue.global().async {
+            do {
+                try self.server.start {
+                    self.started.signal()
+                }
+            } catch {
+                self.startError = error
+                self.started.signal()
+            }
+            self.stopped.signal()
+        }
+        guard started.wait(timeout: .now() + 3) == .success else {
+            throw ProxyHarnessError.timeout("proxy did not start")
+        }
+        if let startError { throw startError }
+    }
+
+    func stop() {
+        server.stop()
+        _ = stopped.wait(timeout: .now() + 3)
+    }
+}
+
+private struct StubHTTPResponse {
+    let status: Int
+    let headers: [String: String]
+    let body: Data
+}
+
+private final class StubHTTPServer {
+    typealias Handler = (Data) -> StubHTTPResponse
+
+    private let handler: Handler
+    private let lock = NSLock()
+    private var listenSocket: Int32 = -1
+    private var isRunning = false
+
+    private(set) var port: UInt16 = 0
+
+    init(handler: @escaping Handler) throws {
+        self.handler = handler
+    }
+
+    func start() throws {
+        listenSocket = try TCPTestSocket.listenOnLoopback(port: 0)
+        port = try TCPTestSocket.boundPort(for: listenSocket)
+        isRunning = true
+        DispatchQueue.global().async {
+            self.acceptLoop()
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        isRunning = false
+        let fd = listenSocket
+        listenSocket = -1
+        lock.unlock()
+        if fd >= 0 { close(fd) }
+    }
+
+    private func acceptLoop() {
+        while running {
+            var addr = sockaddr_in()
+            var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let client = withUnsafeMutablePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                    accept(listenSocket, sockPtr, &len)
+                }
+            }
+            guard client >= 0 else { continue }
+            DispatchQueue.global().async {
+                self.handle(client)
+            }
+        }
+    }
+
+    private var running: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isRunning
+    }
+
+    private func handle(_ client: Int32) {
+        defer { close(client) }
+        guard let request = try? TCPTestSocket.readHTTPMessage(from: client, timeoutSeconds: 5) else {
+            return
+        }
+        let response = handler(request)
+        var head = "HTTP/1.1 \(response.status) \(CurlHTTPClient.httpReasonPhrase(for: response.status))\r\n"
+        for (key, value) in response.headers {
+            head += "\(key): \(value)\r\n"
+        }
+        head += "Content-Length: \(response.body.count)\r\nConnection: close\r\n\r\n"
+        var data = Data(head.utf8)
+        data.append(response.body)
+        try? TCPTestSocket.writeAll(data, to: client)
+    }
+}
+
+private enum TCPTestSocket {
+    static func reserveLoopbackPort() throws -> UInt16 {
+        let fd = try listenOnLoopback(port: 0)
+        defer { close(fd) }
+        return try boundPort(for: fd)
+    }
+
+    static func listenOnLoopback(port: UInt16) throws -> Int32 {
+        let fd = socket(AF_INET, testSocketStreamType, 0)
+        guard fd >= 0 else { throw ProxyHarnessError.systemError("socket") }
+        var reuse: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            close(fd)
+            throw ProxyHarnessError.systemError("bind")
+        }
+        guard listen(fd, 128) == 0 else {
+            close(fd)
+            throw ProxyHarnessError.systemError("listen")
+        }
+        return fd
+    }
+
+    static func boundPort(for fd: Int32) throws -> UInt16 {
+        var addr = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                getsockname(fd, sockPtr, &len)
+            }
+        }
+        guard result == 0 else { throw ProxyHarnessError.systemError("getsockname") }
+        return UInt16(bigEndian: addr.sin_port)
+    }
+
+    static func roundTrip(port: UInt16, request: String, timeoutSeconds: Int = 3) throws -> String {
+        let fd = socket(AF_INET, testSocketStreamType, 0)
+        guard fd >= 0 else { throw ProxyHarnessError.systemError("socket") }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else { throw ProxyHarnessError.systemError("connect") }
+        try writeAll(Data(request.utf8), to: fd)
+        let data = try readToEOF(from: fd, timeoutSeconds: timeoutSeconds)
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    static func readHTTPMessage(from fd: Int32, timeoutSeconds: Int) throws -> Data {
+        setReceiveTimeout(on: fd, seconds: timeoutSeconds)
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = recv(fd, &buffer, buffer.count, 0)
+            guard n > 0 else { break }
+            data.append(contentsOf: buffer[0..<n])
+            if let headerEnd = data.range(of: Data("\r\n\r\n".utf8))?.upperBound {
+                let header = String(data: data[..<headerEnd], encoding: .utf8) ?? ""
+                let length = header
+                    .components(separatedBy: "\r\n")
+                    .compactMap { line -> Int? in
+                        guard line.lowercased().hasPrefix("content-length:") else { return nil }
+                        return Int(line.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces))
+                    }
+                    .first ?? 0
+                if data.count >= headerEnd + length { break }
+            }
+        }
+        return data
+    }
+
+    static func readToEOF(from fd: Int32, timeoutSeconds: Int) throws -> Data {
+        setReceiveTimeout(on: fd, seconds: timeoutSeconds)
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = recv(fd, &buffer, buffer.count, 0)
+            if n > 0 {
+                data.append(contentsOf: buffer[0..<n])
+            } else {
+                break
+            }
+        }
+        return data
+    }
+
+    static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < data.count {
+                let written = send(fd, base.advanced(by: offset), data.count - offset, 0)
+                guard written > 0 else { throw ProxyHarnessError.systemError("send") }
+                offset += written
+            }
+        }
+    }
+
+    private static func setReceiveTimeout(on fd: Int32, seconds: Int) {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+}
+
+private enum ProxyHarnessError: Error, CustomStringConvertible {
+    case posix(String, Int32)
+    case timeout(String)
+
+    static func systemError(_ op: String) -> ProxyHarnessError {
+        .posix(op, errno)
+    }
+
+    var description: String {
+        switch self {
+        case .posix(let op, let code):
+            return "\(op) failed with errno \(code)"
+        case .timeout(let message):
+            return message
+        }
+    }
+}
+
+#if canImport(Darwin)
+private let testSocketStreamType = SOCK_STREAM
+#else
+private let testSocketStreamType = Int32(SOCK_STREAM.rawValue)
+#endif

@@ -73,7 +73,12 @@ struct CurlHTTPClient {
         proxySeverity: Severity = .high,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
-        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
+        alertBeforeDone: ((
+            _ streamCount: Int,
+            _ streamTypes: [String],
+            _ advisoryCount: Int,
+            _ advisoryTypes: [String]
+        ) -> Data?)? = nil
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -192,23 +197,24 @@ struct CurlHTTPClient {
     }
 
     static func parseNonStreamingOutput(_ rawOutput: Data) -> ParsedNonStreamingOutput? {
-        // WO-313: curl appends "\n__HTTP_STATUS__NNN"; search backward so the
-        // same byte sequence in the response body is preserved as body data.
-        guard let markerRange = rawOutput.range(
-            of: nonStreamingStatusMarker,
-            options: .backwards,
-            in: rawOutput.startIndex..<rawOutput.endIndex
-        ) else {
-            return nil
-        }
-        let statusBytes = rawOutput[markerRange.upperBound...]
+        // WO-329: the curl status trailer must be the final marker plus exactly 3 digits.
+        let statusDigitCount = 3
+        let trailerLength = nonStreamingStatusMarker.count + statusDigitCount
+        guard rawOutput.count >= trailerLength else { return nil }
+        let markerStart = rawOutput.count - trailerLength
+        let statusStart = rawOutput.count - statusDigitCount
+        let markerRange = markerStart..<statusStart
+        guard rawOutput[markerRange].elementsEqual(nonStreamingStatusMarker) else { return nil }
+
+        let statusBytes = rawOutput[statusStart..<rawOutput.count]
+        guard statusBytes.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
         guard let statusString = String(data: statusBytes, encoding: .utf8),
-              let statusCode = Int(statusString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+              let statusCode = Int(statusString) else {
             return nil
         }
         return ParsedNonStreamingOutput(
             statusCode: statusCode,
-            body: Data(rawOutput[..<markerRange.lowerBound])
+            body: Data(rawOutput[..<markerStart])
         )
     }
 
@@ -234,7 +240,12 @@ struct CurlHTTPClient {
         bodyPipe: Pipe,
         headerPipe: Pipe,
         ctx: StreamContext,
-        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
+        alertBeforeDone: ((
+            _ streamCount: Int,
+            _ streamTypes: [String],
+            _ advisoryCount: Int,
+            _ advisoryTypes: [String]
+        ) -> Data?)? = nil
     ) -> Response? {
         // WO-156: read headers incrementally until we see the blank line that marks
         // end-of-headers, then signal headerGroup immediately without waiting for curl to exit.
@@ -394,7 +405,12 @@ struct CurlHTTPClient {
     private static func relayBodyChunks(
         from bodyPipe: Pipe,
         ctx: StreamContext,
-        alertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? = nil
+        alertBeforeDone: ((
+            _ streamCount: Int,
+            _ streamTypes: [String],
+            _ advisoryCount: Int,
+            _ advisoryTypes: [String]
+        ) -> Data?)? = nil
     ) -> (Int, [String]) {
         var parser = SSEFrameParser()
         let fd = bodyPipe.fileHandleForReading.fileDescriptor
@@ -402,10 +418,12 @@ struct CurlHTTPClient {
         var buf = [UInt8](repeating: 0, count: chunkSize)
         var totalCount = 0
         var totalTypes: [String] = []
+        var advisoryCount = 0
+        var advisoryTypes: [String] = []
         // WO-216: track how the read loop exited so we know whether to flush the remainder.
         var clientEpipe = false
 
-        while true {
+        readLoop: while true {
             let n = Foundation.read(fd, &buf, chunkSize)
             guard n > 0 else { break }
             let chunk = Data(buf[0..<n])
@@ -425,10 +443,10 @@ struct CurlHTTPClient {
                     totalCount += r.count
                     totalTypes.append(contentsOf: r.types)
                     if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
-                        continue
+                        continue readLoop
                     } else {
                         clientEpipe = true
-                        break
+                        break readLoop
                     }
                 } else {
                     // WO-243: build assembled data and a parallel pending-stats buffer. Apply
@@ -445,7 +463,12 @@ struct CurlHTTPClient {
                         // totals causes builder(0, []) → guard total>0 fails → alert suppressed.
                         if frame.data == "[DONE]",
                            let builder = alertBeforeDone,
-                           let alert = builder(totalCount + pendingCount, totalTypes + pendingTypes) {
+                           let alert = builder(
+                            totalCount + pendingCount,
+                            totalTypes + pendingTypes,
+                            advisoryCount,
+                            advisoryTypes
+                           ) {
                             assembled.append(alert)
                         }
                         // WO-201: skip redactSSEFrame for [DONE] — its first guard already
@@ -456,12 +479,14 @@ struct CurlHTTPClient {
                         assembled.append(r.data)
                         pendingCount += r.count
                         pendingTypes.append(contentsOf: r.types)
+                        advisoryCount += r.advisoryCount
+                        advisoryTypes.append(contentsOf: r.advisoryTypes)
                     }
                     outData = assembled
                     if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
                         totalCount += pendingCount
                         totalTypes.append(contentsOf: pendingTypes)
-                        continue
+                        continue readLoop
                     } else {
                         // WO-250: credential was detected and redacted (pendingCount > 0) even
                         // though the send failed. Record the detection so the audit log is not
@@ -470,10 +495,16 @@ struct CurlHTTPClient {
                         totalCount += pendingCount
                         totalTypes.append(contentsOf: pendingTypes)
                         clientEpipe = true
-                        break
+                        break readLoop
                     }
                 }
-            case .rawStream, .buffer:
+            case .rawStream:
+                // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
+                let r = redactRawBytes(chunk, config: ctx.config, severity: ctx.severity)
+                outData = r.data
+                totalCount += r.count
+                totalTypes.append(contentsOf: r.types)
+            case .buffer:
                 outData = chunk
             }
             // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
@@ -510,7 +541,7 @@ struct CurlHTTPClient {
             return FrameRedactionResult(data: raw, count: 0, types: [])
         }
         let matches = DetectionRules.scan(text, config: config)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        let filtered = streamRedactionMatches(matches)
         guard !filtered.isEmpty else {
             return FrameRedactionResult(data: raw, count: 0, types: [])
         }

@@ -32,6 +32,12 @@ let proxyClientSocketTimeoutSeconds = 30
 /// WO-312: per-recv scratch buffer; accumulated request bytes grow separately.
 let proxyHTTPRequestReadBufferBytes = 64 * 1024
 
+/// WO-323: local single-user proxy active connection ceiling.
+let proxyMaxActiveConnections = 4
+
+/// WO-323: bounded wait for a saturated admission slot before rejecting the client.
+let proxyAdmissionQueueTimeoutMilliseconds = 250
+
 // MARK: - ProxyServer
 
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
@@ -57,11 +63,13 @@ public final class ProxyServer {
     let insecureTLS: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
-    /// WO-245: cap concurrent connections so an adversarial slow upstream cannot pin an
-    /// unbounded number of threads indefinitely. Each accepted connection acquires one slot;
-    /// accept() blocks when the cap is reached. Set to 64 (well above any realistic workload
-    /// and far below the default system thread cap, which defaults to ~512).
-    private let connectionSlots = DispatchSemaphore(value: 64)
+    /// WO-323: hard active-connection gate; queued clients wait for a bounded deadline only.
+    private let admissionSlots = DispatchSemaphore(value: proxyMaxActiveConnections)
+    /// WO-323: protects observable admission counters.
+    private let admissionLock = NSLock()
+    private var activeConnections = 0
+    private var queuedConnections = 0
+    private var rejectedConnections = 0
     /// WO-160: guards all mutations of `stats` from concurrent connection handlers.
     private let statsLock = NSLock()
     /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
@@ -98,6 +106,12 @@ public final class ProxyServer {
         public var requestsProcessed: Int = 0
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
+    }
+
+    public struct ConnectionAdmissionStats: Equatable {
+        public let active: Int
+        public let queued: Int
+        public let rejected: Int
     }
 
     struct HTTPRequest {
@@ -160,6 +174,15 @@ public final class ProxyServer {
     }
 
     public private(set) var stats = RedactionStats()
+    public var connectionAdmissionStats: ConnectionAdmissionStats {
+        admissionLock.lock()
+        defer { admissionLock.unlock() }
+        return ConnectionAdmissionStats(
+            active: activeConnections,
+            queued: queuedConnections,
+            rejected: rejectedConnections
+        )
+    }
 
     public init(
         port: UInt16 = 8443,
@@ -341,42 +364,79 @@ public final class ProxyServer {
 
             guard clientSocket >= 0 else { continue }
 
-            // WO-245: acquire before dispatching so we do not exceed the connection cap.
-            // WO-247: re-check running after acquiring so a stale fd is not dispatched.
-            // WO-253: signal() before break so the consumed slot is returned.
-            // WO-255: poll with a 100ms timeout instead of blocking indefinitely.
-            // A blocking wait() required stop() to signal unconditionally (WO-247), but that
-            // inflated the semaphore count when accept() returned EBADF (the common shutdown
-            // case) — the thread never called wait() at all, so the signal leaked. Polling
-            // lets the thread notice running=false within 100ms without a phantom signal.
-            var gotSlot = false
-            while running {
-                if connectionSlots.wait(timeout: .now() + 0.1) == .success {
-                    gotSlot = true; break
-                }
-            }
-            // WO-261: enter handlerGroup BEFORE checking running so stop()'s handlerGroup.wait()
-            // cannot drain and return while this thread is between the running check and enter().
-            // handlerGroup.leave() is called below if we decide not to dispatch.
-            // WO-266: invariant — gotSlot=false implies running=false was observed in the poll
-            // loop above (running is monotonically false-once-set). Guard A (guard running) fires
-            // first in that case, so a separate guard gotSlot branch is unreachable dead code.
-            if gotSlot { handlerGroup.enter() }
-            guard running else {
-                if gotSlot { handlerGroup.leave(); connectionSlots.signal() }
+            // WO-323/WO-325: enter before admission so stop() waits for accepted sockets
+            // that are queued for a slot as well as handlers already running.
+            handlerGroup.enter()
+            guard admitConnection(clientSocket) else {
+                handlerGroup.leave()
                 close(clientSocket)
-                break
+                if !running { break }
+                continue
             }
-            // WO-257: [self] strong capture keeps connectionSlots alive so signal() fires
-            // unconditionally even if ProxyServer is released during teardown.
-            // WO-264: slots alias removed; [self] strong capture makes it redundant.
-            // WO-234: handlerGroup entered above; stop() barrier-waits for all handlers
-            // so logQueue.sync sees all handler-enqueued audit writes before draining.
+            // WO-323/WO-325: with at most 4 admitted handlers, shutdown remains bounded while
+            // retaining the audit-drain guarantee from handlerGroup.wait().
             queue.async { [self] in
-                defer { connectionSlots.signal(); handlerGroup.leave() }
+                recordConnectionStarted()
+                defer {
+                    recordConnectionFinished()
+                    admissionSlots.signal()
+                    handlerGroup.leave()
+                }
                 handleConnection(clientSocket)
             }
         }
+    }
+
+    private func admitConnection(_ clientSocket: Int32) -> Bool {
+        guard running else { return false }
+        if admissionSlots.wait(timeout: .now()) == .success {
+            guard running else {
+                admissionSlots.signal()
+                return false
+            }
+            return true
+        }
+
+        recordQueuedConnection(delta: 1)
+        defer { recordQueuedConnection(delta: -1) }
+        let deadline = DispatchTime.now() + .milliseconds(proxyAdmissionQueueTimeoutMilliseconds)
+        guard admissionSlots.wait(timeout: deadline) == .success else {
+            if running {
+                recordRejectedConnection()
+                sendError(to: clientSocket, status: 503, message: "Proxy admission timeout")
+            }
+            return false
+        }
+
+        guard running else {
+            admissionSlots.signal()
+            return false
+        }
+        return true
+    }
+
+    private func recordConnectionStarted() {
+        admissionLock.lock()
+        activeConnections += 1
+        admissionLock.unlock()
+    }
+
+    private func recordConnectionFinished() {
+        admissionLock.lock()
+        activeConnections -= 1
+        admissionLock.unlock()
+    }
+
+    private func recordQueuedConnection(delta: Int) {
+        admissionLock.lock()
+        queuedConnections += delta
+        admissionLock.unlock()
+    }
+
+    private func recordRejectedConnection() {
+        admissionLock.lock()
+        rejectedConnections += 1
+        admissionLock.unlock()
     }
 
     /// Stop the proxy server.
@@ -528,7 +588,16 @@ public final class ProxyServer {
 
         var finalBody = buffered.body
         if redactionCount > 0 && injectAlert {
-            finalBody = injectAlertIntoResponse(buffered.body, redactionCount: redactionCount, types: redactedTypes)
+            // WO-331: JSON response alert injection must not silently no-op on raw SSE bodies.
+            if shouldInjectAlertIntoBufferedResponse(headers: buffered.headers) {
+                finalBody = injectAlertIntoResponse(
+                    buffered.body,
+                    redactionCount: redactionCount,
+                    types: redactedTypes
+                )
+            } else {
+                logAlertInjectionSkipped(path: parsed.path, contentType: responseContentType(buffered.headers))
+            }
         }
 
         sendResponse(to: clientSocket, status: buffered.status, headers: buffered.headers, body: finalBody)
@@ -667,14 +736,26 @@ public final class ProxyServer {
     private func buildLinuxAlertClosure(
         redactionCount: Int,
         redactedTypes: [String]
-    ) -> ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)? {
+    ) -> ((
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data?)? {
         guard injectAlert else { return nil }
-        return { [weak self] streamCount, streamTypes in
+        return { [weak self] streamCount, streamTypes, advisoryCount, advisoryTypes in
             guard let self = self else { return nil }
             let total = redactionCount + streamCount
-            guard total > 0 else { return nil }
             let totalTypes = redactedTypes + streamTypes
-            return self.buildAlertSSEData(redactionCount: total, types: totalTypes)
+            var data = Data()
+            if total > 0, let alert = self.buildAlertSSEData(redactionCount: total, types: totalTypes) {
+                data.append(alert)
+            }
+            if advisoryCount > 0,
+               let advisory = self.buildAdvisorySSEData(advisoryCount: advisoryCount, types: advisoryTypes) {
+                data.append(advisory)
+            }
+            return data.isEmpty ? nil : data
         }
     }
 
@@ -868,6 +949,18 @@ public final class ProxyServer {
         statsLock.unlock()
     }
 
+    func responseContentType(_ headers: [AnyHashable: Any]) -> String {
+        for (key, value) in headers where "\(key)".lowercased() == "content-type" {
+            return "\(value)"
+        }
+        return ""
+    }
+
+    func shouldInjectAlertIntoBufferedResponse(headers: [AnyHashable: Any]) -> Bool {
+        // WO-331: injectAlertIntoResponse parses JSON; only call it for JSON response bodies.
+        responseContentType(headers).lowercased().contains("application/json")
+    }
+
     public static func upstreamHostHeader(for upstream: URL) -> String? {
         guard let host = upstream.host, !host.isEmpty else { return nil }
         return host
@@ -932,12 +1025,19 @@ public final class ProxyServer {
         // counts at [DONE] time; body counts are captured from local scope.
         // WO-195: body counts captured directly — no relay property assignment needed.
         if injectAlert {
-            relay.buildAlertBeforeDone = { [weak self] streamCount, streamTypes in
+            relay.buildAlertBeforeDone = { [weak self] streamCount, streamTypes, advisoryCount, advisoryTypes in
                 guard let self = self else { return nil }
                 let total = redactionCount + streamCount
-                guard total > 0 else { return nil }
                 let totalTypes = redactedTypes + streamTypes
-                return self.buildAlertSSEData(redactionCount: total, types: totalTypes)
+                var data = Data()
+                if total > 0, let alert = self.buildAlertSSEData(redactionCount: total, types: totalTypes) {
+                    data.append(alert)
+                }
+                if advisoryCount > 0,
+                   let advisory = self.buildAdvisorySSEData(advisoryCount: advisoryCount, types: advisoryTypes) {
+                    data.append(advisory)
+                }
+                return data.isEmpty ? nil : data
             }
         }
 
@@ -1262,6 +1362,17 @@ public final class ProxyServer {
         return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
     }
 
+    func buildAdvisorySSEData(advisoryCount: Int, types: [String]) -> Data? {
+        // WO-324: advisory-only stream matches are surfaced without claiming mutation.
+        let uniqueTypes = Array(Set(types)).sorted().joined(separator: ", ")
+        let text = "[PASTEWATCH] \(advisoryCount) possible secret match(es) left unchanged. " +
+            "Types: \(uniqueTypes). Configure an allowlist or promote the detector to critical before redacting."
+        let block = ["type": "text", "text": text]
+        guard let alertJSON = try? JSONSerialization.data(withJSONObject: block),
+              let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+        return Data("event: pastewatch_advisory\ndata: \(alertStr)\n\n".utf8)
+    }
+
     private func fixSuggestion(for typeName: String) -> String? {
         switch typeName {
         case "Credential":
@@ -1359,6 +1470,28 @@ public final class ProxyServer {
                 }
             }
         }
+    }
+
+    func logAlertInjectionSkipped(path: String, contentType: String) {
+        let timestamp = formatAuditTimestamp(Date())
+        let normalizedType = contentType.isEmpty ? "missing" : contentType
+        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(path) (non-json response: \(normalizedType))\n"
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    func drainAuditLogForTesting() {
+        // WO-331: tests need deterministic visibility into async audit writes.
+        logQueue.sync {}
     }
 }
 

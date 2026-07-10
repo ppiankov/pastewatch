@@ -51,12 +51,20 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private(set) var streamRedactionCount = 0
     private(set) var streamRedactionTypes: [String] = []
+    /// WO-324: lower-certainty stream detections are advisory-only and do not mutate bytes.
+    private(set) var streamAdvisoryCount = 0
+    private(set) var streamAdvisoryTypes: [String] = []
 
     /// WO-182: when non-nil, called just before [DONE] is forwarded to the client socket.
     /// The closure returns an SSE event frame (raw bytes) to inject, or nil to skip.
     /// Invoked on the URLSession delegate queue with stream-only counts accumulated so far.
     /// WO-195: body-scan counts captured by the closure's own scope (no relay properties needed).
-    var buildAlertBeforeDone: ((_ streamCount: Int, _ streamTypes: [String]) -> Data?)?
+    var buildAlertBeforeDone: ((
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data?)?
 
     /// WO-209/215: retained so EPIPE paths in the frame loop and writeToSocket() can cancel
     /// the task without every call site threading the task reference through.
@@ -203,8 +211,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         switch redactionMode {
         case .rawStream:
-            // WO-299: raw_stream is a true passthrough on macOS, matching Linux.
-            relayRawData(data)
+            // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
+            relayRawRedactedData(data)
 
         case .perSSEEvent:
             relaySSEEventData(data)
@@ -237,11 +245,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    private func relayRawRedactedData(_ data: Data) {
+        let redaction = redactRawBytes(data)
+        recordStreamScan(redaction)
+        if !sendAll(redaction.data, to: clientSocket, flags: sendFlags) {
+            markClientEpipeAndCancelTask()
+        }
+    }
+
     private func relaySSEEventData(_ data: Data) {
         let result = parser.feed(data)
         if result.overflowFlushed {
             // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
-            writeToSocket(redactRawBytes(result.overflowBytes))
+            let redaction = redactRawBytes(result.overflowBytes)
+            recordStreamScan(redaction)
+            writeToSocket(redaction.data)
             // WO-244: writeToSocket() may have set clientEpipe and cancelled activeTask,
             // but the idle timer is still armed. Cancel it explicitly so execute() does not
             // wait up to 60s for a timer that will fire against a dead connection.
@@ -273,7 +291,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         guard frame.data != "[DONE]" else {
             var toSend = Data()
             if let builder = buildAlertBeforeDone,
-               let alertData = builder(streamRedactionCount, streamRedactionTypes) {
+               let alertData = builder(
+                streamRedactionCount,
+                streamRedactionTypes,
+                streamAdvisoryCount,
+                streamAdvisoryTypes
+               ) {
                 toSend.append(alertData)
             }
             toSend.append(frame.raw)
@@ -281,9 +304,15 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
         // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
         let redaction = redactSSEFrame(frame, config: config, severity: severity)
+        recordStreamScan(redaction)
+        return relayFrameData(redaction.data)
+    }
+
+    private func recordStreamScan(_ redaction: SSEFrameRedactionResult) {
         streamRedactionCount += redaction.count
         streamRedactionTypes.append(contentsOf: redaction.types)
-        return relayFrameData(redaction.data)
+        streamAdvisoryCount += redaction.advisoryCount
+        streamAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
     }
 
     private func relayFrameData(_ data: Data) -> Bool {
@@ -343,7 +372,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             if redactionMode == .perSSEEvent {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
-                    writeToSocket(redactRawBytes(rem))
+                    let redaction = redactRawBytes(rem)
+                    recordStreamScan(redaction)
+                    writeToSocket(redaction.data)
                     // WO-249: re-snapshot clientEpipe under socketWriteLock. writeToSocket()
                     // above may have set it — gate the drop-notice on the fresh value so we do
                     // not fire one wasted sendAll() call against a now-dead socket.
@@ -430,15 +461,28 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
-    private func redactRawBytes(_ raw: Data) -> Data {
-        guard let text = String(data: raw, encoding: .utf8) else { return raw }
+    private func redactRawBytes(_ raw: Data) -> SSEFrameRedactionResult {
+        guard let text = String(data: raw, encoding: .utf8) else {
+            return SSEFrameRedactionResult(data: raw, count: 0, types: [])
+        }
         let matches = DetectionRules.scan(text, config: config)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
-        guard !filtered.isEmpty else { return raw }
-        streamRedactionCount += filtered.count
-        streamRedactionTypes.append(contentsOf: filtered.map { $0.displayName })
+        let filtered = streamRedactionMatches(matches)
+        let advisories = streamAdvisoryMatches(matches)
+        guard !filtered.isEmpty else {
+            return SSEFrameRedactionResult(
+                data: raw, count: 0, types: [],
+                advisoryCount: advisories.count,
+                advisoryTypes: advisories.map { $0.displayName }
+            )
+        }
         let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
-        return Data(obfuscated.utf8)
+        return SSEFrameRedactionResult(
+            data: Data(obfuscated.utf8),
+            count: filtered.count,
+            types: filtered.map { $0.displayName },
+            advisoryCount: advisories.count,
+            advisoryTypes: advisories.map { $0.displayName }
+        )
     }
 
     // MARK: - Idle timer
@@ -468,12 +512,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private func makeIdleTimer(task: URLSessionTask) -> DispatchSourceTimer {
         // startIdleTimer is called before any delegate callbacks; no queue requirement yet.
         // Dispatch to timerQueue to keep all timer mutations on one serial queue.
-        var timer: DispatchSourceTimer!
-        timerQueue.sync { [weak self] in
-            guard let self = self else { return }
-            timer = self.makeIdleTimerOnQueue(task: task)
+        // WO-328: return the timer directly from sync; no weak-self IUO nil path.
+        timerQueue.sync {
+            makeIdleTimerOnQueue(task: task)
         }
-        return timer
     }
 
     private func makeIdleTimerOnQueue(task: URLSessionTask) -> DispatchSourceTimer {

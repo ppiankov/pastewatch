@@ -45,6 +45,22 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(parsed?.body, Data("body\n__HTTP_STATUS__inside".utf8))
     }
 
+    func testCurlNonStreamingOutputParserRequiresFinalStatusTrailer() {
+        var output = Data("body\n__HTTP_STATUS__201 still body".utf8)
+        output.append(Data("\n__HTTP_STATUS__200".utf8))
+
+        let parsed = CurlHTTPClient.parseNonStreamingOutput(output)
+
+        XCTAssertEqual(parsed?.statusCode, 200)
+        XCTAssertEqual(parsed?.body, Data("body\n__HTTP_STATUS__201 still body".utf8))
+    }
+
+    func testCurlNonStreamingOutputParserRejectsNonFinalMarker() {
+        let output = Data("body\n__HTTP_STATUS__200 trailing".utf8)
+
+        XCTAssertNil(CurlHTTPClient.parseNonStreamingOutput(output))
+    }
+
     func testCurlResponseHeaderReaderPreservesBufferedInterimBlocks() {
         var fds = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(pipe(&fds), 0)

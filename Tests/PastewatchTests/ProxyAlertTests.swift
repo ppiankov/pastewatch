@@ -108,6 +108,43 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(result, htmlData, "Non-JSON should pass through unchanged")
     }
 
+    func testBufferedAlertInjectionOnlyRunsForJSONResponses() {
+        XCTAssertTrue(server.shouldInjectAlertIntoBufferedResponse(
+            headers: ["Content-Type": "application/json"]
+        ))
+        XCTAssertTrue(server.shouldInjectAlertIntoBufferedResponse(
+            headers: ["content-type": "application/json; charset=utf-8"]
+        ))
+        XCTAssertFalse(server.shouldInjectAlertIntoBufferedResponse(
+            headers: ["Content-Type": "text/event-stream"]
+        ))
+        XCTAssertFalse(server.shouldInjectAlertIntoBufferedResponse(headers: [:]))
+    }
+
+    func testAlertInjectionSkippedAuditLineForNonJSONBufferedResponse() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-alert-skip-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let auditServer = ProxyServer(port: 0, auditLogPath: path)
+
+        auditServer.logAlertInjectionSkipped(path: "/v1/messages", contentType: "text/event-stream")
+        auditServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY ALERT SKIPPED"))
+        XCTAssertTrue(log.contains("/v1/messages"))
+        XCTAssertTrue(log.contains("text/event-stream"))
+    }
+
+    func testAdvisorySSEDataUsesDistinctEventFrame() throws {
+        let data = try XCTUnwrap(server.buildAdvisorySSEData(advisoryCount: 1, types: ["Email"]))
+        let frame = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(frame.hasPrefix("event: pastewatch_advisory\ndata: "))
+        XCTAssertTrue(frame.hasSuffix("\n\n"))
+        XCTAssertTrue(frame.contains("possible secret"))
+        XCTAssertTrue(frame.contains("Email"))
+    }
+
     func testPassthroughOnEmptyContentArray() throws {
         let response: [String: Any] = [
             "id": "msg_789",

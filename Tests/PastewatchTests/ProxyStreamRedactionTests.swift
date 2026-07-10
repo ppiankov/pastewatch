@@ -122,6 +122,48 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
     }
 
+    func testCriticalMatchMutatesStreamBytes() {
+        let credential = "password=s3cr3t-hunter2"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
+        let redaction = redactFirstFrame(payload: payload)
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertFalse(redacted.contains(credential))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
+    func testAmbiguousMatchIsAdvisoryOnlyAndByteIdentical() {
+        let email = "operator@example.com"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.advisoryCount, 1)
+        XCTAssertEqual(redaction.advisoryTypes, ["Email"])
+        XCTAssertEqual(redaction.data, result.frames[0].raw)
+    }
+
+    func testLuhnValidCardMutatesStreamBytes() {
+        let card = "4111111111111111"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"card \#(card)"}}"#
+        let redaction = redactFirstFrame(payload: payload)
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertFalse(redacted.contains(card))
+        XCTAssertTrue(redacted.contains("<CARD_1>"))
+    }
+
     /// A frame with no secret is passed through byte-identical.
     func testSSEFrameWithoutSecretPassesThroughUnchanged() {
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello, world!"}}"#
