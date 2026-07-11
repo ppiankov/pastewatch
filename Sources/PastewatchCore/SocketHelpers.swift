@@ -8,13 +8,26 @@ import Foundation
 /// (Ctrl-C) or other signals can interrupt send() without closing the connection.
 @discardableResult
 func sendAll(_ data: Data, to socket: Int32, flags: Int32) -> Bool {
+    sendAll(data, to: socket, flags: flags) { socket, pointer, length, flags in
+        send(socket, pointer, length, flags)
+    }
+}
+
+/// WO-373: injectable syscall path keeps partial-write and EINTR tests deterministic.
+@discardableResult
+func sendAll(
+    _ data: Data,
+    to socket: Int32,
+    flags: Int32,
+    sendFunction: (Int32, UnsafeRawPointer, Int, Int32) -> Int
+) -> Bool {
     var sent = true
     data.withUnsafeBytes { ptr in
         guard let base = ptr.baseAddress else { return }
         var remaining = ptr.count
         var offset = 0
         while remaining > 0 {
-            let n = send(socket, base.advanced(by: offset), remaining, flags)
+            let n = sendFunction(socket, base.advanced(by: offset), remaining, flags)
             if n < 0 {
                 if errno == EINTR { continue }  // WO-214: signal interruption — retry
                 sent = false; break

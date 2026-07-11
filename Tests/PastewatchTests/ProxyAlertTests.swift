@@ -439,6 +439,34 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(requestAndResponseServer.stats.secretsRedacted, 2)
     }
 
+    func testRequestAndBufferedResponseRedactionAuditDoNotDedupEachOther() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-buffered-response-dedup-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let auditServer = ProxyServer(port: 0, auditLogPath: path)
+
+        auditServer.recordRejectedStreamingBodyRedactionIfNeeded(
+            path: "/v1/messages",
+            redactionCount: 1,
+            redactedTypes: ["Credential"]
+        )
+        auditServer.recordBufferedResponseRedactionAuditForTesting(
+            path: "/v1/messages",
+            count: 1,
+            types: ["Credential"]
+        )
+        auditServer.recordBufferedResponseRedactionAuditForTesting(
+            path: "/v1/messages",
+            count: 1,
+            types: ["Credential"]
+        )
+        auditServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertEqual(log.components(separatedBy: "PROXY REDACTED").count - 1, 2)
+        XCTAssertTrue(log.contains("PROXY REDACTED 1 secret(s) in /v1/messages"))
+        XCTAssertTrue(log.contains("PROXY REDACTED 1 secret(s) in response /v1/messages"))
+    }
+
     func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
         var bufferConfig = PastewatchConfig.defaultConfig
         bufferConfig.responseStreamingRedactionMode = .buffer

@@ -730,7 +730,8 @@ public final class ProxyServer {
             logRedaction(
                 path: path,
                 count: buffered.responseRedactionCount,
-                types: buffered.responseRedactionTypes
+                types: buffered.responseRedactionTypes,
+                source: .response
             )
         }
 
@@ -1127,6 +1128,11 @@ public final class ProxyServer {
         }
         stats.secretsRedacted += responseRedactionCount
         statsLock.unlock()
+    }
+
+    func recordBufferedResponseRedactionAuditForTesting(path: String, count: Int, types: [String]) {
+        // WO-378: exercise the same response-source audit path used by buffered responses.
+        logRedaction(path: path, count: count, types: types, source: .response)
     }
 
     func recordStreamingAuditStats(_ summary: StreamingAuditStats) {
@@ -1653,7 +1659,24 @@ public final class ProxyServer {
     private var lastRedactionLogSignature = "" // WO-358: redaction dedup is independent.
     private var lastAdvisoryLogSignature = "" // WO-358: advisory dedup is independent.
 
-    private func logRedaction(path: String, count: Int, types: [String]) {
+    private enum RedactionLogSource: String {
+        case request
+        case response
+
+        var auditLocationPrefix: String {
+            switch self {
+            case .request: return ""
+            case .response: return "response "
+            }
+        }
+    }
+
+    private func logRedaction(
+        path: String,
+        count: Int,
+        types: [String],
+        source: RedactionLogSource = .request
+    ) {
         // Build type breakdown: "Credential x3, DB Connection x2"
         var typeCounts: [String: Int] = [:]
         for t in types { typeCounts[t, default: 0] += 1 }
@@ -1665,7 +1688,8 @@ public final class ProxyServer {
         // WO-203: lastLogSignature is read+written from logRedaction(), which is called from
         // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
         // concurrent connections do not race on the dedup check.
-        let signature = "\(path):\(count):\(breakdown)"
+        // WO-378: request and buffered-response redactions can share path/count/type values.
+        let signature = "\(source.rawValue):\(path):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastRedactionLogSignature
         lastRedactionLogSignature = signature
@@ -1674,7 +1698,8 @@ public final class ProxyServer {
         let timestamp = formatAuditTimestamp(Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
-        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"
+        let location = "\(source.auditLocationPrefix)\(path)"
+        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(location) (\(breakdown))\n"
         let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
         if !quietLog && !isRepeat {

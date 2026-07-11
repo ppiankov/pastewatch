@@ -339,6 +339,7 @@ struct CurlHTTPClient {
         var pending = Data()
         var sawDone = false
         var advisoryScanTail = Data()
+        // WO-377: absolute_offset = advisoryScanBaseOffset + UTF-8 offset inside advisoryScanTail.
         var advisoryScanBaseOffset = 0
         var seenAdvisorySignatures: Set<String> = []
     }
@@ -895,8 +896,9 @@ struct CurlHTTPClient {
         if state.advisoryScanTail.count > rawStreamAdvisoryScanWindowBytes {
             let overflow = state.advisoryScanTail.count - rawStreamAdvisoryScanWindowBytes
             let trimEnd = state.advisoryScanTail.index(state.advisoryScanTail.startIndex, offsetBy: overflow)
-            state.advisoryScanTail.removeSubrange(..<trimEnd)
+            // WO-377: advance the base before trimming so later signatures stay absolute.
             state.advisoryScanBaseOffset += overflow
+            state.advisoryScanTail.removeSubrange(..<trimEnd)
         }
 
         // swiftlint:disable optional_data_string_conversion

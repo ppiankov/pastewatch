@@ -57,6 +57,39 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(receivedCopy, payload)
     }
 
+    func testSendAllReturnsTrueForEmptyDataWithoutCallingSend() {
+        var calls = 0
+
+        let result = sendAll(Data(), to: -1, flags: 0) { _, _, _, _ in
+            calls += 1
+            return -1
+        }
+
+        XCTAssertTrue(result)
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testSendAllRetriesEINTRAndCompletesPartialWrites() {
+        let payload = Data("abcdef".utf8)
+        var calls = 0
+        var delivered = Data()
+
+        let result = sendAll(payload, to: -1, flags: 0) { _, pointer, remaining, _ in
+            calls += 1
+            if calls == 1 {
+                errno = EINTR
+                return -1
+            }
+            let count = min(2, remaining)
+            delivered.append(Data(bytes: pointer, count: count))
+            return count
+        }
+
+        XCTAssertTrue(result)
+        XCTAssertEqual(delivered, payload)
+        XCTAssertEqual(calls, 4)
+    }
+
     func testCurlBodyUploadArgsUseDataBinaryFileUpload() {
         let args = CurlHTTPClient.bodyUploadArgs(forTempFile: "/tmp/pw-body")
 
