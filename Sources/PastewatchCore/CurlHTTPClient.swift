@@ -257,11 +257,32 @@ struct CurlHTTPClient {
         var advisoryTypes: [String] = []
 
         mutating func record(_ redaction: SSEFrameRedactionResult) {
+            recordCritical(redaction)
+            recordAdvisory(count: redaction.advisoryCount, types: redaction.advisoryTypes)
+        }
+
+        mutating func recordCritical(_ redaction: SSEFrameRedactionResult) {
             redactionCount += redaction.count
             redactionTypes.append(contentsOf: redaction.types)
-            advisoryCount += redaction.advisoryCount
-            advisoryTypes.append(contentsOf: redaction.advisoryTypes)
         }
+
+        mutating func recordAdvisory(count: Int, types: [String]) {
+            advisoryCount += count
+            advisoryTypes.append(contentsOf: types)
+        }
+
+        mutating func recordAdvisoryIfDelivered(_ delivered: Bool, count: Int, types: [String]) {
+            guard delivered else { return } // WO-348: advisory-only matches are delivery-scoped.
+            recordAdvisory(count: count, types: types)
+        }
+    }
+
+    /// WO-348: raw-stream helpers return pending advisory stats so callers can
+    /// commit them only after the socket write succeeds.
+    private struct StreamChunkRelayResult {
+        let data: Data
+        let advisoryCount: Int
+        let advisoryTypes: [String]
     }
 
     static func cancelActiveProcesses() {
@@ -483,6 +504,8 @@ struct CurlHTTPClient {
             guard n > 0 else { break }
             let chunk = Data(buf[0..<n])
             let outData: Data
+            var deliveryScopedAdvisoryCount = 0
+            var deliveryScopedAdvisoryTypes: [String] = []
             switch ctx.redactionMode {
             case .perSSEEvent:
                 let result = parser.feed(chunk)
@@ -495,8 +518,10 @@ struct CurlHTTPClient {
                     // credential was still present in the stream and was redacted from the bytes
                     // we attempted to send. Consistent with the assembled-frames path (WO-250)
                     // and macOS redactRawBytes(). Chosen policy: always-record on detect.
-                    totals.record(r)
+                    totals.recordCritical(r)
                     if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+                        // WO-348: advisory-only overflow bytes are delivery-scoped.
+                        totals.recordAdvisory(count: r.advisoryCount, types: r.advisoryTypes)
                         continue readLoop
                     } else {
                         clientEpipe = true
@@ -568,14 +593,19 @@ struct CurlHTTPClient {
                     alertBeforeDone: alertBeforeDone,
                     totals: &totals
                 ) else { continue readLoop }
-                outData = rawOutput
+                outData = rawOutput.data
+                deliveryScopedAdvisoryCount = rawOutput.advisoryCount
+                deliveryScopedAdvisoryTypes = rawOutput.advisoryTypes
             case .buffer:
                 outData = chunk
             }
             // WO-191/WO-200/WO-206: shared sendAll() from SocketHelpers.swift.
             // WO-205: check return value — on EPIPE the client disconnected; draining the rest
             // of the upstream pipe burns CPU and blocks the connection thread unnecessarily.
-            if !sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+            if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
+                // WO-348: raw_stream advisory counts describe delivered bytes only.
+                totals.recordAdvisory(count: deliveryScopedAdvisoryCount, types: deliveryScopedAdvisoryTypes)
+            } else {
                 clientEpipe = true
                 break
             }
@@ -591,19 +621,20 @@ struct CurlHTTPClient {
             let rem = parser.remainingBytes
             if !rem.isEmpty {
                 let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
-                totals.record(r)
+                totals.recordCritical(r)
                 // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
                 let alert = alertBeforeDone?(
                     totals.redactionCount,
                     totals.redactionTypes,
-                    totals.advisoryCount,
-                    totals.advisoryTypes
+                    totals.advisoryCount + r.advisoryCount,
+                    totals.advisoryTypes + r.advisoryTypes
                 )
-                _ = sendAll(
+                let delivered = sendAll(
                     insertingSSEDataBeforeDone(alert, into: r.data),
                     to: ctx.clientSocket,
                     flags: ctx.sendFlags
                 )
+                totals.recordAdvisoryIfDelivered(delivered, count: r.advisoryCount, types: r.advisoryTypes)
             }
         }
         return StreamRelayResult(
@@ -625,12 +656,16 @@ struct CurlHTTPClient {
             _ advisoryTypes: [String]
         ) -> Data?)?,
         totals: inout StreamScanTotals
-    ) -> Data? {
+    ) -> StreamChunkRelayResult? {
         guard alertBeforeDone != nil else {
             // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
             let redaction = redactRawBytes(chunk, config: ctx.config, severity: ctx.severity)
-            totals.record(redaction)
-            return redaction.data
+            totals.recordCritical(redaction)
+            return StreamChunkRelayResult(
+                data: redaction.data,
+                advisoryCount: redaction.advisoryCount,
+                advisoryTypes: redaction.advisoryTypes
+            )
         }
 
         let result = parser.feed(chunk)
@@ -644,23 +679,31 @@ struct CurlHTTPClient {
         }
 
         var assembled = Data()
+        var pendingAdvisoryCount = 0
+        var pendingAdvisoryTypes: [String] = []
         for frame in result.frames {
             let redaction = redactRawBytes(frame.raw, config: ctx.config, severity: ctx.severity)
-            totals.record(redaction)
+            totals.recordCritical(redaction)
+            pendingAdvisoryCount += redaction.advisoryCount
+            pendingAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
             // WO-336: raw_stream preserves raw frame bytes, but still needs
             // frame-aware [DONE] detection across arbitrary curl read chunks.
             if frame.data == "[DONE]",
                let alert = alertBeforeDone?(
                 totals.redactionCount,
                 totals.redactionTypes,
-                totals.advisoryCount,
-                totals.advisoryTypes
+                totals.advisoryCount + pendingAdvisoryCount,
+                totals.advisoryTypes + pendingAdvisoryTypes
                ) {
                 assembled.append(alert)
             }
             assembled.append(redaction.data)
         }
-        return assembled.isEmpty ? nil : assembled
+        return assembled.isEmpty ? nil : StreamChunkRelayResult(
+            data: assembled,
+            advisoryCount: pendingAdvisoryCount,
+            advisoryTypes: pendingAdvisoryTypes
+        )
     }
 
     private static func relayRawStreamOverflow(
@@ -673,16 +716,20 @@ struct CurlHTTPClient {
             _ advisoryTypes: [String]
         ) -> Data?)?,
         totals: inout StreamScanTotals
-    ) -> Data {
+    ) -> StreamChunkRelayResult {
         let redaction = redactRawBytes(data, config: ctx.config, severity: ctx.severity)
-        totals.record(redaction)
+        totals.recordCritical(redaction)
         let alert = alertBeforeDone?(
             totals.redactionCount,
             totals.redactionTypes,
-            totals.advisoryCount,
-            totals.advisoryTypes
+            totals.advisoryCount + redaction.advisoryCount,
+            totals.advisoryTypes + redaction.advisoryTypes
         )
-        return insertingSSEDataBeforeDone(alert, into: redaction.data)
+        return StreamChunkRelayResult(
+            data: insertingSSEDataBeforeDone(alert, into: redaction.data),
+            advisoryCount: redaction.advisoryCount,
+            advisoryTypes: redaction.advisoryTypes
+        )
     }
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).

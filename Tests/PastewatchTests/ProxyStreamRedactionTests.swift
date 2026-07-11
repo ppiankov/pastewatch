@@ -302,6 +302,70 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(relay.output.isEmpty)
     }
 
+    func testLinuxRelayRemainderAdvisoryStatsSkipFailedSend() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        let relay = relayStream(
+            Data("data: contact operator@example.com".utf8),
+            mode: .perSSEEvent,
+            closePeerBeforeRelay: true
+        )
+
+        XCTAssertEqual(relay.result.advisoryCount, 0)
+        XCTAssertTrue(relay.output.isEmpty)
+    }
+
+    func testLinuxRelayRawStreamAdvisoryStatsCountAfterSuccessfulSend() {
+        let relay = relayStream(
+            rawStreamAdvisorySSE(),
+            mode: .rawStream,
+            closePeerBeforeRelay: false,
+            alertBeforeDone: advisoryAlertBeforeDone
+        )
+
+        XCTAssertEqual(relay.result.advisoryCount, 1)
+        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
+        XCTAssertTrue(relay.output.contains("event: pastewatch_advisory"))
+        XCTAssertTrue(relay.output.contains("operator@example.com"))
+        XCTAssertTrue(relay.output.contains("data: [DONE]"))
+    }
+
+    func testLinuxRelayRawStreamAdvisoryStatsSkipFailedSend() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        let relay = relayStream(
+            rawStreamAdvisorySSE(),
+            mode: .rawStream,
+            closePeerBeforeRelay: true,
+            alertBeforeDone: advisoryAlertBeforeDone
+        )
+
+        XCTAssertEqual(relay.result.advisoryCount, 0)
+        XCTAssertTrue(relay.output.isEmpty)
+    }
+
+    func testLinuxRelayRawStreamNoAlertAdvisoryStatsSkipFailedSend() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        let relay = relayStream(
+            Data("contact operator@example.com".utf8),
+            mode: .rawStream,
+            closePeerBeforeRelay: true
+        )
+
+        XCTAssertEqual(relay.result.advisoryCount, 0)
+        XCTAssertTrue(relay.output.isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func sseFrame(eventType: String?, data: String) -> Data {
@@ -328,10 +392,45 @@ final class ProxyStreamRedactionTests: XCTestCase {
         result: CurlHTTPClient.StreamRelayResult,
         output: String
     ) {
-        let pipe = Pipe()
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact operator@example.com"}}"#
         var stream = sseFrame(eventType: "content_block_delta", data: payload)
         stream.append(sseFrame(eventType: nil, data: "[DONE]"))
+        return relayStream(stream, mode: .perSSEEvent, closePeerBeforeRelay: closePeerBeforeRelay)
+    }
+
+    private func rawStreamAdvisorySSE() -> Data {
+        var stream = Data("data: contact operator@example.com\n\n".utf8)
+        stream.append(Data("data: [DONE]\n\n".utf8))
+        return stream
+    }
+
+    private func advisoryAlertBeforeDone(
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data? {
+        guard advisoryCount > 0 else { return nil }
+        return Data(
+            "event: pastewatch_advisory\ndata: \(advisoryCount):\(advisoryTypes.joined(separator: ","))\n\n".utf8
+        )
+    }
+
+    private func relayStream(
+        _ stream: Data,
+        mode: StreamingRedactionMode,
+        closePeerBeforeRelay: Bool,
+        alertBeforeDone: ((
+            _ streamCount: Int,
+            _ streamTypes: [String],
+            _ advisoryCount: Int,
+            _ advisoryTypes: [String]
+        ) -> Data?)? = nil
+    ) -> (
+        result: CurlHTTPClient.StreamRelayResult,
+        output: String
+    ) {
+        let pipe = Pipe()
         pipe.fileHandleForWriting.write(stream)
         pipe.fileHandleForWriting.closeFile()
 
@@ -350,11 +449,11 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let ctx = CurlHTTPClient.StreamContext(
             clientSocket: sockets[1],
             sendFlags: testSendFlags,
-            redactionMode: .perSSEEvent,
+            redactionMode: mode,
             config: PastewatchConfig.defaultConfig,
             severity: .high
         )
-        let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx)
+        let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
         let output = closePeerBeforeRelay ? "" : readAvailableString(from: sockets[0])
         return (result, output)
     }
