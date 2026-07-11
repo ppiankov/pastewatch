@@ -304,7 +304,7 @@ public struct PastewatchConfig: Codable {
     public var sharedPatternFiles: [String] // WO-124: NR-compatible generated pattern artifacts for file IO
     /// WO-147: controls how the proxy redacts streaming (SSE) responses.
     /// - per_sse_event (default): redact each SSE event's data payload before relay.
-    /// - raw_stream: skip SSE parsing; scan raw chunks for critical-only redaction.
+    /// - raw_stream: skip SSE parsing; scan raw chunks at the configured severity threshold.
     /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
     public var responseStreamingRedactionMode: StreamingRedactionMode // WO-286: enum prevents typo-to-raw fallback
 

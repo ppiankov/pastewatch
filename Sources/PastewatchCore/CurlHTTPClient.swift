@@ -913,7 +913,7 @@ struct CurlHTTPClient {
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
         guard alert.alertBeforeDone != nil else {
-            // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
+            // WO-324/WO-403: raw_stream skips SSE parsing but still honors the configured severity threshold.
             let redaction = redactRawBytes(chunk, config: alert.stream.config, severity: alert.stream.severity)
             totals.recordCritical(redaction)
             return StreamChunkRelayResult(
@@ -965,7 +965,12 @@ struct CurlHTTPClient {
     ) -> StreamChunkRelayResult {
         let redaction = redactRawBytes(data, config: alert.stream.config, severity: alert.stream.severity)
         totals.recordCritical(redaction)
-        let advisory = detectNewRawStreamAdvisories(data, state: &alertState, config: alert.stream.config)
+        let advisory = detectNewRawStreamAdvisories(
+            data,
+            state: &alertState,
+            config: alert.stream.config,
+            severity: alert.stream.severity
+        )
         var output = redaction.data
         if doneLineStart != nil,
            let doneRange = output.range(of: rawStreamDoneLine),
@@ -1006,7 +1011,12 @@ struct CurlHTTPClient {
         state.pending.removeAll(keepingCapacity: true)
         let redaction = redactRawBytes(data, config: ctx.config, severity: ctx.severity)
         totals.recordCritical(redaction)
-        let advisory = detectNewRawStreamAdvisories(data, state: &state, config: ctx.config)
+        let advisory = detectNewRawStreamAdvisories(
+            data,
+            state: &state,
+            config: ctx.config,
+            severity: ctx.severity
+        )
         var output = redaction.data
         // WO-352: no [DONE] arrived, so deliver the advisory event after the final bytes.
         if let alert = alertBeforeDone?(
@@ -1027,7 +1037,8 @@ struct CurlHTTPClient {
     private static func detectNewRawStreamAdvisories(
         _ delivered: Data,
         state: inout RawStreamAlertState,
-        config: PastewatchConfig
+        config: PastewatchConfig,
+        severity: Severity
     ) -> (count: Int, types: [String]) {
         guard !delivered.isEmpty else { return (0, []) }
         state.advisoryScanTail.append(delivered)
@@ -1048,7 +1059,7 @@ struct CurlHTTPClient {
         let text = String(bytes: state.advisoryScanTail, encoding: .utf8) ??
             String(decoding: Array(state.advisoryScanTail), as: UTF8.self)
         // swiftlint:enable optional_data_string_conversion
-        let matches = streamAdvisoryMatches(DetectionRules.scan(text, config: config))
+        let matches = streamAdvisoryMatches(scanStreamText(text, config: config), severity: severity)
         var types: [String] = []
         for match in matches {
             let lowerOffset = text[..<match.range.lowerBound].utf8.count
@@ -1121,7 +1132,11 @@ struct CurlHTTPClient {
         }
         // swiftlint:disable:next optional_data_string_conversion
         let lossyText = String(decoding: body, as: UTF8.self)
-        let matches = DetectionRules.scan(lossyText, config: config)
+        let matches = DetectionRules.scan(
+            lossyText,
+            config: config,
+            customRules: CustomRule.compileValid(config.customRules)
+        )
             .filter { $0.effectiveSeverity >= severity }
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
         guard !matches.isEmpty else {

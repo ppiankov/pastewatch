@@ -12,6 +12,9 @@ let proxyStreamIdleTimeoutSeconds: Double = 60
 /// Total-duration ceiling for non-streaming (buffered) responses (seconds).
 let proxyNonStreamTotalTimeoutSeconds: Double = 600
 
+/// WO-401: URLSession resource timeout must not preempt long progressing streams.
+let proxyURLSessionResourceTimeoutSeconds = Double(curlStreamMaxTimeSeconds)
+
 /// WO-267: while waiting on a non-streaming URLSession completion, poll shutdown
 /// state so stop() cannot wait for the full 600s ceiling if a task misses cancellation.
 let proxyNonStreamShutdownPollMilliseconds = 100
@@ -261,8 +264,13 @@ public final class ProxyServer {
         return "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
     }
 
-    private static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
+    static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
         let sessionConfig = URLSessionConfiguration.default
+        // WO-401: do not let URLSession's 60s request default preempt the
+        // proxy's explicit 600s non-streaming ceiling; resource timeout must
+        // also outlive healthy long streaming sessions.
+        sessionConfig.timeoutIntervalForRequest = proxyNonStreamTotalTimeoutSeconds
+        sessionConfig.timeoutIntervalForResource = proxyURLSessionResourceTimeoutSeconds
         #if canImport(Darwin)
         if let proxy = forwardProxy {
             let proxyHost = proxy.host ?? "127.0.0.1"
@@ -973,7 +981,7 @@ public final class ProxyServer {
 
     // MARK: - Request scanning
 
-    private struct ScanResult {
+    struct ScanResult {
         let body: String
         let redacted: Int
         let redactedTypes: [String]
@@ -985,7 +993,7 @@ public final class ProxyServer {
         let shouldBlockForwarding: Bool
     }
 
-    private func scanAndRedactBody(_ body: String) -> ScanResult {
+    func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ScanResult(body: body, redacted: 0, redactedTypes: [])
@@ -1004,13 +1012,22 @@ public final class ProxyServer {
         return ScanResult(body: resultString, redacted: redacted, redactedTypes: types)
     }
 
+    private func scanProxyText(_ text: String) -> [DetectedMatch] {
+        // WO-402: proxy body scans must honor custom rules, matching streaming scans.
+        DetectionRules.scan(
+            text,
+            config: config,
+            customRules: CustomRule.compileValid(config.customRules)
+        )
+    }
+
     func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
         guard !bodyData.isEmpty else {
             return RedactionDetectionSummary(redacted: 0, redactedTypes: [], shouldBlockForwarding: false)
         }
         // swiftlint:disable:next optional_data_string_conversion
         let lossyBody = String(decoding: bodyData, as: UTF8.self)
-        let matches = DetectionRules.scan(lossyBody, config: config)
+        let matches = scanProxyText(lossyBody)
         let filtered = matches.filter { $0.effectiveSeverity >= severity }
         return RedactionDetectionSummary(
             redacted: filtered.count,
@@ -1036,7 +1053,7 @@ public final class ProxyServer {
                 for block in content {
                     if let type = block["type"] as? String, type == "tool_result",
                        let blockContent = block["content"] as? String {
-                        let matches = DetectionRules.scan(blockContent, config: config)
+                        let matches = scanProxyText(blockContent)
                         let filtered = matches.filter { $0.effectiveSeverity >= severity }
                         if !filtered.isEmpty {
                             let obfuscated = Obfuscator.obfuscate(blockContent, matches: filtered)
@@ -1055,7 +1072,7 @@ public final class ProxyServer {
                         for nested in nestedContent {
                             if let nType = nested["type"] as? String, nType == "text",
                                let text = nested["text"] as? String {
-                                let matches = DetectionRules.scan(text, config: config)
+                                let matches = scanProxyText(text)
                                 let filtered = matches.filter { $0.effectiveSeverity >= severity }
                                 if !filtered.isEmpty {
                                     let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
@@ -1307,14 +1324,15 @@ public final class ProxyServer {
         relay.execute(task: task, session: urlSession)
 
         // WO-153: account for secrets redacted from SSE frames in the stream.
+        let streamStats = relay.snapshotStreamStats()
         recordStreamingAuditStats(StreamingAuditStats(
             path: request.url?.path ?? "/",
             bodyCount: redactionCount,
             bodyTypes: redactedTypes,
-            streamCount: relay.streamRedactionCount,
-            streamTypes: relay.streamRedactionTypes,
-            advisoryCount: relay.streamAdvisoryCount,
-            advisoryTypes: relay.streamAdvisoryTypes
+            streamCount: streamStats.redactionCount,
+            streamTypes: streamStats.redactionTypes,
+            advisoryCount: streamStats.advisoryCount,
+            advisoryTypes: streamStats.advisoryTypes
         ))
     }
 

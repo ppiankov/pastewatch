@@ -205,6 +205,21 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(result, .shutdown)
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
     }
+
+    func testURLSessionConfigurationUsesProxyTimeoutCeilings() {
+        // WO-401: Darwin URLSession's default 60s timeout must not preempt proxy ceilings.
+        let configuration = ProxyServer.makeSessionConfiguration(forwardProxy: nil)
+
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, proxyNonStreamTotalTimeoutSeconds)
+        XCTAssertGreaterThanOrEqual(
+            configuration.timeoutIntervalForResource,
+            proxyNonStreamTotalTimeoutSeconds
+        )
+        XCTAssertGreaterThanOrEqual(
+            configuration.timeoutIntervalForResource,
+            Double(curlStreamMaxTimeSeconds)
+        )
+    }
     #endif
 
     // MARK: - CurlHTTPClient TLS args (regression: existing behavior preserved)
@@ -338,6 +353,47 @@ final class ProxyTimeoutTests: XCTestCase {
         let response = readSocketString(from: sockets[0])
         XCTAssertTrue(response.hasPrefix("HTTP/1.1 504 Gateway Timeout"), response)
         XCTAssertTrue(response.contains(#""error": "Gateway Timeout""#), response)
+    }
+
+    func testSSEStreamRelayIdleTimeoutStatsSnapshotIsConsistent() {
+        // WO-400: timer-driven return reads stream stats through the relay snapshot lock.
+        StatsThenHangStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1],
+            sendFlags: 0,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high,
+            idleTimeoutSeconds: 0.05,
+            maxSessionSeconds: 1
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StatsThenHangStreamURLProtocol.self]
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 2
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: delegateQueue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "relay returns after idle timeout with stats")
+        let request = URLRequest(url: URL(string: "https://example.test/stream")!)
+        DispatchQueue.global().async {
+            relay.execute(request: request, session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        let stats = relay.snapshotStreamStats()
+        XCTAssertEqual(stats.redactionCount, 2)
+        XCTAssertEqual(stats.redactionTypes, ["Credential", "Credential"])
+        XCTAssertEqual(stats.advisoryCount, 1)
+        XCTAssertEqual(stats.advisoryTypes, ["IP"])
     }
 
     func testSSEStreamRelayOverflowKeepsIdleTimerArmed() {
@@ -798,6 +854,39 @@ private class HangingStreamURLProtocol: URLProtocol {
     }
 }
 
+private class StatsThenHangStreamURLProtocol: URLProtocol {
+    static func reset() {}
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+              ) else {
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let first = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=s3cr3t-hunter2"}}"#
+        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=another-s3cr3t"}}"#
+        let advisory = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"host 10.1.2.3"}}"#
+        client?.urlProtocol(self, didLoad: Data("data: \(first)\n\n".utf8))
+        client?.urlProtocol(self, didLoad: Data("data: \(second)\n\n".utf8))
+        client?.urlProtocol(self, didLoad: Data("data: \(advisory)\n\n".utf8))
+    }
+
+    override func stopLoading() {}
+}
+
 private class OverflowThenHangStreamURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var stopSemaphore = DispatchSemaphore(value: 0)
@@ -1071,7 +1160,7 @@ private class AdvisoryAfterCloseStreamURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: Data("data: \(first)\n\n".utf8))
         Self.firstChunkSemaphore.signal()
         _ = Self.allowSecondSemaphore.wait(timeout: .now() + 1)
-        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"operator@example.com"}}"#
+        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"10.1.2.3"}}"#
         client?.urlProtocol(self, didLoad: Data("data: \(second)\n\n".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }

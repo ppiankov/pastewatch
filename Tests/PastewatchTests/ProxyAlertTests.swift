@@ -210,6 +210,22 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(result.shouldBlockForwarding)
     }
 
+    func testNonUTF8RequestBodyHonorsCustomRules() {
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "ACME Proxy Token", pattern: #"ACME-PROXY-[A-Z]+"#, severity: "high")
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .high)
+        var body = Data([0xFF, 0xFE, 0x00])
+        body.append(Data("token ACME-PROXY-ALPHA".utf8))
+
+        let result = customServer.scanNonUTF8BodyForRedactions(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.redactedTypes, ["ACME Proxy Token"])
+        XCTAssertTrue(result.shouldBlockForwarding)
+    }
+
     func testNonUTF8RequestBodyWithoutSecretDoesNotBlockForwarding() {
         let body = Data([0xFF, 0xFE, 0x00, 0x41])
 
@@ -218,6 +234,24 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(result.redacted, 0)
         XCTAssertEqual(result.redactedTypes, [])
         XCTAssertFalse(result.shouldBlockForwarding)
+    }
+
+    func testUTF8ToolResultBodyHonorsCustomRules() {
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "ACME Proxy Token", pattern: #"ACME-PROXY-[A-Z]+"#, severity: "high")
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .high)
+        let body = """
+        {"messages":[{"role":"user","content":[{"type":"tool_result","content":"token ACME-PROXY-ALPHA"}]}]}
+        """
+
+        let result = customServer.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.redactedTypes, ["ACME Proxy Token"])
+        XCTAssertFalse(result.body.contains("ACME-PROXY-ALPHA"))
+        XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"), result.body)
     }
 
     func testBodyRedactionAuditIsDeferredForStreamingRequests() {

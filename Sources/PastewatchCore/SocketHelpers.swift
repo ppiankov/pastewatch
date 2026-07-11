@@ -66,14 +66,23 @@ struct SSEFrameRedactionResult {
     var types: [String] { redactionTypes }
 }
 
-/// WO-324: stream bytes are mutated only for deterministic critical matches.
-func streamRedactionMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
-    matches.filter { $0.effectiveSeverity == .critical }
+/// WO-399: streaming redaction honors the same configured severity threshold as buffering.
+func streamRedactionMatches(_ matches: [DetectedMatch], severity: Severity) -> [DetectedMatch] {
+    matches.filter { $0.effectiveSeverity >= severity }
 }
 
-/// WO-324: ambiguous stream matches stay byte-identical and are surfaced as advisories.
-func streamAdvisoryMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
-    matches.filter { $0.effectiveSeverity != .critical }
+/// WO-399: stream findings below the configured mutation threshold stay advisory-only.
+func streamAdvisoryMatches(_ matches: [DetectedMatch], severity: Severity) -> [DetectedMatch] {
+    matches.filter { $0.effectiveSeverity < severity }
+}
+
+/// WO-399: include configured custom rules on the streaming response path.
+func scanStreamText(_ text: String, config: PastewatchConfig) -> [DetectedMatch] {
+    DetectionRules.scan(
+        text,
+        config: config,
+        customRules: CustomRule.compileValid(config.customRules)
+    )
 }
 
 /// WO-291: raw streaming fallback redaction must not become a strict-UTF-8 bypass.
@@ -89,9 +98,9 @@ func redactRawStreamBytes(
     }
     // swiftlint:disable:next optional_data_string_conversion
     let text = String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
-    let matches = DetectionRules.scan(text, config: config)
-    let filtered = streamRedactionMatches(matches)
-    let advisories = streamAdvisoryMatches(matches)
+    let matches = scanStreamText(text, config: config)
+    let filtered = streamRedactionMatches(matches, severity: severity)
+    let advisories = streamAdvisoryMatches(matches, severity: severity)
     let advisoryTypes = advisories.map { $0.displayName }
     guard !filtered.isEmpty else {
         return SSEFrameRedactionResult(
@@ -167,9 +176,9 @@ func redactSSEFrame(
 
     for (field, value) in delta {
         guard field != "type", let text = value as? String else { continue }
-        let matches = DetectionRules.scan(text, config: config)
-        let filtered = streamRedactionMatches(matches)
-        let advisories = streamAdvisoryMatches(matches)
+        let matches = scanStreamText(text, config: config)
+        let filtered = streamRedactionMatches(matches, severity: severity)
+        let advisories = streamAdvisoryMatches(matches, severity: severity)
         advisoryCount += advisories.count
         advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
         guard !filtered.isEmpty else { continue }

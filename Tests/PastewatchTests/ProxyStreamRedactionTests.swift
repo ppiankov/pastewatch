@@ -140,7 +140,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
     }
 
-    func testAmbiguousMatchIsAdvisoryOnlyAndByteIdentical() {
+    func testHighSeverityMatchMutatesStreamBytes() {
         let email = "operator@example.com"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
         var parser = SSEFrameParser()
@@ -152,11 +152,38 @@ final class ProxyStreamRedactionTests: XCTestCase {
             config: PastewatchConfig.defaultConfig,
             severity: .high
         )
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
 
-        XCTAssertEqual(redaction.count, 0)
-        XCTAssertEqual(redaction.advisoryCount, 1)
-        XCTAssertEqual(redaction.advisoryTypes, ["Email"])
-        XCTAssertEqual(redaction.data, result.frames[0].raw)
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["Email"])
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertFalse(redacted.contains(email))
+        XCTAssertTrue(redacted.contains("<EMAIL_1>"))
+    }
+
+    func testHighCustomRuleMatchMutatesStreamBytes() {
+        let secret = "ACME-STREAM-SECRET"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"token \#(secret)"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "ACME Stream Secret", pattern: #"ACME-STREAM-[A-Z]+"#, severity: "high")
+        ]
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: config,
+            severity: .high
+        )
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["ACME Stream Secret"])
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertFalse(redacted.contains(secret))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
     }
 
     func testMediumAndLowMatchesAreAdvisoryOnlyAndByteIdentical() {
@@ -328,8 +355,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let relay = relayAdvisoryStream(closePeerBeforeRelay: false)
 
         XCTAssertEqual(relay.result.advisoryCount, 1)
-        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
-        XCTAssertTrue(relay.output.contains("operator@example.com"))
+        XCTAssertEqual(relay.result.advisoryTypes, ["IP"])
+        XCTAssertTrue(relay.output.contains("10.1.2.3"))
     }
 
     func testLinuxRelayAdvisoryStatsSkipFailedSend() {
@@ -351,7 +378,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         #endif
 
         let relay = relayStream(
-            Data("data: contact operator@example.com".utf8),
+            Data("data: contact 10.1.2.3".utf8),
             mode: .perSSEEvent,
             closePeerBeforeRelay: true
         )
@@ -369,9 +396,9 @@ final class ProxyStreamRedactionTests: XCTestCase {
         )
 
         XCTAssertEqual(relay.result.advisoryCount, 1)
-        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
+        XCTAssertEqual(relay.result.advisoryTypes, ["IP"])
         XCTAssertTrue(relay.output.contains("event: pastewatch_advisory"))
-        XCTAssertTrue(relay.output.contains("operator@example.com"))
+        XCTAssertTrue(relay.output.contains("10.1.2.3"))
         XCTAssertTrue(relay.output.contains("data: [DONE]"))
     }
 
@@ -417,31 +444,33 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testLinuxRelayRawStreamAlertForwardsPartialChunkBeforeTerminator() {
+        let ipAddress = "10.1.2.3"
         let relay = relayPartialRawStream(
-            Data(("data: contact operator@example.com " + String(repeating: "x", count: 5_000)).utf8)
+            Data(("data: contact \(ipAddress) " + String(repeating: "x", count: 5_000)).utf8)
         )
 
-        XCTAssertTrue(relay.firstOutput.contains("operator@example.com"), relay.firstOutput)
+        XCTAssertTrue(relay.firstOutput.contains(ipAddress), relay.firstOutput)
         XCTAssertEqual(relay.result?.advisoryCount, 1)
-        XCTAssertEqual(relay.result?.advisoryTypes, ["Email"])
+        XCTAssertEqual(relay.result?.advisoryTypes, ["IP"])
     }
 
     func testLinuxRelayRawStreamEOFWithoutDoneDeliversAdvisoryAlert() {
+        let ipAddress = "10.1.2.3"
         let relay = relayStream(
-            Data("data: contact operator@example.com\n\n".utf8),
+            Data("data: contact \(ipAddress)\n\n".utf8),
             mode: .rawStream,
             closePeerBeforeRelay: false,
             alertBeforeDone: advisoryAlertBeforeDone
         )
 
-        guard let bodyRange = relay.output.range(of: "operator@example.com"),
+        guard let bodyRange = relay.output.range(of: ipAddress),
               let advisoryRange = relay.output.range(of: "event: pastewatch_advisory") else {
             XCTFail(relay.output)
             return
         }
         XCTAssertLessThan(bodyRange.lowerBound, advisoryRange.lowerBound)
         XCTAssertEqual(relay.result.advisoryCount, 1)
-        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
+        XCTAssertEqual(relay.result.advisoryTypes, ["IP"])
     }
 
     func testLinuxRelayRawStreamEOFOverlapRedactsCriticalCredential() {
@@ -484,7 +513,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         #endif
 
         let relay = relayStream(
-            Data("contact operator@example.com".utf8),
+            Data("contact 10.1.2.3".utf8),
             mode: .rawStream,
             closePeerBeforeRelay: true
         )
@@ -518,17 +547,17 @@ final class ProxyStreamRedactionTests: XCTestCase {
             finished.fulfill()
         }
 
-        pipe.fileHandleForWriting.write(advisoryFrame(email: "first@example.com"))
+        pipe.fileHandleForWriting.write(advisoryFrame(text: "10.1.2.3"))
         let firstOutput = readAvailableString(from: sockets[0])
-        XCTAssertTrue(firstOutput.contains("first@example.com"), firstOutput)
+        XCTAssertTrue(firstOutput.contains("10.1.2.3"), firstOutput)
         close(sockets[0])
 
-        pipe.fileHandleForWriting.write(advisoryFrame(email: "second@example.com"))
+        pipe.fileHandleForWriting.write(advisoryFrame(text: "10.2.3.4"))
         pipe.fileHandleForWriting.closeFile()
         wait(for: [finished], timeout: 2)
 
         XCTAssertEqual(result?.advisoryCount, 1)
-        XCTAssertEqual(result?.advisoryTypes, ["Email"])
+        XCTAssertEqual(result?.advisoryTypes, ["IP"])
     }
 
     // MARK: - Helpers
@@ -557,20 +586,20 @@ final class ProxyStreamRedactionTests: XCTestCase {
         result: CurlHTTPClient.StreamRelayResult,
         output: String
     ) {
-        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact operator@example.com"}}"#
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact 10.1.2.3"}}"#
         var stream = sseFrame(eventType: "content_block_delta", data: payload)
         stream.append(sseFrame(eventType: nil, data: "[DONE]"))
         return relayStream(stream, mode: .perSSEEvent, closePeerBeforeRelay: closePeerBeforeRelay)
     }
 
-    private func rawStreamAdvisorySSE(_ frame: String = "data: contact operator@example.com\n\n") -> Data {
+    private func rawStreamAdvisorySSE(_ frame: String = "data: contact 10.1.2.3\n\n") -> Data {
         var stream = Data(frame.utf8)
         stream.append(Data("data: [DONE]\n\n".utf8))
         return stream
     }
 
-    private func advisoryFrame(email: String) -> Data {
-        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
+    private func advisoryFrame(text: String) -> Data {
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(text)"}}"#
         return sseFrame(eventType: "content_block_delta", data: payload)
     }
 

@@ -11,6 +11,14 @@ let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
+    /// WO-400: consistent connection-thread snapshot of delegate-queue stream stats.
+    struct StreamStatsSnapshot {
+        let redactionCount: Int
+        let redactionTypes: [String]
+        let advisoryCount: Int
+        let advisoryTypes: [String]
+    }
+
     typealias TLSChallengeHandler = (
         URLSession,
         URLAuthenticationChallenge,
@@ -56,12 +64,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let signalLock = NSLock()
     private var streamDoneSignaled = false
 
+    /// WO-400: protects stream stats mutated on the delegate queue and read by the connection thread.
+    private let streamStatsLock = NSLock()
     /// WO-153: count and type names of secrets redacted from SSE frames.
-    private(set) var streamRedactionCount = 0
-    private(set) var streamRedactionTypes: [String] = []
+    private var streamRedactionCountStorage = 0
+    private var streamRedactionTypesStorage: [String] = []
     /// WO-324: lower-certainty stream detections are advisory-only and do not mutate bytes.
-    private(set) var streamAdvisoryCount = 0
-    private(set) var streamAdvisoryTypes: [String] = []
+    private var streamAdvisoryCountStorage = 0
+    private var streamAdvisoryTypesStorage: [String] = []
+    var streamRedactionCount: Int { snapshotStreamStats().redactionCount }
+    var streamRedactionTypes: [String] { snapshotStreamStats().redactionTypes }
+    var streamAdvisoryCount: Int { snapshotStreamStats().advisoryCount }
+    var streamAdvisoryTypes: [String] { snapshotStreamStats().advisoryTypes }
 
     /// WO-182: when non-nil, called just before [DONE] is forwarded to the client socket.
     /// The closure returns an SSE event frame (raw bytes) to inject, or nil to skip.
@@ -115,6 +129,17 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     func execute(request: URLRequest, session: URLSession) {
         let task = session.dataTask(with: request)
         execute(task: task, session: session)
+    }
+
+    func snapshotStreamStats() -> StreamStatsSnapshot {
+        streamStatsLock.lock()
+        defer { streamStatsLock.unlock() }
+        return StreamStatsSnapshot(
+            redactionCount: streamRedactionCountStorage,
+            redactionTypes: streamRedactionTypesStorage,
+            advisoryCount: streamAdvisoryCountStorage,
+            advisoryTypes: streamAdvisoryTypesStorage
+        )
     }
 
     /// WO-314: let ProxyServer create the task under its shutdown lock, then hand
@@ -223,7 +248,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         switch redactionMode {
         case .rawStream:
-            // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
+            // WO-324/WO-403: raw_stream skips SSE parsing but still honors the configured severity threshold.
             relayRawRedactedData(data)
 
         case .perSSEEvent:
@@ -345,12 +370,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // [DONE] to close the stream and never receive it.
         guard frame.data != "[DONE]" else {
             var toSend = Data()
+            let stats = snapshotStreamStats()
             if let builder = buildAlertBeforeDone,
                let alertData = builder(
-                streamRedactionCount,
-                streamRedactionTypes,
-                streamAdvisoryCount,
-                streamAdvisoryTypes
+                stats.redactionCount,
+                stats.redactionTypes,
+                stats.advisoryCount,
+                stats.advisoryTypes
                ) {
                 toSend.append(alertData)
             }
@@ -375,13 +401,17 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     private func recordCriticalStreamScan(_ redaction: SSEFrameRedactionResult) {
-        streamRedactionCount += redaction.count
-        streamRedactionTypes.append(contentsOf: redaction.types)
+        streamStatsLock.lock()
+        streamRedactionCountStorage += redaction.count
+        streamRedactionTypesStorage.append(contentsOf: redaction.types)
+        streamStatsLock.unlock()
     }
 
     private func recordAdvisoryStreamScan(_ redaction: SSEFrameRedactionResult) {
-        streamAdvisoryCount += redaction.advisoryCount
-        streamAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
+        streamStatsLock.lock()
+        streamAdvisoryCountStorage += redaction.advisoryCount
+        streamAdvisoryTypesStorage.append(contentsOf: redaction.advisoryTypes)
+        streamStatsLock.unlock()
     }
 
     private func relayFrameData(_ data: Data) -> Bool {
@@ -593,20 +623,25 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     private func rawStreamEOFAlertIfNeeded() -> Data? {
+        let stats = snapshotStreamStats()
         guard !rawStreamSawDone,
-              streamRedactionCount > 0 || streamAdvisoryCount > 0 else {
+              stats.redactionCount > 0 || stats.advisoryCount > 0 else {
             return nil
         }
-        return buildAlertBeforeDoneFrameIfNeeded()
+        return buildAlertBeforeDoneFrameIfNeeded(stats)
     }
 
     private func buildAlertBeforeDoneFrameIfNeeded() -> Data? {
+        buildAlertBeforeDoneFrameIfNeeded(snapshotStreamStats())
+    }
+
+    private func buildAlertBeforeDoneFrameIfNeeded(_ stats: StreamStatsSnapshot) -> Data? {
         guard let builder = buildAlertBeforeDone else { return nil }
         return builder(
-            streamRedactionCount,
-            streamRedactionTypes,
-            streamAdvisoryCount,
-            streamAdvisoryTypes
+            stats.redactionCount,
+            stats.redactionTypes,
+            stats.advisoryCount,
+            stats.advisoryTypes
         )
     }
 

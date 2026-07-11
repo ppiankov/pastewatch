@@ -191,6 +191,30 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertNotNil(redaction.data.range(of: Data("<CREDENTIAL_1>".utf8)))
     }
 
+    func testCurlNonUTF8ResponseBodyHonorsCustomRules() {
+        let token = "ACME-BINARY-ALPHA"
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "ACME Binary Token", pattern: #"ACME-BINARY-[A-Z]+"#, severity: "high")
+        ]
+        var body = Data([0xFF, 0xFE])
+        body.append(Data("prefix \(token) suffix".utf8))
+        body.append(0x00)
+
+        let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: config,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["ACME Binary Token"])
+        XCTAssertEqual(redaction.data.prefix(2), Data([0xFF, 0xFE]))
+        XCTAssertEqual(redaction.data.last, 0x00)
+        XCTAssertNil(redaction.data.range(of: Data(token.utf8)))
+        XCTAssertNotNil(redaction.data.range(of: Data("<CREDENTIAL_1>".utf8)))
+    }
+
     func testCurlNonUTF8ResponseBodyWithoutCredentialIsByteIdentical() {
         let body = Data([0xFF, 0xFE, 0x00, 0x41])
 

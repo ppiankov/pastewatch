@@ -4,14 +4,16 @@ These invariants define the proxy streaming and shutdown behavior that must stay
 guarded by tests. New edge ideas outside this list should be logged as follow-up
 work unless they violate one of these invariants.
 
-1. Mutate bytes only on `.critical` matches; never infer secret status from shape alone.
-   Guard: `ProxyStreamRedactionTests.testCriticalMatchMutatesStreamBytes`.
+1. Mutate streaming bytes only for matches at or above the configured severity threshold;
+   never infer secret status from shape alone.
+   Guard: `ProxyStreamRedactionTests.testCriticalMatchMutatesStreamBytes`,
+   `ProxyStreamRedactionTests.testHighSeverityMatchMutatesStreamBytes`, and
+   `ProxyStreamRedactionTests.testHighCustomRuleMatchMutatesStreamBytes`.
 
-2. Ambiguous `.high`, `.medium`, and `.low` matches are never silently redacted and
-   never silently passed. They pass byte-identically and emit an advisory with a
+2. Matches below the configured streaming redaction threshold are never silently redacted
+   and never silently passed. They pass byte-identically and emit an advisory with a
    suggested config action.
-   Guard: `ProxyStreamRedactionTests.testAmbiguousMatchIsAdvisoryOnlyAndByteIdentical`,
-   `ProxyStreamRedactionTests.testMediumAndLowMatchesAreAdvisoryOnlyAndByteIdentical`,
+   Guard: `ProxyStreamRedactionTests.testMediumAndLowMatchesAreAdvisoryOnlyAndByteIdentical`,
    and `ProxyStreamRedactionTests.testLinuxRelayRawStreamMediumAdvisoryIsByteIdentical`.
 
 3. Client disconnect anywhere produces clean bounded teardown with no leaked file
