@@ -128,6 +128,127 @@ final class ProxyRealServerTests: XCTestCase {
         }
     }
 
+    func testAdmitConnectionAfterStopSendsHTTP503ToAcceptedSocket() throws {
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let sockets = try TCPTestSocket.socketPair()
+        defer { close(sockets.client) }
+        defer { close(sockets.server) }
+
+        proxy.stopAdmissionForTesting()
+
+        XCTAssertFalse(proxy.admitConnectionForTesting(sockets.server))
+        let response = try TCPTestSocket.readHTTPMessage(from: sockets.client, timeoutSeconds: 2)
+        let text = String(data: response, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains("HTTP/1.1 503 Service Unavailable"), TCPTestSocket.describeResponse(text))
+        XCTAssertTrue(text.contains(#""error": "Service Unavailable""#), TCPTestSocket.describeResponse(text))
+    }
+
+    func testQueuedAdmissionAfterStopSendsHTTP503WhenSlotOpens() throws {
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        var heldSlots = 0
+        for _ in 0..<proxyMaxActiveConnections {
+            XCTAssertTrue(proxy.admitConnectionForTesting())
+            heldSlots += 1
+        }
+        defer {
+            for _ in 0..<heldSlots {
+                proxy.finishAdmittedConnectionForTesting()
+            }
+        }
+
+        let sockets = try TCPTestSocket.socketPair()
+        defer { close(sockets.client) }
+        let finished = DispatchSemaphore(value: 0)
+        let admittedLock = NSLock()
+        var admitted: Bool?
+        runDetached {
+            let result = proxy.admitConnectionForTesting(sockets.server)
+            admittedLock.lock()
+            admitted = result
+            admittedLock.unlock()
+            close(sockets.server)
+            finished.signal()
+        }
+        eventually(timeout: 1) {
+            proxy.connectionAdmissionStats.queued == 1
+        }
+
+        proxy.stopAdmissionForTesting()
+        proxy.finishAdmittedConnectionForTesting()
+        heldSlots -= 1
+
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        admittedLock.lock()
+        let admittedResult = admitted
+        admittedLock.unlock()
+        XCTAssertEqual(admittedResult, false)
+        let response = try TCPTestSocket.readHTTPMessage(from: sockets.client, timeoutSeconds: 2)
+        let text = String(data: response, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains("HTTP/1.1 503 Service Unavailable"), TCPTestSocket.describeResponse(text))
+        XCTAssertTrue(text.contains(#""error": "Service Unavailable""#), TCPTestSocket.describeResponse(text))
+    }
+
+    func testQueuedAdmissionAfterStopSendsHTTP503WhenQueueTimeoutExpires() throws {
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        var heldSlots = 0
+        for _ in 0..<proxyMaxActiveConnections {
+            XCTAssertTrue(proxy.admitConnectionForTesting())
+            heldSlots += 1
+        }
+        defer {
+            for _ in 0..<heldSlots {
+                proxy.finishAdmittedConnectionForTesting()
+            }
+        }
+
+        let sockets = try TCPTestSocket.socketPair()
+        defer { close(sockets.client) }
+        let finished = DispatchSemaphore(value: 0)
+        let admittedLock = NSLock()
+        var admitted: Bool?
+        runDetached {
+            let result = proxy.admitConnectionForTesting(sockets.server)
+            admittedLock.lock()
+            admitted = result
+            admittedLock.unlock()
+            close(sockets.server)
+            finished.signal()
+        }
+        eventually(timeout: 1) {
+            proxy.connectionAdmissionStats.queued == 1
+        }
+
+        proxy.stopAdmissionForTesting()
+
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        admittedLock.lock()
+        let admittedResult = admitted
+        admittedLock.unlock()
+        XCTAssertEqual(admittedResult, false)
+        let response = try TCPTestSocket.readHTTPMessage(from: sockets.client, timeoutSeconds: 2)
+        let text = String(data: response, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains("HTTP/1.1 503 Service Unavailable"), TCPTestSocket.describeResponse(text))
+        XCTAssertTrue(text.contains(#""error": "Service Unavailable""#), TCPTestSocket.describeResponse(text))
+    }
+
     private func eventually(
         timeout: TimeInterval,
         file: StaticString = #filePath,
@@ -346,6 +467,13 @@ private enum TCPTestSocket {
                 connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+    }
+
+    static func socketPair() throws -> (client: Int32, server: Int32) {
+        var sockets = [Int32](repeating: 0, count: 2)
+        let result = socketpair(AF_UNIX, testSocketStreamType, 0, &sockets)
+        guard result == 0 else { throw ProxyHarnessError.systemError("socketpair") }
+        return (sockets[0], sockets[1])
     }
 
     static func roundTrip(port: UInt16, request: String, timeoutSeconds: Int = 3) throws -> String {

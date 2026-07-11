@@ -240,6 +240,32 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertEqual(hostMatches.count, 0)
     }
 
+    func testIgnoresGoMethodChainsAsHostnames() {
+        // WO-390: Go field/method chains are dotted code identifiers, not FQDNs.
+        let methodChains = [
+            "node.HostStartedAt.IsZero",
+            "envelope.Topology.Band",
+            "r.Wo.ID",
+            "ask.Envelope.Delivery",
+            "p.CreatedAt.Format",
+        ]
+
+        for content in methodChains {
+            let matches = DetectionRules.scan(content, config: config)
+            let hostMatches = matches.filter { $0.type == .hostname }
+            XCTAssertEqual(hostMatches.count, 0, "Should not detect Go method chain as hostname: \(content)")
+        }
+    }
+
+    func testStillDetectsServiceHostnames() {
+        let content = "Connect to api.internal.corp and myservice.default.svc.cluster.local"
+        let matches = DetectionRules.scan(content, config: config)
+
+        let values = Set(matches.filter { $0.type == .hostname }.map(\.value))
+        XCTAssertTrue(values.contains("api.internal.corp"))
+        XCTAssertTrue(values.contains("myservice.default.svc.cluster.local"))
+    }
+
     // MARK: - Credential Detection
 
     func testDetectsPasswordKeyValue() {
@@ -350,6 +376,21 @@ final class DetectionRulesTests: XCTestCase {
             let matches = DetectionRules.scan(input, config: config)
             let credMatches = matches.filter { $0.type == .credential }
             XCTAssertEqual(credMatches.count, 0, "Should not detect env lookup: \(input)")
+        }
+    }
+
+    func testIgnoresGoStructFieldReferencesAsCredentials() {
+        // WO-390: exported Go struct fields with code-reference RHS values are not literals.
+        let goFields = [
+            "Token: makeToken(),",
+            "Secret: computeSecret(),",
+            "Credentials: creds,",
+        ]
+
+        for input in goFields {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect Go field reference: \(input)")
         }
     }
 

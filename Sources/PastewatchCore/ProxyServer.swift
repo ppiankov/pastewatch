@@ -450,9 +450,17 @@ public final class ProxyServer {
     }
 
     private func admitConnection(_ clientSocket: Int32) -> Bool {
-        guard running else { return false }
+        guard running else {
+            // WO-392/WO-393: an accepted socket that arrives during shutdown still
+            // gets an HTTP status instead of a bare TCP close.
+            sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
+            return false
+        }
         if admissionSlots.wait(timeout: .now()) == .success {
             guard running else {
+                // WO-392: send before releasing the slot so the rejected socket is
+                // accounted for before another queued connection can be admitted.
+                sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
                 admissionSlots.signal()
                 return false
             }
@@ -466,27 +474,40 @@ public final class ProxyServer {
         guard admissionSlots.wait(timeout: deadline) == .success else {
             if running {
                 recordRejectedConnection()
-                // WO-335: this send runs on the accept loop, before handler socket setup.
-                var sendTimeout = timeval(tv_sec: proxyRejectedSocketSendTimeoutSeconds, tv_usec: 0)
-                if setsockopt(
-                    clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-                    &sendTimeout, socklen_t(MemoryLayout<timeval>.size)
-                ) != 0 {
-                    FileHandle.standardError.write(Data(
-                        "[pastewatch-proxy] rejected socket SO_SNDTIMEO failed: errno \(errno)\n".utf8
-                    ))
-                }
-                sendError(to: clientSocket, status: 503, message: "Proxy admission timeout")
             }
+            // WO-392: a queued socket may observe stop() before a slot opens; it
+            // still gets an HTTP response instead of a bare TCP close.
+            sendAdmissionRejection(
+                to: clientSocket,
+                message: running ? "Proxy admission timeout" : "Service Unavailable"
+            )
             return false
         }
 
         guard running else {
+            // WO-392: queued sockets that win a slot after stop() should receive a
+            // normal shutdown response, not a reset from the accept loop close().
+            sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
             admissionSlots.signal()
             return false
         }
         recordConnectionStarted()
         return true
+    }
+
+    private func sendAdmissionRejection(to clientSocket: Int32, message: String) {
+        guard clientSocket >= 0 else { return }
+        // WO-335: this send runs on the accept loop, before handler socket setup.
+        var sendTimeout = timeval(tv_sec: proxyRejectedSocketSendTimeoutSeconds, tv_usec: 0)
+        if setsockopt(
+            clientSocket, SOL_SOCKET, SO_SNDTIMEO,
+            &sendTimeout, socklen_t(MemoryLayout<timeval>.size)
+        ) != 0 {
+            FileHandle.standardError.write(Data(
+                "[pastewatch-proxy] rejected socket SO_SNDTIMEO failed: errno \(errno)\n".utf8
+            ))
+        }
+        sendError(to: clientSocket, status: 503, message: message)
     }
 
     private func recordConnectionStarted() {
@@ -510,6 +531,14 @@ public final class ProxyServer {
         // WO-347: mirror the handler defer path for tests that claim slots directly.
         recordConnectionFinished()
         admissionSlots.signal()
+    }
+
+    func stopAdmissionForTesting() {
+        // WO-392/WO-393: let tests deterministically exercise sockets accepted
+        // after shutdown begins without racing the real accept-loop wakeup.
+        runningLock.lock()
+        _running = false
+        runningLock.unlock()
     }
 
     private func recordQueuedConnection(delta: Int) {
@@ -536,6 +565,10 @@ public final class ProxyServer {
         serverSocket = -1
         runningLock.unlock()
         if fdToClose >= 0 {
+            // WO-393: keep the WO-330 wake-before-close ordering because Linux CI
+            // does not reliably unblock accept() on cross-thread close alone. Any
+            // real client accepted in this small shutdown window is rejected by
+            // admitConnection() with a bounded HTTP 503 instead of a bare close.
             wakeAcceptLoop(port: port)
             close(fdToClose)
         }

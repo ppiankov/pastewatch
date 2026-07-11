@@ -1,9 +1,8 @@
 # Proxy Invariants
 
-PR #25 is complete when these invariants are guarded by green tests. A review
-finding is a merge blocker only if it violates one of these invariants; new edge
-ideas outside this list should be logged as future work, not used to keep the PR
-open.
+These invariants define the proxy streaming and shutdown behavior that must stay
+guarded by tests. New edge ideas outside this list should be logged as follow-up
+work unless they violate one of these invariants.
 
 1. Mutate bytes only on `.critical` matches; never infer secret status from shape alone.
    Guard: `ProxyStreamRedactionTests.testCriticalMatchMutatesStreamBytes`.
@@ -28,7 +27,9 @@ open.
    Guard: `ProxyTimeoutTests.testCurlCancelActiveProcessesTerminatesRegisteredProcess`.
 
 5. Partial sends and saturated admission never silently truncate client output.
-   Guard: `ProxyRealServerTests.testAdmissionCapRejectsFifthConcurrentConnection`.
+   Guard: `ProxyRealServerTests.testAdmissionCapRejectsFifthConcurrentConnection`,
+   `ProxyRealServerTests.testAdmitConnectionAfterStopSendsHTTP503ToAcceptedSocket`,
+   and `ProxyRealServerTests.testQueuedAdmissionAfterStopSendsHTTP503WhenSlotOpens`.
 
 6. Idle or hung upstream work is closed within the configured deadline.
    Guard: `ProxyTimeoutTests.testSSEStreamRelayHardCeilingAfterHeadersSendsHTTP504`,
