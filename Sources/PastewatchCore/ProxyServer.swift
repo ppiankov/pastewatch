@@ -1656,7 +1656,7 @@ public final class ProxyServer {
 
     // MARK: - Audit log
 
-    private var lastRedactionLogSignature = "" // WO-358: redaction dedup is independent.
+    private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
     private var lastAdvisoryLogSignature = "" // WO-358: advisory dedup is independent.
 
     private enum RedactionLogSource: String {
@@ -1691,8 +1691,8 @@ public final class ProxyServer {
         // WO-378: request and buffered-response redactions can share path/count/type values.
         let signature = "\(source.rawValue):\(path):\(count):\(breakdown)"
         statsLock.lock()
-        let isRepeat = signature == lastRedactionLogSignature
-        lastRedactionLogSignature = signature
+        let isRepeat = signature == lastRedactionLogSignatures[source]
+        lastRedactionLogSignatures[source] = signature
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())

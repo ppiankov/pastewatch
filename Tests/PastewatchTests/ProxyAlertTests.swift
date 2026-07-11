@@ -454,6 +454,11 @@ final class ProxyAlertTests: XCTestCase {
             count: 1,
             types: ["Credential"]
         )
+        auditServer.recordRejectedStreamingBodyRedactionIfNeeded(
+            path: "/v1/messages",
+            redactionCount: 1,
+            redactedTypes: ["Credential"]
+        )
         auditServer.recordBufferedResponseRedactionAuditForTesting(
             path: "/v1/messages",
             count: 1,
