@@ -122,6 +122,35 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(CurlHTTPClient.executeError(forTerminationStatus: 7), .failure)
     }
 
+    func testCurlNonStreamingCollectionDrainsLargeProcessOutputBeforeWait() throws {
+        // WO-396: the reader must drain stdout while the process is still running.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c",
+            "yes a | head -c 262144; printf '\\n__HTTP_STATUS__200'; printf 'HTTP/1.1 200 OK\\r\\n\\r\\n' >&2"
+        ]
+        let bodyPipe = Pipe()
+        let headerPipe = Pipe()
+        process.standardOutput = bodyPipe
+        process.standardError = headerPipe
+
+        try process.run()
+        let started = Date()
+        let output = CurlHTTPClient.collectNonStreamingProcessOutput(
+            process: process,
+            bodyPipe: bodyPipe,
+            headerPipe: headerPipe
+        )
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
+        let parsed = CurlHTTPClient.parseNonStreamingOutput(output.body)
+        XCTAssertEqual(parsed?.statusCode, 200)
+        XCTAssertEqual(parsed?.body.count, 262_144)
+        XCTAssertEqual(String(data: output.headers, encoding: .utf8), "HTTP/1.1 200 OK\r\n\r\n")
+    }
+
     func testRawStreamAdvisoryTrimSkipsUTF8ContinuationByte() {
         // WO-387: when the sliding window trim lands inside "é", start after the sequence.
         let bytes = Data([0x61, 0xC3, 0xA9, 0x62])
@@ -129,6 +158,17 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 2), 3)
         XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 1), 1)
         XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 3), 3)
+        XCTAssertEqual(
+            CurlHTTPClient.utf8AlignedTrimOffset(in: Data([0x61, 0xC3, 0xA9]), minimumOffset: 2),
+            3
+        )
+    }
+
+    func testRawStreamAdvisoryTrimDoesNotEraseAllContinuationTail() {
+        // WO-397: pathological continuation-byte tails must not advance to data.count.
+        let bytes = Data(repeating: 0x80, count: 4_097)
+
+        XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 1), 1)
     }
 
     func testCurlNonUTF8ResponseBodyRedactsASCIICredentialBytePreserving() {

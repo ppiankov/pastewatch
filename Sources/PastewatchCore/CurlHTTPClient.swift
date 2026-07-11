@@ -28,6 +28,7 @@ struct CurlHTTPClient {
     private static var activeProcesses: [ObjectIdentifier: Process] = [:]
     private static let utf8ContinuationByteMask: UInt8 = 0xC0
     private static let utf8ContinuationBytePrefix: UInt8 = 0x80
+    private static let maxUTF8ContinuationBytes = 3
 
     enum ExecuteError: Error, Equatable {
         case timeout // WO-386: curl exit 28 maps to HTTP 504, not generic 502.
@@ -184,14 +185,20 @@ struct CurlHTTPClient {
             return response
         }
 
-        process.waitUntilExit()
+        // WO-396: drain stdout/stderr while curl is running so large buffered
+        // responses cannot fill the OS pipe and deadlock waitUntilExit().
+        let collectedOutput = collectNonStreamingProcessOutput(
+            process: process,
+            bodyPipe: bodyPipe,
+            headerPipe: headerPipe
+        )
 
         guard process.terminationStatus == 0 else {
             throw executeError(forTerminationStatus: process.terminationStatus)
         }
 
-        let rawOutput = bodyPipe.fileHandleForReading.readDataToEndOfFile()
-        let headerData = headerPipe.fileHandleForReading.readDataToEndOfFile()
+        let rawOutput = collectedOutput.body
+        let headerData = collectedOutput.headers
 
         // WO-313: parse the curl status trailer at the byte level so a binary
         // upstream body is forwarded unchanged instead of failing the whole request.
@@ -233,6 +240,49 @@ struct CurlHTTPClient {
 
     static func executeError(forTerminationStatus status: Int32) -> ExecuteError {
         status == curlOperationTimedOutExitCode ? .timeout : .failure
+    }
+
+    struct CollectedProcessOutput {
+        let body: Data
+        let headers: Data
+    }
+
+    static func collectNonStreamingProcessOutput(
+        process: Process,
+        bodyPipe: Pipe,
+        headerPipe: Pipe
+    ) -> CollectedProcessOutput {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var bodyData = Data()
+        var headerData = Data()
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let data = bodyPipe.fileHandleForReading.readDataToEndOfFile()
+            lock.lock()
+            bodyData = data
+            lock.unlock()
+            group.leave()
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let data = headerPipe.fileHandleForReading.readDataToEndOfFile()
+            lock.lock()
+            headerData = data
+            lock.unlock()
+            group.leave()
+        }
+
+        bodyPipe.fileHandleForWriting.closeFile()
+        headerPipe.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+        group.wait()
+
+        lock.lock()
+        defer { lock.unlock() }
+        return CollectedProcessOutput(body: bodyData, headers: headerData)
     }
 
     /// Relay a streaming (SSE) curl response incrementally to the client socket.
@@ -374,16 +424,52 @@ struct CurlHTTPClient {
 
     static func utf8AlignedTrimOffset(in data: Data, minimumOffset: Int) -> Int {
         // WO-387: a sliding advisory scan window must not start on a UTF-8 continuation byte.
-        var offset = min(max(0, minimumOffset), data.count)
-        while offset < data.count {
-            let index = data.index(data.startIndex, offsetBy: offset)
-            let byte = data[index]
-            guard (byte & utf8ContinuationByteMask) == utf8ContinuationBytePrefix else {
+        // WO-397: bound the scan to the maximum continuation span in a valid UTF-8 scalar.
+        let rawOffset = min(max(0, minimumOffset), data.count)
+        guard rawOffset < data.count,
+              isUTF8ContinuationByte(data[data.index(data.startIndex, offsetBy: rawOffset)]) else {
+            return rawOffset
+        }
+        return utf8ScalarEndOffset(containingContinuationAt: rawOffset, in: data) ?? rawOffset
+    }
+
+    private static func isUTF8ContinuationByte(_ byte: UInt8) -> Bool {
+        (byte & utf8ContinuationByteMask) == utf8ContinuationBytePrefix
+    }
+
+    private static func utf8ScalarEndOffset(containingContinuationAt offset: Int, in data: Data) -> Int? {
+        var leadOffset = offset
+        var bytesWalked = 0
+        while leadOffset > 0 && bytesWalked < maxUTF8ContinuationBytes {
+            leadOffset -= 1
+            bytesWalked += 1
+            let candidate = data[data.index(data.startIndex, offsetBy: leadOffset)]
+            if !isUTF8ContinuationByte(candidate) {
                 break
             }
-            offset += 1
         }
-        return offset
+
+        let lead = data[data.index(data.startIndex, offsetBy: leadOffset)]
+        guard !isUTF8ContinuationByte(lead),
+              let scalarLength = utf8ScalarLength(forLeadByte: lead),
+              offset > leadOffset,
+              offset < leadOffset + scalarLength else {
+            return nil
+        }
+        return min(leadOffset + scalarLength, data.count)
+    }
+
+    private static func utf8ScalarLength(forLeadByte byte: UInt8) -> Int? {
+        switch byte {
+        case 0xC2...0xDF:
+            return 2
+        case 0xE0...0xEF:
+            return 3
+        case 0xF0...0xF4:
+            return 4
+        default:
+            return nil
+        }
     }
 
     static func cancelActiveProcesses() {
@@ -426,7 +512,7 @@ struct CurlHTTPClient {
 
     /// WO-196: alertBeforeDone passed directly rather than via StreamContext to avoid
     /// silent nil-default divergence when StreamContext is constructed without it.
-    private static func relayStreamingResponse(
+    static func relayStreamingResponse(
         process: Process,
         bodyPipe: Pipe,
         headerPipe: Pipe,
@@ -436,7 +522,8 @@ struct CurlHTTPClient {
             _ streamTypes: [String],
             _ advisoryCount: Int,
             _ advisoryTypes: [String]
-        ) -> Data?)? = nil
+        ) -> Data?)? = nil,
+        headerTimeout: DispatchTimeInterval = .seconds(curlHeaderTimeoutSeconds)
     ) -> Response? {
         // WO-156: read headers incrementally until we see the blank line that marks
         // end-of-headers, then signal headerGroup immediately without waiting for curl to exit.
@@ -495,7 +582,8 @@ struct CurlHTTPClient {
         // thread indefinitely against a server that accepts TCP but stalls before sending headers.
         // WO-346: header arrival and post-header idle-data are separate timeout
         // concerns; keep this deadline independently tunable from --speed-time.
-        let headerDeadline = DispatchTime.now() + .seconds(curlHeaderTimeoutSeconds)
+        // WO-370: timeout interval is injectable for focused Linux relay tests.
+        let headerDeadline = DispatchTime.now() + headerTimeout
         if headerGroup.wait(timeout: headerDeadline) == .timedOut {
             process.terminate()
             // WO-208: wait after terminate so the kernel reaps the child and no zombie lingers.

@@ -34,4 +34,8 @@ work unless they violate one of these invariants.
 6. Idle or hung upstream work is closed within the configured deadline.
    Guard: `ProxyTimeoutTests.testSSEStreamRelayHardCeilingAfterHeadersSendsHTTP504`,
    `ProxyTimeoutTests.testSSEStreamRelayIdleTimeoutAfterHeadersSendsHTTP504`, and
-   `ProxyHTTPRequestReadTests.testCurlResponseHeaderReaderRejectsEOFWithPartialHeaders`.
+   `ProxyTimeoutTests.testCurlStreamingHeaderTimeoutTerminatesProcess`.
+   Malformed or truncated response headers must fail closed;
+   Guard: `ProxyHTTPRequestReadTests.testCurlResponseHeaderReaderRejectsEOFWithPartialHeaders`.
+   Linux curl subprocess output must also be drained while the child is running;
+   Guard: `ProxyHTTPRequestReadTests.testCurlNonStreamingCollectionDrainsLargeProcessOutputBeforeWait`.

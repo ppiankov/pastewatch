@@ -37,6 +37,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
+    /// WO-398: raw_stream EOF without `[DONE]` still needs a final advisory.
+    private var rawStreamSawDone = false
     /// WO-179: guards didWriteHeaders across execute() error paths and the delegate queue.
     /// WO-194: renamed from headersLock; also protects timerDidFire (checked together with
     /// didWriteHeaders in didCompleteWithError — their coupling is intentional).
@@ -288,6 +290,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 output.append(alert)
             }
             guard frame.data != "[DONE]" else {
+                rawStreamSawDone = true
                 // WO-389: [DONE] is a protocol sentinel, not payload; exclude it
                 // from scan counts used by the advisory alert built immediately above.
                 output.append(frame.raw)
@@ -356,13 +359,27 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
         // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
         let redaction = redactSSEFrame(frame, config: config, severity: severity)
-        recordStreamScan(redaction)
-        return relayFrameData(redaction.data)
+        let delivered = relayFrameData(redaction.data)
+        // WO-372: critical redactions stay attempted-detection scoped, but
+        // advisory-only matches are in-band guidance and must be delivery-scoped.
+        recordCriticalStreamScan(redaction)
+        if delivered {
+            recordAdvisoryStreamScan(redaction)
+        }
+        return delivered
     }
 
     private func recordStreamScan(_ redaction: SSEFrameRedactionResult) {
+        recordCriticalStreamScan(redaction)
+        recordAdvisoryStreamScan(redaction)
+    }
+
+    private func recordCriticalStreamScan(_ redaction: SSEFrameRedactionResult) {
         streamRedactionCount += redaction.count
         streamRedactionTypes.append(contentsOf: redaction.types)
+    }
+
+    private func recordAdvisoryStreamScan(_ redaction: SSEFrameRedactionResult) {
         streamAdvisoryCount += redaction.advisoryCount
         streamAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
     }
@@ -441,7 +458,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 if !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
                     recordStreamScan(redaction)
-                    writeToSocket(insertingAlertBeforeDoneIfNeeded(redaction.data))
+                    writeToSocket(insertingAlertBeforeDoneOrEOFIfNeeded(redaction.data))
+                    socketWriteLock.lock()
+                    epipeAfterFlush = clientEpipe
+                    socketWriteLock.unlock()
+                } else if let alert = rawStreamEOFAlertIfNeeded() {
+                    // WO-398: all frames may already be flushed when an upstream
+                    // closes without `[DONE]`; append the advisory as the final event.
+                    writeToSocket(alert)
                     socketWriteLock.lock()
                     epipeAfterFlush = clientEpipe
                     socketWriteLock.unlock()
@@ -558,6 +582,22 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     private func insertingAlertBeforeDoneIfNeeded(_ data: Data) -> Data {
         insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(), into: data)
+    }
+
+    private func insertingAlertBeforeDoneOrEOFIfNeeded(_ data: Data) -> Data {
+        let output = insertingAlertBeforeDoneIfNeeded(data)
+        guard output == data, let alert = rawStreamEOFAlertIfNeeded() else { return output }
+        var appended = output
+        appended.append(alert)
+        return appended
+    }
+
+    private func rawStreamEOFAlertIfNeeded() -> Data? {
+        guard !rawStreamSawDone,
+              streamRedactionCount > 0 || streamAdvisoryCount > 0 else {
+            return nil
+        }
+        return buildAlertBeforeDoneFrameIfNeeded()
     }
 
     private func buildAlertBeforeDoneFrameIfNeeded() -> Data? {
