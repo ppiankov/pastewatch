@@ -1194,6 +1194,16 @@ public final class ProxyServer {
         }
     }
 
+    private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
+        // WO-314: serialize the running check with stop()'s _running=false write so
+        // task creation cannot happen after invalidateAndCancel() has been reached.
+        runningLock.lock()
+        defer { runningLock.unlock() }
+        guard _running else { return nil }
+        return urlSession.dataTask(with: request)
+    }
+    #endif
+
     func recordRejectedStreamingBodyRedactionIfNeeded(
         path: String,
         redactionCount: Int,
@@ -1206,16 +1216,6 @@ public final class ProxyServer {
         recordForwardedBodyRedactionStats(redactionCount: redactionCount)
         logRedaction(path: path, count: redactionCount, types: redactedTypes)
     }
-
-    private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
-        // WO-314: serialize the running check with stop()'s _running=false write so
-        // task creation cannot happen after invalidateAndCancel() has been reached.
-        runningLock.lock()
-        defer { runningLock.unlock() }
-        guard _running else { return nil }
-        return urlSession.dataTask(with: request)
-    }
-    #endif
 
     // MARK: - Raw socket I/O
 
