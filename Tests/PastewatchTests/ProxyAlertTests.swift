@@ -287,6 +287,31 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(streamingServer.stats.secretsRedacted, 1)
     }
 
+    func testRejectedStreamingBodyRedactionLogsAuditAndStats() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-stream-reject-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let streamingServer = ProxyServer(port: 0, auditLogPath: path)
+
+        streamingServer.recordInitialRequestStats(
+            redactionCount: 1,
+            shouldBlockNonUTF8Forwarding: false,
+            countForwardedRedaction: false
+        )
+        streamingServer.recordRejectedStreamingBodyRedactionIfNeeded(
+            path: "/v1/messages",
+            redactionCount: 1,
+            redactedTypes: ["Credential"]
+        )
+        streamingServer.drainAuditLogForTesting()
+
+        XCTAssertEqual(streamingServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(streamingServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(streamingServer.stats.secretsRedacted, 1)
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY REDACTED 1 secret(s) in /v1/messages"))
+        XCTAssertTrue(log.contains("Credential x1"))
+    }
+
     func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
         var bufferConfig = PastewatchConfig.defaultConfig
         bufferConfig.responseStreamingRedactionMode = .buffer

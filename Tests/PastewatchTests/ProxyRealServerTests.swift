@@ -109,6 +109,24 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(heldResponses.allSatisfy { $0.contains("HTTP/1.1 200 OK") })
     }
 
+    func testAdmitConnectionIncrementsActiveBeforeReturning() throws {
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        for expectedActive in 1...proxyMaxActiveConnections {
+            XCTAssertTrue(proxy.admitConnectionForTesting())
+            XCTAssertEqual(proxy.connectionAdmissionStats.active, expectedActive)
+        }
+
+        for expectedActive in stride(from: proxyMaxActiveConnections - 1, through: 0, by: -1) {
+            proxy.finishAdmittedConnectionForTesting()
+            XCTAssertEqual(proxy.connectionAdmissionStats.active, expectedActive)
+        }
+    }
+
     private func eventually(
         timeout: TimeInterval,
         file: StaticString = #filePath,

@@ -1,6 +1,12 @@
 import XCTest
 @testable import PastewatchCore
 
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
 /// WO-147: Verifies per-SSE-event redaction behavior and responseStreamingRedactionMode config.
 final class ProxyStreamRedactionTests: XCTestCase {
 
@@ -276,6 +282,26 @@ final class ProxyStreamRedactionTests: XCTestCase {
                        "At least one output path should fire")
     }
 
+    func testLinuxRelayAdvisoryStatsCountAfterSuccessfulSend() {
+        let relay = relayAdvisoryStream(closePeerBeforeRelay: false)
+
+        XCTAssertEqual(relay.result.advisoryCount, 1)
+        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
+        XCTAssertTrue(relay.output.contains("operator@example.com"))
+    }
+
+    func testLinuxRelayAdvisoryStatsSkipFailedSend() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        let relay = relayAdvisoryStream(closePeerBeforeRelay: true)
+
+        XCTAssertEqual(relay.result.advisoryCount, 0)
+        XCTAssertTrue(relay.output.isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func sseFrame(eventType: String?, data: String) -> Data {
@@ -297,4 +323,59 @@ final class ProxyStreamRedactionTests: XCTestCase {
             severity: .high
         )
     }
+
+    private func relayAdvisoryStream(closePeerBeforeRelay: Bool) -> (
+        result: CurlHTTPClient.StreamRelayResult,
+        output: String
+    ) {
+        let pipe = Pipe()
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact operator@example.com"}}"#
+        var stream = sseFrame(eventType: "content_block_delta", data: payload)
+        stream.append(sseFrame(eventType: nil, data: "[DONE]"))
+        pipe.fileHandleForWriting.write(stream)
+        pipe.fileHandleForWriting.closeFile()
+
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, testSocketStreamType, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+        defer {
+            if !closePeerBeforeRelay {
+                close(sockets[0])
+            }
+        }
+        if closePeerBeforeRelay {
+            close(sockets[0])
+        }
+
+        let ctx = CurlHTTPClient.StreamContext(
+            clientSocket: sockets[1],
+            sendFlags: testSendFlags,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx)
+        let output = closePeerBeforeRelay ? "" : readAvailableString(from: sockets[0])
+        return (result, output)
+    }
+
+    private func readAvailableString(from socket: Int32) -> String {
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        XCTAssertEqual(
+            setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)),
+            0
+        )
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let count = recv(socket, &buffer, buffer.count, 0)
+        guard count > 0 else { return "" }
+        return String(bytes: buffer[..<count], encoding: .utf8) ?? ""
+    }
 }
+
+#if canImport(Darwin)
+private let testSocketStreamType = SOCK_STREAM
+private let testSendFlags: Int32 = 0
+#else
+private let testSocketStreamType = Int32(SOCK_STREAM.rawValue)
+private let testSendFlags: Int32 = Int32(MSG_NOSIGNAL)
+#endif

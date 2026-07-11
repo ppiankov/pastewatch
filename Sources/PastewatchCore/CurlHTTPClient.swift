@@ -66,8 +66,8 @@ struct CurlHTTPClient {
     /// Returns nil if curl is not available or the process fails.
     ///
     /// For non-streaming responses: uses a large total timeout ceiling.
-    /// For streaming responses: uses idle-based (--speed-time/--speed-limit) timeout
-    /// so long-but-progressing streams are not killed by a fixed total cap.
+    /// For streaming responses: uses an idle timeout plus a larger hard ceiling
+    /// so slow-drip streams cannot run forever.
     static func execute(
         method: String,
         url: URL,
@@ -182,11 +182,15 @@ struct CurlHTTPClient {
 
     /// Relay a streaming (SSE) curl response incrementally to the client socket.
     /// Reads chunks from the body pipe as curl writes them, forwarding each immediately.
-    private static func buildBaseArgs(method: String, url: URL, streaming: Bool) -> [String] {
+    static func buildBaseArgs(method: String, url: URL, streaming: Bool) -> [String] {
         var args: [String] = ["-s", "-S", "-X", method, "-D", "/dev/stderr"]
         // Idle floor: fail only when no bytes arrive for the speed-time window.
         args += ["--speed-limit", String(curlMinSpeedBytesPerSecond), "--speed-time", String(curlSpeedTimeSeconds)]
-        if !streaming {
+        if streaming {
+            // WO-343: slow-drip streams can satisfy --speed-time forever; keep a
+            // separate total-session ceiling for Linux curl streaming.
+            args += ["--max-time", String(curlStreamMaxTimeSeconds)]
+        } else {
             // Non-streaming: add a large total ceiling as a backstop and a status marker for parsing.
             args += ["--max-time", String(curlMaxTimeSeconds)]
             // WO-157: only append the status marker for non-streaming paths. The streaming relay
@@ -238,7 +242,7 @@ struct CurlHTTPClient {
     }
 
     /// WO-336: named Linux relay result carries critical and advisory stream totals.
-    private struct StreamRelayResult {
+    struct StreamRelayResult {
         let redactionCount: Int
         let redactionTypes: [String]
         let advisoryCount: Int
@@ -354,9 +358,9 @@ struct CurlHTTPClient {
         // WO-204: --speed-limit/--speed-time activate only once data flows; they do not fire
         // during TCP-connected-but-no-headers phase, so headerGroup.wait() can block the proxy
         // thread indefinitely against a server that accepts TCP but stalls before sending headers.
-        // Use an explicit deadline equal to curlSpeedTimeSeconds (the same idle budget curl uses
-        // once data starts); terminate curl and return nil on timeout.
-        let headerDeadline = DispatchTime.now() + .seconds(curlSpeedTimeSeconds)
+        // WO-346: header arrival and post-header idle-data are separate timeout
+        // concerns; keep this deadline independently tunable from --speed-time.
+        let headerDeadline = DispatchTime.now() + .seconds(curlHeaderTimeoutSeconds)
         if headerGroup.wait(timeout: headerDeadline) == .timedOut {
             process.terminate()
             // WO-208: wait after terminate so the kernel reaps the child and no zombie lingers.
@@ -456,7 +460,7 @@ struct CurlHTTPClient {
     /// Returns accumulated redaction stats (count, type names) for audit logging.
     /// WO-182/WO-192: alertBeforeDone closure is evaluated at [DONE] time with accumulated stream
     /// counts so stream-only secrets also produce an alert. Nil = no alert injection.
-    private static func relayBodyChunks(
+    static func relayBodyChunks(
         from bodyPipe: Pipe,
         ctx: StreamContext,
         alertBeforeDone: ((
@@ -504,6 +508,8 @@ struct CurlHTTPClient {
                     var assembled = Data()
                     var pendingCount = 0
                     var pendingTypes: [String] = []
+                    var pendingAdvisoryCount = 0
+                    var pendingAdvisoryTypes: [String] = []
                     for frame in result.frames {
                         // WO-182/WO-192: evaluate alert closure at [DONE] time with live stream
                         // counts so stream-only secrets (body-clean request) also trigger alert.
@@ -516,8 +522,8 @@ struct CurlHTTPClient {
                            let alert = builder(
                             totals.redactionCount + pendingCount,
                             totals.redactionTypes + pendingTypes,
-                            totals.advisoryCount,
-                            totals.advisoryTypes
+                            totals.advisoryCount + pendingAdvisoryCount,
+                            totals.advisoryTypes + pendingAdvisoryTypes
                            ) {
                             assembled.append(alert)
                         }
@@ -529,13 +535,17 @@ struct CurlHTTPClient {
                         assembled.append(r.data)
                         pendingCount += r.count
                         pendingTypes.append(contentsOf: r.types)
-                        totals.advisoryCount += r.advisoryCount
-                        totals.advisoryTypes.append(contentsOf: r.advisoryTypes)
+                        pendingAdvisoryCount += r.advisoryCount
+                        pendingAdvisoryTypes.append(contentsOf: r.advisoryTypes)
                     }
                     outData = assembled
                     if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
                         totals.redactionCount += pendingCount
                         totals.redactionTypes.append(contentsOf: pendingTypes)
+                        // WO-345: advisory stats are delivery-scoped on Linux;
+                        // count them only after the assembled frame batch is sent.
+                        totals.advisoryCount += pendingAdvisoryCount
+                        totals.advisoryTypes.append(contentsOf: pendingAdvisoryTypes)
                         continue readLoop
                     } else {
                         // WO-250: credential was detected and redacted (pendingCount > 0) even
@@ -544,6 +554,8 @@ struct CurlHTTPClient {
                         // whether the redacted bytes reached the client.
                         totals.redactionCount += pendingCount
                         totals.redactionTypes.append(contentsOf: pendingTypes)
+                        // WO-345: advisory-only matches leave bytes unchanged; if the
+                        // client EPIPEs, do not claim those advisory bytes were delivered.
                         clientEpipe = true
                         break readLoop
                     }

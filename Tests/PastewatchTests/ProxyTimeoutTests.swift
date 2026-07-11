@@ -25,8 +25,19 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertGreaterThan(curlSpeedTimeSeconds, 0)
     }
 
+    func testCurlHeaderTimeoutIsIndependentFromSpeedTime() {
+        // WO-346: header-arrival and idle-data windows must be independently tunable.
+        XCTAssertGreaterThan(curlHeaderTimeoutSeconds, 0)
+        XCTAssertNotEqual(curlHeaderTimeoutSeconds, curlSpeedTimeSeconds)
+    }
+
     func testCurlMaxTimeExceedsOldCap() {
         XCTAssertGreaterThan(curlMaxTimeSeconds, 120)
+    }
+
+    func testCurlStreamMaxTimeExceedsIdleWindow() {
+        // WO-343: streaming curl has a hard ceiling, but it must not replace the idle budget.
+        XCTAssertGreaterThan(curlStreamMaxTimeSeconds, curlSpeedTimeSeconds)
     }
 
     func testClientSocketTimeoutConstantIsNamedThirtySecondWindow() {
@@ -51,6 +62,36 @@ final class ProxyTimeoutTests: XCTestCase {
         // Confirm the named constant replaces it and is larger.
         XCTAssertNotEqual(Int(proxyNonStreamTotalTimeoutSeconds), 120,
                           "Non-streaming timeout must not be the old 120s fixed cap")
+    }
+
+    func testStreamingCurlArgsContainIndependentMaxTime() {
+        let args = CurlHTTPClient.buildBaseArgs(
+            method: "POST",
+            url: URL(string: "https://example.test/stream")!,
+            streaming: true
+        )
+
+        XCTAssertEqual(argument(after: "--speed-time", in: args), String(curlSpeedTimeSeconds))
+        XCTAssertEqual(argument(after: "--max-time", in: args), String(curlStreamMaxTimeSeconds))
+        XCTAssertFalse(args.contains("-w"))
+    }
+
+    func testNonStreamingCurlArgsKeepStatusMarkerAndMaxTime() {
+        let args = CurlHTTPClient.buildBaseArgs(
+            method: "POST",
+            url: URL(string: "https://example.test/messages")!,
+            streaming: false
+        )
+
+        XCTAssertEqual(argument(after: "--max-time", in: args), String(curlMaxTimeSeconds))
+        XCTAssertEqual(argument(after: "-w", in: args), "\n__HTTP_STATUS__%{http_code}")
+    }
+
+    private func argument(after option: String, in args: [String]) -> String? {
+        guard let index = args.firstIndex(of: option) else { return nil }
+        let valueIndex = args.index(after: index)
+        guard valueIndex < args.endIndex else { return nil }
+        return args[valueIndex]
     }
 
     #if canImport(Darwin)

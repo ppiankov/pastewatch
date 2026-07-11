@@ -23,8 +23,14 @@ let curlMinSpeedBytesPerSecond = 1
 /// within this window or the request is aborted.
 let curlSpeedTimeSeconds = 60
 
+/// WO-346: header-arrival deadline before streaming body bytes begin.
+let curlHeaderTimeoutSeconds = 30
+
 /// Large maximum time for curl (non-streaming path). Zero = no cap.
 let curlMaxTimeSeconds = 600
+
+/// WO-343: hard ceiling for Linux streaming curl sessions that slow-drip forever.
+let curlStreamMaxTimeSeconds = 7_200
 
 /// WO-280: shared per-call recv/send timeout for client sockets (seconds).
 let proxyClientSocketTimeoutSeconds = 30
@@ -405,7 +411,6 @@ public final class ProxyServer {
             // WO-323/WO-325: with at most 4 admitted handlers, shutdown remains bounded while
             // retaining the audit-drain guarantee from handlerGroup.wait().
             queue.async { [self] in
-                recordConnectionStarted()
                 defer {
                     recordConnectionFinished()
                     admissionSlots.signal()
@@ -423,6 +428,7 @@ public final class ProxyServer {
                 admissionSlots.signal()
                 return false
             }
+            recordConnectionStarted()
             return true
         }
 
@@ -451,6 +457,7 @@ public final class ProxyServer {
             admissionSlots.signal()
             return false
         }
+        recordConnectionStarted()
         return true
     }
 
@@ -464,6 +471,17 @@ public final class ProxyServer {
         admissionLock.lock()
         activeConnections -= 1
         admissionLock.unlock()
+    }
+
+    func admitConnectionForTesting(_ clientSocket: Int32 = -1) -> Bool {
+        // WO-347: deterministic coverage for the admission slot/counter contract.
+        admitConnection(clientSocket)
+    }
+
+    func finishAdmittedConnectionForTesting() {
+        // WO-347: mirror the handler defer path for tests that claim slots directly.
+        recordConnectionFinished()
+        admissionSlots.signal()
     }
 
     private func recordQueuedConnection(delta: Int) {
@@ -1109,6 +1127,11 @@ public final class ProxyServer {
             // WO-314: stop() may invalidate the shared URLSession while a handler is
             // about to create its streaming task; return a shutdown status instead
             // of calling dataTask() on an invalidated session.
+            recordRejectedStreamingBodyRedactionIfNeeded(
+                path: request.url?.path ?? "/",
+                redactionCount: redactionCount,
+                redactedTypes: redactedTypes
+            )
             sendError(to: clientSocket, status: 503, message: "Service Unavailable")
             return
         }
@@ -1169,6 +1192,19 @@ public final class ProxyServer {
             }
             logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
         }
+    }
+
+    func recordRejectedStreamingBodyRedactionIfNeeded(
+        path: String,
+        redactionCount: Int,
+        redactedTypes: [String]
+    ) {
+        guard redactionCount > 0 else { return }
+        // WO-344: streaming request-body redaction stats are normally deferred
+        // until a URLSession task is accepted; the server-stopping branch also
+        // needs an audit/stat record before returning 503.
+        recordForwardedBodyRedactionStats(redactionCount: redactionCount)
+        logRedaction(path: path, count: redactionCount, types: redactedTypes)
     }
 
     private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
