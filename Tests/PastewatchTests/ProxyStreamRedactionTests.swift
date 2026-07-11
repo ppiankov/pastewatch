@@ -176,6 +176,31 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.data, result.frames[0].raw)
     }
 
+    // WO-371: mixed critical and advisory severities keep independent outcomes.
+    func testMixedCriticalAndMediumFrameRedactsOnlyCriticalAndAdvisesMedium() {
+        let credential = "password=s3cr3t-hunter2"
+        let ipAddress = "10.1.2.3"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential) from \#(ipAddress)"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        let output = String(data: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["Credential"])
+        XCTAssertEqual(redaction.advisoryCount, 1)
+        XCTAssertEqual(redaction.advisoryTypes, ["IP"])
+        XCTAssertFalse(output.contains(credential))
+        XCTAssertTrue(output.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(output.contains(ipAddress))
+    }
+
     func testInvalidUTF8RawFrameWithCredentialIsRedacted() {
         let credential = "password=s3cr3t-hunter2"
         var raw = Data([0xFF, 0xFE])
@@ -350,6 +375,23 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(relay.output.contains("data: [DONE]"))
     }
 
+    // WO-371: raw_stream mode reports medium advisory matches without mutating bytes.
+    func testLinuxRelayRawStreamMediumAdvisoryIsByteIdentical() {
+        let ipAddress = "10.1.2.3"
+        let relay = relayStream(
+            rawStreamAdvisorySSE("data: contact \(ipAddress)\n\n"),
+            mode: .rawStream,
+            closePeerBeforeRelay: false,
+            alertBeforeDone: advisoryAlertBeforeDone
+        )
+
+        XCTAssertEqual(relay.result.redactionCount, 0)
+        XCTAssertEqual(relay.result.advisoryCount, 1)
+        XCTAssertEqual(relay.result.advisoryTypes, ["IP"])
+        XCTAssertTrue(relay.output.contains(ipAddress))
+        XCTAssertTrue(relay.output.contains("event: pastewatch_advisory"))
+    }
+
     func testLinuxRelayRawStreamAlertForwardsPartialChunkBeforeTerminator() {
         let relay = relayPartialRawStream(
             Data(("data: contact operator@example.com " + String(repeating: "x", count: 5_000)).utf8)
@@ -497,8 +539,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
         return relayStream(stream, mode: .perSSEEvent, closePeerBeforeRelay: closePeerBeforeRelay)
     }
 
-    private func rawStreamAdvisorySSE() -> Data {
-        var stream = Data("data: contact operator@example.com\n\n".utf8)
+    private func rawStreamAdvisorySSE(_ frame: String = "data: contact operator@example.com\n\n") -> Data {
+        var stream = Data(frame.utf8)
         stream.append(Data("data: [DONE]\n\n".utf8))
         return stream
     }
