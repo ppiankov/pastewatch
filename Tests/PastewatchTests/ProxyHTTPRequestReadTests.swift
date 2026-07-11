@@ -9,6 +9,54 @@ import Glibc
 
 final class ProxyHTTPRequestReadTests: XCTestCase {
 
+    func testSendAllReturnsFalseWhenPeerClosed() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, socketStreamType, 0, &sockets), 0)
+        close(sockets[0])
+        defer { close(sockets[1]) }
+
+        XCTAssertFalse(sendAll(Data("hello".utf8), to: sockets[1], flags: testSendFlags))
+    }
+
+    func testSendAllDeliversLargePayloadAcrossMultipleWrites() {
+        let payload = Data(repeating: 0x61, count: 256 * 1024)
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, socketStreamType, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let lock = NSLock()
+        var received = Data()
+        let finished = expectation(description: "reader drains large sendAll payload")
+        DispatchQueue.global().async {
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = recv(sockets[0], &buffer, buffer.count, 0)
+                guard count > 0 else { break }
+                lock.lock()
+                received.append(contentsOf: buffer[..<count])
+                let complete = received.count >= payload.count
+                lock.unlock()
+                if complete { break }
+            }
+            finished.fulfill()
+        }
+
+        XCTAssertTrue(sendAll(payload, to: sockets[1], flags: testSendFlags))
+        wait(for: [finished], timeout: 2)
+        lock.lock()
+        let receivedCopy = received
+        lock.unlock()
+        XCTAssertEqual(receivedCopy, payload)
+    }
+
     func testCurlBodyUploadArgsUseDataBinaryFileUpload() {
         let args = CurlHTTPClient.bodyUploadArgs(forTempFile: "/tmp/pw-body")
 
@@ -23,6 +71,48 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertTrue(paths.allSatisfy {
             $0.hasPrefix("/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-")
         })
+    }
+
+    func testCurlTemporaryBodyFileIsOwnerOnly() throws {
+        let path = try XCTUnwrap(CurlHTTPClient.writeTemporaryBodyFile(Data("secret body".utf8)))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        var info = stat()
+
+        XCTAssertEqual(stat(path, &info), 0)
+        XCTAssertEqual(Int(info.st_mode & 0o777), 0o600)
+    }
+
+    func testCurlNonUTF8ResponseBodyRedactsASCIICredentialBytePreserving() {
+        let credential = "password=s3cr3t-hunter2"
+        var body = Data([0xFF, 0xFE])
+        body.append(Data("prefix \(credential) suffix".utf8))
+        body.append(0x00)
+
+        let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["Credential"])
+        XCTAssertEqual(redaction.data.prefix(2), Data([0xFF, 0xFE]))
+        XCTAssertEqual(redaction.data.last, 0x00)
+        XCTAssertNil(redaction.data.range(of: Data(credential.utf8)))
+        XCTAssertNotNil(redaction.data.range(of: Data("<CREDENTIAL_1>".utf8)))
+    }
+
+    func testCurlNonUTF8ResponseBodyWithoutCredentialIsByteIdentical() {
+        let body = Data([0xFF, 0xFE, 0x00, 0x41])
+
+        let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.data, body)
     }
 
     func testCurlNonStreamingOutputParserPreservesNonUTF8Body() {
@@ -405,6 +495,8 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
 
 #if canImport(Darwin)
 private let socketStreamType = SOCK_STREAM
+private let testSendFlags: Int32 = 0
 #else
 private let socketStreamType = Int32(SOCK_STREAM.rawValue)
+private let testSendFlags: Int32 = Int32(MSG_NOSIGNAL)
 #endif

@@ -159,6 +159,23 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.data, result.frames[0].raw)
     }
 
+    func testMediumAndLowMatchesAreAdvisoryOnlyAndByteIdentical() {
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"host 10.1.2.3 trace 550e8400-e29b-41d4-a716-446655440000"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(Set(redaction.advisoryTypes), Set(["IP", "UUID"]))
+        XCTAssertEqual(redaction.data, result.frames[0].raw)
+    }
+
     func testInvalidUTF8RawFrameWithCredentialIsRedacted() {
         let credential = "password=s3cr3t-hunter2"
         var raw = Data([0xFF, 0xFE])
@@ -410,6 +427,44 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(relay.output.isEmpty)
     }
 
+    func testLinuxRelayStopsAfterClientEPIPEMidStream() {
+        #if canImport(Darwin)
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        #endif
+
+        let pipe = Pipe()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, testSocketStreamType, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+
+        let ctx = CurlHTTPClient.StreamContext(
+            clientSocket: sockets[1],
+            sendFlags: testSendFlags,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        var result: CurlHTTPClient.StreamRelayResult?
+        let finished = expectation(description: "relay exits after mid-stream EPIPE")
+        DispatchQueue.global().async {
+            result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx)
+            finished.fulfill()
+        }
+
+        pipe.fileHandleForWriting.write(advisoryFrame(email: "first@example.com"))
+        let firstOutput = readAvailableString(from: sockets[0])
+        XCTAssertTrue(firstOutput.contains("first@example.com"), firstOutput)
+        close(sockets[0])
+
+        pipe.fileHandleForWriting.write(advisoryFrame(email: "second@example.com"))
+        pipe.fileHandleForWriting.closeFile()
+        wait(for: [finished], timeout: 2)
+
+        XCTAssertEqual(result?.advisoryCount, 1)
+        XCTAssertEqual(result?.advisoryTypes, ["Email"])
+    }
+
     // MARK: - Helpers
 
     private func sseFrame(eventType: String?, data: String) -> Data {
@@ -446,6 +501,11 @@ final class ProxyStreamRedactionTests: XCTestCase {
         var stream = Data("data: contact operator@example.com\n\n".utf8)
         stream.append(Data("data: [DONE]\n\n".utf8))
         return stream
+    }
+
+    private func advisoryFrame(email: String) -> Data {
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
+        return sseFrame(eventType: "content_block_delta", data: payload)
     }
 
     private func advisoryAlertBeforeDone(

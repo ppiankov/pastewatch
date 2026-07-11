@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
@@ -35,10 +40,14 @@ struct CurlHTTPClient {
         let streamAdvisoryCount: Int
         /// WO-336: advisory-only type names detected during streaming (Linux path).
         let streamAdvisoryTypes: [String]
+        /// WO-359: non-UTF-8 buffered response redactions detected on the Linux curl path.
+        let responseRedactionCount: Int
+        let responseRedactionTypes: [String]
 
         init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
              streamRedactionCount: Int = 0, streamRedactionTypes: [String] = [],
-             streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = []) {
+             streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = [],
+             responseRedactionCount: Int = 0, responseRedactionTypes: [String] = []) {
             self.statusCode = statusCode
             self.headers = headers
             self.body = body
@@ -47,7 +56,15 @@ struct CurlHTTPClient {
             self.streamRedactionTypes = streamRedactionTypes
             self.streamAdvisoryCount = streamAdvisoryCount
             self.streamAdvisoryTypes = streamAdvisoryTypes
+            self.responseRedactionCount = responseRedactionCount
+            self.responseRedactionTypes = responseRedactionTypes
         }
+    }
+
+    private struct NonUTF8ResponseReplacement {
+        let range: Range<Data.Index> // WO-359: byte range to redact in original body.
+        let placeholder: Data // WO-359: ASCII placeholder replacing the matched bytes.
+        let type: String // WO-359: detection type recorded for audit stats.
     }
 
     /// WO-313: byte-preserving parsed curl output for non-streaming responses.
@@ -110,8 +127,7 @@ struct CurlHTTPClient {
         // Write body to a temp file to avoid argument length limits
         var tempFile: String?
         if let body = body {
-            let path = Self.temporaryBodyPath()
-            FileManager.default.createFile(atPath: path, contents: body)
+            guard let path = Self.writeTemporaryBodyFile(body) else { return nil }
             args.append(contentsOf: Self.bodyUploadArgs(forTempFile: path))
             tempFile = path
         }
@@ -161,9 +177,17 @@ struct CurlHTTPClient {
         // WO-313: parse the curl status trailer at the byte level so a binary
         // upstream body is forwarded unchanged instead of failing the whole request.
         guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { return nil }
+        var responseBody = parsedOutput.body
+        var responseRedaction = SSEFrameRedactionResult(data: responseBody, count: 0, types: [])
         if String(data: parsedOutput.body, encoding: .utf8) == nil, !parsedOutput.body.isEmpty {
+            responseRedaction = redactNonUTF8ResponseBody(
+                parsedOutput.body,
+                config: proxyConfig,
+                severity: proxySeverity
+            )
+            responseBody = responseRedaction.data
             FileHandle.standardError.write(Data(
-                "[pastewatch-proxy] non-UTF-8 response body, forwarding unscanned\n".utf8
+                "[pastewatch-proxy] non-UTF-8 response body, redacted \(responseRedaction.count) match(es)\n".utf8
             ))
         }
 
@@ -179,7 +203,13 @@ struct CurlHTTPClient {
             }
         }
 
-        return Response(statusCode: parsedOutput.statusCode, headers: responseHeaders, body: parsedOutput.body)
+        return Response(
+            statusCode: parsedOutput.statusCode,
+            headers: responseHeaders,
+            body: responseBody,
+            responseRedactionCount: responseRedaction.count,
+            responseRedactionTypes: responseRedaction.types
+        )
     }
 
     /// Relay a streaming (SSE) curl response incrementally to the client socket.
@@ -211,6 +241,17 @@ struct CurlHTTPClient {
     /// WO-294: per-call unique path so concurrent curl uploads cannot share a body file.
     static func temporaryBodyPath() -> String {
         "/tmp/pw-proxy-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).body"
+    }
+
+    /// WO-367: create request body files with owner-only permissions from the start.
+    static func writeTemporaryBodyFile(_ body: Data) -> String? {
+        let path = temporaryBodyPath()
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        handle.write(body)
+        handle.closeFile()
+        return path
     }
 
     static func parseNonStreamingOutput(_ rawOutput: Data) -> ParsedNonStreamingOutput? {
@@ -885,6 +926,9 @@ struct CurlHTTPClient {
         let lfTerminator = Data([0x0A, 0x0A])
         let crlfStart = prefix.range(of: crlfTerminator, options: .backwards)?.upperBound
         let lfStart = prefix.range(of: lfTerminator, options: .backwards)?.upperBound
+        // WO-368: offsets are measured in delivered bytes before `[DONE]`. The
+        // larger upperBound is the closest complete frame delimiter, so advisory
+        // insertion lands before the `[DONE]` frame even when CRLF and LF frames mix.
         return max(crlfStart ?? 0, lfStart ?? 0)
     }
 
@@ -918,6 +962,60 @@ struct CurlHTTPClient {
     /// Treats the whole buffer as plain text, scans it, and obfuscates in-place.
     private static func redactRawBytes(_ raw: Data, config: PastewatchConfig, severity: Severity) -> SSEFrameRedactionResult {
         redactRawStreamBytes(raw, config: config, severity: severity)
+    }
+
+    /// WO-359: detect ASCII credentials inside otherwise non-UTF-8 response bodies
+    /// without round-tripping the full binary body through a lossy string.
+    static func redactNonUTF8ResponseBody(
+        _ body: Data,
+        config: PastewatchConfig,
+        severity: Severity
+    ) -> SSEFrameRedactionResult {
+        guard !body.isEmpty else {
+            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+        }
+        // swiftlint:disable:next optional_data_string_conversion
+        let lossyText = String(decoding: body, as: UTF8.self)
+        let matches = DetectionRules.scan(lossyText, config: config)
+            .filter { $0.effectiveSeverity >= severity }
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
+        guard !matches.isEmpty else {
+            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+        }
+
+        var replacements: [NonUTF8ResponseReplacement] = []
+        var typeCounters: [SensitiveDataType: Int] = [:]
+        var searchStart = body.startIndex
+        for match in matches {
+            guard match.value.unicodeScalars.allSatisfy({ $0.value <= 0x7F }) else { continue }
+            let needle = Data(match.value.utf8)
+            guard !needle.isEmpty,
+                  let range = body.range(of: needle, options: [], in: searchStart..<body.endIndex) else {
+                continue
+            }
+            let number = (typeCounters[match.type] ?? 0) + 1
+            typeCounters[match.type] = number
+            let placeholder = Data(Obfuscator.makePlaceholder(type: match.type, number: number).utf8)
+            replacements.append(NonUTF8ResponseReplacement(
+                range: range,
+                placeholder: placeholder,
+                type: match.displayName
+            ))
+            searchStart = range.upperBound
+        }
+        guard !replacements.isEmpty else {
+            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+        }
+
+        var redacted = body
+        for replacement in replacements.reversed() {
+            redacted.replaceSubrange(replacement.range, with: replacement.placeholder)
+        }
+        return SSEFrameRedactionResult(
+            data: redacted,
+            count: replacements.count,
+            types: replacements.map(\.type)
+        )
     }
 
     /// WO-290: shared close-delimited streaming headers for Linux and macOS relay paths.

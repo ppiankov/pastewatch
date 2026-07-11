@@ -3,6 +3,8 @@ import Foundation
 
 /// WO-292: hard ceiling for an otherwise-progressing stream session.
 let sseStreamMaxSessionSeconds: Double = 3600
+/// WO-355: upper bound for delegate-queue drain after URLSession invalidation.
+let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 
 /// WO-146/147: URLSession-based SSE streaming relay for the macOS proxy path.
 /// Replaces the buffering dataTask+semaphore for streaming responses.
@@ -22,6 +24,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let severity: Severity
     private let idleTimeoutSeconds: Double
     private let maxSessionSeconds: Double // WO-292: hard ceiling before cancelling active stream task
+    private let delegateQueueDrainTimeoutSeconds: Double // WO-355: avoid shutdown deadlock on invalidated sessions.
     private let tlsChallengeHandler: TLSChallengeHandler? // WO-305: preserve custom TLS trust policy.
 
     /// Signals that the upstream response head has been received.
@@ -88,6 +91,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         severity: Severity,
         idleTimeoutSeconds: Double,
         maxSessionSeconds: Double = sseStreamMaxSessionSeconds,
+        delegateQueueDrainTimeoutSeconds: Double = sseDelegateQueueDrainTimeoutSeconds,
         tlsChallengeHandler: TLSChallengeHandler? = nil
     ) {
         self.clientSocket = clientSocket
@@ -97,6 +101,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         self.severity = severity
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.maxSessionSeconds = maxSessionSeconds
+        self.delegateQueueDrainTimeoutSeconds = delegateQueueDrainTimeoutSeconds
         self.tlsChallengeHandler = tlsChallengeHandler
     }
 
@@ -474,7 +479,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let body = "{\"error\": \"\(message)\"}"
         let bodyBytes = Data(body.utf8)
         // WO-221: Content-Length must be byte count, not Swift character count.
-        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
+        // WO-360: keep diagnostic detail in the body, not the HTTP reason phrase.
+        let reason = CurlHTTPClient.httpReasonPhrase(for: status)
+        let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)
         responseData.append(bodyBytes)
         writeToSocket(responseData)
@@ -510,9 +517,26 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     }
 
     private func drainDelegateQueue(_ session: URLSession) {
-        let drain = BlockOperation {}
-        session.delegateQueue.addOperation(drain)
-        drain.waitUntilFinished()
+        // WO-355: after invalidateAndCancel(), some Foundation versions may stop
+        // running newly-added delegateQueue operations. Bound the wait so shutdown
+        // cannot deadlock the connection handler forever.
+        if !Self.drainOperationQueue(session.delegateQueue, timeoutSeconds: delegateQueueDrainTimeoutSeconds) {
+            FileHandle.standardError.write(Data(
+                "[pastewatch-proxy] SSE delegate queue drain timed out; continuing shutdown\n".utf8
+            ))
+        }
+    }
+
+    static func drainOperationQueue(_ queue: OperationQueue, timeoutSeconds: Double) -> Bool {
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            // WO-355: addOperation itself can block after session invalidation on
+            // some Foundation versions, so keep it off the connection handler.
+            queue.addOperation {
+                drained.signal()
+            }
+        }
+        return drained.wait(timeout: .now() + timeoutSeconds) == .success
     }
 
     private func insertingAlertBeforeDoneIfNeeded(_ data: Data) -> Data {

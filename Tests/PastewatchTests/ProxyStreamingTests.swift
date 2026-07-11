@@ -89,6 +89,18 @@ final class ProxyStreamingTests: XCTestCase {
         XCTAssertGreaterThan(queue.maxConcurrentOperationCount, 1)
     }
 
+    func testBufferModeWarningIgnoresQuietFlag() {
+        var config = PastewatchConfig.defaultConfig
+        config.responseStreamingRedactionMode = .buffer
+
+        let warning = ProxyServer.bufferModeWarning(config: config, quiet: true)
+
+        XCTAssertEqual(
+            warning,
+            "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+        )
+    }
+
     func testForwardHeadersForceIdentityAcceptEncoding() {
         let server = ProxyServer(
             port: 0,

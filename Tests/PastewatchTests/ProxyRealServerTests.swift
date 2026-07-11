@@ -99,7 +99,8 @@ final class ProxyRealServerTests: XCTestCase {
             request: TCPTestSocket.postRequest(path: "/rejected"),
             timeoutSeconds: 3
         )
-        XCTAssertTrue(rejected.contains("HTTP/1.1 503"))
+        XCTAssertTrue(rejected.contains("HTTP/1.1 503 Service Unavailable"))
+        XCTAssertTrue(rejected.contains(#""error": "Proxy admission timeout""#))
         XCTAssertGreaterThanOrEqual(proxy.connectionAdmissionStats.rejected, 1)
 
         for _ in 0..<proxyMaxActiveConnections {

@@ -183,6 +183,22 @@ public final class ProxyServer {
         let status: Int
         let headers: [AnyHashable: Any]
         let body: Data
+        let responseRedactionCount: Int // WO-359: Linux binary response body redactions.
+        let responseRedactionTypes: [String]
+
+        init(
+            status: Int,
+            headers: [AnyHashable: Any],
+            body: Data,
+            responseRedactionCount: Int = 0,
+            responseRedactionTypes: [String] = []
+        ) {
+            self.status = status
+            self.headers = headers
+            self.body = body
+            self.responseRedactionCount = responseRedactionCount
+            self.responseRedactionTypes = responseRedactionTypes
+        }
     }
 
     // WO-267: typed wait result lets shutdown and timeout paths avoid sharing
@@ -237,10 +253,11 @@ public final class ProxyServer {
         #endif
     }
 
-    public static func bufferModeWarning(config: PastewatchConfig, quiet: Bool) -> String? {
+    public static func bufferModeWarning(config: PastewatchConfig, quiet _: Bool) -> String? {
         // WO-316: buffer mode is a compatibility path; response-body redaction is
         // not yet implemented there, so surface the limitation at startup.
-        guard !quiet, config.responseStreamingRedactionMode == .buffer else { return nil }
+        // WO-365: this is security-relevant and must remain visible under --quiet.
+        guard config.responseStreamingRedactionMode == .buffer else { return nil }
         return "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
     }
 
@@ -688,29 +705,59 @@ public final class ProxyServer {
         )
         guard let buffered = forwardRequest(ctx) else { return }
 
+        let finalBody = bufferedResponseBodyForClient(
+            buffered,
+            path: parsed.path,
+            requestRedactionCount: redactionCount,
+            requestRedactedTypes: redactedTypes
+        )
+        sendResponse(to: clientSocket, status: buffered.status, headers: buffered.headers, body: finalBody)
+    }
+
+    // WO-359: include response-body redactions in buffered stats, audit, and alert injection.
+    private func bufferedResponseBodyForClient(
+        _ buffered: BufferedResponse,
+        path: String,
+        requestRedactionCount: Int,
+        requestRedactedTypes: [String]
+    ) -> Data {
         var finalBody = buffered.body
-        if redactionCount > 0 && injectAlert {
+        recordBufferedResponseRedactionStats(
+            requestRedactionCount: requestRedactionCount,
+            responseRedactionCount: buffered.responseRedactionCount
+        )
+        if buffered.responseRedactionCount > 0 {
+            logRedaction(
+                path: path,
+                count: buffered.responseRedactionCount,
+                types: buffered.responseRedactionTypes
+            )
+        }
+
+        let alertRedactionCount = requestRedactionCount + buffered.responseRedactionCount
+        let alertTypes = requestRedactedTypes + buffered.responseRedactionTypes
+        if alertRedactionCount > 0 && injectAlert {
             // WO-331: JSON response alert injection must not silently no-op on raw SSE bodies.
             if shouldInjectAlertIntoBufferedResponse(headers: buffered.headers) {
                 finalBody = injectAlertIntoResponse(
                     buffered.body,
-                    redactionCount: redactionCount,
-                    types: redactedTypes
+                    redactionCount: alertRedactionCount,
+                    types: alertTypes
                 )
             } else if shouldInjectAlertIntoBufferedSSEResponse(headers: buffered.headers),
-                      let comment = buildAlertSSECommentData(redactionCount: redactionCount, types: redactedTypes) {
+                      let comment = buildAlertSSECommentData(redactionCount: alertRedactionCount, types: alertTypes) {
                 // WO-334: buffered SSE responses cannot use JSON alert injection, but
                 // an SSE comment preserves protocol framing and operator-visible alert bytes.
                 var bodyWithComment = comment
                 bodyWithComment.append(buffered.body)
                 finalBody = bodyWithComment
-                logAlertInjectedAsSSEComment(path: parsed.path)
+                logAlertInjectedAsSSEComment(path: path)
             } else {
-                logAlertInjectionSkipped(path: parsed.path, contentType: responseContentType(buffered.headers))
+                logAlertInjectionSkipped(path: path, contentType: responseContentType(buffered.headers))
             }
         }
 
-        sendResponse(to: clientSocket, status: buffered.status, headers: buffered.headers, body: finalBody)
+        return finalBody
     }
 
     /// Platform-specific upstream request dispatch. Returns a BufferedResponse for the
@@ -843,7 +890,9 @@ public final class ProxyServer {
         return BufferedResponse(
             status: curlResponse.statusCode,
             headers: curlResponse.headers as [AnyHashable: Any],
-            body: curlResponse.body
+            body: curlResponse.body,
+            responseRedactionCount: curlResponse.responseRedactionCount,
+            responseRedactionTypes: curlResponse.responseRedactionTypes
         )
     }
 
@@ -1067,6 +1116,16 @@ public final class ProxyServer {
         statsLock.lock()
         stats.requestsRedacted += 1
         stats.secretsRedacted += redactionCount
+        statsLock.unlock()
+    }
+
+    func recordBufferedResponseRedactionStats(requestRedactionCount: Int, responseRedactionCount: Int) {
+        guard responseRedactionCount > 0 else { return }
+        statsLock.lock()
+        if requestRedactionCount == 0 {
+            stats.requestsRedacted += 1
+        }
+        stats.secretsRedacted += responseRedactionCount
         statsLock.unlock()
     }
 
@@ -1468,7 +1527,9 @@ public final class ProxyServer {
         let body = "{\"error\": \"\(message)\"}"
         let bodyBytes = Data(body.utf8)
         // WO-219: Content-Length must be byte count, not Swift character count (they diverge for non-ASCII).
-        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
+        // WO-360: keep diagnostic detail in the body, not the HTTP reason phrase.
+        let reason = CurlHTTPClient.httpReasonPhrase(for: status)
+        let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)
         responseData.append(bodyBytes)
         // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
@@ -1589,7 +1650,8 @@ public final class ProxyServer {
 
     // MARK: - Audit log
 
-    private var lastLogSignature = ""
+    private var lastRedactionLogSignature = "" // WO-358: redaction dedup is independent.
+    private var lastAdvisoryLogSignature = "" // WO-358: advisory dedup is independent.
 
     private func logRedaction(path: String, count: Int, types: [String]) {
         // Build type breakdown: "Credential x3, DB Connection x2"
@@ -1603,10 +1665,10 @@ public final class ProxyServer {
         // WO-203: lastLogSignature is read+written from logRedaction(), which is called from
         // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
         // concurrent connections do not race on the dedup check.
-        let signature = "\(count):\(breakdown)"
+        let signature = "\(path):\(count):\(breakdown)"
         statsLock.lock()
-        let isRepeat = signature == lastLogSignature
-        lastLogSignature = signature
+        let isRepeat = signature == lastRedactionLogSignature
+        lastRedactionLogSignature = signature
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
@@ -1621,6 +1683,8 @@ public final class ProxyServer {
                 FileHandle.standardError.write(Data(hintLine.utf8))
             }
         }
+
+        guard !isRepeat else { return }
 
         if let logPath = auditLogPath {
             // WO-224: write only the structured `line` to the audit log file — hintLine is
@@ -1649,10 +1713,10 @@ public final class ProxyServer {
             .map { "\($0.key) x\($0.value)" }
             .joined(separator: ", ")
 
-        let signature = "advisory:\(count):\(breakdown)"
+        let signature = "advisory:\(path):\(count):\(breakdown)"
         statsLock.lock()
-        let isRepeat = signature == lastLogSignature
-        lastLogSignature = signature
+        let isRepeat = signature == lastAdvisoryLogSignature
+        lastAdvisoryLogSignature = signature
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
@@ -1660,6 +1724,8 @@ public final class ProxyServer {
         if !quietLog && !isRepeat {
             FileHandle.standardError.write(Data(line.utf8))
         }
+
+        guard !isRepeat else { return }
 
         if let logPath = auditLogPath {
             logQueue.async {

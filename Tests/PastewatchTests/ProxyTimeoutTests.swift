@@ -95,6 +95,28 @@ final class ProxyTimeoutTests: XCTestCase {
     }
 
     #if canImport(Darwin)
+    func testSSEDelegateQueueDrainTimesOutWhenQueueDoesNotRun() {
+        let queue = OperationQueue()
+        queue.isSuspended = true
+        defer { queue.cancelAllOperations() }
+        let start = Date()
+
+        let drained = SSEStreamRelay.drainOperationQueue(queue, timeoutSeconds: 0.01)
+
+        XCTAssertFalse(drained)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+    }
+
+    func testSSEDelegateQueueDrainTimesOutWhenAddOperationBlocks() {
+        let queue = BlockingAddOperationQueue(delaySeconds: 0.25)
+        let start = Date()
+
+        let drained = SSEStreamRelay.drainOperationQueue(queue, timeoutSeconds: 0.01)
+
+        XCTAssertFalse(drained)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.2)
+    }
+
     func testNonStreamingTaskWaitReturnsOnShutdownWithoutFullTimeout() {
         let server = ProxyServer(port: 0)
         let semaphore = DispatchSemaphore(value: 0)
@@ -375,6 +397,20 @@ final class ProxyTimeoutTests: XCTestCase {
 }
 
 #if canImport(Darwin)
+private final class BlockingAddOperationQueue: OperationQueue, @unchecked Sendable {
+    private let delaySeconds: TimeInterval
+
+    init(delaySeconds: TimeInterval) {
+        self.delaySeconds = delaySeconds
+        super.init()
+    }
+
+    override func addOperation(_ op: Operation) {
+        Thread.sleep(forTimeInterval: delaySeconds)
+        super.addOperation(op)
+    }
+}
+
 private class FailingStreamURLProtocol: URLProtocol {
     static func reset() {}
 

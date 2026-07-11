@@ -12,6 +12,12 @@ import Glibc
 private let proxyShutdownSemaphore = DispatchSemaphore(value: 0)
 // WO-308: brief SIGINT grace for the running=true -> onListening startup window.
 private let proxyStartupSignalGraceMilliseconds = 100
+// WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
+let proxyInterruptedExitCode: Int32 = 130
+
+func proxyShutdownExitCode(didStart: Bool) -> Int32 {
+    didStart ? 0 : proxyInterruptedExitCode
+}
 
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -115,14 +121,16 @@ struct Proxy: ParsableCommand {
             proxyShutdownSemaphore.wait()
             // WO-308: cover the tiny running=true -> onListening signal window without
             // calling stop() when listen() never completed.
-            if startedGate.wait(timeout: .now() + .milliseconds(proxyStartupSignalGraceMilliseconds)) == .success {
+            let didStart = startedGate.wait(timeout: .now() + .milliseconds(proxyStartupSignalGraceMilliseconds)) == .success
+            if didStart {
                 FileHandle.standardError.write(Data("\nstopped.\n".utf8))
                 server.stop()
             }
+            let exitCode = proxyShutdownExitCode(didStart: didStart)
             #if canImport(Darwin)
-            Darwin.exit(0)
+            Darwin.exit(exitCode)
             #elseif canImport(Glibc)
-            Glibc.exit(0)
+            Glibc.exit(exitCode)
             #endif
         }
         signal(SIGINT) { _ in

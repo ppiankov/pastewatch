@@ -373,6 +373,72 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("Email x1"))
     }
 
+    func testAdvisoryDedupDoesNotResetRedactionDedup() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-stream-dedup-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let streamingServer = ProxyServer(port: 0, auditLogPath: path)
+        let summary = ProxyServer.StreamingAuditStats(
+            path: "/v1/messages",
+            bodyCount: 0,
+            bodyTypes: [],
+            streamCount: 1,
+            streamTypes: ["Credential"],
+            advisoryCount: 1,
+            advisoryTypes: ["Email"]
+        )
+
+        streamingServer.recordStreamingAuditStats(summary)
+        streamingServer.recordStreamingAuditStats(summary)
+        streamingServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertEqual(log.components(separatedBy: "PROXY REDACTED").count - 1, 1)
+        XCTAssertEqual(log.components(separatedBy: "PROXY ADVISORY").count - 1, 1)
+    }
+
+    func testAdvisoryDedupKeepsDistinctPaths() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-stream-dedup-path-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let streamingServer = ProxyServer(port: 0, auditLogPath: path)
+
+        for requestPath in ["/v1/messages", "/v1/other"] {
+            streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
+                path: requestPath,
+                bodyCount: 0,
+                bodyTypes: [],
+                streamCount: 1,
+                streamTypes: ["Credential"],
+                advisoryCount: 1,
+                advisoryTypes: ["Email"]
+            ))
+        }
+        streamingServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertEqual(log.components(separatedBy: "PROXY REDACTED").count - 1, 2)
+        XCTAssertEqual(log.components(separatedBy: "PROXY ADVISORY").count - 1, 2)
+        XCTAssertTrue(log.contains("/v1/messages"))
+        XCTAssertTrue(log.contains("/v1/other"))
+    }
+
+    func testBufferedResponseRedactionStatsDoNotDoubleCountRequest() {
+        let responseOnlyServer = ProxyServer(port: 0)
+        responseOnlyServer.recordInitialRequestStats(redactionCount: 0, shouldBlockNonUTF8Forwarding: false)
+        responseOnlyServer.recordBufferedResponseRedactionStats(requestRedactionCount: 0, responseRedactionCount: 1)
+
+        XCTAssertEqual(responseOnlyServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(responseOnlyServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(responseOnlyServer.stats.secretsRedacted, 1)
+
+        let requestAndResponseServer = ProxyServer(port: 0)
+        requestAndResponseServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: false)
+        requestAndResponseServer.recordBufferedResponseRedactionStats(requestRedactionCount: 1, responseRedactionCount: 1)
+
+        XCTAssertEqual(requestAndResponseServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(requestAndResponseServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(requestAndResponseServer.stats.secretsRedacted, 2)
+    }
+
     func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
         var bufferConfig = PastewatchConfig.defaultConfig
         bufferConfig.responseStreamingRedactionMode = .buffer
@@ -388,15 +454,14 @@ final class ProxyAlertTests: XCTestCase {
         #endif
     }
 
-    func testBufferModeWarningHonorsQuietFlag() {
+    func testBufferModeWarningIgnoresQuietFlag() {
         var config = PastewatchConfig.defaultConfig
         config.responseStreamingRedactionMode = .buffer
 
-        XCTAssertEqual(
-            ProxyServer.bufferModeWarning(config: config, quiet: false),
-            "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
-        )
-        XCTAssertNil(ProxyServer.bufferModeWarning(config: config, quiet: true))
+        let warning = "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+
+        XCTAssertEqual(ProxyServer.bufferModeWarning(config: config, quiet: false), warning)
+        XCTAssertEqual(ProxyServer.bufferModeWarning(config: config, quiet: true), warning)
         XCTAssertNil(ProxyServer.bufferModeWarning(config: PastewatchConfig.defaultConfig, quiet: false))
     }
 
