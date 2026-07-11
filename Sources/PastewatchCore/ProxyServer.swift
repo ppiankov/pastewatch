@@ -115,6 +115,17 @@ public final class ProxyServer {
         public var requestsProcessed: Int = 0
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
+        public var advisoryMatches: Int = 0 // WO-353/354: stream advisories are audited separately.
+    }
+
+    struct StreamingAuditStats {
+        let path: String
+        let bodyCount: Int
+        let bodyTypes: [String]
+        let streamCount: Int // WO-353/354: critical stream redactions delivered to the client.
+        let streamTypes: [String]
+        let advisoryCount: Int // WO-353/354: advisory-only stream matches delivered to the client.
+        let advisoryTypes: [String]
     }
 
     public struct ConnectionAdmissionStats: Equatable {
@@ -818,11 +829,15 @@ public final class ProxyServer {
         }
         if curlResponse.wasStreamed {
             // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
-            recordLinuxStreamStats(
-                path: ctx.parsed.path, bodyCount: ctx.redactionCount, bodyTypes: ctx.redactedTypes,
+            recordLinuxStreamStats(StreamingAuditStats(
+                path: ctx.parsed.path,
+                bodyCount: ctx.redactionCount,
+                bodyTypes: ctx.redactedTypes,
                 streamCount: curlResponse.streamRedactionCount,
-                streamTypes: curlResponse.streamRedactionTypes
-            )
+                streamTypes: curlResponse.streamRedactionTypes,
+                advisoryCount: curlResponse.streamAdvisoryCount,
+                advisoryTypes: curlResponse.streamAdvisoryTypes
+            ))
             return nil
         }
         return BufferedResponse(
@@ -858,23 +873,8 @@ public final class ProxyServer {
         }
     }
 
-    private func recordLinuxStreamStats(
-        path: String, bodyCount: Int, bodyTypes: [String],
-        streamCount: Int, streamTypes: [String]
-    ) {
-        let totalCount = bodyCount + streamCount
-        let totalTypes = bodyTypes + streamTypes
-        if streamCount > 0 {
-            statsLock.lock()
-            // WO-174: only increment requestsRedacted when body scan did NOT already count this.
-            if bodyCount == 0 { stats.requestsRedacted += 1 }
-            stats.secretsRedacted += streamCount
-            statsLock.unlock()
-        }
-        // WO-184: log combined totals (body log suppressed above for streaming).
-        if totalCount > 0 {
-            logRedaction(path: path, count: totalCount, types: totalTypes)
-        }
+    private func recordLinuxStreamStats(_ summary: StreamingAuditStats) {
+        recordStreamingAuditStats(summary)
     }
     #endif
 
@@ -1070,6 +1070,30 @@ public final class ProxyServer {
         statsLock.unlock()
     }
 
+    func recordStreamingAuditStats(_ summary: StreamingAuditStats) {
+        let totalCount = summary.bodyCount + summary.streamCount
+        let totalTypes = summary.bodyTypes + summary.streamTypes
+        if summary.streamCount > 0 || summary.advisoryCount > 0 {
+            statsLock.lock()
+            if summary.streamCount > 0 {
+                // WO-353/354: mirror existing body+stream request coalescing.
+                if summary.bodyCount == 0 { stats.requestsRedacted += 1 }
+                stats.secretsRedacted += summary.streamCount
+            }
+            if summary.advisoryCount > 0 {
+                stats.advisoryMatches += summary.advisoryCount
+            }
+            statsLock.unlock()
+        }
+        // WO-184/WO-353/WO-354: log body+stream redactions and stream advisories independently.
+        if totalCount > 0 {
+            logRedaction(path: summary.path, count: totalCount, types: totalTypes)
+        }
+        if summary.advisoryCount > 0 {
+            logAdvisory(path: summary.path, count: summary.advisoryCount, types: summary.advisoryTypes)
+        }
+    }
+
     func responseContentType(_ headers: [AnyHashable: Any]) -> String {
         for (key, value) in headers where "\(key)".lowercased() == "content-type" {
             return "\(value)"
@@ -1175,23 +1199,15 @@ public final class ProxyServer {
         relay.execute(task: task, session: urlSession)
 
         // WO-153: account for secrets redacted from SSE frames in the stream.
-        let totalCount = redactionCount + relay.streamRedactionCount
-        let totalTypes = redactedTypes + relay.streamRedactionTypes
-        // WO-197: gate on totalCount (body + stream) so body-only streaming redactions
-        // (stream returns 0 but body had secrets) are not silently unlogged.
-        if totalCount > 0 {
-            if relay.streamRedactionCount > 0 {
-                statsLock.lock()
-                // WO-181: mirror WO-174 — only increment requestsRedacted when the body scan did
-                // NOT already count this request (redactionCount == 0). Body + stream = 1 request.
-                if redactionCount == 0 {
-                    stats.requestsRedacted += 1
-                }
-                stats.secretsRedacted += relay.streamRedactionCount
-                statsLock.unlock()
-            }
-            logRedaction(path: request.url?.path ?? "/", count: totalCount, types: totalTypes)
-        }
+        recordStreamingAuditStats(StreamingAuditStats(
+            path: request.url?.path ?? "/",
+            bodyCount: redactionCount,
+            bodyTypes: redactedTypes,
+            streamCount: relay.streamRedactionCount,
+            streamTypes: relay.streamRedactionTypes,
+            advisoryCount: relay.streamAdvisoryCount,
+            advisoryTypes: relay.streamAdvisoryTypes
+        ))
     }
 
     private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
@@ -1612,6 +1628,40 @@ public final class ProxyServer {
             // WO-210: seek+write must be serialized so concurrent handlers cannot interleave.
             // WO-217: use a dedicated serial logQueue instead of statsLock so slow disk I/O
             // does not block concurrent handlers from incrementing in-memory stats.
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    private func logAdvisory(path: String, count: Int, types: [String]) {
+        // WO-353/354: advisory matches did not mutate bytes, so audit them
+        // separately from redacted secrets.
+        var typeCounts: [String: Int] = [:]
+        for t in types { typeCounts[t, default: 0] += 1 }
+        let breakdown = typeCounts.sorted { $0.key < $1.key }
+            .map { "\($0.key) x\($0.value)" }
+            .joined(separator: ", ")
+
+        let signature = "advisory:\(count):\(breakdown)"
+        statsLock.lock()
+        let isRepeat = signature == lastLogSignature
+        lastLogSignature = signature
+        statsLock.unlock()
+
+        let timestamp = formatAuditTimestamp(Date())
+        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(path) (\(breakdown))\n"
+        if !quietLog && !isRepeat {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+
+        if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
                     handle.seekToEndOfFile()

@@ -333,6 +333,50 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(relay.output.contains("data: [DONE]"))
     }
 
+    func testLinuxRelayRawStreamAlertForwardsPartialChunkBeforeTerminator() {
+        let relay = relayPartialRawStream(
+            Data(("data: contact operator@example.com " + String(repeating: "x", count: 5_000)).utf8)
+        )
+
+        XCTAssertTrue(relay.firstOutput.contains("operator@example.com"), relay.firstOutput)
+        XCTAssertEqual(relay.result?.advisoryCount, 1)
+        XCTAssertEqual(relay.result?.advisoryTypes, ["Email"])
+    }
+
+    func testLinuxRelayRawStreamEOFWithoutDoneDeliversAdvisoryAlert() {
+        let relay = relayStream(
+            Data("data: contact operator@example.com\n\n".utf8),
+            mode: .rawStream,
+            closePeerBeforeRelay: false,
+            alertBeforeDone: advisoryAlertBeforeDone
+        )
+
+        guard let bodyRange = relay.output.range(of: "operator@example.com"),
+              let advisoryRange = relay.output.range(of: "event: pastewatch_advisory") else {
+            XCTFail(relay.output)
+            return
+        }
+        XCTAssertLessThan(bodyRange.lowerBound, advisoryRange.lowerBound)
+        XCTAssertEqual(relay.result.advisoryCount, 1)
+        XCTAssertEqual(relay.result.advisoryTypes, ["Email"])
+    }
+
+    func testLinuxRelayRawStreamEOFOverlapRedactsCriticalCredential() {
+        let credential = "password=s3cr3t-hunter2"
+        let stream = Data(("data: " + String(repeating: "a", count: 5_000) + credential + "\n\n").utf8)
+        let relay = relayStream(
+            stream,
+            mode: .rawStream,
+            closePeerBeforeRelay: false,
+            alertBeforeDone: advisoryAlertBeforeDone
+        )
+
+        XCTAssertEqual(relay.result.redactionCount, 1)
+        XCTAssertEqual(relay.result.redactionTypes, ["Credential"])
+        XCTAssertFalse(relay.output.contains(credential))
+        XCTAssertTrue(relay.output.contains("<CREDENTIAL_1>"))
+    }
+
     func testLinuxRelayRawStreamAdvisoryStatsSkipFailedSend() {
         #if canImport(Darwin)
         let previousHandler = signal(SIGPIPE, SIG_IGN)
@@ -454,8 +498,45 @@ final class ProxyStreamRedactionTests: XCTestCase {
             severity: .high
         )
         let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
-        let output = closePeerBeforeRelay ? "" : readAvailableString(from: sockets[0])
+        let output = closePeerBeforeRelay ? "" : readAllAvailableString(from: sockets[0])
         return (result, output)
+    }
+
+    private func relayPartialRawStream(_ firstChunk: Data) -> (
+        result: CurlHTTPClient.StreamRelayResult?,
+        firstOutput: String
+    ) {
+        let pipe = Pipe()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, testSocketStreamType, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+
+        let ctx = CurlHTTPClient.StreamContext(
+            clientSocket: sockets[1],
+            sendFlags: testSendFlags,
+            redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+        var result: CurlHTTPClient.StreamRelayResult?
+        let finished = expectation(description: "raw stream relay finishes")
+        DispatchQueue.global().async {
+            result = CurlHTTPClient.relayBodyChunks(
+                from: pipe,
+                ctx: ctx,
+                alertBeforeDone: self.advisoryAlertBeforeDone
+            )
+            finished.fulfill()
+        }
+
+        pipe.fileHandleForWriting.write(firstChunk)
+        let firstOutput = readAvailableString(from: sockets[0])
+        pipe.fileHandleForWriting.closeFile()
+        wait(for: [finished], timeout: 2)
+        return (result, firstOutput)
     }
 
     private func readAvailableString(from socket: Int32) -> String {
@@ -469,6 +550,22 @@ final class ProxyStreamRedactionTests: XCTestCase {
         guard count > 0 else { return "" }
         return String(bytes: buffer[..<count], encoding: .utf8) ?? ""
     }
+
+    private func readAllAvailableString(from socket: Int32) -> String {
+        var timeout = socketReadDrainTimeout
+        XCTAssertEqual(
+            setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)),
+            0
+        )
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = recv(socket, &buffer, buffer.count, 0)
+            guard count > 0 else { break }
+            output.append(contentsOf: buffer[..<count])
+        }
+        return String(data: output, encoding: .utf8) ?? ""
+    }
 }
 
 #if canImport(Darwin)
@@ -478,3 +575,4 @@ private let testSendFlags: Int32 = 0
 private let testSocketStreamType = Int32(SOCK_STREAM.rawValue)
 private let testSendFlags: Int32 = Int32(MSG_NOSIGNAL)
 #endif
+private let socketReadDrainTimeout = timeval(tv_sec: 0, tv_usec: 100_000)

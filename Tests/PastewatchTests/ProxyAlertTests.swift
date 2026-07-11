@@ -312,6 +312,67 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("Credential x1"))
     }
 
+    func testStreamingAdvisoryOnlyStatsLogAuditAndStats() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-stream-advisory-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let streamingServer = ProxyServer(port: 0, auditLogPath: path)
+
+        streamingServer.recordInitialRequestStats(
+            redactionCount: 0,
+            shouldBlockNonUTF8Forwarding: false
+        )
+        streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
+            path: "/v1/messages",
+            bodyCount: 0,
+            bodyTypes: [],
+            streamCount: 0,
+            streamTypes: [],
+            advisoryCount: 1,
+            advisoryTypes: ["Email"]
+        ))
+        streamingServer.drainAuditLogForTesting()
+
+        XCTAssertEqual(streamingServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(streamingServer.stats.requestsRedacted, 0)
+        XCTAssertEqual(streamingServer.stats.secretsRedacted, 0)
+        XCTAssertEqual(streamingServer.stats.advisoryMatches, 1)
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"))
+        XCTAssertTrue(log.contains("Email x1"))
+    }
+
+    func testStreamingRedactionAndAdvisoryStatsLogSeparateAuditLines() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-stream-mixed-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let streamingServer = ProxyServer(port: 0, auditLogPath: path)
+
+        streamingServer.recordInitialRequestStats(
+            redactionCount: 0,
+            shouldBlockNonUTF8Forwarding: false,
+            countForwardedRedaction: false
+        )
+        streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
+            path: "/v1/messages",
+            bodyCount: 0,
+            bodyTypes: [],
+            streamCount: 1,
+            streamTypes: ["Credential"],
+            advisoryCount: 1,
+            advisoryTypes: ["Email"]
+        ))
+        streamingServer.drainAuditLogForTesting()
+
+        XCTAssertEqual(streamingServer.stats.requestsProcessed, 1)
+        XCTAssertEqual(streamingServer.stats.requestsRedacted, 1)
+        XCTAssertEqual(streamingServer.stats.secretsRedacted, 1)
+        XCTAssertEqual(streamingServer.stats.advisoryMatches, 1)
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY REDACTED 1 secret(s) in /v1/messages"))
+        XCTAssertTrue(log.contains("Credential x1"))
+        XCTAssertTrue(log.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"))
+        XCTAssertTrue(log.contains("Email x1"))
+    }
+
     func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
         var bufferConfig = PastewatchConfig.defaultConfig
         bufferConfig.responseStreamingRedactionMode = .buffer

@@ -4,6 +4,13 @@ import Foundation
 /// is unreliable (arm64 dataTask completion handler never fires).
 /// On macOS this file compiles but is not used — ProxyServer uses URLSession there.
 struct CurlHTTPClient {
+    typealias StreamAlertBuilder = (
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data?
+
     private static let responseHeaderReadChunkSize = 256
     private static let maxHeaderTerminatorOverlapBytes = 3
     private static let crlfHeaderTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
@@ -83,12 +90,7 @@ struct CurlHTTPClient {
         proxySeverity: Severity = .high,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
-        alertBeforeDone: ((
-            _ streamCount: Int,
-            _ streamTypes: [String],
-            _ advisoryCount: Int,
-            _ advisoryTypes: [String]
-        ) -> Data?)? = nil
+        alertBeforeDone: StreamAlertBuilder? = nil
     ) -> Response? {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
@@ -284,6 +286,26 @@ struct CurlHTTPClient {
         let advisoryCount: Int
         let advisoryTypes: [String]
     }
+
+    private struct RawStreamAlertContext {
+        let stream: StreamContext
+        let alertBeforeDone: StreamAlertBuilder?
+    }
+
+    /// WO-351: raw_stream alert detection keeps only a small [DONE] lookbehind
+    /// instead of buffering arbitrary partial SSE frames.
+    private struct RawStreamAlertState {
+        var pending = Data()
+        var sawDone = false
+        var advisoryScanTail = Data()
+        var advisoryScanBaseOffset = 0
+        var seenAdvisorySignatures: Set<String> = []
+    }
+
+    private static let rawStreamDoneLine = Data("data: [DONE]".utf8)
+    private static let rawStreamScanOverlapBytes = 4_096
+    private static let rawStreamAdvisoryScanWindowBytes = rawStreamScanOverlapBytes
+    private static let rawStreamDeliveryLookbehindBytes = rawStreamScanOverlapBytes
 
     static func cancelActiveProcesses() {
         activeProcessLock.lock()
@@ -484,12 +506,7 @@ struct CurlHTTPClient {
     static func relayBodyChunks(
         from bodyPipe: Pipe,
         ctx: StreamContext,
-        alertBeforeDone: ((
-            _ streamCount: Int,
-            _ streamTypes: [String],
-            _ advisoryCount: Int,
-            _ advisoryTypes: [String]
-        ) -> Data?)? = nil
+        alertBeforeDone: StreamAlertBuilder? = nil
     ) -> StreamRelayResult {
         var parser = SSEFrameParser()
         let fd = bodyPipe.fileHandleForReading.fileDescriptor
@@ -498,6 +515,8 @@ struct CurlHTTPClient {
         var totals = StreamScanTotals()
         // WO-216: track how the read loop exited so we know whether to flush the remainder.
         var clientEpipe = false
+        var rawStreamAlertState = RawStreamAlertState()
+        let rawAlert = RawStreamAlertContext(stream: ctx, alertBeforeDone: alertBeforeDone)
 
         readLoop: while true {
             let n = Foundation.read(fd, &buf, chunkSize)
@@ -589,9 +608,9 @@ struct CurlHTTPClient {
                 guard let rawOutput = relayRawStreamChunk(
                     chunk,
                     parser: &parser,
-                    ctx: ctx,
-                    alertBeforeDone: alertBeforeDone,
-                    totals: &totals
+                    alert: rawAlert,
+                    totals: &totals,
+                    alertState: &rawStreamAlertState
                 ) else { continue readLoop }
                 outData = rawOutput.data
                 deliveryScopedAdvisoryCount = rawOutput.advisoryCount
@@ -611,31 +630,14 @@ struct CurlHTTPClient {
             }
         }
 
-        // Flush partial SSE remainder at EOF only — skip on EPIPE.
-        // WO-172: redact before sending — a partial frame may contain a mid-stream credential
-        // that was split across chunk boundaries and never reached the per-frame redaction path.
-        // WO-216: on EPIPE the client is gone; scanning the remainder burns CPU and inflates
-        // stats with secrets that were never actually delivered or redacted to anyone.
-        if !clientEpipe && (ctx.redactionMode == .perSSEEvent ||
-            (ctx.redactionMode == .rawStream && alertBeforeDone != nil)) {
-            let rem = parser.remainingBytes
-            if !rem.isEmpty {
-                let r = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
-                totals.recordCritical(r)
-                // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
-                let alert = alertBeforeDone?(
-                    totals.redactionCount,
-                    totals.redactionTypes,
-                    totals.advisoryCount + r.advisoryCount,
-                    totals.advisoryTypes + r.advisoryTypes
-                )
-                let delivered = sendAll(
-                    insertingSSEDataBeforeDone(alert, into: r.data),
-                    to: ctx.clientSocket,
-                    flags: ctx.sendFlags
-                )
-                totals.recordAdvisoryIfDelivered(delivered, count: r.advisoryCount, types: r.advisoryTypes)
-            }
+        if !clientEpipe {
+            flushRelayRemainder(
+                parser: &parser,
+                ctx: ctx,
+                alertBeforeDone: alertBeforeDone,
+                totals: &totals,
+                rawStreamAlertState: &rawStreamAlertState
+            )
         }
         return StreamRelayResult(
             redactionCount: totals.redactionCount,
@@ -645,21 +647,94 @@ struct CurlHTTPClient {
         )
     }
 
+    private static func flushRelayRemainder(
+        parser: inout SSEFrameParser,
+        ctx: StreamContext,
+        alertBeforeDone: StreamAlertBuilder?,
+        totals: inout StreamScanTotals,
+        rawStreamAlertState: inout RawStreamAlertState
+    ) {
+        // Flush partial SSE remainder at EOF only — skip on EPIPE.
+        // WO-172: redact before sending — a partial frame may contain a mid-stream credential
+        // that was split across chunk boundaries and never reached the per-frame redaction path.
+        // WO-216: on EPIPE the client is gone; scanning the remainder burns CPU and inflates
+        // stats with secrets that were never actually delivered or redacted to anyone.
+        if ctx.redactionMode == .perSSEEvent {
+            flushPerSSEEventRemainder(
+                parser: &parser,
+                ctx: ctx,
+                alertBeforeDone: alertBeforeDone,
+                totals: &totals
+            )
+        } else if ctx.redactionMode == .rawStream && alertBeforeDone != nil {
+            flushRawStreamRemainder(
+                state: &rawStreamAlertState,
+                ctx: ctx,
+                alertBeforeDone: alertBeforeDone,
+                totals: &totals
+            )
+        }
+    }
+
+    private static func flushPerSSEEventRemainder(
+        parser: inout SSEFrameParser,
+        ctx: StreamContext,
+        alertBeforeDone: StreamAlertBuilder?,
+        totals: inout StreamScanTotals
+    ) {
+        let rem = parser.remainingBytes
+        guard !rem.isEmpty else { return }
+        let redaction = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
+        totals.recordCritical(redaction)
+        // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
+        let alert = alertBeforeDone?(
+            totals.redactionCount,
+            totals.redactionTypes,
+            totals.advisoryCount + redaction.advisoryCount,
+            totals.advisoryTypes + redaction.advisoryTypes
+        )
+        let delivered = sendAll(
+            insertingSSEDataBeforeDone(alert, into: redaction.data),
+            to: ctx.clientSocket,
+            flags: ctx.sendFlags
+        )
+        totals.recordAdvisoryIfDelivered(
+            delivered,
+            count: redaction.advisoryCount,
+            types: redaction.advisoryTypes
+        )
+    }
+
+    private static func flushRawStreamRemainder(
+        state: inout RawStreamAlertState,
+        ctx: StreamContext,
+        alertBeforeDone: StreamAlertBuilder?,
+        totals: inout StreamScanTotals
+    ) {
+        guard let rawOutput = relayRawStreamEOF(
+            state: &state,
+            ctx: ctx,
+            alertBeforeDone: alertBeforeDone,
+            totals: &totals
+        ) else { return }
+        let delivered = sendAll(rawOutput.data, to: ctx.clientSocket, flags: ctx.sendFlags)
+        totals.recordAdvisoryIfDelivered(
+            delivered,
+            count: rawOutput.advisoryCount,
+            types: rawOutput.advisoryTypes
+        )
+    }
+
     private static func relayRawStreamChunk(
         _ chunk: Data,
         parser: inout SSEFrameParser,
-        ctx: StreamContext,
-        alertBeforeDone: ((
-            _ streamCount: Int,
-            _ streamTypes: [String],
-            _ advisoryCount: Int,
-            _ advisoryTypes: [String]
-        ) -> Data?)?,
-        totals: inout StreamScanTotals
+        alert: RawStreamAlertContext,
+        totals: inout StreamScanTotals,
+        alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
-        guard alertBeforeDone != nil else {
+        guard alert.alertBeforeDone != nil else {
             // WO-324: raw_stream skips SSE parsing but still redacts critical raw text.
-            let redaction = redactRawBytes(chunk, config: ctx.config, severity: ctx.severity)
+            let redaction = redactRawBytes(chunk, config: alert.stream.config, severity: alert.stream.severity)
             totals.recordCritical(redaction)
             return StreamChunkRelayResult(
                 data: redaction.data,
@@ -668,42 +743,149 @@ struct CurlHTTPClient {
             )
         }
 
-        let result = parser.feed(chunk)
-        if result.overflowFlushed {
-            return relayRawStreamOverflow(
-                result.overflowBytes,
-                ctx: ctx,
-                alertBeforeDone: alertBeforeDone,
-                totals: &totals
+        _ = parser // WO-351: raw_stream no longer uses frame assembly for delivery.
+        alertState.pending.append(chunk)
+        if let doneRange = alertState.pending.range(of: rawStreamDoneLine) {
+            let data = alertState.pending
+            alertState.pending.removeAll(keepingCapacity: true)
+            alertState.sawDone = true
+            return relayRawStreamBufferedData(
+                data,
+                doneLineStart: doneRange.lowerBound,
+                alert: alert,
+                totals: &totals,
+                alertState: &alertState
             )
         }
 
-        var assembled = Data()
-        var pendingAdvisoryCount = 0
-        var pendingAdvisoryTypes: [String] = []
-        for frame in result.frames {
-            let redaction = redactRawBytes(frame.raw, config: ctx.config, severity: ctx.severity)
-            totals.recordCritical(redaction)
-            pendingAdvisoryCount += redaction.advisoryCount
-            pendingAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
-            // WO-336: raw_stream preserves raw frame bytes, but still needs
-            // frame-aware [DONE] detection across arbitrary curl read chunks.
-            if frame.data == "[DONE]",
-               let alert = alertBeforeDone?(
+        guard alertState.pending.count > rawStreamDeliveryLookbehindBytes else {
+            return nil
+        }
+        let emitEnd = alertState.pending.index(
+            alertState.pending.startIndex,
+            offsetBy: alertState.pending.count - rawStreamDeliveryLookbehindBytes
+        )
+        let data = Data(alertState.pending[..<emitEnd])
+        alertState.pending.removeSubrange(..<emitEnd)
+        return relayRawStreamBufferedData(
+            data,
+            doneLineStart: nil,
+            alert: alert,
+            totals: &totals,
+            alertState: &alertState
+        )
+    }
+
+    private static func relayRawStreamBufferedData(
+        _ data: Data,
+        doneLineStart: Data.Index?,
+        alert: RawStreamAlertContext,
+        totals: inout StreamScanTotals,
+        alertState: inout RawStreamAlertState
+    ) -> StreamChunkRelayResult {
+        let redaction = redactRawBytes(data, config: alert.stream.config, severity: alert.stream.severity)
+        totals.recordCritical(redaction)
+        let advisory = detectNewRawStreamAdvisories(data, state: &alertState, config: alert.stream.config)
+        var output = redaction.data
+        if doneLineStart != nil,
+           let doneRange = output.range(of: rawStreamDoneLine),
+           let alertData = alert.alertBeforeDone?(
+            totals.redactionCount,
+            totals.redactionTypes,
+            totals.advisoryCount + advisory.count,
+            totals.advisoryTypes + advisory.types
+           ) {
+            let frameStart = rawStreamFrameStart(in: output, before: doneRange.lowerBound)
+            output.insert(contentsOf: alertData, at: frameStart)
+        }
+        return StreamChunkRelayResult(
+            data: output,
+            advisoryCount: advisory.count,
+            advisoryTypes: advisory.types
+        )
+    }
+
+    private static func relayRawStreamEOF(
+        state: inout RawStreamAlertState,
+        ctx: StreamContext,
+        alertBeforeDone: StreamAlertBuilder?,
+        totals: inout StreamScanTotals
+    ) -> StreamChunkRelayResult? {
+        guard !state.sawDone else { return nil }
+        if state.pending.isEmpty {
+            guard let alert = alertBeforeDone?(
                 totals.redactionCount,
                 totals.redactionTypes,
-                totals.advisoryCount + pendingAdvisoryCount,
-                totals.advisoryTypes + pendingAdvisoryTypes
-               ) {
-                assembled.append(alert)
-            }
-            assembled.append(redaction.data)
+                totals.advisoryCount,
+                totals.advisoryTypes
+            ) else { return nil }
+            return StreamChunkRelayResult(data: alert, advisoryCount: 0, advisoryTypes: [])
         }
-        return assembled.isEmpty ? nil : StreamChunkRelayResult(
-            data: assembled,
-            advisoryCount: pendingAdvisoryCount,
-            advisoryTypes: pendingAdvisoryTypes
+
+        let data = state.pending
+        state.pending.removeAll(keepingCapacity: true)
+        let redaction = redactRawBytes(data, config: ctx.config, severity: ctx.severity)
+        totals.recordCritical(redaction)
+        let advisory = detectNewRawStreamAdvisories(data, state: &state, config: ctx.config)
+        var output = redaction.data
+        // WO-352: no [DONE] arrived, so deliver the advisory event after the final bytes.
+        if let alert = alertBeforeDone?(
+            totals.redactionCount,
+            totals.redactionTypes,
+            totals.advisoryCount + advisory.count,
+            totals.advisoryTypes + advisory.types
+        ) {
+            output.append(alert)
+        }
+        return StreamChunkRelayResult(
+            data: output,
+            advisoryCount: advisory.count,
+            advisoryTypes: advisory.types
         )
+    }
+
+    private static func detectNewRawStreamAdvisories(
+        _ delivered: Data,
+        state: inout RawStreamAlertState,
+        config: PastewatchConfig
+    ) -> (count: Int, types: [String]) {
+        guard !delivered.isEmpty else { return (0, []) }
+        state.advisoryScanTail.append(delivered)
+        if state.advisoryScanTail.count > rawStreamAdvisoryScanWindowBytes {
+            let overflow = state.advisoryScanTail.count - rawStreamAdvisoryScanWindowBytes
+            let trimEnd = state.advisoryScanTail.index(state.advisoryScanTail.startIndex, offsetBy: overflow)
+            state.advisoryScanTail.removeSubrange(..<trimEnd)
+            state.advisoryScanBaseOffset += overflow
+        }
+
+        // swiftlint:disable optional_data_string_conversion
+        let text = String(bytes: state.advisoryScanTail, encoding: .utf8) ??
+            String(decoding: Array(state.advisoryScanTail), as: UTF8.self)
+        // swiftlint:enable optional_data_string_conversion
+        let matches = streamAdvisoryMatches(DetectionRules.scan(text, config: config))
+        var types: [String] = []
+        for match in matches {
+            let lowerOffset = text[..<match.range.lowerBound].utf8.count
+            let upperOffset = text[..<match.range.upperBound].utf8.count
+            let signature = [
+                match.displayName,
+                "\(state.advisoryScanBaseOffset + lowerOffset)",
+                "\(state.advisoryScanBaseOffset + upperOffset)",
+                match.value
+            ].joined(separator: ":")
+            guard state.seenAdvisorySignatures.insert(signature).inserted else { continue }
+            types.append(match.displayName)
+        }
+        return (types.count, types)
+    }
+
+    private static func rawStreamFrameStart(in data: Data, before doneLineStart: Data.Index) -> Data.Index {
+        let prefix = Data(data[..<doneLineStart])
+        let crlfTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
+        let lfTerminator = Data([0x0A, 0x0A])
+        let crlfStart = prefix.range(of: crlfTerminator, options: .backwards)?.upperBound
+        let lfStart = prefix.range(of: lfTerminator, options: .backwards)?.upperBound
+        return max(crlfStart ?? 0, lfStart ?? 0)
     }
 
     private static func relayRawStreamOverflow(

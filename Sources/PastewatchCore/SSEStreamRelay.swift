@@ -112,8 +112,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     func execute(task: URLSessionDataTask, session: URLSession) {
         task.delegate = self
         activeTask = task
-        task.resume()
         startIdleTimer(task: task)
+        task.resume()
 
         // Wait for the response head (or failure).
         let headWait = headReceived.wait(timeout: .now() + idleTimeoutSeconds)
@@ -124,7 +124,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // overwrite our error response with a spurious "HTTP/1.1 200 OK" preamble.
             // WO-179: lock because didCompleteWithError reads this from the delegate queue.
             socketWriteLock.lock(); didWriteHeaders = true; socketWriteLock.unlock()
-            idleTimer?.cancel()
+            cancelIdleTimerSync()
             // WO-176: wait for the delegate to finish so execute() does not return while
             // didCompleteWithError is still writing to the socket.
             _ = streamDone.wait(timeout: .now() + 5)
@@ -138,7 +138,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // WO-171: same guard — prevent async didCompleteWithError from corrupting the socket.
             // WO-179: lock because didCompleteWithError reads this from the delegate queue.
             socketWriteLock.lock(); didWriteHeaders = true; socketWriteLock.unlock()
-            idleTimer?.cancel()
+            cancelIdleTimerSync()
             // WO-176: wait for delegate to finish before execute() returns.
             _ = streamDone.wait(timeout: .now() + 5)
             drainDelegateQueue(session)
@@ -159,10 +159,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
         // WO-318: cancel the idle timer before draining the delegate queue on the
         // max-session path, so a late timer fire cannot race the shutdown drain.
-        idleTimer?.cancel()
+        cancelIdleTimerSync()
         // WO-284: streamDone can be signaled by the idle timer while didReceive is still
         // finishing on the delegate queue. Drain it before callers read streamRedactionCount.
         drainDelegateQueue(session)
+        sendIdleTimeoutErrorIfNeeded()
     }
 
     // MARK: - URLSessionDataDelegate
@@ -298,8 +299,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // but the idle timer is still armed. Cancel it explicitly so execute() does not
             // wait up to 60s for a timer that will fire against a dead connection.
             // timerQueue.async (not sync) to avoid deadlock if this callback fires from timerQueue.
-            timerQueue.async { [weak self] in
-                self?.idleTimer?.cancel()
+            if hasClientEpipe() {
+                // WO-350: only clear the timer after an actual EPIPE. A successful
+                // overflow relay must keep the active idle timeout armed.
+                cancelIdleTimerAsync()
             }
             return
         }
@@ -500,6 +503,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         activeTask?.cancel()
     }
 
+    private func hasClientEpipe() -> Bool {
+        socketWriteLock.lock()
+        defer { socketWriteLock.unlock() }
+        return clientEpipe
+    }
+
     private func drainDelegateQueue(_ session: URLSession) {
         let drain = BlockOperation {}
         session.delegateQueue.addOperation(drain)
@@ -525,10 +534,46 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         redactRawStreamBytes(raw, config: config, severity: severity)
     }
 
+    private func sendIdleTimeoutErrorIfNeeded() {
+        socketWriteLock.lock()
+        // WO-349: a post-header idle timeout before the first body byte used to
+        // return with no HTTP status line. Claim the write slot and send 504.
+        let shouldSend = timerDidFire && !didWriteHeaders && !clientEpipe && responseStatus != 0
+        if shouldSend {
+            didWriteHeaders = true
+        }
+        socketWriteLock.unlock()
+        guard shouldSend else { return }
+        sendErrorDirect(status: 504, message: "Gateway Timeout")
+    }
+
     // MARK: - Idle timer
 
     private func startIdleTimer(task: URLSessionDataTask) {
-        idleTimer = makeIdleTimer(task: task)
+        timerQueue.sync {
+            // WO-350: arm before task.resume() and mutate only on timerQueue so
+            // fast delegate callbacks cannot race startup into a stale timer object.
+            cancelIdleTimerOnQueue()
+            idleTimer = makeIdleTimerOnQueue(task: task)
+        }
+    }
+
+    private func cancelIdleTimerSync() {
+        timerQueue.sync {
+            cancelIdleTimerOnQueue()
+        }
+    }
+
+    private func cancelIdleTimerAsync() {
+        timerQueue.async { [weak self] in
+            self?.cancelIdleTimerOnQueue()
+        }
+    }
+
+    private func cancelIdleTimerOnQueue() {
+        idleTimer?.cancel()
+        idleTimer = nil
+        idleDeadline = nil
     }
 
     /// WO-301: reschedule the current timer in place instead of canceling and allocating
