@@ -392,6 +392,30 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(relay.output.contains("event: pastewatch_advisory"))
     }
 
+    func testLinuxRelayRawStreamAlertSurvivesRedactionBeforeDone() {
+        // WO-388: post-redaction byte shifts before [DONE] must not suppress alert injection.
+        let credential = "password=s3cr3t-hunter2"
+        var stream = Data("data: \(credential)\n\n".utf8)
+        stream.append(Data("data: [DONE]\n\n".utf8))
+
+        let relay = relayStream(
+            stream,
+            mode: .rawStream,
+            closePeerBeforeRelay: false,
+            alertBeforeDone: redactionAlertBeforeDone
+        )
+
+        XCTAssertEqual(relay.result.redactionCount, 1)
+        XCTAssertFalse(relay.output.contains(credential))
+        XCTAssertTrue(relay.output.contains("<CREDENTIAL_1>"))
+        guard let alertRange = relay.output.range(of: "event: pastewatch_alert"),
+              let doneRange = relay.output.range(of: "data: [DONE]") else {
+            XCTFail(relay.output)
+            return
+        }
+        XCTAssertLessThan(alertRange.lowerBound, doneRange.lowerBound)
+    }
+
     func testLinuxRelayRawStreamAlertForwardsPartialChunkBeforeTerminator() {
         let relay = relayPartialRawStream(
             Data(("data: contact operator@example.com " + String(repeating: "x", count: 5_000)).utf8)
@@ -560,6 +584,16 @@ final class ProxyStreamRedactionTests: XCTestCase {
         return Data(
             "event: pastewatch_advisory\ndata: \(advisoryCount):\(advisoryTypes.joined(separator: ","))\n\n".utf8
         )
+    }
+
+    private func redactionAlertBeforeDone(
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data? {
+        guard streamCount > 0 else { return nil }
+        return Data("event: pastewatch_alert\ndata: \(streamCount):\(streamTypes.joined(separator: ","))\n\n".utf8)
     }
 
     private func relayStream(

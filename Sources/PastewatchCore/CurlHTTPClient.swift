@@ -22,9 +22,17 @@ struct CurlHTTPClient {
     private static let lfHeaderTerminator = Data([0x0A, 0x0A])
     // WO-313: byte marker for curl's appended non-streaming status trailer.
     private static let nonStreamingStatusMarker = Data("\n__HTTP_STATUS__".utf8)
+    private static let curlOperationTimedOutExitCode: Int32 = 28 // WO-386: CURLE_OPERATION_TIMEDOUT.
     // WO-338: live curl subprocesses must be cancellable during ProxyServer.stop().
     private static let activeProcessLock = NSLock()
     private static var activeProcesses: [ObjectIdentifier: Process] = [:]
+    private static let utf8ContinuationByteMask: UInt8 = 0xC0
+    private static let utf8ContinuationBytePrefix: UInt8 = 0x80
+
+    enum ExecuteError: Error, Equatable {
+        case timeout // WO-386: curl exit 28 maps to HTTP 504, not generic 502.
+        case failure
+    }
 
     struct Response {
         let statusCode: Int
@@ -87,7 +95,7 @@ struct CurlHTTPClient {
     }
 
     /// Execute an HTTP request via /usr/bin/curl.
-    /// Returns nil if curl is not available or the process fails.
+    /// Throws if curl is not available or the process fails.
     ///
     /// For non-streaming responses: uses a large total timeout ceiling.
     /// For streaming responses: uses an idle timeout plus a larger hard ceiling
@@ -108,9 +116,9 @@ struct CurlHTTPClient {
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
         alertBeforeDone: StreamAlertBuilder? = nil
-    ) -> Response? {
+    ) throws -> Response {
         let curlPath = "/usr/bin/curl"
-        guard FileManager.default.fileExists(atPath: curlPath) else { return nil }
+        guard FileManager.default.fileExists(atPath: curlPath) else { throw ExecuteError.failure }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: curlPath)
@@ -127,7 +135,7 @@ struct CurlHTTPClient {
         // Write body to a temp file to avoid argument length limits
         var tempFile: String?
         if let body = body {
-            guard let path = Self.writeTemporaryBodyFile(body) else { return nil }
+            guard let path = Self.writeTemporaryBodyFile(body) else { throw ExecuteError.failure }
             args.append(contentsOf: Self.bodyUploadArgs(forTempFile: path))
             tempFile = path
         }
@@ -148,7 +156,7 @@ struct CurlHTTPClient {
         do {
             try startAndRegisterActiveProcess(process)
         } catch {
-            return nil
+            throw ExecuteError.failure
         }
         defer { unregisterActiveProcess(process) }
 
@@ -164,19 +172,30 @@ struct CurlHTTPClient {
                 severity: proxySeverity
             )
             // WO-196: alertBeforeDone passed directly, not through StreamContext.
-            return relayStreamingResponse(process: process, bodyPipe: bodyPipe, headerPipe: headerPipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
+            guard let response = relayStreamingResponse(
+                process: process,
+                bodyPipe: bodyPipe,
+                headerPipe: headerPipe,
+                ctx: ctx,
+                alertBeforeDone: alertBeforeDone
+            ) else {
+                throw ExecuteError.failure
+            }
+            return response
         }
 
         process.waitUntilExit()
 
-        guard process.terminationStatus == 0 else { return nil }
+        guard process.terminationStatus == 0 else {
+            throw executeError(forTerminationStatus: process.terminationStatus)
+        }
 
         let rawOutput = bodyPipe.fileHandleForReading.readDataToEndOfFile()
         let headerData = headerPipe.fileHandleForReading.readDataToEndOfFile()
 
         // WO-313: parse the curl status trailer at the byte level so a binary
         // upstream body is forwarded unchanged instead of failing the whole request.
-        guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { return nil }
+        guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { throw ExecuteError.failure }
         var responseBody = parsedOutput.body
         var responseRedaction = SSEFrameRedactionResult(data: responseBody, count: 0, types: [])
         if String(data: parsedOutput.body, encoding: .utf8) == nil, !parsedOutput.body.isEmpty {
@@ -210,6 +229,10 @@ struct CurlHTTPClient {
             responseRedactionCount: responseRedaction.count,
             responseRedactionTypes: responseRedaction.types
         )
+    }
+
+    static func executeError(forTerminationStatus status: Int32) -> ExecuteError {
+        status == curlOperationTimedOutExitCode ? .timeout : .failure
     }
 
     /// Relay a streaming (SSE) curl response incrementally to the client socket.
@@ -349,6 +372,20 @@ struct CurlHTTPClient {
     private static let rawStreamAdvisoryScanWindowBytes = rawStreamScanOverlapBytes
     private static let rawStreamDeliveryLookbehindBytes = rawStreamScanOverlapBytes
 
+    static func utf8AlignedTrimOffset(in data: Data, minimumOffset: Int) -> Int {
+        // WO-387: a sliding advisory scan window must not start on a UTF-8 continuation byte.
+        var offset = min(max(0, minimumOffset), data.count)
+        while offset < data.count {
+            let index = data.index(data.startIndex, offsetBy: offset)
+            let byte = data[index]
+            guard (byte & utf8ContinuationByteMask) == utf8ContinuationBytePrefix else {
+                break
+            }
+            offset += 1
+        }
+        return offset
+    }
+
     static func cancelActiveProcesses() {
         activeProcessLock.lock()
         let processes = Array(activeProcesses.values)
@@ -369,6 +406,19 @@ struct CurlHTTPClient {
     }
 
     private static func unregisterActiveProcess(_ process: Process) {
+        activeProcessLock.lock()
+        activeProcesses.removeValue(forKey: ObjectIdentifier(process))
+        activeProcessLock.unlock()
+    }
+
+    static func registerActiveProcessForTesting(_ process: Process) {
+        // WO-370: tests need deterministic coverage for stop-driven curl cancellation.
+        activeProcessLock.lock()
+        activeProcesses[ObjectIdentifier(process)] = process
+        activeProcessLock.unlock()
+    }
+
+    static func unregisterActiveProcessForTesting(_ process: Process) {
         activeProcessLock.lock()
         activeProcesses.removeValue(forKey: ObjectIdentifier(process))
         activeProcessLock.unlock()
@@ -895,9 +945,14 @@ struct CurlHTTPClient {
         state.advisoryScanTail.append(delivered)
         if state.advisoryScanTail.count > rawStreamAdvisoryScanWindowBytes {
             let overflow = state.advisoryScanTail.count - rawStreamAdvisoryScanWindowBytes
-            let trimEnd = state.advisoryScanTail.index(state.advisoryScanTail.startIndex, offsetBy: overflow)
-            // WO-377: advance the base before trimming so later signatures stay absolute.
-            state.advisoryScanBaseOffset += overflow
+            let trimOffset = utf8AlignedTrimOffset(in: state.advisoryScanTail, minimumOffset: overflow)
+            let trimEnd = state.advisoryScanTail.index(
+                state.advisoryScanTail.startIndex,
+                offsetBy: trimOffset
+            )
+            // WO-377/WO-387: advance by the exact removed byte count so later
+            // signatures stay absolute even when trim skips UTF-8 continuation bytes.
+            state.advisoryScanBaseOffset += trimOffset
             state.advisoryScanTail.removeSubrange(..<trimEnd)
         }
 

@@ -115,6 +115,22 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         XCTAssertEqual(Int(info.st_mode & 0o777), 0o600)
     }
 
+    func testCurlTimeoutExitCodeMapsToTimeoutError() {
+        // WO-386: curl exit 28 is CURLE_OPERATION_TIMEDOUT and maps to HTTP 504 upstream.
+        XCTAssertEqual(CurlHTTPClient.executeError(forTerminationStatus: 28), .timeout)
+        XCTAssertEqual(CurlHTTPClient.executeError(forTerminationStatus: 6), .failure)
+        XCTAssertEqual(CurlHTTPClient.executeError(forTerminationStatus: 7), .failure)
+    }
+
+    func testRawStreamAdvisoryTrimSkipsUTF8ContinuationByte() {
+        // WO-387: when the sliding window trim lands inside "é", start after the sequence.
+        let bytes = Data([0x61, 0xC3, 0xA9, 0x62])
+
+        XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 2), 3)
+        XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 1), 1)
+        XCTAssertEqual(CurlHTTPClient.utf8AlignedTrimOffset(in: bytes, minimumOffset: 3), 3)
+    }
+
     func testCurlNonUTF8ResponseBodyRedactsASCIICredentialBytePreserving() {
         let credential = "password=s3cr3t-hunter2"
         var body = Data([0xFF, 0xFE])

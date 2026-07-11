@@ -45,6 +45,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-170: set by the idle-timer handler before signaling streamDone so that the
     /// async didCompleteWithError callback skips writing headers to the already-closed socket.
     private var timerDidFire = false
+    /// WO-385: set by the max-session ceiling path so it can send one HTTP 504
+    /// while still suppressing later delegate writes after task cancellation.
+    private var sessionCeilingDidFire = false
     /// WO-178: prevents double-signal on streamDone when both the idle timer and
     /// didCompleteWithError reach the signal site.
     /// WO-194: separate lock; streamDoneSignaled has no coupling to didWriteHeaders/timerDidFire.
@@ -158,9 +161,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // Wait for stream to finish (data is relayed incrementally via delegate callbacks).
         let streamWait = streamDone.wait(timeout: .now() + maxSessionSeconds)
         if streamWait == .timedOut {
-            // WO-292: the caller will close clientSocket after execute() returns. Mark it
-            // dead and cancel the task first so late delegate callbacks cannot write to it.
-            markClientEpipeAndCancelTask()
+            // WO-292/WO-385: cancel the task on the hard ceiling while preserving
+            // the ability to send one HTTP 504 if no response bytes reached the client.
+            markSessionCeilingAndCancelTask()
         }
         // WO-318: cancel the idle timer before draining the delegate queue on the
         // max-session path, so a late timer fire cannot race the shutdown drain.
@@ -190,11 +193,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // post-timer-cancel chunks do not write to the already-closed clientSocket fd.
         // timerDidFire is written under socketWriteLock; capture it there.
         socketWriteLock.lock()
-        let shouldExit = clientEpipe || timerDidFire
+        let terminalTimeout = timerDidFire || sessionCeilingDidFire
+        let shouldExit = clientEpipe || terminalTimeout
         let needsHeaders = !didWriteHeaders
-        // WO-241: set didWriteHeaders even when shouldExit=true so didCompleteWithError
-        // does not attempt a spurious sendAll() to the already-dead client socket.
-        if needsHeaders { didWriteHeaders = true }
+        // WO-241/WO-385: only a live relay claims the header slot here. Timeout
+        // paths must keep it open so execute() can send the single HTTP 504.
+        if needsHeaders && !shouldExit { didWriteHeaders = true }
         socketWriteLock.unlock()
         guard !shouldExit else { return }
 
@@ -278,13 +282,19 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         var output = Data()
         for frame in result.frames {
-            let redaction = redactRawBytes(frame.raw)
-            recordStreamScan(redaction)
             // WO-337: raw_stream preserves raw frame bytes, but still needs a frame-aware
             // [DONE] hook so alert/advisory events survive arbitrary URLSession chunking.
             if frame.data == "[DONE]", let alert = buildAlertBeforeDoneFrameIfNeeded() {
                 output.append(alert)
             }
+            guard frame.data != "[DONE]" else {
+                // WO-389: [DONE] is a protocol sentinel, not payload; exclude it
+                // from scan counts used by the advisory alert built immediately above.
+                output.append(frame.raw)
+                continue
+            }
+            let redaction = redactRawBytes(frame.raw)
+            recordStreamScan(redaction)
             output.append(redaction.data)
         }
         guard !output.isEmpty else { return }
@@ -371,7 +381,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-194: socketWriteLock guards didWriteHeaders+timerDidFire together (intentional coupling).
         socketWriteLock.lock()
         let alreadyWritten = didWriteHeaders
-        let timerFired = timerDidFire
+        let terminalTimeout = timerDidFire || sessionCeilingDidFire
         let clientAlreadyDead = clientEpipe
         socketWriteLock.unlock()
 
@@ -388,7 +398,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // corrupts the HTTP framing seen by the client.
         // WO-252: the ternary `responseStatus==0?200:responseStatus` is dead code — the guard
         // above requires responseStatus != 0, so the condition can never be true. Simplified.
-        if !alreadyWritten && !timerFired && !clientAlreadyDead && responseStatus != 0 {
+        if !alreadyWritten && !terminalTimeout && !clientAlreadyDead && responseStatus != 0 {
             let ok = writeStreamingHeaders(status: responseStatus, upstreamHeaders: responseHeaders)
             socketWriteLock.lock()
             didWriteHeaders = true
@@ -406,7 +416,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
         // fires the socket is dead; writing to it would corrupt the next connection on that fd.
         // WO-227: also guard behind clientEpipe — client is gone; flush burns CPU and inflates stats.
-        if !timerFired && !epipe {
+        if !terminalTimeout && !epipe {
             // Flush any partial SSE remainder on clean close.
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.
@@ -510,6 +520,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         activeTask?.cancel()
     }
 
+    private func markSessionCeilingAndCancelTask() {
+        socketWriteLock.lock()
+        sessionCeilingDidFire = true
+        socketWriteLock.unlock()
+        activeTask?.cancel()
+    }
+
     private func hasClientEpipe() -> Bool {
         socketWriteLock.lock()
         defer { socketWriteLock.unlock() }
@@ -562,7 +579,9 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         socketWriteLock.lock()
         // WO-349: a post-header idle timeout before the first body byte used to
         // return with no HTTP status line. Claim the write slot and send 504.
-        let shouldSend = timerDidFire && !didWriteHeaders && !clientEpipe && responseStatus != 0
+        // WO-385: max-session expiry shares the same single-error-response path.
+        let shouldSend = (timerDidFire || sessionCeilingDidFire) &&
+            !didWriteHeaders && !clientEpipe && responseStatus != 0
         if shouldSend {
             didWriteHeaders = true
         }

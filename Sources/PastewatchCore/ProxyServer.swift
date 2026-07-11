@@ -859,14 +859,24 @@ public final class ProxyServer {
         let alertBeforeDone = buildLinuxAlertClosure(
             redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes
         )
-        guard let curlResponse = CurlHTTPClient.execute(
-            method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
-            body: ctx.processedBodyData, caCertPath: caCertPath,
-            insecure: insecureTLS, streaming: shouldStream,
-            clientSocket: ctx.clientSocket, sendFlags: sendFlags,
-            streamingRedactionMode: streamingMode,
-            proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
-        ) else {
+        let curlResponse: CurlHTTPClient.Response
+        do {
+            curlResponse = try CurlHTTPClient.execute(
+                method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
+                body: ctx.processedBodyData, caCertPath: caCertPath,
+                insecure: insecureTLS, streaming: shouldStream,
+                clientSocket: ctx.clientSocket, sendFlags: sendFlags,
+                streamingRedactionMode: streamingMode,
+                proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
+            )
+        } catch CurlHTTPClient.ExecuteError.timeout {
+            // WO-386: curl exit 28 is an upstream timeout, not a bad gateway.
+            if shouldStream && ctx.redactionCount > 0 {
+                logRedaction(path: ctx.parsed.path, count: ctx.redactionCount, types: ctx.redactedTypes)
+            }
+            sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
+            return nil
+        } catch {
             // WO-304: Linux streaming can fail before CurlHTTPClient returns stream
             // stats; log body redactions here so the audit trail is not silent.
             if shouldStream && ctx.redactionCount > 0 {

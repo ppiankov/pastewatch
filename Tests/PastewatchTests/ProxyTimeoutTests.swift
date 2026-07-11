@@ -45,6 +45,29 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertGreaterThan(proxyClientSocketTimeoutSeconds, 0)
     }
 
+    func testCurlCancelActiveProcessesTerminatesRegisteredProcess() throws {
+        // WO-370: Linux stop() relies on CurlHTTPClient.cancelActiveProcesses().
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        CurlHTTPClient.registerActiveProcessForTesting(process)
+        defer {
+            CurlHTTPClient.unregisterActiveProcessForTesting(process)
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        let start = Date()
+        CurlHTTPClient.cancelActiveProcesses()
+        process.waitUntilExit()
+
+        XCTAssertFalse(process.isRunning)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0)
+    }
+
     // MARK: - CurlHTTPClient idle-based args
 
     func testStreamingCurlArgsContainSpeedBasedIdle() {
@@ -193,7 +216,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertFalse(response.hasPrefix("[PASTEWATCH-STREAM-DROP]"), response)
     }
 
-    func testSSEStreamRelayHardCeilingCancelsHangingTaskWithoutWritingHeaders() {
+    func testSSEStreamRelayHardCeilingAfterHeadersSendsHTTP504() {
         HangingStreamURLProtocol.reset()
         var sockets = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
@@ -227,7 +250,9 @@ final class ProxyTimeoutTests: XCTestCase {
 
         wait(for: [finished], timeout: 2)
         XCTAssertTrue(HangingStreamURLProtocol.waitForStop(timeout: 1))
-        assertNoDataAvailable(on: sockets[0])
+        let response = readSocketString(from: sockets[0])
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 504 Gateway Timeout"), response)
+        XCTAssertTrue(response.contains(#""error": "Gateway Timeout""#), response)
     }
 
     func testSSEStreamRelayIdleTimeoutAfterHeadersSendsHTTP504() {
@@ -331,8 +356,11 @@ final class ProxyTimeoutTests: XCTestCase {
             idleTimeoutSeconds: 5,
             maxSessionSeconds: 1
         )
-        relay.buildAlertBeforeDone = { _, _, _, _ in
-            Data("event: pastewatch_advisory\ndata: {}\n\n".utf8)
+        var capturedAdvisoryCount = -1
+        relay.buildAlertBeforeDone = { _, _, advisoryCount, _ in
+            // WO-389: the `[DONE]` sentinel must not be scanned into advisory counts.
+            capturedAdvisoryCount = advisoryCount
+            return Data("event: pastewatch_advisory\ndata: {}\n\n".utf8)
         }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SplitDoneStreamURLProtocol.self]
@@ -357,6 +385,58 @@ final class ProxyTimeoutTests: XCTestCase {
         }
         XCTAssertLessThan(advisoryRange.lowerBound, doneRange.lowerBound)
         XCTAssertTrue(response.contains("data: one\n\n"))
+        XCTAssertEqual(capturedAdvisoryCount, 0)
+    }
+
+    func testSSEStreamRelayClientDisconnectDuringDoneAlertReturnsBounded() {
+        // WO-372: client EPIPE during alert+[DONE] should cancel the task without stat inflation.
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+
+        ControlledDoneStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1],
+            sendFlags: 0,
+            redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high,
+            idleTimeoutSeconds: 5,
+            maxSessionSeconds: 1
+        )
+        relay.buildAlertBeforeDone = { streamCount, streamTypes, _, _ in
+            guard streamCount > 0 else { return nil }
+            return Data("event: pastewatch_alert\ndata: \(streamTypes.joined(separator: ","))\n\n".utf8)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ControlledDoneStreamURLProtocol.self]
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: delegateQueue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "relay returns after client EPIPE around done alert")
+        let request = URLRequest(url: URL(string: "https://example.test/stream")!)
+        DispatchQueue.global().async {
+            relay.execute(request: request, session: session)
+            finished.fulfill()
+        }
+
+        XCTAssertTrue(ControlledDoneStreamURLProtocol.waitForFirstChunk(timeout: 2))
+        var firstResponse = readSocketString(from: sockets[0])
+        if !firstResponse.contains("<CREDENTIAL_1>") {
+            firstResponse += readSocketString(from: sockets[0])
+        }
+        XCTAssertTrue(firstResponse.contains("<CREDENTIAL_1>"), firstResponse)
+        close(sockets[0])
+        ControlledDoneStreamURLProtocol.allowDone()
+
+        wait(for: [finished], timeout: 2)
+        XCTAssertEqual(relay.streamRedactionCount, 1)
+        XCTAssertEqual(relay.streamRedactionTypes, ["Credential"])
     }
 
     private func assertNoDataAvailable(
@@ -507,6 +587,58 @@ private class OverflowThenHangStreamURLProtocol: URLProtocol {
 
     override func stopLoading() {
         Self.stopSemaphore.signal()
+    }
+}
+
+private class ControlledDoneStreamURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var firstChunkSemaphore = DispatchSemaphore(value: 0)
+    private static var allowDoneSemaphore = DispatchSemaphore(value: 0)
+
+    static func reset() {
+        lock.lock()
+        firstChunkSemaphore = DispatchSemaphore(value: 0)
+        allowDoneSemaphore = DispatchSemaphore(value: 0)
+        lock.unlock()
+    }
+
+    static func waitForFirstChunk(timeout: TimeInterval) -> Bool {
+        firstChunkSemaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    static func allowDone() {
+        allowDoneSemaphore.signal()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+              ) else {
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=s3cr3t-hunter2"}}"#
+        client?.urlProtocol(self, didLoad: Data("data: \(payload)\n\n".utf8))
+        Self.firstChunkSemaphore.signal()
+        _ = Self.allowDoneSemaphore.wait(timeout: .now() + 1)
+        client?.urlProtocol(self, didLoad: Data("data: [DONE]\n\n".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {
+        Self.allowDoneSemaphore.signal()
     }
 }
 
