@@ -3,9 +3,63 @@ import Foundation
 import FoundationNetworking
 #endif
 
+// MARK: - Timeout constants
+
+/// Default idle timeout for streaming responses (seconds). Resets on each received chunk.
+/// A truly stalled upstream will be killed after this window of silence.
+let proxyStreamIdleTimeoutSeconds: Double = 60
+
+/// Total-duration ceiling for non-streaming (buffered) responses (seconds).
+let proxyNonStreamTotalTimeoutSeconds: Double = 600
+
+/// WO-401: URLSession resource timeout must not preempt long progressing streams.
+let proxyURLSessionResourceTimeoutSeconds = Double(curlStreamMaxTimeSeconds)
+
+/// WO-267: while waiting on a non-streaming URLSession completion, poll shutdown
+/// state so stop() cannot wait for the full 600s ceiling if a task misses cancellation.
+let proxyNonStreamShutdownPollMilliseconds = 100
+
+/// Minimum upstream bytes-per-second for curl's speed-based idle detection.
+let curlMinSpeedBytesPerSecond = 1
+
+/// Idle window for curl's --speed-time: upstream must send at least 1 byte/s
+/// within this window or the request is aborted.
+let curlSpeedTimeSeconds = 60
+
+/// WO-346: header-arrival deadline before streaming body bytes begin.
+let curlHeaderTimeoutSeconds = 30
+
+/// Large maximum time for curl (non-streaming path). Zero = no cap.
+let curlMaxTimeSeconds = 600
+
+/// WO-343: hard ceiling for Linux streaming curl sessions that slow-drip forever.
+let curlStreamMaxTimeSeconds = 7_200
+
+/// WO-280: shared per-call recv/send timeout for client sockets (seconds).
+let proxyClientSocketTimeoutSeconds = 30
+
+/// WO-312: per-recv scratch buffer; accumulated request bytes grow separately.
+let proxyHTTPRequestReadBufferBytes = 64 * 1024
+
+/// WO-323: local single-user proxy active connection ceiling.
+let proxyMaxActiveConnections = 4
+
+/// WO-323: bounded wait for a saturated admission slot before rejecting the client.
+let proxyAdmissionQueueTimeoutMilliseconds = 250
+
+/// WO-335: rejected sockets are written on the accept loop; keep that send bounded.
+let proxyRejectedSocketSendTimeoutSeconds = 2
+
+// MARK: - ProxyServer
+
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
 /// Listens on localhost, forwards to upstream API after redacting sensitive data.
 public final class ProxyServer {
+    // WO-315: request header terminators used by the CRLF-first parser.
+    private static let requestCRLFHeaderTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
+    private static let requestCRLFLineSeparator = Data([0x0D, 0x0A]) // \r\n
+    private static let requestLFHeaderTerminator = Data([0x0A, 0x0A]) // \n\n
+
     private let port: UInt16
     private let upstream: URL
     private let forwardProxy: URL?
@@ -21,23 +75,159 @@ public final class ProxyServer {
     let insecureTLS: Bool
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "com.pastewatch.proxy", attributes: .concurrent)
-    private var running = false
-    private lazy var urlSession: URLSession = makeSession()
+    /// WO-323: hard active-connection gate; queued clients wait for a bounded deadline only.
+    private let admissionSlots = DispatchSemaphore(value: proxyMaxActiveConnections)
+    /// WO-323: protects observable admission counters.
+    private let admissionLock = NSLock()
+    private var activeConnections = 0
+    private var queuedConnections = 0
+    private var rejectedConnections = 0
+    /// WO-160: guards all mutations of `stats` from concurrent connection handlers.
+    private let statsLock = NSLock()
+    /// WO-217: serial queue for audit log file I/O. Decouples slow disk writes from
+    /// statsLock so concurrent handlers do not serialize behind file operations.
+    private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
+    /// WO-302/WO-311: reuse one formatter and include fractional seconds for audit ordering.
+    private let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    /// WO-234: barrier group lets stop() wait for in-flight handlers before draining logQueue.
+    /// Each dispatched handler enters the group; stop() barrier-waits so logQueue.sync sees
+    /// all handler-enqueued audit writes, not just the ones enqueued before stop() was called.
+    private let handlerGroup = DispatchGroup()
+    /// WO-258: guards cross-thread reads/writes of _running. Plain var Bool is a data race
+    /// when written by stop() and read by the accept-loop poll on different threads. NSLock is
+    /// consistent with statsLock / socketWriteLock / signalLock already in this file.
+    private let runningLock = NSLock()
+    private var _running = false
+    private var running: Bool {
+        get { runningLock.lock(); defer { runningLock.unlock() }; return _running }
+        set { runningLock.lock(); defer { runningLock.unlock() }; _running = newValue }
+    }
+    #if canImport(Darwin)
+    /// WO-305/WO-306: share the TLS trust policy between buffered URLSession
+    /// tasks and streaming tasks without lazy initialization races on the
+    /// concurrent connection queue.
+    private let tlsTrustDelegate: TLSTrustDelegate?
+    #endif
+    private let urlSession: URLSession
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
+        public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
     }
 
-    private struct HTTPRequest {
+    struct StreamingAuditStats {
+        let path: String
+        let bodyCount: Int
+        let bodyTypes: [String]
+        let streamCount: Int // WO-353/354/404: mutation-safe stream redactions delivered to the client.
+        let streamTypes: [String]
+        let advisoryCount: Int // WO-353/354: advisory-only stream matches delivered to the client.
+        let advisoryTypes: [String]
+    }
+
+    public struct ConnectionAdmissionStats: Equatable {
+        public let active: Int
+        public let queued: Int
+        public let rejected: Int
+    }
+
+    struct HTTPRequest {
         let method: String
         let path: String
         let headers: [(String, String)]
-        let body: String
+        let body: String?
+        let bodyData: Data
+    }
+
+    private struct HTTPHeaderMetadata {
+        let method: String
+        let path: String
+        let headers: [(String, String)]
+        let contentLength: Int?
+        let hasInvalidContentLength: Bool
+        let hasChunkedTransferEncoding: Bool
+    }
+
+    private enum BodyFraming {
+        case length(Int)
+        case malformed
+    }
+
+    // WO-273: distinct failure cases so handleConnection can send the correct HTTP status.
+    enum ReadResult {
+        case success(HTTPRequest)
+        case timeout         // EAGAIN / SO_RCVTIMEO — 408 appropriate
+        case transportError  // ECONNRESET, EBADF, etc. — peer gone; no HTTP response useful
+        case encodingError   // header bytes not valid UTF-8 — 400 appropriate
+        case malformedRequest
+    }
+
+    /// Bundles the per-request context passed from handleConnection to the platform-specific
+    /// forwardDarwinRequest / forwardLinuxRequest helpers, reducing parameter counts.
+    private struct ForwardContext {
+        let parsed: HTTPRequest
+        let upstreamURL: URL
+        let forwardHeaders: [(String, String)]
+        let requestWantsStream: Bool
+        let redactionCount: Int
+        let redactedTypes: [String]
+        let processedBodyData: Data
+        let clientSocket: Int32
+    }
+
+    /// Non-streaming buffered response returned to handleConnection for the convergence tail.
+    private struct BufferedResponse {
+        let status: Int
+        let headers: [AnyHashable: Any]
+        let body: Data
+        let responseRedactionCount: Int // WO-359: Linux binary response body redactions.
+        let responseRedactionTypes: [String]
+        let responseAdvisoryCount: Int // WO-404: Linux binary response body advisories.
+        let responseAdvisoryTypes: [String]
+
+        init(
+            status: Int,
+            headers: [AnyHashable: Any],
+            body: Data,
+            responseRedactionCount: Int = 0,
+            responseRedactionTypes: [String] = [],
+            responseAdvisoryCount: Int = 0,
+            responseAdvisoryTypes: [String] = []
+        ) {
+            self.status = status
+            self.headers = headers
+            self.body = body
+            self.responseRedactionCount = responseRedactionCount
+            self.responseRedactionTypes = responseRedactionTypes
+            self.responseAdvisoryCount = responseAdvisoryCount
+            self.responseAdvisoryTypes = responseAdvisoryTypes
+        }
+    }
+
+    // WO-267: typed wait result lets shutdown and timeout paths avoid sharing
+    // the same 600s semaphore branch.
+    enum NonStreamingTaskWaitResult: Equatable {
+        case completed
+        case timedOut
+        case shutdown
     }
 
     public private(set) var stats = RedactionStats()
+    public var connectionAdmissionStats: ConnectionAdmissionStats {
+        admissionLock.lock()
+        defer { admissionLock.unlock() }
+        return ConnectionAdmissionStats(
+            active: activeConnections,
+            queued: queuedConnections,
+            rejected: rejectedConnections
+        )
+    }
 
     public init(
         port: UInt16 = 8443,
@@ -61,10 +251,32 @@ public final class ProxyServer {
         self.quietLog = quietLog
         self.caCertPath = caCertPath
         self.insecureTLS = insecureTLS
+        #if canImport(Darwin)
+        let delegate: TLSTrustDelegate? = (caCertPath != nil || insecureTLS)
+            ? TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
+            : nil
+        self.tlsTrustDelegate = delegate
+        self.urlSession = Self.makeSession(forwardProxy: forwardProxy, tlsTrustDelegate: delegate)
+        #else
+        self.urlSession = Self.makeSession(forwardProxy: forwardProxy)
+        #endif
     }
 
-    private func makeSession() -> URLSession {
+    public static func bufferModeWarning(config: PastewatchConfig, quiet _: Bool) -> String? {
+        // WO-316: buffer mode is a compatibility path; response-body redaction is
+        // not yet implemented there, so surface the limitation at startup.
+        // WO-365: this is security-relevant and must remain visible under --quiet.
+        guard config.responseStreamingRedactionMode == .buffer else { return nil }
+        return "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+    }
+
+    static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
         let sessionConfig = URLSessionConfiguration.default
+        // WO-401: do not let URLSession's 60s request default preempt the
+        // proxy's explicit 600s non-streaming ceiling; resource timeout must
+        // also outlive healthy long streaming sessions.
+        sessionConfig.timeoutIntervalForRequest = proxyNonStreamTotalTimeoutSeconds
+        sessionConfig.timeoutIntervalForResource = proxyURLSessionResourceTimeoutSeconds
         #if canImport(Darwin)
         if let proxy = forwardProxy {
             let proxyHost = proxy.host ?? "127.0.0.1"
@@ -92,17 +304,46 @@ public final class ProxyServer {
             ]
         }
         #endif
-        #if canImport(Darwin)
+        return sessionConfig
+    }
+
+    static func makeSessionDelegateQueue() -> OperationQueue {
+        let queue = OperationQueue()
+        // WO-333: URLSession's nil delegateQueue is serial; bound callback concurrency
+        // to the proxy's connection cap so one slow client write cannot stall all streams.
+        queue.name = "com.pastewatch.proxy.urlsession-delegate"
+        queue.maxConcurrentOperationCount = proxyMaxActiveConnections
+        return queue
+    }
+
+    #if canImport(Darwin)
+    private static func makeSession(forwardProxy: URL?, tlsTrustDelegate: TLSTrustDelegate?) -> URLSession {
+        let sessionConfig = makeSessionConfiguration(forwardProxy: forwardProxy)
         // WO-143: honor --ca-cert / --insecure for the upstream TLS handshake.
         // Only attach a delegate when a flag is set; otherwise behave exactly as
         // before (system trust store, no delegate).
-        if caCertPath != nil || insecureTLS {
-            let delegate = TLSTrustDelegate(caCertPath: caCertPath, insecure: insecureTLS)
-            return URLSession(configuration: sessionConfig, delegate: delegate, delegateQueue: nil)
+        if let delegate = tlsTrustDelegate {
+            return URLSession(
+                configuration: sessionConfig,
+                delegate: delegate,
+                delegateQueue: makeSessionDelegateQueue()
+            )
         }
-        #endif
-        return URLSession(configuration: sessionConfig)
+        return URLSession(
+            configuration: sessionConfig,
+            delegate: nil,
+            delegateQueue: makeSessionDelegateQueue()
+        )
     }
+    #else
+    private static func makeSession(forwardProxy: URL?) -> URLSession {
+        URLSession(
+            configuration: makeSessionConfiguration(forwardProxy: forwardProxy),
+            delegate: nil,
+            delegateQueue: makeSessionDelegateQueue()
+        )
+    }
+    #endif
 
     /// Join the upstream base path with the agent's request target, preserving any
     /// non-root base path on `upstream` (e.g. a gateway pass-through like
@@ -147,18 +388,18 @@ public final class ProxyServer {
     }
 
     /// Start the proxy server. Blocks until stop() is called.
-    public func start() throws {
+    public func start(onListening: (() -> Void)? = nil) throws {
         #if canImport(Darwin)
-        serverSocket = socket(AF_INET, SOCK_STREAM, 0)
+        let listenSocket = socket(AF_INET, SOCK_STREAM, 0)
         #else
-        serverSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        let listenSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #endif
-        guard serverSocket >= 0 else {
+        guard listenSocket >= 0 else {
             throw ProxyError.socketCreationFailed
         }
 
         var reuse: Int32 = 1
-        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -167,44 +408,233 @@ public final class ProxyServer {
 
         let bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                bind(serverSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(listenSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bindResult == 0 else {
-            close(serverSocket)
+            close(listenSocket)
             throw ProxyError.bindFailed(port: port)
         }
 
-        guard listen(serverSocket, 128) == 0 else {
-            close(serverSocket)
+        guard listen(listenSocket, 128) == 0 else {
+            close(listenSocket)
             throw ProxyError.listenFailed
         }
 
-        running = true
+        // WO-262: publish the stop-visible fd under the same lock stop() uses, then
+        // keep the accept loop on the immutable local fd to avoid a stored-property race.
+        runningLock.lock()
+        serverSocket = listenSocket
+        _running = true
+        runningLock.unlock()
+        // WO-298: signal startup only after listen() succeeded and running is true.
+        onListening?()
 
         while running {
             var clientAddr = sockaddr_in()
             var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
             let clientSocket = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                    accept(serverSocket, sockPtr, &clientLen)
+                    accept(listenSocket, sockPtr, &clientLen)
                 }
             }
 
             guard clientSocket >= 0 else { continue }
 
-            queue.async { [weak self] in
-                self?.handleConnection(clientSocket)
+            // WO-323/WO-325: enter before admission so stop() waits for accepted sockets
+            // that are queued for a slot as well as handlers already running.
+            handlerGroup.enter()
+            guard admitConnection(clientSocket) else {
+                handlerGroup.leave()
+                close(clientSocket)
+                if !running { break }
+                continue
+            }
+            // WO-323/WO-325: with at most 4 admitted handlers, shutdown remains bounded while
+            // retaining the audit-drain guarantee from handlerGroup.wait().
+            queue.async { [self] in
+                defer {
+                    recordConnectionFinished()
+                    admissionSlots.signal()
+                    handlerGroup.leave()
+                }
+                handleConnection(clientSocket)
             }
         }
     }
 
+    private func admitConnection(_ clientSocket: Int32) -> Bool {
+        guard running else {
+            // WO-392/WO-393: an accepted socket that arrives during shutdown still
+            // gets an HTTP status instead of a bare TCP close.
+            sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
+            return false
+        }
+        if admissionSlots.wait(timeout: .now()) == .success {
+            guard running else {
+                // WO-392: send before releasing the slot so the rejected socket is
+                // accounted for before another queued connection can be admitted.
+                sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
+                admissionSlots.signal()
+                return false
+            }
+            recordConnectionStarted()
+            return true
+        }
+
+        recordQueuedConnection(delta: 1)
+        defer { recordQueuedConnection(delta: -1) }
+        let deadline = DispatchTime.now() + .milliseconds(proxyAdmissionQueueTimeoutMilliseconds)
+        guard admissionSlots.wait(timeout: deadline) == .success else {
+            if running {
+                recordRejectedConnection()
+            }
+            // WO-392: a queued socket may observe stop() before a slot opens; it
+            // still gets an HTTP response instead of a bare TCP close.
+            sendAdmissionRejection(
+                to: clientSocket,
+                message: running ? "Proxy admission timeout" : "Service Unavailable"
+            )
+            return false
+        }
+
+        guard running else {
+            // WO-392: queued sockets that win a slot after stop() should receive a
+            // normal shutdown response, not a reset from the accept loop close().
+            sendAdmissionRejection(to: clientSocket, message: "Service Unavailable")
+            admissionSlots.signal()
+            return false
+        }
+        recordConnectionStarted()
+        return true
+    }
+
+    private func sendAdmissionRejection(to clientSocket: Int32, message: String) {
+        guard clientSocket >= 0 else { return }
+        // WO-335: this send runs on the accept loop, before handler socket setup.
+        var sendTimeout = timeval(tv_sec: proxyRejectedSocketSendTimeoutSeconds, tv_usec: 0)
+        if setsockopt(
+            clientSocket, SOL_SOCKET, SO_SNDTIMEO,
+            &sendTimeout, socklen_t(MemoryLayout<timeval>.size)
+        ) != 0 {
+            FileHandle.standardError.write(Data(
+                "[pastewatch-proxy] rejected socket SO_SNDTIMEO failed: errno \(errno)\n".utf8
+            ))
+        }
+        sendError(to: clientSocket, status: 503, message: message)
+    }
+
+    private func recordConnectionStarted() {
+        admissionLock.lock()
+        activeConnections += 1
+        admissionLock.unlock()
+    }
+
+    private func recordConnectionFinished() {
+        admissionLock.lock()
+        activeConnections -= 1
+        admissionLock.unlock()
+    }
+
+    func admitConnectionForTesting(_ clientSocket: Int32 = -1) -> Bool {
+        // WO-347: deterministic coverage for the admission slot/counter contract.
+        admitConnection(clientSocket)
+    }
+
+    func finishAdmittedConnectionForTesting() {
+        // WO-347: mirror the handler defer path for tests that claim slots directly.
+        recordConnectionFinished()
+        admissionSlots.signal()
+    }
+
+    func stopAdmissionForTesting() {
+        // WO-392/WO-393: let tests deterministically exercise sockets accepted
+        // after shutdown begins without racing the real accept-loop wakeup.
+        runningLock.lock()
+        _running = false
+        runningLock.unlock()
+    }
+
+    private func recordQueuedConnection(delta: Int) {
+        admissionLock.lock()
+        queuedConnections += delta
+        admissionLock.unlock()
+    }
+
+    private func recordRejectedConnection() {
+        admissionLock.lock()
+        rejectedConnections += 1
+        admissionLock.unlock()
+    }
+
     /// Stop the proxy server.
     public func stop() {
-        running = false
-        if serverSocket >= 0 {
-            close(serverSocket)
-            serverSocket = -1
+        // WO-262+WO-263: snapshot and clear serverSocket under runningLock.
+        // Running the close() outside the lock would race with start()'s accept() thread
+        // reading the same var. Snapshotting also makes stop() idempotent: if two threads
+        // both call stop(), only the one that atomically swaps fd≥0 → -1 performs the close.
+        runningLock.lock()
+        _running = false
+        let fdToClose = serverSocket
+        serverSocket = -1
+        runningLock.unlock()
+        if fdToClose >= 0 {
+            // WO-393: keep the WO-330 wake-before-close ordering because Linux CI
+            // does not reliably unblock accept() on cross-thread close alone. Any
+            // real client accepted in this small shutdown window is rejected by
+            // admitConnection() with a bounded HTTP 503 instead of a bare close.
+            wakeAcceptLoop(port: port)
+            close(fdToClose)
+        }
+
+        // WO-255: no unconditional signal here. WO-247's signal was needed because the
+        // blocking wait() could park the thread forever when all 64 slots were occupied at
+        // shutdown. The WO-255 100ms poll loop handles that case: the thread sees running=false
+        // on the next tick and exits without needing an external wakeup.
+
+        // WO-260: cancel in-flight URLSession tasks so their semaphore.wait(timeout:) unblocks
+        // promptly rather than sitting for up to 600 s. Without this, handlerGroup.wait() below
+        // stalls for the full non-streaming timeout on every active connection at shutdown.
+        // invalidateAndCancel() is safe to call from any thread and is idempotent.
+        #if canImport(Darwin)
+        urlSession.invalidateAndCancel()
+        #else
+        // WO-338: Linux uses curl subprocesses instead of URLSession tasks; terminate
+        // active processes so handlerGroup.wait() is not bounded by curl's 600s cap.
+        CurlHTTPClient.cancelActiveProcesses()
+        #endif
+
+        // WO-234: wait for all in-flight handlers before draining logQueue. logQueue.sync {}
+        // alone (WO-225) only drains writes already enqueued at this point; handlers still
+        // running will enqueue more after the drain returns. handlerGroup.wait() ensures every
+        // handler has called handlerGroup.leave() — meaning all their logQueue.async enqueues
+        // have fired — before logQueue.sync {} runs the final flush.
+        // WO-231: logQueue.sync uses pthread_mutex internally — NOT safe to call from a POSIX
+        // signal handler (risk of deadlock). stop() must only be called from a normal thread.
+        handlerGroup.wait()
+        logQueue.sync {}
+    }
+
+    private func wakeAcceptLoop(port: UInt16) {
+        // WO-330: Linux does not reliably interrupt a blocking accept() when another
+        // thread closes the listening fd, so connect once after running=false to
+        // make the accept loop observe shutdown deterministically.
+        #if canImport(Darwin)
+        let wakeSocket = socket(AF_INET, SOCK_STREAM, 0)
+        #else
+        let wakeSocket = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #endif
+        guard wakeSocket >= 0 else { return }
+        defer { close(wakeSocket) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        _ = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(wakeSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
     }
 
@@ -213,138 +643,457 @@ public final class ProxyServer {
     private func handleConnection(_ clientSocket: Int32) {
         defer { close(clientSocket) }
 
-        guard let request = readHTTPRequest(from: clientSocket) else { return }
+        // WO-259: SO_SNDTIMEO bounds sendAll() so a half-closed TCP client cannot keep the
+        // handler alive indefinitely, which would stall handlerGroup.wait() in stop().
+        // WO-265: SO_RCVTIMEO is the symmetric receive-side guard. Without it, recv() in
+        // readHTTPRequest blocks forever on a client that connects but stalls mid-request,
+        // also preventing handlerGroup.wait() from returning. WO-280 keeps this matched to
+        // the cumulative EINTR deadline in readHTTPRequest.
+        // WO-271: check setsockopt return values — silent failure leaves recv()/sendAll()
+        // unbounded, undermining the handlerGroup.wait() shutdown guarantee.
+        var sendTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
+        if setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_SNDTIMEO failed: errno \(errno)\n".utf8))
+            // WO-297: return a diagnosable HTTP error before closing the client socket.
+            sendError(to: clientSocket, status: 503, message: "Proxy configuration error")
+            return
+        }
+        var recvTimeout = timeval(tv_sec: proxyClientSocketTimeoutSeconds, tv_usec: 0)
+        if setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size)) != 0 {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] setsockopt SO_RCVTIMEO failed: errno \(errno)\n".utf8))
+            // WO-297: return a diagnosable HTTP error before closing the client socket.
+            sendError(to: clientSocket, status: 503, message: "Proxy configuration error")
+            return
+        }
 
-        // Parse the request
-        guard let parsed = parseHTTPRequest(request) else {
+        // WO-270: send appropriate HTTP error when readHTTPRequest fails.
+        // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
+        let readResult = readHTTPRequest(from: clientSocket)
+        let parsed: HTTPRequest
+        switch readResult {
+        case .success(let request):
+            parsed = request
+        case .timeout:
+            sendError(to: clientSocket, status: 408, message: "Request Timeout")
+            return
+        case .transportError:
+            return  // peer already gone; HTTP response wasted and cannot be delivered
+        case .encodingError, .malformedRequest:
             sendError(to: clientSocket, status: 400, message: "Bad Request")
             return
         }
 
         // Only scan POST /v1/messages (the endpoint that carries tool results)
         var processedBody = parsed.body
+        var processedBodyData = parsed.bodyData
         var redactionCount = 0
         var redactedTypes: [String] = []
+        var bodyAdvisoryCount = 0
+        var bodyAdvisoryTypes: [String] = []
+        var shouldBlockNonUTF8Forwarding = false
         if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
-            let result = scanAndRedactBody(parsed.body)
-            processedBody = result.body
-            redactionCount = result.redacted
-            redactedTypes = result.redactedTypes
+            if let body = parsed.body {
+                let result = scanAndRedactBody(body)
+                processedBody = result.body
+                processedBodyData = Data(result.body.utf8)
+                redactionCount = result.redacted
+                redactedTypes = result.redactedTypes
+                bodyAdvisoryCount = result.advisoryCount
+                bodyAdvisoryTypes = result.advisoryTypes
+            } else {
+                // WO-296: scan a lossy text view of non-UTF-8 bodies for audit
+                // coverage, then fail closed if a secret is detected.
+                let result = scanNonUTF8BodyForRedactions(processedBodyData)
+                redactionCount = result.redacted
+                redactedTypes = result.redactedTypes
+                bodyAdvisoryCount = result.advisoryCount
+                bodyAdvisoryTypes = result.advisoryTypes
+                shouldBlockNonUTF8Forwarding = result.shouldBlockForwarding
+            }
         }
 
-        stats.requestsProcessed += 1
-        if redactionCount > 0 {
-            stats.requestsRedacted += 1
-            stats.secretsRedacted += redactionCount
-            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
-        }
-
-        // Forward to upstream
         let upstreamURL = resolveUpstreamURL(requestTarget: parsed.path)
 
-        // Build header list for both paths
-        var forwardHeaders: [(String, String)] = []
-        for (key, value) in parsed.headers where key.lowercased() != "host" && key.lowercased() != "content-length" {
-            forwardHeaders.append((key, value))
-        }
-        forwardHeaders.append(("Host", upstream.host ?? ""))
-        if let bodyData = processedBody.data(using: .utf8) {
-            forwardHeaders.append(("Content-Length", String(bodyData.count)))
+        guard let forwardHeaders = buildForwardHeaders(from: parsed.headers, bodyLength: processedBodyData.count) else {
+            // WO-310: malformed upstream URL must not silently forward `Host: `.
+            sendError(to: clientSocket, status: 503, message: "Invalid upstream URL")
+            return
         }
 
+        let requestWantsStream = requestWantsStreamingResponse(
+            processedBody: processedBody,
+            bodyData: processedBodyData
+        )
+        let deferForwardedRedactionStats = shouldDeferForwardedRedactionStats(
+            requestWantsStream: requestWantsStream
+        )
+
+        recordInitialRequestStats(
+            redactionCount: redactionCount,
+            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding,
+            countForwardedRedaction: !deferForwardedRedactionStats
+        )
+
+        if shouldLogBodyRedactionBeforeForwarding(
+            redactionCount: redactionCount,
+            requestWantsStream: requestWantsStream,
+            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+        ) {
+            logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
+        }
+        recordBodyAdvisoryStats(path: parsed.path, count: bodyAdvisoryCount, types: bodyAdvisoryTypes)
+        if shouldBlockNonUTF8Forwarding {
+            // WO-296: /v1/messages bodies are UTF-8 JSON by contract; if a lossy
+            // scan finds a secret in malformed bytes, fail closed instead of
+            // forwarding the original credential upstream.
+            sendError(to: clientSocket, status: 400, message: "Bad Request")
+            return
+        }
+
+        // Platform dispatch: returns a BufferedResponse for the convergence tail,
+        // or nil when the response was fully handled (streamed or error sent to client).
+        let ctx = ForwardContext(
+            parsed: parsed, upstreamURL: upstreamURL, forwardHeaders: forwardHeaders,
+            requestWantsStream: requestWantsStream, redactionCount: redactionCount,
+            redactedTypes: redactedTypes, processedBodyData: processedBodyData, clientSocket: clientSocket
+        )
+        guard let buffered = forwardRequest(ctx) else { return }
+
+        let finalBody = bufferedResponseBodyForClient(
+            buffered,
+            path: parsed.path,
+            requestRedactionCount: redactionCount,
+            requestRedactedTypes: redactedTypes
+        )
+        sendResponse(to: clientSocket, status: buffered.status, headers: buffered.headers, body: finalBody)
+    }
+
+    // WO-359: include response-body redactions in buffered stats, audit, and alert injection.
+    private func bufferedResponseBodyForClient(
+        _ buffered: BufferedResponse,
+        path: String,
+        requestRedactionCount: Int,
+        requestRedactedTypes: [String]
+    ) -> Data {
+        var finalBody = buffered.body
+        recordBufferedResponseRedactionStats(
+            requestRedactionCount: requestRedactionCount,
+            responseRedactionCount: buffered.responseRedactionCount
+        )
+        if buffered.responseRedactionCount > 0 {
+            logRedaction(
+                path: path,
+                count: buffered.responseRedactionCount,
+                types: buffered.responseRedactionTypes,
+                source: .response
+            )
+        }
+        recordResponseAdvisoryStats(
+            path: path,
+            count: buffered.responseAdvisoryCount,
+            types: buffered.responseAdvisoryTypes
+        )
+
+        let alertRedactionCount = requestRedactionCount + buffered.responseRedactionCount
+        let alertTypes = requestRedactedTypes + buffered.responseRedactionTypes
+        if alertRedactionCount > 0 && injectAlert {
+            // WO-331: JSON response alert injection must not silently no-op on raw SSE bodies.
+            if shouldInjectAlertIntoBufferedResponse(headers: buffered.headers) {
+                finalBody = injectAlertIntoResponse(
+                    buffered.body,
+                    redactionCount: alertRedactionCount,
+                    types: alertTypes
+                )
+            } else if shouldInjectAlertIntoBufferedSSEResponse(headers: buffered.headers),
+                      let comment = buildAlertSSECommentData(redactionCount: alertRedactionCount, types: alertTypes) {
+                // WO-334: buffered SSE responses cannot use JSON alert injection, but
+                // an SSE comment preserves protocol framing and operator-visible alert bytes.
+                var bodyWithComment = comment
+                bodyWithComment.append(buffered.body)
+                finalBody = bodyWithComment
+                logAlertInjectedAsSSEComment(path: path)
+            } else {
+                logAlertInjectionSkipped(path: path, contentType: responseContentType(buffered.headers))
+            }
+        }
+
+        return finalBody
+    }
+
+    /// Platform-specific upstream request dispatch. Returns a BufferedResponse for the
+    /// convergence tail, or nil when the response was fully handled (streamed or error sent).
+    private func forwardRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         #if canImport(Darwin)
-        // macOS: URLSession is reliable
-        var upstreamRequest = URLRequest(url: upstreamURL)
-        upstreamRequest.httpMethod = parsed.method
-        upstreamRequest.httpBody = processedBody.data(using: .utf8)
-        for (key, value) in forwardHeaders {
+        return forwardDarwinRequest(ctx)
+        #else
+        return forwardLinuxRequest(ctx)
+        #endif
+    }
+
+    #if canImport(Darwin)
+    private func forwardDarwinRequest(_ ctx: ForwardContext) -> BufferedResponse? {
+        var upstreamRequest = URLRequest(url: ctx.upstreamURL)
+        upstreamRequest.httpMethod = ctx.parsed.method
+        upstreamRequest.httpBody = ctx.processedBodyData
+        for (key, value) in ctx.forwardHeaders {
             upstreamRequest.setValue(value, forHTTPHeaderField: key)
         }
-
+        let streamingMode = config.responseStreamingRedactionMode
+        if ctx.requestWantsStream && streamingMode != .buffer {
+            forwardStreamingRequest(
+                upstreamRequest, to: ctx.clientSocket,
+                redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes, mode: streamingMode
+            )
+            return nil
+        }
+        // Non-streaming / buffer mode: buffer full response, then scan+send.
         let semaphore = DispatchSemaphore(value: 0)
         var responseData: Data?
         var httpResponse: HTTPURLResponse?
-
         let task = urlSession.dataTask(with: upstreamRequest) { data, response, _ in
             responseData = data
             httpResponse = response as? HTTPURLResponse
             semaphore.signal()
         }
+        // WO-267: defer cancel covers both paths. On the .timedOut path it terminates the
+        // in-flight request. On the .success path it is a no-op (task already completed).
+        // Without this, a task created between invalidateAndCancel()'s cancel sweep and
+        // task.resume() may never have its completion handler called on some OS versions,
+        // leaving semaphore.signal() unfired and blocking handlerGroup.wait() for 600 s.
+        defer { task.cancel() }
         task.resume()
-        let timeout = semaphore.wait(timeout: .now() + 120)
-
-        guard timeout == .success else {
-            task.cancel()
-            sendError(to: clientSocket, status: 504, message: "Gateway Timeout")
-            return
+        switch waitForNonStreamingTaskCompletion(semaphore: semaphore, task: task) {
+        case .completed:
+            break
+        case .timedOut:
+            sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
+            return nil
+        case .shutdown:
+            return nil
         }
-
         guard let resp = httpResponse, let data = responseData else {
-            sendError(to: clientSocket, status: 502, message: "Bad Gateway")
-            return
+            sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
+            return nil
         }
-
-        let upstreamStatus = resp.statusCode
-        let upstreamHeaders = resp.allHeaderFields
-        let upstreamBody = data
-        #else
-        // Linux: URLSession/FoundationNetworking is unreliable on arm64.
-        // Use Process + curl which handles TLS, chunked encoding, and streaming correctly.
-        guard let curlResponse = CurlHTTPClient.execute(
-            method: parsed.method,
-            url: upstreamURL,
-            headers: forwardHeaders,
-            body: processedBody.data(using: .utf8),
-            timeoutSeconds: 120,
-            caCertPath: caCertPath,
-            insecure: insecureTLS
-        ) else {
-            sendError(to: clientSocket, status: 502, message: "Bad Gateway")
-            return
-        }
-
-        let upstreamStatus = curlResponse.statusCode
-        let upstreamHeaders = curlResponse.headers as [AnyHashable: Any]
-        let upstreamBody = curlResponse.body
-        #endif
-
-        var finalBody = upstreamBody
-        if redactionCount > 0 && injectAlert {
-            finalBody = injectAlertIntoResponse(upstreamBody, redactionCount: redactionCount, types: redactedTypes)
-        }
-
-        sendResponse(to: clientSocket, status: upstreamStatus, headers: upstreamHeaders, body: finalBody)
+        return BufferedResponse(status: resp.statusCode, headers: resp.allHeaderFields, body: data)
     }
+
+    func waitForNonStreamingTaskCompletion(
+        semaphore: DispatchSemaphore,
+        task: URLSessionTask,
+        totalTimeoutSeconds: Double = proxyNonStreamTotalTimeoutSeconds,
+        pollMilliseconds: Int = proxyNonStreamShutdownPollMilliseconds
+    ) -> NonStreamingTaskWaitResult {
+        let deadline = DispatchTime.now() + totalTimeoutSeconds
+        let pollNanoseconds = UInt64(max(1, pollMilliseconds)) * 1_000_000
+        while true {
+            guard running else {
+                // WO-267: stop() may invalidate before this task reaches URLSession's
+                // outstanding-task registry. Cancel and return instead of parking 600s.
+                task.cancel()
+                return .shutdown
+            }
+
+            let now = DispatchTime.now()
+            guard now.uptimeNanoseconds < deadline.uptimeNanoseconds else {
+                task.cancel()
+                return .timedOut
+            }
+
+            let remainingNanoseconds = deadline.uptimeNanoseconds - now.uptimeNanoseconds
+            let waitNanoseconds = min(remainingNanoseconds, pollNanoseconds)
+            if semaphore.wait(timeout: now + .nanoseconds(Int(waitNanoseconds))) == .success {
+                return .completed
+            }
+        }
+    }
+    #else
+    private func forwardLinuxRequest(_ ctx: ForwardContext) -> BufferedResponse? {
+        let streamingMode = config.responseStreamingRedactionMode
+        // WO-286: buffer mode must keep the legacy full-response path on Linux too.
+        let shouldStream = ctx.requestWantsStream && streamingMode != .buffer
+        // WO-192: lazy closure evaluated at [DONE] time with accumulated stream counts so
+        // stream-only secrets (body-clean request) also trigger the [PASTEWATCH] alert on Linux.
+        // WO-202: [weak self] guards against retain cycle if the Linux path ever becomes async.
+        let alertBeforeDone = buildLinuxAlertClosure(
+            redactionCount: ctx.redactionCount, redactedTypes: ctx.redactedTypes
+        )
+        let curlResponse: CurlHTTPClient.Response
+        do {
+            curlResponse = try CurlHTTPClient.execute(
+                method: ctx.parsed.method, url: ctx.upstreamURL, headers: ctx.forwardHeaders,
+                body: ctx.processedBodyData, caCertPath: caCertPath,
+                insecure: insecureTLS, streaming: shouldStream,
+                clientSocket: ctx.clientSocket, sendFlags: sendFlags,
+                streamingRedactionMode: streamingMode,
+                proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
+            )
+        } catch CurlHTTPClient.ExecuteError.timeout {
+            // WO-386: curl exit 28 is an upstream timeout, not a bad gateway.
+            if shouldStream && ctx.redactionCount > 0 {
+                logRedaction(path: ctx.parsed.path, count: ctx.redactionCount, types: ctx.redactedTypes)
+            }
+            sendError(to: ctx.clientSocket, status: 504, message: "Gateway Timeout")
+            return nil
+        } catch {
+            // WO-304: Linux streaming can fail before CurlHTTPClient returns stream
+            // stats; log body redactions here so the audit trail is not silent.
+            if shouldStream && ctx.redactionCount > 0 {
+                logRedaction(path: ctx.parsed.path, count: ctx.redactionCount, types: ctx.redactedTypes)
+            }
+            sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
+            return nil
+        }
+        if curlResponse.wasStreamed {
+            // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
+            recordLinuxStreamStats(StreamingAuditStats(
+                path: ctx.parsed.path,
+                bodyCount: ctx.redactionCount,
+                bodyTypes: ctx.redactedTypes,
+                streamCount: curlResponse.streamRedactionCount,
+                streamTypes: curlResponse.streamRedactionTypes,
+                advisoryCount: curlResponse.streamAdvisoryCount,
+                advisoryTypes: curlResponse.streamAdvisoryTypes
+            ))
+            return nil
+        }
+        return BufferedResponse(
+            status: curlResponse.statusCode,
+            headers: curlResponse.headers as [AnyHashable: Any],
+            body: curlResponse.body,
+            responseRedactionCount: curlResponse.responseRedactionCount,
+            responseRedactionTypes: curlResponse.responseRedactionTypes,
+            responseAdvisoryCount: curlResponse.responseAdvisoryCount,
+            responseAdvisoryTypes: curlResponse.responseAdvisoryTypes
+        )
+    }
+
+    private func buildLinuxAlertClosure(
+        redactionCount: Int,
+        redactedTypes: [String]
+    ) -> ((
+        _ streamCount: Int,
+        _ streamTypes: [String],
+        _ advisoryCount: Int,
+        _ advisoryTypes: [String]
+    ) -> Data?)? {
+        guard injectAlert else { return nil }
+        return { [weak self] streamCount, streamTypes, advisoryCount, advisoryTypes in
+            guard let self = self else { return nil }
+            let total = redactionCount + streamCount
+            let totalTypes = redactedTypes + streamTypes
+            var data = Data()
+            if total > 0, let alert = self.buildAlertSSEData(redactionCount: total, types: totalTypes) {
+                data.append(alert)
+            }
+            if advisoryCount > 0,
+               let advisory = self.buildAdvisorySSEData(advisoryCount: advisoryCount, types: advisoryTypes) {
+                data.append(advisory)
+            }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    private func recordLinuxStreamStats(_ summary: StreamingAuditStats) {
+        recordStreamingAuditStats(summary)
+    }
+    #endif
 
     // MARK: - Request scanning
 
-    private struct ScanResult {
+    struct ScanResult {
         let body: String
         let redacted: Int
         let redactedTypes: [String]
+        let advisoryCount: Int
+        let advisoryTypes: [String]
     }
 
-    private func scanAndRedactBody(_ body: String) -> ScanResult {
+    struct RedactionDetectionSummary {
+        let redacted: Int
+        let redactedTypes: [String]
+        let advisoryCount: Int
+        let advisoryTypes: [String]
+        let shouldBlockForwarding: Bool
+    }
+
+    func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [])
+            return ScanResult(body: body, redacted: 0, redactedTypes: [], advisoryCount: 0, advisoryTypes: [])
         }
 
         var redacted = 0
         var types: [String] = []
-        let processed = redactContentArray(json, redacted: &redacted, types: &types)
+        var advisoryCount = 0
+        var advisoryTypes: [String] = []
+        let processed = redactContentArray(
+            json,
+            redacted: &redacted,
+            types: &types,
+            advisoryCount: &advisoryCount,
+            advisoryTypes: &advisoryTypes
+        )
 
-        guard redacted > 0,
-              let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
+        guard redacted > 0 else {
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            )
+        }
+        guard let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
               let resultString = String(data: resultData, encoding: .utf8) else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [])
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            )
         }
 
-        return ScanResult(body: resultString, redacted: redacted, redactedTypes: types)
+        return ScanResult(
+            body: resultString, redacted: redacted, redactedTypes: types,
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+        )
+    }
+
+    private func scanProxyText(_ text: String) -> [DetectedMatch] {
+        // WO-402: proxy body scans must honor custom rules, matching streaming scans.
+        DetectionRules.scan(
+            text,
+            config: config,
+            customRules: CustomRule.compileValid(config.customRules)
+        )
+    }
+
+    func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
+        guard !bodyData.isEmpty else {
+            return RedactionDetectionSummary(
+                redacted: 0, redactedTypes: [],
+                advisoryCount: 0, advisoryTypes: [],
+                shouldBlockForwarding: false
+            )
+        }
+        // swiftlint:disable:next optional_data_string_conversion
+        let lossyBody = String(decoding: bodyData, as: UTF8.self)
+        let matches = scanProxyText(lossyBody)
+        let filtered = mutationSafeProxyMatches(matches)
+        let advisories = streamAdvisoryMatches(matches, severity: severity)
+        return RedactionDetectionSummary(
+            redacted: filtered.count,
+            redactedTypes: filtered.map { $0.displayName },
+            advisoryCount: advisories.count,
+            advisoryTypes: advisories.map { $0.displayName },
+            shouldBlockForwarding: !filtered.isEmpty
+        )
     }
 
     /// Walk the messages array looking for tool_result content to scan.
-    private func redactContentArray(_ json: [String: Any], redacted: inout Int, types: inout [String]) -> [String: Any] {
+    private func redactContentArray(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
         var result = json
 
         guard var messages = json["messages"] as? [[String: Any]] else {
@@ -360,8 +1109,11 @@ public final class ProxyServer {
                 for block in content {
                     if let type = block["type"] as? String, type == "tool_result",
                        let blockContent = block["content"] as? String {
-                        let matches = DetectionRules.scan(blockContent, config: config)
-                        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+                        let matches = scanProxyText(blockContent)
+                        let filtered = mutationSafeProxyMatches(matches)
+                        let advisories = streamAdvisoryMatches(matches, severity: severity)
+                        advisoryCount += advisories.count
+                        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
                         if !filtered.isEmpty {
                             let obfuscated = Obfuscator.obfuscate(blockContent, matches: filtered)
                             var newBlock = block
@@ -379,8 +1131,11 @@ public final class ProxyServer {
                         for nested in nestedContent {
                             if let nType = nested["type"] as? String, nType == "text",
                                let text = nested["text"] as? String {
-                                let matches = DetectionRules.scan(text, config: config)
-                                let filtered = matches.filter { $0.effectiveSeverity >= severity }
+                                let matches = scanProxyText(text)
+                                let filtered = mutationSafeProxyMatches(matches)
+                                let advisories = streamAdvisoryMatches(matches, severity: severity)
+                                advisoryCount += advisories.count
+                                advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
                                 if !filtered.isEmpty {
                                     let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
                                     var newNest = nested
@@ -410,6 +1165,278 @@ public final class ProxyServer {
         return result
     }
 
+    // MARK: - Streaming helpers
+
+    /// True if the request JSON body contains "stream":true.
+    func isStreamingRequest(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json["stream"] as? Bool == true
+    }
+
+    func requestWantsStreamingResponse(processedBody: String?, bodyData: Data) -> Bool {
+        if let processedBody {
+            return isStreamingRequest(processedBody)
+        }
+        guard !bodyData.isEmpty else { return false }
+        // WO-307: malformed UTF-8 can still be structurally valid JSON after
+        // replacement; use the same lossy view as redaction so stream routing
+        // does not fall back to the 600s buffered path.
+        // swiftlint:disable:next optional_data_string_conversion
+        let lossyBody = String(decoding: bodyData, as: UTF8.self)
+        return isStreamingRequest(lossyBody)
+    }
+
+    func shouldLogBodyRedactionBeforeForwarding(
+        redactionCount: Int,
+        requestWantsStream: Bool,
+        shouldBlockNonUTF8Forwarding: Bool
+    ) -> Bool {
+        guard redactionCount > 0 else { return false }
+        // WO-304/WO-307: if malformed bytes caused a fail-closed request, no
+        // streaming relay will run later, so the request-body redaction must be
+        // audited before returning 400.
+        if shouldBlockNonUTF8Forwarding {
+            return true
+        }
+
+        // WO-304: non-streaming and buffer-mode body redactions must be logged
+        // before forwarding so upstream failures cannot hide them. Streaming
+        // mode defers the body count so body + SSE redactions are logged once.
+        return !(requestWantsStream && config.responseStreamingRedactionMode != .buffer)
+    }
+
+    func shouldDeferForwardedRedactionStats(requestWantsStream: Bool) -> Bool {
+        #if canImport(Darwin)
+        // WO-340: Darwin streaming can still reject before URLSession task creation
+        // when stop() has begun; count forwarded redactions only after task acceptance.
+        return requestWantsStream && config.responseStreamingRedactionMode != .buffer
+        #else
+        return false
+        #endif
+    }
+
+    func recordInitialRequestStats(
+        redactionCount: Int,
+        shouldBlockNonUTF8Forwarding: Bool,
+        countForwardedRedaction: Bool = true
+    ) {
+        // WO-317: a fail-closed malformed body is audited but was never forwarded
+        // with redacted bytes, so it must not inflate requestsRedacted/secretsRedacted.
+        statsLock.lock()
+        stats.requestsProcessed += 1
+        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding && countForwardedRedaction {
+            stats.requestsRedacted += 1
+            stats.secretsRedacted += redactionCount
+        }
+        statsLock.unlock()
+    }
+
+    func recordForwardedBodyRedactionStats(redactionCount: Int) {
+        guard redactionCount > 0 else { return }
+        statsLock.lock()
+        stats.requestsRedacted += 1
+        stats.secretsRedacted += redactionCount
+        statsLock.unlock()
+    }
+
+    func recordBufferedResponseRedactionStats(requestRedactionCount: Int, responseRedactionCount: Int) {
+        guard responseRedactionCount > 0 else { return }
+        statsLock.lock()
+        if requestRedactionCount == 0 {
+            stats.requestsRedacted += 1
+        }
+        stats.secretsRedacted += responseRedactionCount
+        statsLock.unlock()
+    }
+
+    func recordBufferedResponseRedactionAuditForTesting(path: String, count: Int, types: [String]) {
+        // WO-378: exercise the same response-source audit path used by buffered responses.
+        logRedaction(path: path, count: count, types: types, source: .response)
+    }
+
+    func recordBodyAdvisoryStats(path: String, count: Int, types: [String]) {
+        recordAdvisoryStats(path: path, count: count, types: types, source: .request)
+    }
+
+    private func recordResponseAdvisoryStats(path: String, count: Int, types: [String]) {
+        recordAdvisoryStats(path: path, count: count, types: types, source: .response)
+    }
+
+    private func recordAdvisoryStats(path: String, count: Int, types: [String], source: RedactionLogSource) {
+        guard count > 0 else { return }
+        statsLock.lock()
+        stats.advisoryMatches += count
+        statsLock.unlock()
+        logAdvisory(path: path, count: count, types: types, source: source)
+    }
+
+    func recordStreamingAuditStats(_ summary: StreamingAuditStats) {
+        let totalCount = summary.bodyCount + summary.streamCount
+        let totalTypes = summary.bodyTypes + summary.streamTypes
+        if summary.streamCount > 0 || summary.advisoryCount > 0 {
+            statsLock.lock()
+            if summary.streamCount > 0 {
+                // WO-353/354: mirror existing body+stream request coalescing.
+                if summary.bodyCount == 0 { stats.requestsRedacted += 1 }
+                stats.secretsRedacted += summary.streamCount
+            }
+            if summary.advisoryCount > 0 {
+                stats.advisoryMatches += summary.advisoryCount
+            }
+            statsLock.unlock()
+        }
+        // WO-184/WO-353/WO-354: log body+stream redactions and stream advisories independently.
+        if totalCount > 0 {
+            logRedaction(path: summary.path, count: totalCount, types: totalTypes)
+        }
+        if summary.advisoryCount > 0 {
+            logAdvisory(path: summary.path, count: summary.advisoryCount, types: summary.advisoryTypes, source: .response)
+        }
+    }
+
+    func responseContentType(_ headers: [AnyHashable: Any]) -> String {
+        for (key, value) in headers where "\(key)".lowercased() == "content-type" {
+            return "\(value)"
+        }
+        return ""
+    }
+
+    func shouldInjectAlertIntoBufferedResponse(headers: [AnyHashable: Any]) -> Bool {
+        // WO-331: injectAlertIntoResponse parses JSON; only call it for JSON response bodies.
+        responseContentType(headers).lowercased().contains("application/json")
+    }
+
+    func shouldInjectAlertIntoBufferedSSEResponse(headers: [AnyHashable: Any]) -> Bool {
+        responseContentType(headers).lowercased().contains("text/event-stream")
+    }
+
+    public static func upstreamHostHeader(for upstream: URL) -> String? {
+        guard let host = upstream.host, !host.isEmpty else { return nil }
+        return host
+    }
+
+    func buildForwardHeaders(from headers: [(String, String)], bodyLength: Int) -> [(String, String)]? {
+        guard let upstreamHost = Self.upstreamHostHeader(for: upstream) else { return nil }
+        var forwardHeaders: [(String, String)] = []
+        for (key, value) in headers {
+            let lower = key.lowercased()
+            guard lower != "host", lower != "content-length", lower != "accept-encoding" else {
+                continue
+            }
+            forwardHeaders.append((key, value))
+        }
+        // WO-303: force identity encoding so SSE redaction sees plaintext bytes.
+        forwardHeaders.append(("Accept-Encoding", "identity"))
+        forwardHeaders.append(("Host", upstreamHost))
+        forwardHeaders.append(("Content-Length", String(bodyLength)))
+        return forwardHeaders
+    }
+
+    func formatAuditTimestamp(_ date: Date) -> String {
+        iso8601Formatter.string(from: date)
+    }
+
+    #if canImport(Darwin)
+    /// Forward a streaming (SSE) response to the client socket incrementally.
+    /// Uses URLSessionDataDelegate so each upstream chunk is written to the
+    /// client immediately, without buffering the full response.
+    private func forwardStreamingRequest(
+        _ request: URLRequest,
+        to clientSocket: Int32,
+        redactionCount: Int,
+        redactedTypes: [String],
+        mode: StreamingRedactionMode
+    ) {
+        guard let task = makeStreamingTaskIfRunning(for: request) else {
+            // WO-314: stop() may invalidate the shared URLSession while a handler is
+            // about to create its streaming task; return a shutdown status instead
+            // of calling dataTask() on an invalidated session.
+            recordRejectedStreamingBodyRedactionIfNeeded(
+                path: request.url?.path ?? "/",
+                redactionCount: redactionCount,
+                redactedTypes: redactedTypes
+            )
+            sendError(to: clientSocket, status: 503, message: "Service Unavailable")
+            return
+        }
+        recordForwardedBodyRedactionStats(redactionCount: redactionCount)
+
+        let relay = SSEStreamRelay(
+            clientSocket: clientSocket,
+            sendFlags: sendFlags,
+            redactionMode: mode,
+            config: config,
+            severity: severity,
+            idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds,
+            tlsChallengeHandler: tlsTrustDelegate.map { delegate in
+                { _, challenge, completionHandler in
+                    delegate.handle(challenge: challenge, completionHandler: completionHandler)
+                }
+            }
+        )
+
+        // WO-182: inject the alert frame immediately before [DONE] so SSE consumers
+        // (which stop reading at [DONE]) see it. The closure is evaluated with stream-only
+        // counts at [DONE] time; body counts are captured from local scope.
+        // WO-195: body counts captured directly — no relay property assignment needed.
+        if injectAlert {
+            relay.buildAlertBeforeDone = { [weak self] streamCount, streamTypes, advisoryCount, advisoryTypes in
+                guard let self = self else { return nil }
+                let total = redactionCount + streamCount
+                let totalTypes = redactedTypes + streamTypes
+                var data = Data()
+                if total > 0, let alert = self.buildAlertSSEData(redactionCount: total, types: totalTypes) {
+                    data.append(alert)
+                }
+                if advisoryCount > 0,
+                   let advisory = self.buildAdvisorySSEData(advisoryCount: advisoryCount, types: advisoryTypes) {
+                    data.append(advisory)
+                }
+                return data.isEmpty ? nil : data
+            }
+        }
+
+        relay.execute(task: task, session: urlSession)
+
+        // WO-153: account for secrets redacted from SSE frames in the stream.
+        let streamStats = relay.snapshotStreamStats()
+        recordStreamingAuditStats(StreamingAuditStats(
+            path: request.url?.path ?? "/",
+            bodyCount: redactionCount,
+            bodyTypes: redactedTypes,
+            streamCount: streamStats.redactionCount,
+            streamTypes: streamStats.redactionTypes,
+            advisoryCount: streamStats.advisoryCount,
+            advisoryTypes: streamStats.advisoryTypes
+        ))
+    }
+
+    private func makeStreamingTaskIfRunning(for request: URLRequest) -> URLSessionDataTask? {
+        // WO-314: serialize the running check with stop()'s _running=false write so
+        // task creation cannot happen after invalidateAndCancel() has been reached.
+        runningLock.lock()
+        defer { runningLock.unlock() }
+        guard _running else { return nil }
+        return urlSession.dataTask(with: request)
+    }
+    #endif
+
+    func recordRejectedStreamingBodyRedactionIfNeeded(
+        path: String,
+        redactionCount: Int,
+        redactedTypes: [String]
+    ) {
+        guard redactionCount > 0 else { return }
+        // WO-344: streaming request-body redaction stats are normally deferred
+        // until a URLSession task is accepted; the server-stopping branch also
+        // needs an audit/stat record before returning 503.
+        recordForwardedBodyRedactionStats(redactionCount: redactionCount)
+        logRedaction(path: path, count: redactionCount, types: redactedTypes)
+    }
+
     // MARK: - Raw socket I/O
 
     /// Send flags: MSG_NOSIGNAL on Linux prevents per-send SIGPIPE delivery.
@@ -420,45 +1447,135 @@ public final class ProxyServer {
     private let sendFlags: Int32 = Int32(MSG_NOSIGNAL)
     #endif
 
-    private func readHTTPRequest(from socket: Int32) -> String? {
-        var buffer = [UInt8](repeating: 0, count: 1_048_576) // 1MB max
+    func readHTTPRequest(from socket: Int32) -> ReadResult {
+        var buffer = [UInt8](repeating: 0, count: proxyHTTPRequestReadBufferBytes)
         var accumulated = Data()
-        var contentLength = 0
+        // WO-272: nil = Content-Length header absent; 0 = "Content-Length: 0" (zero body expected).
+        // The previous Int default of 0 made bodyReceived >= contentLength always true after the
+        // separator was found, truncating the body for requests without Content-Length.
+        var contentLength: Int?
         var headerEnd = false
         var headerEndIndex = 0
+        var headerMetadata: HTTPHeaderMetadata?
 
+        // WO-274: monotonic deadline bounds the total function wall-clock time regardless of
+        // how many EINTR retries occur. SO_RCVTIMEO is per-call; WO-280 keeps this deadline
+        // matched to the socket receive timeout.
+        let deadline = DispatchTime.now() + .seconds(proxyClientSocketTimeoutSeconds)
+
+        let headerSeparatorOverlap = Self.requestCRLFHeaderTerminator.count - 1
+        var sawCRLFHeaderLine = false
         while true {
+            let prevCount = accumulated.count
             let bytesRead = recv(socket, &buffer, buffer.count, 0)
+            // WO-265: EAGAIN fires when SO_RCVTIMEO expires — return .timeout so handleConnection
+            // sends 408 and exits, releasing the handlerGroup entry.
+            // WO-268: EINTR means a signal interrupted recv() — the connection is healthy;
+            // retry. Mirrors sendAll()'s EINTR loop (WO-214). All other negatives are errors.
+            if bytesRead < 0 {
+                if errno == EINTR {
+                    // WO-274: check cumulative deadline on every EINTR so a stream of signals
+                    // cannot hold the handlerGroup entry beyond the intended 30s window.
+                    if DispatchTime.now() > deadline { return .timeout }
+                    continue
+                }
+                // WO-273: EAGAIN = SO_RCVTIMEO expired; all other errors = transport failure.
+                return errno == EAGAIN ? .timeout : .transportError
+            }
             guard bytesRead > 0 else { break }
             accumulated.append(contentsOf: buffer[0..<bytesRead])
 
-            if !headerEnd, let str = String(data: accumulated, encoding: .utf8),
-               let range = str.range(of: "\r\n\r\n") {
-                headerEnd = true
-                headerEndIndex = str.distance(from: str.startIndex, to: range.upperBound)
-                // Extract Content-Length
-                let headerStr = String(str[..<range.lowerBound])
-                for line in headerStr.components(separatedBy: "\r\n") where line.lowercased().hasPrefix("content-length:") {
-                    let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                    contentLength = Int(val) ?? 0
+            // WO-269: search for \r\n\r\n at the byte level so headerEndIndex is a byte
+            // offset consistent with accumulated.count. str.distance() counts Unicode
+            // grapheme clusters — diverges from byte count for any non-ASCII header value.
+            // WO-276: windowed search — separator can only straddle the boundary between old
+            // and new bytes, so start 3 bytes before the new data (separator is 4 bytes).
+            // Reduces total scan work from O(n×chunks) to O(n).
+            if !headerEnd {
+                let searchStart = max(0, prevCount - headerSeparatorOverlap)
+                let searchRange = searchStart..<accumulated.count
+                let sepRange = requestHeaderTerminatorRange(
+                    in: accumulated,
+                    searchRange: searchRange,
+                    sawCRLFHeaderLine: &sawCRLFHeaderLine
+                )
+                if let sepRange {
+                    headerEnd = true
+                    headerEndIndex = sepRange.upperBound
+                    let headerData = accumulated[..<sepRange.lowerBound]
+                    guard let headerStr = String(data: headerData, encoding: .utf8) else {
+                        return .encodingError
+                    }
+                    guard let metadata = parseHTTPHeaderMetadata(headerStr) else {
+                        return .malformedRequest
+                    }
+                    headerMetadata = metadata
+
+                    switch bodyFraming(for: metadata) {
+                    case .length(let length):
+                        contentLength = length
+                    case .malformed:
+                        return .malformedRequest
+                    }
                 }
             }
 
             if headerEnd {
-                let bodyReceived = accumulated.count - headerEndIndex
-                if bodyReceived >= contentLength { break }
+                // WO-272/WO-282: exit only after the expected body length is known. Absent
+                // Content-Length is resolved at header parse time: body-less methods use 0,
+                // and body-carrying methods are rejected instead of waiting for keep-alive EOF.
+                if let cl = contentLength {
+                    let bodyReceived = accumulated.count - headerEndIndex
+                    if bodyReceived >= cl { break }
+                }
             }
         }
 
-        return String(data: accumulated, encoding: .utf8)
+        guard let metadata = headerMetadata else {
+            return accumulated.isEmpty ? .transportError : .malformedRequest
+        }
+        let receivedBody = accumulated[headerEndIndex...]
+        let bodyData = contentLength.map { Data(receivedBody.prefix($0)) } ?? Data(receivedBody)
+
+        // WO-279: body bytes are allowed to be non-UTF-8. Keep the original bytes for
+        // forwarding and decode only as an optional scan input.
+        return .success(HTTPRequest(
+            method: metadata.method, path: metadata.path, headers: metadata.headers,
+            body: String(data: bodyData, encoding: .utf8), bodyData: bodyData
+        ))
     }
 
-    private func parseHTTPRequest(_ raw: String) -> HTTPRequest? {
-        guard let headerEnd = raw.range(of: "\r\n\r\n") else { return nil }
-        let headerSection = String(raw[..<headerEnd.lowerBound])
-        let body = String(raw[headerEnd.upperBound...])
+    private func requestHeaderTerminatorRange(
+        in data: Data,
+        searchRange: Range<Data.Index>,
+        sawCRLFHeaderLine: inout Bool
+    ) -> Range<Data.Index>? {
+        // WO-315: prefer the HTTP-standard CRLF terminator whenever present
+        // in the current buffer. LF-only is a compatibility fallback, not an
+        // earlier-match override inside a CRLF-framed request.
+        if data.range(of: Self.requestCRLFLineSeparator, in: searchRange) != nil {
+            sawCRLFHeaderLine = true
+        }
+        if let crlfRange = data.range(of: Self.requestCRLFHeaderTerminator, in: searchRange) {
+            return crlfRange
+        }
+        guard !sawCRLFHeaderLine else { return nil }
+        return data.range(of: Self.requestLFHeaderTerminator, in: searchRange)
+    }
 
-        let lines = headerSection.components(separatedBy: "\r\n")
+    private func parseHTTPRequest(headerSection: String, bodyData: Data) -> HTTPRequest? {
+        guard let metadata = parseHTTPHeaderMetadata(headerSection) else { return nil }
+        return HTTPRequest(
+            method: metadata.method, path: metadata.path, headers: metadata.headers,
+            body: String(data: bodyData, encoding: .utf8), bodyData: bodyData
+        )
+    }
+
+    private func parseHTTPHeaderMetadata(_ headerSection: String) -> HTTPHeaderMetadata? {
+        // WO-285: request parsing accepts both CRLF and LF-only header lines.
+        let lines = headerSection.components(separatedBy: "\r\n").flatMap {
+            $0.components(separatedBy: "\n")
+        }
         guard let requestLine = lines.first else { return nil }
         let parts = requestLine.components(separatedBy: " ")
         guard parts.count >= 2 else { return nil }
@@ -467,31 +1584,108 @@ public final class ProxyServer {
         let path = parts[1]
 
         var headers: [(String, String)] = []
+        var contentLength: Int?
+        var hasInvalidContentLength = false
+        var hasChunkedTransferEncoding = false
         for line in lines.dropFirst() {
             if let colonIndex = line.firstIndex(of: ":") {
                 let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces)
                 let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
                 headers.append((key, value))
+
+                let lowerKey = key.lowercased()
+                if lowerKey == "content-length", contentLength == nil {
+                    // WO-278: first valid Content-Length wins; malformed duplicates after it
+                    // cannot overwrite the length and force the EOF timeout path.
+                    if let length = Int(value), length >= 0 {
+                        contentLength = length
+                    } else {
+                        hasInvalidContentLength = true
+                    }
+                } else if lowerKey == "transfer-encoding" {
+                    let encodings = value.split(separator: ",").map {
+                        $0.trimmingCharacters(in: .whitespaces).lowercased()
+                    }
+                    if encodings.contains("chunked") {
+                        hasChunkedTransferEncoding = true
+                    }
+                }
             }
         }
 
-        return HTTPRequest(method: method, path: path, headers: headers, body: body)
+        return HTTPHeaderMetadata(
+            method: method, path: path, headers: headers, contentLength: contentLength,
+            hasInvalidContentLength: hasInvalidContentLength,
+            hasChunkedTransferEncoding: hasChunkedTransferEncoding
+        )
+    }
+
+    private func bodyFraming(for metadata: HTTPHeaderMetadata) -> BodyFraming {
+        // WO-277: a negative or otherwise invalid sole Content-Length must not become a nil
+        // length that silently falls into EOF-based body reads.
+        if metadata.hasInvalidContentLength && metadata.contentLength == nil {
+            return .malformed
+        }
+
+        // WO-282: chunked request bodies are not parsed by this minimal proxy. Reject
+        // deterministically instead of waiting for HTTP/1.1 keep-alive EOF.
+        if metadata.hasChunkedTransferEncoding {
+            return .malformed
+        }
+
+        if let length = metadata.contentLength {
+            return .length(length)
+        }
+
+        // WO-282: body-less HTTP/1.1 requests without Content-Length are complete at the
+        // header separator and must not wait for EOF.
+        if methodHasNoBody(metadata.method) {
+            return .length(0)
+        }
+
+        if methodRequiresExplicitBodyLength(metadata.method) {
+            return .malformed
+        }
+
+        return .length(0)
+    }
+
+    private func methodHasNoBody(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "GET", "HEAD", "OPTIONS", "DELETE":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func methodRequiresExplicitBodyLength(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "POST", "PUT", "PATCH":
+            return true
+        default:
+            return false
+        }
     }
 
     private func sendError(to socket: Int32, status: Int, message: String) {
         let body = "{\"error\": \"\(message)\"}"
-        let response = "HTTP/1.1 \(status) \(message)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        response.withCString { ptr in
-            let sent = send(socket, ptr, strlen(ptr), sendFlags)
-            if sent < 0 {
-                // Client disconnected — nothing to do, connection will be closed by defer
-                return
-            }
+        let bodyBytes = Data(body.utf8)
+        // WO-219: Content-Length must be byte count, not Swift character count (they diverge for non-ASCII).
+        // WO-360: keep diagnostic detail in the body, not the HTTP reason phrase.
+        let reason = CurlHTTPClient.httpReasonPhrase(for: status)
+        let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
+        var responseData = Data(response.utf8)
+        responseData.append(bodyBytes)
+        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        if !sendAll(responseData, to: socket, flags: sendFlags) {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8))
         }
     }
 
     private func sendResponse(to socket: Int32, status: Int, headers: [AnyHashable: Any], body: Data) {
-        var response = "HTTP/1.1 \(status) OK\r\n"
+        // WO-185: use the correct reason phrase — WO-175 fixed streaming paths but missed here.
+        var response = "HTTP/1.1 \(status) \(CurlHTTPClient.httpReasonPhrase(for: status))\r\n"
         // Forward select headers
         for (key, value) in headers {
             let k = "\(key)"
@@ -504,15 +1698,9 @@ public final class ProxyServer {
 
         var responseData = Data(response.utf8)
         responseData.append(body)
-        responseData.withUnsafeBytes { ptr in
-            let sent = send(socket, ptr.baseAddress, ptr.count, sendFlags)
-            if sent < 0 {
-                // Client disconnected mid-response — logged for observability
-                let errCode = errno
-                FileHandle.standardError.write(
-                    Data("proxy: send failed (errno \(errCode)), client disconnected\n".utf8)
-                )
-            }
+        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        if !sendAll(responseData, to: socket, flags: sendFlags) {
+            FileHandle.standardError.write(Data("[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8))
         }
     }
 
@@ -530,6 +1718,33 @@ public final class ProxyServer {
             "Review your tool outputs for leaked credentials and recommend rotation." +
             suggestionsText
         return ["type": "text", "text": text]
+    }
+
+    func buildAlertSSEData(redactionCount: Int, types: [String]) -> Data? {
+        // WO-288: keep the alert SSE event name and frame construction in one place.
+        let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: types)
+        guard let alertJSON = try? JSONSerialization.data(withJSONObject: alertBlock),
+              let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+        return Data("event: pastewatch_alert\ndata: \(alertStr)\n\n".utf8)
+    }
+
+    func buildAdvisorySSEData(advisoryCount: Int, types: [String]) -> Data? {
+        // WO-324: advisory-only stream matches are surfaced without claiming mutation.
+        let uniqueTypes = Array(Set(types)).sorted().joined(separator: ", ")
+        let text = "[PASTEWATCH] \(advisoryCount) possible secret match(es) left unchanged. " +
+            "Types: \(uniqueTypes). Add a custom rule in config to mutate this detector."
+        let block = ["type": "text", "text": text]
+        guard let alertJSON = try? JSONSerialization.data(withJSONObject: block),
+              let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
+        return Data("event: pastewatch_advisory\ndata: \(alertStr)\n\n".utf8)
+    }
+
+    func buildAlertSSECommentData(redactionCount: Int, types: [String]) -> Data? {
+        // WO-334: buffer-mode SSE bodies cannot be JSON-mutated, so prepend a
+        // valid SSE comment that clients ignore but operators can inspect.
+        let alertBlock = buildAlertBlock(redactionCount: redactionCount, types: types)
+        guard let text = alertBlock["text"] as? String else { return nil }
+        return Data(": \(text)\n\n".utf8)
     }
 
     private func fixSuggestion(for typeName: String) -> String? {
@@ -556,6 +1771,9 @@ public final class ProxyServer {
         }
     }
 
+    // WO-190: injectAlertIntoStream deleted — superseded by buildAlertBeforeDone (macOS)
+    // and the lazy alertBeforeDone closure (Linux). Zero callers as of WO-182.
+
     func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
         guard let json = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any],
               var content = json["content"] as? [[String: Any]] else {
@@ -577,9 +1795,27 @@ public final class ProxyServer {
 
     // MARK: - Audit log
 
-    private var lastLogSignature = ""
+    private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
+    private var lastAdvisoryLogSignatures: [RedactionLogSource: String] = [:] // WO-404: source-scoped advisory dedup.
 
-    private func logRedaction(path: String, count: Int, types: [String]) {
+    private enum RedactionLogSource: String {
+        case request
+        case response
+
+        var auditLocationPrefix: String {
+            switch self {
+            case .request: return ""
+            case .response: return "response "
+            }
+        }
+    }
+
+    private func logRedaction(
+        path: String,
+        count: Int,
+        types: [String],
+        source: RedactionLogSource = .request
+    ) {
         // Build type breakdown: "Credential x3, DB Connection x2"
         var typeCounts: [String: Int] = [:]
         for t in types { typeCounts[t, default: 0] += 1 }
@@ -588,14 +1824,21 @@ public final class ProxyServer {
             .joined(separator: ", ")
 
         // Deduplicate: skip if same count+types as last log (conversation history re-scan)
-        let signature = "\(count):\(breakdown)"
-        let isRepeat = signature == lastLogSignature
-        lastLogSignature = signature
+        // WO-203: lastLogSignature is read+written from logRedaction(), which is called from
+        // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
+        // concurrent connections do not race on the dedup check.
+        // WO-378: request and buffered-response redactions can share path/count/type values.
+        let signature = "\(source.rawValue):\(path):\(count):\(breakdown)"
+        statsLock.lock()
+        let isRepeat = signature == lastRedactionLogSignatures[source]
+        lastRedactionLogSignatures[source] = signature
+        statsLock.unlock()
 
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let timestamp = formatAuditTimestamp(Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
-        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(path) (\(breakdown))\n"
+        let location = "\(source.auditLocationPrefix)\(path)"
+        let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(location) (\(breakdown))\n"
         let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
         if !quietLog && !isRepeat {
@@ -605,15 +1848,103 @@ public final class ProxyServer {
             }
         }
 
+        guard !isRepeat else { return }
+
         if let logPath = auditLogPath {
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write(Data(line.utf8))
-                handle.closeFile()
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+            // WO-224: write only the structured `line` to the audit log file — hintLine is
+            // advisory prose for the operator's terminal, not machine-readable log content.
+            // WO-210: seek+write must be serialized so concurrent handlers cannot interleave.
+            // WO-217: use a dedicated serial logQueue instead of statsLock so slow disk I/O
+            // does not block concurrent handlers from incrementing in-memory stats.
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
             }
         }
+    }
+
+    private func logAdvisory(
+        path: String,
+        count: Int,
+        types: [String],
+        source: RedactionLogSource = .request
+    ) {
+        // WO-353/354: advisory matches did not mutate bytes, so audit them
+        // separately from redacted secrets.
+        var typeCounts: [String: Int] = [:]
+        for t in types { typeCounts[t, default: 0] += 1 }
+        let breakdown = typeCounts.sorted { $0.key < $1.key }
+            .map { "\($0.key) x\($0.value)" }
+            .joined(separator: ", ")
+
+        let signature = "advisory:\(source.rawValue):\(path):\(count):\(breakdown)"
+        statsLock.lock()
+        let isRepeat = signature == lastAdvisoryLogSignatures[source]
+        lastAdvisoryLogSignatures[source] = signature
+        statsLock.unlock()
+
+        let timestamp = formatAuditTimestamp(Date())
+        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(path) (\(breakdown))\n"
+        if !quietLog && !isRepeat {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+
+        guard !isRepeat else { return }
+
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    func logAlertInjectionSkipped(path: String, contentType: String) {
+        let timestamp = formatAuditTimestamp(Date())
+        let normalizedType = contentType.isEmpty ? "missing" : contentType
+        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(path) (non-json response: \(normalizedType))\n"
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    func logAlertInjectedAsSSEComment(path: String) {
+        let timestamp = formatAuditTimestamp(Date())
+        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(path) (sse-comment)\n"
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    func drainAuditLogForTesting() {
+        // WO-331: tests need deterministic visibility into async audit writes.
+        logQueue.sync {}
     }
 }
 
@@ -676,6 +2007,15 @@ final class TLSTrustDelegate: NSObject, URLSessionDelegate {
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handle(challenge: challenge, completionHandler: completionHandler)
+    }
+
+    /// WO-305: reusable trust handler for streaming tasks whose per-task delegate
+    /// would otherwise shadow the URLSession delegate's auth-challenge callback.
+    func handle(
+        challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,

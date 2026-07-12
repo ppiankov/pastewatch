@@ -408,7 +408,9 @@ public struct DetectionRules {
         // Matches fully qualified domain names
         // Ported from chainwatch internal/redact/scanner.go
         if let regex = try? NSRegularExpression(
-            pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[-a-zA-Z0-9]+\.[a-zA-Z]{2,}\b"#,
+            // WO-390: allow multi-label service names while validation rejects
+            // mixed-case dotted code identifiers.
+            pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[-a-zA-Z0-9]+)+\.[a-zA-Z]{2,}\b"#,
             options: []
         ) {
             result.append((.hostname, regex))
@@ -661,11 +663,11 @@ public struct DetectionRules {
         allowlist: Allowlist = Allowlist(),
         customRules: [CustomRule] = []
     ) -> [DetectedMatch] {
-        // Run built-in rules
-        var matches = scan(content, config: config)
-        var matchedRanges = matches.map { $0.range }
+        var matches: [DetectedMatch] = []
+        var matchedRanges: [Range<String.Index>] = []
 
-        // Run custom rules (after built-in, same overlap logic)
+        // WO-404: custom rules are explicit operator approval, so they promote
+        // overlapping uncertain built-ins into mutation-safe matches.
         for rule in customRules {
             let nsRange = NSRange(content.startIndex..., in: content)
             let regexMatches = rule.regex.matches(in: content, options: [], range: nsRange)
@@ -688,6 +690,11 @@ public struct DetectionRules {
                 ))
                 matchedRanges.append(range)
             }
+        }
+
+        for match in scan(content, config: config) where !matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+            matches.append(match)
+            matchedRanges.append(match.range)
         }
 
         // Apply allowlist filtering
@@ -731,10 +738,33 @@ public struct DetectionRules {
         guard let separatorRange = fullMatch.range(of: #"(?::=|[=:])\s*"#, options: .regularExpression) else {
             return true
         }
+        let key = String(fullMatch[..<separatorRange.lowerBound])
+            .trimmingCharacters(in: .whitespaces)
+        let separator = String(fullMatch[separatorRange])
         let value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
 
+        // WO-390: Go struct field labels such as Token: makeToken() are code
+        // references, not literal credential values.
+        if isLikelyStructFieldReference(key: key, separator: separator, value: value) {
+            return false
+        }
+
         return isValidCredentialValue(value)
+    }
+
+    private static func isLikelyStructFieldReference(key: String, separator: String, value: String) -> Bool {
+        let separatorText = separator.trimmingCharacters(in: .whitespaces)
+        guard separatorText == ":" else { return false }
+        guard let firstScalar = key.unicodeScalars.first,
+              CharacterSet.uppercaseLetters.contains(firstScalar) else {
+            return false
+        }
+        let cleanedValue = value.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ",")))
+        let identifierPattern = #"^[A-Za-z_][A-Za-z0-9_]*$"#
+        let callPattern = #"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\([^)]*\)$"#
+        return cleanedValue.range(of: identifierPattern, options: .regularExpression) != nil ||
+            cleanedValue.range(of: callPattern, options: .regularExpression) != nil
     }
 
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.
@@ -868,7 +898,21 @@ public struct DetectionRules {
         // Built-in safe hosts (exact only) + user safe hosts (exact + suffix)
         if safeHosts.contains(hostLower) || hostMatches(hostLower, in: config.safeHosts) { return false }
         if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
+        // WO-390: Go method chains such as node.HostStartedAt.IsZero match the
+        // FQDN regex shape but include mixed-case code identifiers.
+        if isLikelyDottedCodeIdentifier(value) { return false }
         return true
+    }
+
+    private static func isLikelyDottedCodeIdentifier(_ value: String) -> Bool {
+        let segments = value.split(separator: ".")
+        guard segments.count >= 3 else { return false }
+        return segments.contains { segment in
+            let scalars = segment.unicodeScalars
+            let hasUppercase = scalars.contains { CharacterSet.uppercaseLetters.contains($0) }
+            let hasLowercase = scalars.contains { CharacterSet.lowercaseLetters.contains($0) }
+            return hasUppercase && hasLowercase
+        }
     }
 
     // Regex for 2-segment hostnames (e.g., nas.local, printer.lan).

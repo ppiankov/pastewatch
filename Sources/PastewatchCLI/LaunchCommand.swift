@@ -81,6 +81,10 @@ struct Launch: ParsableCommand {
         try runStartupSweepFixtureProbeIfNeeded()
         let command = try normalizedCommand()
         runStartupSweepIfNeeded()
+        let config = PastewatchConfig.resolve()
+        if let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) {
+            FileHandle.standardError.write(Data(warning.utf8))
+        }
 
         // Resolve our own binary to spawn the proxy subprocess
         let binaryPath = ProcessInfo.processInfo.arguments[0]

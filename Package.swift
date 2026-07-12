@@ -20,7 +20,7 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "PastewatchTests",
-        dependencies: ["PastewatchCore"],
+        dependencies: ["PastewatchCore", "PastewatchCLI"],
         path: "Tests/PastewatchTests"
     )
 ]

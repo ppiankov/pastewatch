@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-12
+
+### Added
+
+- The API proxy now **streams SSE responses incrementally** instead of buffering the whole
+  response. Fixes context compaction on Sonnet (and any long streamed generation) hanging at ~95%
+  and then looping — the proxy no longer waits for the entire response before relaying a single byte.
+- Per-SSE-event redaction: secrets in a streamed response are redacted frame-by-frame as they arrive,
+  without ever buffering the whole stream (buffer at most one SSE event).
+- `responseStreamingRedactionMode` config key (`per_sse_event` default, `raw_stream`, `buffer`) to
+  control response-stream handling.
+
+### Changed
+
+- **Zero false-positive mutation is now a hard invariant.** The proxy obfuscates/restores bytes only
+  for deterministic secret classes (API keys, tokens, DSNs, JWTs, SSH keys, Luhn-valid cards) and
+  operator-approved custom rules. Ambiguous built-ins (email, phone, IP, hostname, file path, UUID)
+  are **advisory-only** and are never mutated, regardless of `--severity`. `--severity` now controls
+  advisory reporting volume, not what gets rewritten. Promote an ambiguous pattern to mutation by
+  adding a custom rule.
+- Streaming, buffered-response, Linux-response, and request-side redaction now share one certainty-based
+  mutation rule (no path divergence).
+
+### Fixed
+
+- The 120-second whole-response timeout that caused compaction to return 504 and retry-loop is replaced
+  with an **idle timeout** (fails only when no bytes arrive for the idle window), so a long-but-progressing
+  stream succeeds. Non-streaming responses use a 600s ceiling.
+- macOS `URLSession` request/resource timeouts no longer undercut the proxy's non-streaming ceiling.
+
 ## [0.28.0] - 2026-07-02
 
 ### Added

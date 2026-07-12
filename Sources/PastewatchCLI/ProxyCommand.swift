@@ -7,6 +7,18 @@ import Darwin
 import Glibc
 #endif
 
+// WO-234: global semaphore used by the SIGINT handler (C function pointer — cannot capture
+// context) to wake the shutdown thread that calls server.stop() from a normal thread.
+private let proxyShutdownSemaphore = DispatchSemaphore(value: 0)
+// WO-308: brief SIGINT grace for the running=true -> onListening startup window.
+private let proxyStartupSignalGraceMilliseconds = 100
+// WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
+let proxyInterruptedExitCode: Int32 = 130
+
+func proxyShutdownExitCode(didStart: Bool) -> Int32 {
+    didStart ? 0 : proxyInterruptedExitCode
+}
+
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start API proxy that scans and redacts secrets from outbound requests"
@@ -44,6 +56,11 @@ struct Proxy: ParsableCommand {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
+        guard ProxyServer.upstreamHostHeader(for: upstreamURL) != nil else {
+            // WO-310: fail fast instead of starting a proxy that forwards `Host: `.
+            FileHandle.standardError.write(Data("error: upstream URL has no host component: \(upstream)\n".utf8))
+            throw ExitCode(rawValue: 2)
+        }
 
         var forwardProxyURL: URL?
         if let fp = forwardProxy {
@@ -75,6 +92,9 @@ struct Proxy: ParsableCommand {
         }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
         FileHandle.standardError.write(Data("alert-injection: \(alert ? "on" : "off")\n".utf8))
+        if let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) {
+            FileHandle.standardError.write(Data(warning.utf8))
+        }
         if insecure {
             FileHandle.standardError.write(Data("WARNING: --insecure set — upstream TLS verification is DISABLED\n".utf8))
         } else if let caCert = caCert {
@@ -89,11 +109,36 @@ struct Proxy: ParsableCommand {
         // terminates the process silently (no error, no log).
         signal(SIGPIPE, SIG_IGN)
 
+        // WO-234: the SIGINT handler must not call server.stop() directly — logQueue.sync
+        // uses pthread_mutex and is not async-signal-safe (WO-231). Signal the global
+        // semaphore (signal-safe) to wake a normal thread that calls stop(), draining
+        // pending audit log writes (WO-225) before exit.
+        // WO-240/WO-298: SIGINT can arrive between signal() installation and listen()
+        // completing inside server.start(). Use a second semaphore that opens only after
+        // listen() succeeds, so early SIGINT does not call stop() on an unstarted server.
+        let startedGate = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            proxyShutdownSemaphore.wait()
+            // WO-308: cover the tiny running=true -> onListening signal window without
+            // calling stop() when listen() never completed.
+            let didStart = startedGate.wait(timeout: .now() + .milliseconds(proxyStartupSignalGraceMilliseconds)) == .success
+            if didStart {
+                FileHandle.standardError.write(Data("\nstopped.\n".utf8))
+                server.stop()
+            }
+            let exitCode = proxyShutdownExitCode(didStart: didStart)
+            #if canImport(Darwin)
+            Darwin.exit(exitCode)
+            #elseif canImport(Glibc)
+            Glibc.exit(exitCode)
+            #endif
+        }
         signal(SIGINT) { _ in
-            FileHandle.standardError.write(Data("\nstopped.\n".utf8))
-            _exit(0)
+            proxyShutdownSemaphore.signal()
         }
 
-        try server.start()
+        try server.start {
+            startedGate.signal()
+        }
     }
 }

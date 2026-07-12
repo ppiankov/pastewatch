@@ -17,15 +17,16 @@ final class CustomRuleTests: XCTestCase {
         XCTAssertEqual(customMatches[0].displayName, "Ticket ID")
     }
 
-    func testCustomRuleNoOverlapWithBuiltin() throws {
+    func testCustomRulePromotesOverlappingBuiltin() throws {
         let rules = try CustomRule.compile([
             CustomRuleConfig(name: "Broad Email", pattern: "[a-z]+@[a-z]+\\.[a-z]+")
         ])
         let content = "Contact admin@corp.com"
         let matches = DetectionRules.scan(content, config: config, customRules: rules)
-        // Built-in email rule should match first, custom should be skipped (overlap)
+
         XCTAssertEqual(matches.count, 1)
-        XCTAssertNil(matches[0].customRuleName)
+        XCTAssertEqual(matches[0].customRuleName, "Broad Email")
+        XCTAssertTrue(matches[0].mutationSafe)
     }
 
     func testInvalidRegexThrows() {
