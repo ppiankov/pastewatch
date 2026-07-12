@@ -24,3 +24,10 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # setup-swift v3 switched to Swiftly and adds a GPG signature check that
+      # fails on the Linux runner; the only fix disables toolchain signature
+      # verification, an unacceptable supply-chain downgrade for a security
+      # tool. v2 works on every path we use (arm64 uses a container instead).
+      - dependency-name: "swift-actions/setup-swift"
+        versions: [">=3"]
