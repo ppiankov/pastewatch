@@ -88,7 +88,7 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
-      - uses: swift-actions/setup-swift@v2
+      - uses: swift-actions/setup-swift@v3
         with:
           swift-version: "5.9"
 
@@ -113,7 +113,7 @@ jobs:
     name: Build Linux Release (arm64)
     runs-on: ubuntu-22.04-arm
     needs: [resolve, test]
-    # Build inside the official Swift arm64 image. swift-actions/setup-swift@v2
+    # Build inside the official Swift arm64 image. swift-actions/setup-swift@v3
     # installs the x86_64 toolchain on arm64 runners (the swift binary is an
     # x86_64 ELF, so the arm64 host cannot exec it), which fails the job.
     container: swift:5.9-jammy
