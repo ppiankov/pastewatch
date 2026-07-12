@@ -12,6 +12,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # TypeScript 6+ removes moduleResolution=node10; migrating the extension's
+      # tsconfig off moduleResolution:"node" is out of scope for this
+      # feature-complete project. Allow 5.x compatibility bumps; defer majors.
+      - dependency-name: "typescript"
+        versions: [">=6"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
