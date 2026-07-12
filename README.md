@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.28.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.28.0)
+[![Version](https://img.shields.io/badge/version-0.29.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.29.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -72,7 +72,15 @@ Pastewatch started as a clipboard monitor — scan before paste, replace secrets
 
 All layers share the same detection engine — 30+ pattern types, deterministic regex, no ML. Every layer operates locally. Nothing phones home.
 
-False negatives are preferred over false positives.
+### Zero false-positive mutation
+
+Pastewatch rewrites your data only when it is **certain** the value is a secret. This is a hard rule, not a tuning knob:
+
+- **Mutated (obfuscated/restored):** deterministic secret classes only — API keys, tokens, DSNs, JWTs, SSH keys, credit cards (Luhn-validated), and any pattern **you** approve via a custom rule.
+- **Advisory only (never mutated):** inherently ambiguous detections — emails, phone numbers, IPs, hostnames, file paths, UUIDs. A legitimate email or hostname in a real response is not a leak, and pastewatch will never corrupt a valid response by rewriting one. Instead it **nags you off-band** so you can decide whether to promote the pattern by adding a custom rule.
+- **`--severity` controls how much it nags, never what it rewrites.** Lowering severity surfaces more advisories; it never widens the set of values that get mutated.
+
+The result: false negatives are preferred over false positives, and mutation false positives are driven to ~zero by construction. Pastewatch never breaks a working agent response to redact something it only *might* be.
 
 ---
 
@@ -766,7 +774,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.28.0
+    rev: v0.29.0
     hooks:
       - id: pastewatch
 ```
@@ -980,7 +988,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.28.0** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.29.0** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|
