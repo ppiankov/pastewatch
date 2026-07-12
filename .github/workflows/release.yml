@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: resolve
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
@@ -69,7 +69,7 @@ jobs:
     runs-on: macos-14
     needs: [resolve, validate-tag]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [resolve, test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
@@ -118,7 +118,7 @@ jobs:
     # x86_64 ELF, so the arm64 host cannot exec it), which fails the job.
     container: swift:5.9-jammy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
@@ -144,7 +144,7 @@ jobs:
     runs-on: macos-14
     needs: [resolve, test, build-linux, build-linux-arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
