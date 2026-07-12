@@ -94,6 +94,25 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         }
     }
 
+    /// WO-404: only deterministic secret classes are safe to mutate automatically.
+    public var mutationSafe: Bool {
+        switch self {
+        case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
+             .jwtToken, .creditCard, .credential,
+             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
+             .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
+             .npmToken, .pypiToken, .rubygemsToken,
+             .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
+             .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
+             .jdbcUrl, .xmlCredential:
+            return true
+        case .email, .phone, .xmlUsername,
+             .ipAddress, .filePath, .hostname, .xmlHostname,
+             .uuid, .highEntropyString:
+            return false
+        }
+    }
+
     /// Human-readable explanation of what this type detects.
     public var explanation: String {
         switch self {
@@ -219,6 +238,11 @@ public struct DetectedMatch: Identifiable, Equatable {
         customSeverity ?? type.severity
     }
 
+    /// WO-404: custom rules are explicit operator approval to mutate matches.
+    public var mutationSafe: Bool {
+        customRuleName != nil || type.mutationSafe
+    }
+
     /// Display name for output (custom rule name or type rawValue).
     public var displayName: String {
         customRuleName ?? type.rawValue
@@ -304,7 +328,7 @@ public struct PastewatchConfig: Codable {
     public var sharedPatternFiles: [String] // WO-124: NR-compatible generated pattern artifacts for file IO
     /// WO-147: controls how the proxy redacts streaming (SSE) responses.
     /// - per_sse_event (default): redact each SSE event's data payload before relay.
-    /// - raw_stream: skip SSE parsing; scan raw chunks at the configured severity threshold.
+    /// - raw_stream: skip SSE parsing; scan raw chunks with the certainty gate.
     /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
     public var responseStreamingRedactionMode: StreamingRedactionMode // WO-286: enum prevents typo-to-raw fallback
 

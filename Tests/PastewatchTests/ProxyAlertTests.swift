@@ -172,6 +172,7 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(frame.hasSuffix("\n\n"))
         XCTAssertTrue(frame.contains("possible secret"))
         XCTAssertTrue(frame.contains("Email"))
+        XCTAssertTrue(frame.contains("custom rule"))
     }
 
     func testPassthroughOnEmptyContentArray() throws {
@@ -373,6 +374,42 @@ final class ProxyAlertTests: XCTestCase {
         let log = try String(contentsOfFile: path)
         XCTAssertTrue(log.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"))
         XCTAssertTrue(log.contains("Email x1"))
+    }
+
+    func testBodyAdvisoryOnlyStatsLogAuditAndStats() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-body-advisory-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let advisoryServer = ProxyServer(port: 0, auditLogPath: path)
+
+        advisoryServer.recordBodyAdvisoryStats(path: "/v1/messages", count: 1, types: ["Email"])
+        advisoryServer.drainAuditLogForTesting()
+
+        XCTAssertEqual(advisoryServer.stats.advisoryMatches, 1)
+        let log = try String(contentsOfFile: path)
+        XCTAssertTrue(log.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"))
+        XCTAssertTrue(log.contains("Email x1"))
+    }
+
+    func testAdvisoryDedupSeparatesRequestAndStreamSources() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-advisory-source-dedup-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let advisoryServer = ProxyServer(port: 0, auditLogPath: path)
+
+        advisoryServer.recordBodyAdvisoryStats(path: "/v1/messages", count: 1, types: ["Email"])
+        advisoryServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
+            path: "/v1/messages",
+            bodyCount: 0,
+            bodyTypes: [],
+            streamCount: 0,
+            streamTypes: [],
+            advisoryCount: 1,
+            advisoryTypes: ["Email"]
+        ))
+        advisoryServer.drainAuditLogForTesting()
+
+        XCTAssertEqual(advisoryServer.stats.advisoryMatches, 2)
+        let log = try String(contentsOfFile: path)
+        XCTAssertEqual(log.components(separatedBy: "PROXY ADVISORY").count - 1, 2)
     }
 
     func testStreamingRedactionAndAdvisoryStatsLogSeparateAuditLines() throws {

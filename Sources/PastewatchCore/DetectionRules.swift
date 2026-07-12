@@ -663,11 +663,11 @@ public struct DetectionRules {
         allowlist: Allowlist = Allowlist(),
         customRules: [CustomRule] = []
     ) -> [DetectedMatch] {
-        // Run built-in rules
-        var matches = scan(content, config: config)
-        var matchedRanges = matches.map { $0.range }
+        var matches: [DetectedMatch] = []
+        var matchedRanges: [Range<String.Index>] = []
 
-        // Run custom rules (after built-in, same overlap logic)
+        // WO-404: custom rules are explicit operator approval, so they promote
+        // overlapping uncertain built-ins into mutation-safe matches.
         for rule in customRules {
             let nsRange = NSRange(content.startIndex..., in: content)
             let regexMatches = rule.regex.matches(in: content, options: [], range: nsRange)
@@ -690,6 +690,11 @@ public struct DetectionRules {
                 ))
                 matchedRanges.append(range)
             }
+        }
+
+        for match in scan(content, config: config) where !matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+            matches.append(match)
+            matchedRanges.append(match.range)
         }
 
         // Apply allowlist filtering

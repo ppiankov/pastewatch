@@ -118,14 +118,14 @@ public final class ProxyServer {
         public var requestsProcessed: Int = 0
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
-        public var advisoryMatches: Int = 0 // WO-353/354: stream advisories are audited separately.
+        public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
     }
 
     struct StreamingAuditStats {
         let path: String
         let bodyCount: Int
         let bodyTypes: [String]
-        let streamCount: Int // WO-353/354: critical stream redactions delivered to the client.
+        let streamCount: Int // WO-353/354/404: mutation-safe stream redactions delivered to the client.
         let streamTypes: [String]
         let advisoryCount: Int // WO-353/354: advisory-only stream matches delivered to the client.
         let advisoryTypes: [String]
@@ -188,19 +188,25 @@ public final class ProxyServer {
         let body: Data
         let responseRedactionCount: Int // WO-359: Linux binary response body redactions.
         let responseRedactionTypes: [String]
+        let responseAdvisoryCount: Int // WO-404: Linux binary response body advisories.
+        let responseAdvisoryTypes: [String]
 
         init(
             status: Int,
             headers: [AnyHashable: Any],
             body: Data,
             responseRedactionCount: Int = 0,
-            responseRedactionTypes: [String] = []
+            responseRedactionTypes: [String] = [],
+            responseAdvisoryCount: Int = 0,
+            responseAdvisoryTypes: [String] = []
         ) {
             self.status = status
             self.headers = headers
             self.body = body
             self.responseRedactionCount = responseRedactionCount
             self.responseRedactionTypes = responseRedactionTypes
+            self.responseAdvisoryCount = responseAdvisoryCount
+            self.responseAdvisoryTypes = responseAdvisoryTypes
         }
     }
 
@@ -682,6 +688,8 @@ public final class ProxyServer {
         var processedBodyData = parsed.bodyData
         var redactionCount = 0
         var redactedTypes: [String] = []
+        var bodyAdvisoryCount = 0
+        var bodyAdvisoryTypes: [String] = []
         var shouldBlockNonUTF8Forwarding = false
         if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
             if let body = parsed.body {
@@ -690,12 +698,16 @@ public final class ProxyServer {
                 processedBodyData = Data(result.body.utf8)
                 redactionCount = result.redacted
                 redactedTypes = result.redactedTypes
+                bodyAdvisoryCount = result.advisoryCount
+                bodyAdvisoryTypes = result.advisoryTypes
             } else {
                 // WO-296: scan a lossy text view of non-UTF-8 bodies for audit
                 // coverage, then fail closed if a secret is detected.
                 let result = scanNonUTF8BodyForRedactions(processedBodyData)
                 redactionCount = result.redacted
                 redactedTypes = result.redactedTypes
+                bodyAdvisoryCount = result.advisoryCount
+                bodyAdvisoryTypes = result.advisoryTypes
                 shouldBlockNonUTF8Forwarding = result.shouldBlockForwarding
             }
         }
@@ -729,6 +741,7 @@ public final class ProxyServer {
         ) {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
+        recordBodyAdvisoryStats(path: parsed.path, count: bodyAdvisoryCount, types: bodyAdvisoryTypes)
         if shouldBlockNonUTF8Forwarding {
             // WO-296: /v1/messages bodies are UTF-8 JSON by contract; if a lossy
             // scan finds a secret in malformed bytes, fail closed instead of
@@ -775,6 +788,11 @@ public final class ProxyServer {
                 source: .response
             )
         }
+        recordResponseAdvisoryStats(
+            path: path,
+            count: buffered.responseAdvisoryCount,
+            types: buffered.responseAdvisoryTypes
+        )
 
         let alertRedactionCount = requestRedactionCount + buffered.responseRedactionCount
         let alertTypes = requestRedactedTypes + buffered.responseRedactionTypes
@@ -944,7 +962,9 @@ public final class ProxyServer {
             headers: curlResponse.headers as [AnyHashable: Any],
             body: curlResponse.body,
             responseRedactionCount: curlResponse.responseRedactionCount,
-            responseRedactionTypes: curlResponse.responseRedactionTypes
+            responseRedactionTypes: curlResponse.responseRedactionTypes,
+            responseAdvisoryCount: curlResponse.responseAdvisoryCount,
+            responseAdvisoryTypes: curlResponse.responseAdvisoryTypes
         )
     }
 
@@ -985,31 +1005,54 @@ public final class ProxyServer {
         let body: String
         let redacted: Int
         let redactedTypes: [String]
+        let advisoryCount: Int
+        let advisoryTypes: [String]
     }
 
     struct RedactionDetectionSummary {
         let redacted: Int
         let redactedTypes: [String]
+        let advisoryCount: Int
+        let advisoryTypes: [String]
         let shouldBlockForwarding: Bool
     }
 
     func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [])
+            return ScanResult(body: body, redacted: 0, redactedTypes: [], advisoryCount: 0, advisoryTypes: [])
         }
 
         var redacted = 0
         var types: [String] = []
-        let processed = redactContentArray(json, redacted: &redacted, types: &types)
+        var advisoryCount = 0
+        var advisoryTypes: [String] = []
+        let processed = redactContentArray(
+            json,
+            redacted: &redacted,
+            types: &types,
+            advisoryCount: &advisoryCount,
+            advisoryTypes: &advisoryTypes
+        )
 
-        guard redacted > 0,
-              let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
+        guard redacted > 0 else {
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            )
+        }
+        guard let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
               let resultString = String(data: resultData, encoding: .utf8) else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [])
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            )
         }
 
-        return ScanResult(body: resultString, redacted: redacted, redactedTypes: types)
+        return ScanResult(
+            body: resultString, redacted: redacted, redactedTypes: types,
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+        )
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {
@@ -1023,21 +1066,34 @@ public final class ProxyServer {
 
     func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
         guard !bodyData.isEmpty else {
-            return RedactionDetectionSummary(redacted: 0, redactedTypes: [], shouldBlockForwarding: false)
+            return RedactionDetectionSummary(
+                redacted: 0, redactedTypes: [],
+                advisoryCount: 0, advisoryTypes: [],
+                shouldBlockForwarding: false
+            )
         }
         // swiftlint:disable:next optional_data_string_conversion
         let lossyBody = String(decoding: bodyData, as: UTF8.self)
         let matches = scanProxyText(lossyBody)
-        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+        let filtered = mutationSafeProxyMatches(matches)
+        let advisories = streamAdvisoryMatches(matches, severity: severity)
         return RedactionDetectionSummary(
             redacted: filtered.count,
             redactedTypes: filtered.map { $0.displayName },
+            advisoryCount: advisories.count,
+            advisoryTypes: advisories.map { $0.displayName },
             shouldBlockForwarding: !filtered.isEmpty
         )
     }
 
     /// Walk the messages array looking for tool_result content to scan.
-    private func redactContentArray(_ json: [String: Any], redacted: inout Int, types: inout [String]) -> [String: Any] {
+    private func redactContentArray(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
         var result = json
 
         guard var messages = json["messages"] as? [[String: Any]] else {
@@ -1054,7 +1110,10 @@ public final class ProxyServer {
                     if let type = block["type"] as? String, type == "tool_result",
                        let blockContent = block["content"] as? String {
                         let matches = scanProxyText(blockContent)
-                        let filtered = matches.filter { $0.effectiveSeverity >= severity }
+                        let filtered = mutationSafeProxyMatches(matches)
+                        let advisories = streamAdvisoryMatches(matches, severity: severity)
+                        advisoryCount += advisories.count
+                        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
                         if !filtered.isEmpty {
                             let obfuscated = Obfuscator.obfuscate(blockContent, matches: filtered)
                             var newBlock = block
@@ -1073,7 +1132,10 @@ public final class ProxyServer {
                             if let nType = nested["type"] as? String, nType == "text",
                                let text = nested["text"] as? String {
                                 let matches = scanProxyText(text)
-                                let filtered = matches.filter { $0.effectiveSeverity >= severity }
+                                let filtered = mutationSafeProxyMatches(matches)
+                                let advisories = streamAdvisoryMatches(matches, severity: severity)
+                                advisoryCount += advisories.count
+                                advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
                                 if !filtered.isEmpty {
                                     let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
                                     var newNest = nested
@@ -1195,6 +1257,22 @@ public final class ProxyServer {
         logRedaction(path: path, count: count, types: types, source: .response)
     }
 
+    func recordBodyAdvisoryStats(path: String, count: Int, types: [String]) {
+        recordAdvisoryStats(path: path, count: count, types: types, source: .request)
+    }
+
+    private func recordResponseAdvisoryStats(path: String, count: Int, types: [String]) {
+        recordAdvisoryStats(path: path, count: count, types: types, source: .response)
+    }
+
+    private func recordAdvisoryStats(path: String, count: Int, types: [String], source: RedactionLogSource) {
+        guard count > 0 else { return }
+        statsLock.lock()
+        stats.advisoryMatches += count
+        statsLock.unlock()
+        logAdvisory(path: path, count: count, types: types, source: source)
+    }
+
     func recordStreamingAuditStats(_ summary: StreamingAuditStats) {
         let totalCount = summary.bodyCount + summary.streamCount
         let totalTypes = summary.bodyTypes + summary.streamTypes
@@ -1215,7 +1293,7 @@ public final class ProxyServer {
             logRedaction(path: summary.path, count: totalCount, types: totalTypes)
         }
         if summary.advisoryCount > 0 {
-            logAdvisory(path: summary.path, count: summary.advisoryCount, types: summary.advisoryTypes)
+            logAdvisory(path: summary.path, count: summary.advisoryCount, types: summary.advisoryTypes, source: .response)
         }
     }
 
@@ -1654,7 +1732,7 @@ public final class ProxyServer {
         // WO-324: advisory-only stream matches are surfaced without claiming mutation.
         let uniqueTypes = Array(Set(types)).sorted().joined(separator: ", ")
         let text = "[PASTEWATCH] \(advisoryCount) possible secret match(es) left unchanged. " +
-            "Types: \(uniqueTypes). Configure an allowlist or promote the detector to critical before redacting."
+            "Types: \(uniqueTypes). Add a custom rule in config to mutate this detector."
         let block = ["type": "text", "text": text]
         guard let alertJSON = try? JSONSerialization.data(withJSONObject: block),
               let alertStr = String(data: alertJSON, encoding: .utf8) else { return nil }
@@ -1718,7 +1796,7 @@ public final class ProxyServer {
     // MARK: - Audit log
 
     private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
-    private var lastAdvisoryLogSignature = "" // WO-358: advisory dedup is independent.
+    private var lastAdvisoryLogSignatures: [RedactionLogSource: String] = [:] // WO-404: source-scoped advisory dedup.
 
     private enum RedactionLogSource: String {
         case request
@@ -1790,7 +1868,12 @@ public final class ProxyServer {
         }
     }
 
-    private func logAdvisory(path: String, count: Int, types: [String]) {
+    private func logAdvisory(
+        path: String,
+        count: Int,
+        types: [String],
+        source: RedactionLogSource = .request
+    ) {
         // WO-353/354: advisory matches did not mutate bytes, so audit them
         // separately from redacted secrets.
         var typeCounts: [String: Int] = [:]
@@ -1799,10 +1882,10 @@ public final class ProxyServer {
             .map { "\($0.key) x\($0.value)" }
             .joined(separator: ", ")
 
-        let signature = "advisory:\(path):\(count):\(breakdown)"
+        let signature = "advisory:\(source.rawValue):\(path):\(count):\(breakdown)"
         statsLock.lock()
-        let isRepeat = signature == lastAdvisoryLogSignature
-        lastAdvisoryLogSignature = signature
+        let isRepeat = signature == lastAdvisoryLogSignatures[source]
+        lastAdvisoryLogSignatures[source] = signature
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())

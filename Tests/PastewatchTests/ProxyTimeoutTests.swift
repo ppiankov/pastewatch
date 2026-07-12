@@ -331,7 +331,7 @@ final class ProxyTimeoutTests: XCTestCase {
             sendFlags: 0,
             redactionMode: .perSSEEvent,
             config: PastewatchConfig.defaultConfig,
-            severity: .high,
+            severity: .medium,
             idleTimeoutSeconds: 0.05,
             maxSessionSeconds: 1
         )
@@ -370,7 +370,7 @@ final class ProxyTimeoutTests: XCTestCase {
             sendFlags: 0,
             redactionMode: .perSSEEvent,
             config: PastewatchConfig.defaultConfig,
-            severity: .high,
+            severity: .medium,
             idleTimeoutSeconds: 0.05,
             maxSessionSeconds: 1
         )

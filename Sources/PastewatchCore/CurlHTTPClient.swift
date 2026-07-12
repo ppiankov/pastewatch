@@ -52,11 +52,15 @@ struct CurlHTTPClient {
         /// WO-359: non-UTF-8 buffered response redactions detected on the Linux curl path.
         let responseRedactionCount: Int
         let responseRedactionTypes: [String]
+        /// WO-404: non-mutating buffered response advisories detected on the Linux curl path.
+        let responseAdvisoryCount: Int
+        let responseAdvisoryTypes: [String]
 
         init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
              streamRedactionCount: Int = 0, streamRedactionTypes: [String] = [],
              streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = [],
-             responseRedactionCount: Int = 0, responseRedactionTypes: [String] = []) {
+             responseRedactionCount: Int = 0, responseRedactionTypes: [String] = [],
+             responseAdvisoryCount: Int = 0, responseAdvisoryTypes: [String] = []) {
             self.statusCode = statusCode
             self.headers = headers
             self.body = body
@@ -67,6 +71,8 @@ struct CurlHTTPClient {
             self.streamAdvisoryTypes = streamAdvisoryTypes
             self.responseRedactionCount = responseRedactionCount
             self.responseRedactionTypes = responseRedactionTypes
+            self.responseAdvisoryCount = responseAdvisoryCount
+            self.responseAdvisoryTypes = responseAdvisoryTypes
         }
     }
 
@@ -234,7 +240,9 @@ struct CurlHTTPClient {
             headers: responseHeaders,
             body: responseBody,
             responseRedactionCount: responseRedaction.count,
-            responseRedactionTypes: responseRedaction.types
+            responseRedactionTypes: responseRedaction.types,
+            responseAdvisoryCount: responseRedaction.advisoryCount,
+            responseAdvisoryTypes: responseRedaction.advisoryTypes
         )
     }
 
@@ -357,7 +365,7 @@ struct CurlHTTPClient {
         let severity: Severity
     }
 
-    /// WO-336: named Linux relay result carries critical and advisory stream totals.
+    /// WO-336/WO-404: named Linux relay result carries mutation-safe and advisory stream totals.
     struct StreamRelayResult {
         let redactionCount: Int
         let redactionTypes: [String]
@@ -365,7 +373,7 @@ struct CurlHTTPClient {
         let advisoryTypes: [String]
     }
 
-    /// WO-336: keep raw-stream critical/advisory counters together across helpers.
+    /// WO-336/WO-404: keep raw-stream mutation-safe/advisory counters together across helpers.
     private struct StreamScanTotals {
         var redactionCount = 0
         var redactionTypes: [String] = []
@@ -913,7 +921,7 @@ struct CurlHTTPClient {
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
         guard alert.alertBeforeDone != nil else {
-            // WO-324/WO-403: raw_stream skips SSE parsing but still honors the configured severity threshold.
+            // WO-324/WO-404: raw_stream skips SSE parsing but still honors the certainty gate.
             let redaction = redactRawBytes(chunk, config: alert.stream.config, severity: alert.stream.severity)
             totals.recordCritical(redaction)
             return StreamChunkRelayResult(
@@ -1137,16 +1145,21 @@ struct CurlHTTPClient {
             config: config,
             customRules: CustomRule.compileValid(config.customRules)
         )
-            .filter { $0.effectiveSeverity >= severity }
+        let redactionMatches = mutationSafeProxyMatches(matches)
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
-        guard !matches.isEmpty else {
-            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+        let advisories = streamAdvisoryMatches(matches, severity: severity)
+        let advisoryTypes = advisories.map { $0.displayName }
+        guard !redactionMatches.isEmpty else {
+            return SSEFrameRedactionResult(
+                data: body, count: 0, types: [],
+                advisoryCount: advisories.count, advisoryTypes: advisoryTypes
+            )
         }
 
         var replacements: [NonUTF8ResponseReplacement] = []
         var typeCounters: [SensitiveDataType: Int] = [:]
         var searchStart = body.startIndex
-        for match in matches {
+        for match in redactionMatches {
             guard match.value.unicodeScalars.allSatisfy({ $0.value <= 0x7F }) else { continue }
             let needle = Data(match.value.utf8)
             guard !needle.isEmpty,
@@ -1164,7 +1177,10 @@ struct CurlHTTPClient {
             searchStart = range.upperBound
         }
         guard !replacements.isEmpty else {
-            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+            return SSEFrameRedactionResult(
+                data: body, count: 0, types: [],
+                advisoryCount: advisories.count, advisoryTypes: advisoryTypes
+            )
         }
 
         var redacted = body
@@ -1174,7 +1190,9 @@ struct CurlHTTPClient {
         return SSEFrameRedactionResult(
             data: redacted,
             count: replacements.count,
-            types: replacements.map(\.type)
+            types: replacements.map(\.type),
+            advisoryCount: advisories.count,
+            advisoryTypes: advisoryTypes
         )
     }
 

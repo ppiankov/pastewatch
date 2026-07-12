@@ -248,7 +248,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
         switch redactionMode {
         case .rawStream:
-            // WO-324/WO-403: raw_stream skips SSE parsing but still honors the configured severity threshold.
+            // WO-324/WO-404: raw_stream skips SSE parsing but still honors the certainty gate.
             relayRawRedactedData(data)
 
         case .perSSEEvent:
@@ -386,7 +386,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
         let redaction = redactSSEFrame(frame, config: config, severity: severity)
         let delivered = relayFrameData(redaction.data)
-        // WO-372: critical redactions stay attempted-detection scoped, but
+        // WO-372/WO-404: mutation-safe redactions stay attempted-detection scoped, but
         // advisory-only matches are in-band guidance and must be delivery-scoped.
         recordCriticalStreamScan(redaction)
         if delivered {

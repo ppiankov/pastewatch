@@ -140,25 +140,57 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
     }
 
-    func testHighSeverityMatchMutatesStreamBytes() {
+    func testCriticalMutationSetIgnoresSeverityThreshold() {
+        let credential = "password=s3cr3t-hunter2"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+
+        for severity in Severity.allCases {
+            let redaction = redactSSEFrame(
+                result.frames[0],
+                config: PastewatchConfig.defaultConfig,
+                severity: severity
+            )
+            let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+
+            XCTAssertEqual(redaction.count, 1, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, ["Credential"], "severity \(severity.rawValue)")
+            XCTAssertFalse(redacted.contains(credential), "severity \(severity.rawValue)")
+            XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"), "severity \(severity.rawValue)")
+        }
+    }
+
+    func testHighBuiltInMatchIsAdvisoryOnlyAndByteIdentical() {
         let email = "operator@example.com"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
         XCTAssertEqual(result.frames.count, 1)
 
-        let redaction = redactSSEFrame(
+        for severity in [Severity.high, .medium, .low] {
+            let redaction = redactSSEFrame(
+                result.frames[0],
+                config: PastewatchConfig.defaultConfig,
+                severity: severity
+            )
+
+            XCTAssertEqual(redaction.count, 0, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, [], "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.advisoryCount, 1, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.advisoryTypes, ["Email"], "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.data, result.frames[0].raw, "severity \(severity.rawValue)")
+        }
+
+        let critical = redactSSEFrame(
             result.frames[0],
             config: PastewatchConfig.defaultConfig,
-            severity: .high
+            severity: .critical
         )
-        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
-
-        XCTAssertEqual(redaction.count, 1)
-        XCTAssertEqual(redaction.types, ["Email"])
-        XCTAssertEqual(redaction.advisoryCount, 0)
-        XCTAssertFalse(redacted.contains(email))
-        XCTAssertTrue(redacted.contains("<EMAIL_1>"))
+        XCTAssertEqual(critical.count, 0)
+        XCTAssertEqual(critical.advisoryCount, 0)
+        XCTAssertEqual(critical.data, result.frames[0].raw)
     }
 
     func testHighCustomRuleMatchMutatesStreamBytes() {
@@ -169,13 +201,13 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(result.frames.count, 1)
         var config = PastewatchConfig.defaultConfig
         config.customRules = [
-            CustomRuleConfig(name: "ACME Stream Secret", pattern: #"ACME-STREAM-[A-Z]+"#, severity: "high")
+            CustomRuleConfig(name: "ACME Stream Secret", pattern: #"ACME-STREAM-[A-Z]+"#, severity: "low")
         ]
 
         let redaction = redactSSEFrame(
             result.frames[0],
             config: config,
-            severity: .high
+            severity: .critical
         )
         let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
 
@@ -186,21 +218,65 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
     }
 
-    func testMediumAndLowMatchesAreAdvisoryOnlyAndByteIdentical() {
-        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"host 10.1.2.3 trace 550e8400-e29b-41d4-a716-446655440000"}}"#
+    func testCustomRulePromotesHighBuiltInToStreamMutation() {
+        let email = "operator@example.com"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
+        var parser = SSEFrameParser()
+        let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
+        XCTAssertEqual(result.frames.count, 1)
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Approved Operator Email", pattern: #"operator@example\.com"#, severity: "low")
+        ]
+
+        let redaction = redactSSEFrame(
+            result.frames[0],
+            config: config,
+            severity: .critical
+        )
+        let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.types, ["Approved Operator Email"])
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertFalse(redacted.contains(email))
+        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+    }
+
+    func testSeverityControlsAdvisoryVolumeNotMutationSet() {
+        let credential = "password=s3cr3t-hunter2"
+        let email = "operator@example.com"
+        let ipAddress = "10.1.2.3"
+        let uuid = "550e8400-e29b-41d4-a716-446655440000"
+        let text = "\(credential) contact \(email) host \(ipAddress) trace \(uuid)"
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(text)"}}"#
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
         XCTAssertEqual(result.frames.count, 1)
 
-        let redaction = redactSSEFrame(
-            result.frames[0],
-            config: PastewatchConfig.defaultConfig,
-            severity: .high
-        )
+        let cases: [(Severity, Set<String>)] = [
+            (.critical, []),
+            (.high, ["Email"]),
+            (.medium, ["Email", "IP"]),
+            (.low, ["Email", "IP", "UUID"])
+        ]
 
-        XCTAssertEqual(redaction.count, 0)
-        XCTAssertEqual(Set(redaction.advisoryTypes), Set(["IP", "UUID"]))
-        XCTAssertEqual(redaction.data, result.frames[0].raw)
+        for (severity, advisoryTypes) in cases {
+            let redaction = redactSSEFrame(
+                result.frames[0],
+                config: PastewatchConfig.defaultConfig,
+                severity: severity
+            )
+            let output = String(data: redaction.data, encoding: .utf8) ?? ""
+
+            XCTAssertEqual(redaction.count, 1, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, ["Credential"], "severity \(severity.rawValue)")
+            XCTAssertEqual(Set(redaction.advisoryTypes), advisoryTypes, "severity \(severity.rawValue)")
+            XCTAssertFalse(output.contains(credential), "severity \(severity.rawValue)")
+            XCTAssertTrue(output.contains(email), "severity \(severity.rawValue)")
+            XCTAssertTrue(output.contains(ipAddress), "severity \(severity.rawValue)")
+            XCTAssertTrue(output.contains(uuid), "severity \(severity.rawValue)")
+        }
     }
 
     // WO-371: mixed critical and advisory severities keep independent outcomes.
@@ -215,7 +291,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let redaction = redactSSEFrame(
             result.frames[0],
             config: PastewatchConfig.defaultConfig,
-            severity: .high
+            severity: .medium
         )
         let output = String(data: redaction.data, encoding: .utf8) ?? ""
 
@@ -305,6 +381,88 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(redacted.contains("<CARD_1>"))
     }
 
+    func testUTF8ProxyBodyLeavesHighBuiltInUnmutated() {
+        let email = "operator@example.com"
+        let server = ProxyServer(port: 0, severity: .high)
+        let body = #"{"messages":[{"role":"user","content":[{"type":"tool_result","content":"contact \#(email)"}]}]}"#
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 0)
+        XCTAssertEqual(result.redactedTypes, [])
+        XCTAssertEqual(result.advisoryCount, 1)
+        XCTAssertEqual(result.advisoryTypes, ["Email"])
+        XCTAssertEqual(result.body, body)
+    }
+
+    func testUTF8ProxyBodyCustomRuleMutatesAtCriticalThreshold() {
+        let secret = "ACME-PROXY-ALPHA"
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "ACME Proxy Token", pattern: #"ACME-PROXY-[A-Z]+"#, severity: "low")
+        ]
+        let server = ProxyServer(port: 0, config: config, severity: .critical)
+        let body = #"{"messages":[{"role":"user","content":[{"type":"tool_result","content":"token \#(secret)"}]}]}"#
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.redactedTypes, ["ACME Proxy Token"])
+        XCTAssertEqual(result.advisoryCount, 0)
+        XCTAssertFalse(result.body.contains(secret))
+        XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"))
+    }
+
+    func testUTF8ProxyBodyCustomRulePromotesHighBuiltIn() {
+        let email = "operator@example.com"
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Approved Operator Email", pattern: #"operator@example\.com"#, severity: "low")
+        ]
+        let server = ProxyServer(port: 0, config: config, severity: .critical)
+        let body = #"{"messages":[{"role":"user","content":[{"type":"tool_result","content":"contact \#(email)"}]}]}"#
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.redactedTypes, ["Approved Operator Email"])
+        XCTAssertEqual(result.advisoryCount, 0)
+        XCTAssertFalse(result.body.contains(email))
+        XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"))
+    }
+
+    func testNonUTF8RequestBodyHighBuiltInDoesNotBlockForwarding() {
+        var body = Data([0xFF, 0xFE, 0x00])
+        body.append(Data("operator@example.com".utf8))
+        let server = ProxyServer(port: 0, severity: .high)
+
+        let result = server.scanNonUTF8BodyForRedactions(body)
+
+        XCTAssertEqual(result.redacted, 0)
+        XCTAssertEqual(result.redactedTypes, [])
+        XCTAssertEqual(result.advisoryCount, 1)
+        XCTAssertEqual(result.advisoryTypes, ["Email"])
+        XCTAssertFalse(result.shouldBlockForwarding)
+    }
+
+    func testCurlNonUTF8ResponseHighBuiltInIsByteIdentical() {
+        let email = "operator@example.com"
+        var body = Data([0xFF, 0xFE])
+        body.append(Data("prefix \(email) suffix".utf8))
+        body.append(0x00)
+
+        let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: PastewatchConfig.defaultConfig,
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.advisoryCount, 1)
+        XCTAssertEqual(redaction.advisoryTypes, ["Email"])
+        XCTAssertEqual(redaction.data, body)
+    }
+
     /// A frame with no secret is passed through byte-identical.
     func testSSEFrameWithoutSecretPassesThroughUnchanged() {
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello, world!"}}"#
@@ -380,7 +538,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let relay = relayStream(
             Data("data: contact 10.1.2.3".utf8),
             mode: .perSSEEvent,
-            closePeerBeforeRelay: true
+            closePeerBeforeRelay: true,
+            severity: .medium
         )
 
         XCTAssertEqual(relay.result.advisoryCount, 0)
@@ -392,7 +551,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             rawStreamAdvisorySSE(),
             mode: .rawStream,
             closePeerBeforeRelay: false,
-            alertBeforeDone: advisoryAlertBeforeDone
+            alertBeforeDone: advisoryAlertBeforeDone,
+            severity: .medium
         )
 
         XCTAssertEqual(relay.result.advisoryCount, 1)
@@ -409,7 +569,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             rawStreamAdvisorySSE("data: contact \(ipAddress)\n\n"),
             mode: .rawStream,
             closePeerBeforeRelay: false,
-            alertBeforeDone: advisoryAlertBeforeDone
+            alertBeforeDone: advisoryAlertBeforeDone,
+            severity: .medium
         )
 
         XCTAssertEqual(relay.result.redactionCount, 0)
@@ -460,7 +621,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             Data("data: contact \(ipAddress)\n\n".utf8),
             mode: .rawStream,
             closePeerBeforeRelay: false,
-            alertBeforeDone: advisoryAlertBeforeDone
+            alertBeforeDone: advisoryAlertBeforeDone,
+            severity: .medium
         )
 
         guard let bodyRange = relay.output.range(of: ipAddress),
@@ -499,7 +661,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             rawStreamAdvisorySSE(),
             mode: .rawStream,
             closePeerBeforeRelay: true,
-            alertBeforeDone: advisoryAlertBeforeDone
+            alertBeforeDone: advisoryAlertBeforeDone,
+            severity: .medium
         )
 
         XCTAssertEqual(relay.result.advisoryCount, 0)
@@ -515,7 +678,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let relay = relayStream(
             Data("contact 10.1.2.3".utf8),
             mode: .rawStream,
-            closePeerBeforeRelay: true
+            closePeerBeforeRelay: true,
+            severity: .medium
         )
 
         XCTAssertEqual(relay.result.advisoryCount, 0)
@@ -538,7 +702,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
             sendFlags: testSendFlags,
             redactionMode: .perSSEEvent,
             config: PastewatchConfig.defaultConfig,
-            severity: .high
+            severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?
         let finished = expectation(description: "relay exits after mid-stream EPIPE")
@@ -589,7 +753,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact 10.1.2.3"}}"#
         var stream = sseFrame(eventType: "content_block_delta", data: payload)
         stream.append(sseFrame(eventType: nil, data: "[DONE]"))
-        return relayStream(stream, mode: .perSSEEvent, closePeerBeforeRelay: closePeerBeforeRelay)
+        return relayStream(stream, mode: .perSSEEvent, closePeerBeforeRelay: closePeerBeforeRelay, severity: .medium)
     }
 
     private func rawStreamAdvisorySSE(_ frame: String = "data: contact 10.1.2.3\n\n") -> Data {
@@ -634,7 +798,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             _ streamTypes: [String],
             _ advisoryCount: Int,
             _ advisoryTypes: [String]
-        ) -> Data?)? = nil
+        ) -> Data?)? = nil,
+        severity: Severity = .high
     ) -> (
         result: CurlHTTPClient.StreamRelayResult,
         output: String
@@ -660,7 +825,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
             sendFlags: testSendFlags,
             redactionMode: mode,
             config: PastewatchConfig.defaultConfig,
-            severity: .high
+            severity: severity
         )
         let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
         let output = closePeerBeforeRelay ? "" : readAllAvailableString(from: sockets[0])
@@ -684,7 +849,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
             sendFlags: testSendFlags,
             redactionMode: .rawStream,
             config: PastewatchConfig.defaultConfig,
-            severity: .high
+            severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?
         let finished = expectation(description: "raw stream relay finishes")
