@@ -17,7 +17,7 @@ jobs:
     name: Analyze Swift
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.2.app
@@ -39,7 +39,7 @@ jobs:
     name: Analyze JavaScript (VS Code Extension)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
