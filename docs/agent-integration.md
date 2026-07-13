@@ -27,7 +27,7 @@ Shell alias for zero-friction protected sessions:
 alias claude='pastewatch-cli launch claude'
 ```
 
-The proxy catches supported Claude Code traffic that hooks and MCP may miss. MCP tools and hooks below add defense in depth and are the primary integration path for agents not routed through `ANTHROPIC_BASE_URL`.
+The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use the MCP tools and hooks below as defense in depth, and for agents not routed through `ANTHROPIC_BASE_URL` where those integrations are available.
 
 ---
 

@@ -44,12 +44,27 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
     }
 
-    func testMessagesEndpointWithoutMessagesArrayAllowed() {
-        // Some Anthropic endpoints (e.g. count_tokens variants) may omit a messages array.
+    func testContentNullAllowed() {
+        // WO-427: JSON null maps to NSNull and is equivalent to absent content.
+        let body = """
+        {"model":"claude-3","messages":[{"role":"assistant","content":null}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+    }
+
+    func testMixedNullAndStringContentAllowed() {
+        let body = """
+        {"model":"claude-3","messages":[{"role":"assistant","content":null},{"role":"user","content":"continue"}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+    }
+
+    func testCountTokensEndpointWithoutMessagesArrayAllowed() {
+        // Some Anthropic count_tokens variants may omit a messages array.
         let body = """
         {"model":"claude-3","system":"be terse"}
         """
-        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+        XCTAssertEqual(verdict("POST", "/v1/messages/count_tokens", body), .allow)
     }
 
     // MARK: - Foreign shapes are refused
@@ -120,6 +135,28 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
+    func testOFamilyModelDashPrefixesRefusedLayerB() {
+        // WO-428: future OpenAI o-family dash-prefixed models must fail closed.
+        for model in ["o1-mini", "o2-mini", "o3-mini", "o4-mini", "o5-mini", "o6-mini"] {
+            let body = """
+            {"model":"\(model)","messages":[{"role":"user","content":"hello"}]}
+            """
+            XCTAssertEqual(
+                verdict("POST", "/v1/messages", body),
+                .refuse("non-Anthropic messages schema on /v1/messages"),
+                "expected \(model) to be refused"
+            )
+        }
+    }
+
+    func testOFamilyBareLookalikeDoesNotMatchForeignPrefix() {
+        // WO-428: avoid the old broad "o1*" match; unknown future fields stay permissive.
+        let body = """
+        {"model":"o1fast","messages":[{"role":"user","content":"hello"}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+    }
+
     func testTopLevelJSONArrayRefusedOnUnsupportedPath() {
         // WO-422: JSON arrays are parseable JSON bodies, not opaque non-JSON bytes.
         let body = """
@@ -149,9 +186,12 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
-    func testNonUTF8MessagesPathAllowedForDownstreamScan() {
+    func testNonUTF8MessagesPathRefused() {
         let data = Data([0xff, 0xfe, 0xfd])
-        XCTAssertEqual(verdict("POST", "/v1/messages", bodyData: data), .allow)
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", bodyData: data),
+            .refuse("malformed Anthropic JSON body on /v1/messages")
+        )
     }
 
     // MARK: - Legitimate non-message traffic is NOT broken
@@ -184,8 +224,11 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/llm-gateway/v1/messages/count_tokens", body), .allow)
     }
 
-    func testNonJSONBodyOnMessagesPathAllowedForDownstreamScan() {
-        XCTAssertEqual(verdict("POST", "/v1/messages", "not json at all"), .allow)
+    func testNonJSONBodyOnMessagesPathRefused() {
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", "not json at all"),
+            .refuse("malformed Anthropic JSON body on /v1/messages")
+        )
     }
 
     func testNonJSONBodyOnUnsupportedPathRefused() {
@@ -195,8 +238,11 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
-    func testEmptyBodyAllowed() {
-        XCTAssertEqual(verdict("POST", "/v1/messages", ""), .allow)
+    func testEmptyMessagesBodyRefused() {
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", ""),
+            .refuse("malformed Anthropic JSON body on /v1/messages")
+        )
     }
 
     func testGetRequestAllowed() {
@@ -244,6 +290,11 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
 
     func testShapeRejectsMissingRole() {
         let json: [String: Any] = ["messages": [["content": "hi"]]]
+        XCTAssertFalse(server().isAnthropicMessagesShape(json))
+    }
+
+    func testShapeRejectsContentBlockWithoutType() {
+        let json: [String: Any] = ["messages": [["role": "user", "content": [["text": "hi"]]]]]
         XCTAssertFalse(server().isAnthropicMessagesShape(json))
     }
 

@@ -128,7 +128,7 @@ pastewatch-cli setup claude-code
 pastewatch-cli launch claude
 ```
 
-The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs Claude Code. When the agent exits, the proxy stops. The proxy scans Anthropic-shaped API requests and redacts supported secrets before they leave your machine; other agents remain covered by hooks, MCP tools, and agent instructions.
+The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs Claude Code. When the agent exits, the proxy stops. The proxy scans Anthropic-shaped API requests and redacts supported secrets before they leave your machine. Protect other agents with configured hooks, MCP tools, and agent instructions where available.
 
 **Important:** The setup step injects credential handling rules into your agent's `CLAUDE.md`. Without these rules, agents may echo passwords in shell output or store plaintext credentials in memory files — formats that bypass regex detection. The rules ensure agents use detectable keywords (`password=`, `secret=`) and never store raw values. See [docs/CLAUDE-SNIPPET.md](docs/CLAUDE-SNIPPET.md) for the full snippet.
 
@@ -339,7 +339,7 @@ pastewatch-cli config check
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
 
-> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Cover Codex and other agents with the pastewatch hooks and MCP server instead.
+> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
@@ -371,7 +371,7 @@ pastewatch-cli launch claude
 pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
 ```
 
-Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy — the agent runs normally and stays covered by the pastewatch hooks and MCP server.
+Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy. Protect non-routed agents with configured pastewatch hooks and MCP tools where available.
 
 Or start the proxy manually for more control:
 

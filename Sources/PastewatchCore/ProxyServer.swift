@@ -1081,10 +1081,14 @@ public final class ProxyServer {
     func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
         guard method.uppercased() == "POST" else { return .allow }
         let supportedAnthropicPath = isSupportedAnthropicPostPath(path)
-        // WO-422: non-JSON and non-UTF-8 bodies on foreign paths cannot be scanned by the
-        // Anthropic-only proxy. Supported paths still fall through to the WO-296 body scan.
+        // WO-425: malformed supported-path bodies are not safe passthrough. The downstream
+        // scanner only understands valid Anthropic JSON, so fail closed instead of forwarding
+        // an unscanned /v1/messages body.
         guard let jsonValue = try? JSONSerialization.jsonObject(with: bodyData, options: [.fragmentsAllowed]) else {
-            return supportedAnthropicPath ? .allow : .refuse("unsupported non-JSON POST body on \(path)")
+            let reason = supportedAnthropicPath
+                ? "malformed Anthropic JSON body on \(path)"
+                : "unsupported non-JSON POST body on \(path)"
+            return .refuse(reason)
         }
         // WO-422: parseable JSON arrays/scalars are JSON bodies, not opaque transport bytes.
         // Refuse malformed Anthropic JSON on supported paths and any JSON body on unsupported
@@ -1099,9 +1103,13 @@ public final class ProxyServer {
             return .refuse("unsupported JSON POST body on \(path)")
         }
         let hasMessages = json["messages"] is [Any]
-        // Some Anthropic endpoints (for example count_tokens variants) may omit a messages
-        // array. Keep those allowed; malformed message arrays are refused below.
-        guard hasMessages else { return .allow }
+        // WO-425: /v1/messages must have a messages array so the body scanner has a supported
+        // shape. Count-token gateway variants are allowed to omit it.
+        guard hasMessages else {
+            return isSupportedAnthropicCountTokensPath(path)
+                ? .allow
+                : .refuse("malformed Anthropic messages body on \(path)")
+        }
         return isAnthropicMessagesShape(json)
             ? .allow
             : .refuse("non-Anthropic messages schema on \(path)")
@@ -1114,12 +1122,25 @@ public final class ProxyServer {
     // Anthropic Messages endpoint and allowed, while /v1/chat/completions, /v1/responses,
     // and other non-Anthropic JSON POSTs remain refused.
     func isSupportedAnthropicPostPath(_ path: String) -> Bool {
-        let pathOnly = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
-            .map(String.init) ?? path
+        let pathOnly = requestPathWithoutQuery(path)
         return pathOnly == "/v1/messages"
             || pathOnly == "/v1/messages/count_tokens"
             || pathOnly.hasSuffix("/v1/messages")
             || pathOnly.hasSuffix("/v1/messages/count_tokens")
+    }
+
+    // WO-425: count-token endpoints share the supported Anthropic path family but can have
+    // request shapes that are not scanned as Messages tool-result bodies.
+    private func isSupportedAnthropicCountTokensPath(_ path: String) -> Bool {
+        let pathOnly = requestPathWithoutQuery(path)
+        return pathOnly == "/v1/messages/count_tokens"
+            || pathOnly.hasSuffix("/v1/messages/count_tokens")
+    }
+
+    // WO-425: classify gateway paths without letting query strings affect endpoint shape.
+    private func requestPathWithoutQuery(_ path: String) -> String {
+        path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map(String.init) ?? path
     }
 
     // WO-408: positive identification of the Anthropic Messages schema. Permissive on
@@ -1138,6 +1159,7 @@ public final class ProxyServer {
             // their presence is a high-signal marker that this is not an Anthropic body.
             if message["tool_calls"] != nil || message["function_call"] != nil { return false }
             if let content = message["content"] {
+                if content is NSNull { continue } // WO-427: JSON null is equivalent to absent content.
                 if content is String { continue }
                 guard let blocks = content as? [[String: Any]] else { return false }
                 for block in blocks where !(block["type"] is String) { return false }
@@ -1148,10 +1170,16 @@ public final class ProxyServer {
 
     // WO-422: a plain OpenAI chat body can otherwise look identical to a minimal
     // Anthropic Messages request once it is delivered to a /v1/messages-suffixed path.
+    // WO-428: keep the o-family matches dash-scoped and static so broad "o1*" prefixes
+    // do not classify arbitrary lookalikes as OpenAI-family models.
+    private static let knownForeignMessagesModelPrefixes = [
+        "gpt-", "chatgpt-", "o1-", "o2-", "o3-", "o4-", "o5-", "o6-",
+        "gemini-", "mistral-", "llama-", "grok-",
+    ]
+
     private func isKnownForeignMessagesModel(_ model: String) -> Bool {
         let lower = model.lowercased()
-        let foreignPrefixes = ["gpt-", "chatgpt-", "o1", "o3", "o4", "gemini-", "mistral-"]
-        return foreignPrefixes.contains { lower.hasPrefix($0) }
+        return Self.knownForeignMessagesModelPrefixes.contains { lower.hasPrefix($0) }
     }
 
     // WO-408/WO-413: per-request audit signal for a fail-closed refusal (verdict f6978df9).

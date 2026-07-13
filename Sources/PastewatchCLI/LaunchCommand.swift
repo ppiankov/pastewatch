@@ -150,8 +150,8 @@ struct Launch: ParsableCommand {
         return "warning: pastewatch proxy redaction is not wired for agent '\(agentBinary)'; " +
             "\(baseURLClause) " +
             "The proxy layer currently redacts Anthropic-shaped traffic only; 'claude' is " +
-            "the only agent routed through it. Codex and other agents remain covered by the " +
-            "pastewatch hooks and MCP server.\n"
+            "the only agent routed through it. Protect non-routed agents with configured " +
+            "pastewatch hooks and MCP tools where available.\n"
     }
 
     func run() throws {

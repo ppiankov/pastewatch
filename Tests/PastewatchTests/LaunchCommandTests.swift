@@ -80,6 +80,11 @@ final class LaunchCommandTests: XCTestCase {
             result.stderr.contains("redaction is not wired for agent 'codex'"),
             "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
         )
+        XCTAssertTrue(
+            result.stderr.contains("Protect non-routed agents with configured pastewatch hooks and MCP tools where available."),
+            "warning should avoid blanket coverage claims; stderr: \(result.stderr)"
+        )
+        XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
         XCTAssertTrue(result.stderr.hasSuffix("\n"), "warning should end with one newline: \(result.stderr.debugDescription)")
         XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
     }
@@ -100,6 +105,11 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, "launch should preserve remote gateway; stderr: \(result.stderr)")
         XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic"), result.stdout)
         XCTAssertTrue(result.stderr.contains("preserving existing ANTHROPIC_BASE_URL"), result.stderr)
+        XCTAssertTrue(
+            result.stderr.contains("Protect non-routed agents with configured pastewatch hooks and MCP tools where available."),
+            "warning should avoid blanket coverage claims; stderr: \(result.stderr)"
+        )
+        XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
         XCTAssertFalse(result.stderr.contains("gateway.example.com"), "warning must not echo gateway URL values")
         XCTAssertFalse(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
         XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
@@ -174,6 +184,11 @@ final class LaunchCommandTests: XCTestCase {
             result.stderr.contains("redaction is not wired for agent 'codex'"),
             "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
         )
+        XCTAssertTrue(
+            result.stderr.contains("Protect non-routed agents with configured pastewatch hooks and MCP tools where available."),
+            "warning should avoid blanket coverage claims; stderr: \(result.stderr)"
+        )
+        XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
     }
 
     // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.

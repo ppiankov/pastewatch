@@ -28,7 +28,7 @@ For persistent setup, add a shell alias:
 alias claude='pastewatch-cli launch claude'
 ```
 
-The proxy is Layer 0 for Claude Code — it catches Anthropic-shaped requests that bypass hooks, MCP tools, and agent instructions. MCP and hooks below add defense in depth and are the primary integration path for agents that are not routed through the proxy.
+The proxy is Layer 0 for Claude Code — it catches Anthropic-shaped requests that bypass hooks, MCP tools, and agent instructions. Use the MCP tools and hooks below as defense in depth, and for agents not routed through the proxy where those integrations are available.
 
 ---
 

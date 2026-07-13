@@ -32,7 +32,7 @@ final class ProxyRealServerTests: XCTestCase {
 
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: TCPTestSocket.postRequest(path: "/v1/messages"),
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: TCPTestSocket.validAnthropicMessagesBody),
             timeoutSeconds: 10
         )
 
@@ -248,6 +248,55 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(upstream.requestCount, 0, "non-UTF-8 foreign body must not reach upstream; \(diagnostic)")
     }
 
+    // WO-425: malformed supported-path bodies fail closed instead of forwarding unscanned bytes.
+    func testNonJSONMessagesPathRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: "not json password=messages-hunter2"),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "malformed messages body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-425: a JSON object without the Messages scan shape is not safe passthrough.
+    func testMessagesPathWithoutMessagesArrayRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = #"{"model":"claude-3","input":"password=messages-hunter2"}"#
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "non-message JSON body must not reach upstream; \(diagnostic)")
+    }
+
     // WO-412: unsupported JSON POST bodies without messages arrays are also refused.
     func testUnsupportedJSONPostWithoutMessagesRefusedBeforeUpstream() throws {
         let upstream = try StubHTTPServer { _ in
@@ -412,7 +461,7 @@ final class ProxyRealServerTests: XCTestCase {
             runDetached {
                 let response = (try? TCPTestSocket.roundTrip(
                     port: proxyPort,
-                    request: TCPTestSocket.postRequest(path: "/v1/messages"),
+                    request: TCPTestSocket.postRequest(path: "/v1/messages", body: TCPTestSocket.validAnthropicMessagesBody),
                     timeoutSeconds: 5
                 )) ?? ""
                 responseLock.lock()
@@ -431,7 +480,7 @@ final class ProxyRealServerTests: XCTestCase {
 
         let rejected = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: TCPTestSocket.postRequest(path: "/v1/messages"),
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: TCPTestSocket.validAnthropicMessagesBody),
             timeoutSeconds: 3
         )
         XCTAssertTrue(rejected.contains("HTTP/1.1 503 Service Unavailable"))
@@ -808,6 +857,8 @@ private final class StubHTTPServer {
 }
 
 private enum TCPTestSocket {
+    static let validAnthropicMessagesBody = #"{"model":"claude-3","messages":[{"role":"user","content":"hello"}]}"#
+
     static func postRequest(path: String, body: String = "{}") -> String {
         let bodyData = Data(body.utf8)
         return """
