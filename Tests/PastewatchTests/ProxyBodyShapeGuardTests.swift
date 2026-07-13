@@ -113,6 +113,25 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages/count_tokens", body), .allow)
     }
 
+    func testGatewayPrefixedMessagesPathAllowed() {
+        // WO-419: a gateway-fronted upstream (WO-142) embeds a base path in the request
+        // target. An Anthropic-shaped body at /v1/llm-gateway/v1/messages must be allowed,
+        // not refused by an over-strict exact path match.
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":"hi"}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/llm-gateway/v1/messages", body), .allow)
+        XCTAssertEqual(verdict("POST", "/anthropic/v1/messages?beta=true", body), .allow)
+    }
+
+    func testGatewayPrefixedCountTokensAllowed() {
+        // WO-419: the count_tokens endpoint through a gateway prefix must also pass.
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":"count me"}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/llm-gateway/v1/messages/count_tokens", body), .allow)
+    }
+
     func testNonJSONBodyAllowed() {
         XCTAssertEqual(verdict("POST", "/v1/anything", "not json at all"), .allow)
     }

@@ -1098,10 +1098,18 @@ public final class ProxyServer {
     }
 
     // WO-411/WO-412: path allowlist for JSON POST bodies the proxy understands.
+    // WO-419: match the /v1/messages endpoint as a path SUFFIX, not an exact string, so a
+    // gateway-fronted upstream (WO-142) whose request target embeds a base path — e.g.
+    // /v1/llm-gateway/v1/messages or /anthropic/v1/messages — is still recognized as the
+    // Anthropic Messages endpoint and allowed, while /v1/chat/completions, /v1/responses,
+    // and other non-Anthropic JSON POSTs remain refused.
     func isSupportedAnthropicPostPath(_ path: String) -> Bool {
         let pathOnly = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
             .map(String.init) ?? path
-        return pathOnly == "/v1/messages" || pathOnly == "/v1/messages/count_tokens"
+        return pathOnly == "/v1/messages"
+            || pathOnly == "/v1/messages/count_tokens"
+            || pathOnly.hasSuffix("/v1/messages")
+            || pathOnly.hasSuffix("/v1/messages/count_tokens")
     }
 
     // WO-408: positive identification of the Anthropic Messages schema. Permissive on
