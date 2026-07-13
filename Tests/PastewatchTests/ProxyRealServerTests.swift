@@ -45,6 +45,56 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains(#"{"ok":true}"#), diagnostic)
     }
 
+    // WO-408: an OpenAI-shaped body is refused with 415 and never reaches upstream.
+    func testUnsupportedBodyShapeRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let openAIBody = #"{"model":"gpt-4","messages":[{"role":"user","content":"x","tool_calls":[{"id":"c"}]}]}"#
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/chat/completions", body: openAIBody),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "foreign body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-408: an Anthropic-shaped count-tokens body is forwarded, not falsely refused.
+    func testAnthropicCountTokensNotRefused() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"input_tokens":3}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":"count me"}]}"#
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages/count_tokens", body: body),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertFalse(response.contains("HTTP/1.1 415"), "count_tokens wrongly refused; \(diagnostic)")
+        XCTAssertEqual(upstream.requestCount, 1, "count_tokens must be forwarded; \(diagnostic)")
+    }
+
     func testAdmissionCapRejectsFifthConcurrentConnection() throws {
         let upstreamEntered = DispatchSemaphore(value: 0)
         let upstreamRelease = DispatchSemaphore(value: 0)

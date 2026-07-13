@@ -683,6 +683,20 @@ public final class ProxyServer {
             return
         }
 
+        // WO-408: fail closed on unsupported upstream body shapes. The scan path below
+        // only redacts POST /v1/messages (Anthropic shape); any other POST body — notably
+        // OpenAI /v1/chat/completions — would otherwise be forwarded UNSCANNED, a silent
+        // no-op that makes users believe traffic was redacted when it was not. Refuse an
+        // unrecognized shape rather than forward it. Runs for ALL POSTs, so it sits before
+        // the /v1/messages scan branch.
+        if case .refuse(let reason) = upstreamBodyShapeVerdict(
+            method: parsed.method, path: parsed.path, bodyData: parsed.bodyData
+        ) {
+            logUnsupportedBodyShapeRefusal(path: parsed.path, reason: reason)
+            sendError(to: clientSocket, status: 415, message: "Unsupported upstream body shape")
+            return
+        }
+
         // Only scan POST /v1/messages (the endpoint that carries tool results)
         var processedBody = parsed.body
         var processedBodyData = parsed.bodyData
@@ -1053,6 +1067,71 @@ public final class ProxyServer {
             body: resultString, redacted: redacted, redactedTypes: types,
             advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
         )
+    }
+
+    // WO-408: outcome of the fail-closed upstream body-shape check.
+    enum BodyShapeVerdict: Equatable {
+        case allow
+        case refuse(String)
+    }
+
+    // WO-408: decide whether a request body is a shape pastewatch can redact, so an
+    // unredactable foreign body (e.g. OpenAI /v1/chat/completions) is refused rather than
+    // silently forwarded unscanned. Pure and socket-free so it is unit-testable directly.
+    // Only POST bodies carry tool results; everything else (GET /v1/models, OPTIONS, the
+    // token-counting endpoint's Anthropic body, non-JSON bodies) is allowed through — the
+    // /v1/messages scan branch already structurally skips them.
+    func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
+        guard method.uppercased() == "POST" else { return .allow }
+        // Non-JSON (incl. non-UTF-8) is not a chat body we own; a non-UTF-8 /v1/messages
+        // body still reaches the existing WO-296 fail-closed path downstream.
+        guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            return .allow
+        }
+        let hasMessages = json["messages"] is [Any]
+        if path.contains("/v1/messages") {
+            // Layer B: a foreign body arriving at the Anthropic endpoint. An Anthropic body
+            // with no messages array (or a valid shape) is fine; anything else is refused.
+            guard hasMessages else { return .allow }
+            return isAnthropicMessagesShape(json)
+                ? .allow
+                : .refuse("non-Anthropic messages schema on \(path)")
+        }
+        // Layer A: a chat-shaped body on a non-/v1/messages path (e.g. /v1/chat/completions).
+        // Refuse only when it carries a messages array that is NOT Anthropic-shaped, so an
+        // Anthropic-shaped body on another endpoint (e.g. /v1/messages/count_tokens) passes.
+        if hasMessages && !isAnthropicMessagesShape(json) {
+            return .refuse("chat body on unsupported endpoint \(path)")
+        }
+        return .allow
+    }
+
+    // WO-408: positive identification of the Anthropic Messages schema. Permissive on
+    // unknown keys (Anthropic adds fields over time — fail closed, never over-refuse a
+    // genuine future field by being strict), strict on the three load-bearing invariants,
+    // and rejecting OpenAI-only siblings that disambiguate a chat/completions body.
+    func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
+        guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        for message in messages {
+            guard message["role"] is String else { return false }
+            // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
+            // their presence is a high-signal marker that this is not an Anthropic body.
+            if message["tool_calls"] != nil || message["function_call"] != nil { return false }
+            if let content = message["content"] {
+                if content is String { continue }
+                guard let blocks = content as? [[String: Any]] else { return false }
+                for block in blocks where !(block["type"] is String) { return false }
+            }
+        }
+        return true
+    }
+
+    // WO-408: per-request audit signal for a fail-closed refusal (verdict f6978df9).
+    private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
+        guard !quietLog else { return }
+        FileHandle.standardError.write(Data(
+            "[pastewatch-proxy] refused unsupported upstream body shape: \(reason)\n".utf8
+        ))
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {

@@ -34,13 +34,16 @@ struct Launch: ParsableCommand {
         abstract: "Start the proxy and launch an agent through it in one command",
         discussion: """
         Starts the pastewatch proxy in the background, waits for it to be ready,
-        then launches your agent with ANTHROPIC_BASE_URL pointed at the proxy.
-        When the agent exits, the proxy is stopped automatically.
+        then launches your agent. The proxy redacts Anthropic-shaped (/v1/messages)
+        traffic, so ANTHROPIC_BASE_URL is pointed at it only for 'claude'; other
+        agents launch without proxy interposition (a warning is printed) and stay
+        covered by the pastewatch hooks and MCP server. When the agent exits, the
+        proxy is stopped automatically.
 
         Examples:
           pastewatch-cli launch claude
           pastewatch-cli launch --port 9999 -- claude --model opus
-          pastewatch-cli launch --audit-log /tmp/pw.log -- codex --full-auto
+          pastewatch-cli launch --audit-log /tmp/pw.log -- claude
         """
     )
 
@@ -76,6 +79,36 @@ struct Launch: ParsableCommand {
 
     @Argument(parsing: .captureForPassthrough)
     var command: [String] = []
+
+    // WO-409: agents whose traffic the proxy can actually redact get ANTHROPIC_BASE_URL
+    // pointed at the proxy. Exact basename match (not prefix) so a foreign wrapper like
+    // `claude-openai-bridge` cannot accidentally route into the Anthropic-only proxy and
+    // hit WO-408's fail-closed refusal. A future --force-proxy flag can override this.
+    static let proxyRoutedAgents: Set<String> = ["claude"]
+
+    static func isProxyRoutedAgent(_ binary: String) -> Bool {
+        proxyRoutedAgents.contains(binary)
+    }
+
+    // WO-409: only wire ANTHROPIC_BASE_URL for agents the proxy actually redacts. The proxy
+    // scans Anthropic-shaped (/v1/messages) traffic only; routing a non-Anthropic agent
+    // through it would fail closed on every request (WO-408), looking like a proxy bug
+    // rather than a deliberate unsupported-upstream refusal. Gating the setenv (and unsetting
+    // any inherited value) keeps launch coherent with the guard.
+    static func configureProxyEnv(agentBinary: String, port: UInt16) {
+        if isProxyRoutedAgent(agentBinary) {
+            setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:\(port)", 1)
+        } else {
+            unsetenv("ANTHROPIC_BASE_URL")
+            FileHandle.standardError.write(Data("""
+            warning: pastewatch proxy redaction is not wired for agent '\(agentBinary)'; \
+            launching without proxy interposition (ANTHROPIC_BASE_URL not set). \
+            The proxy layer currently redacts Anthropic-shaped traffic only; 'claude' is \
+            the only agent routed through it. Codex and other agents remain covered by the \
+            pastewatch hooks and MCP server.\n
+            """.utf8))
+        }
+    }
 
     func run() throws {
         try runStartupSweepFixtureProbeIfNeeded()
@@ -130,8 +163,7 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
         }
 
-        // Set ANTHROPIC_BASE_URL for the agent
-        setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:\(port)", 1)
+        Launch.configureProxyEnv(agentBinary: (command[0] as NSString).lastPathComponent, port: port)
 
         // Fork: child exec's the agent (inherits TTY), parent waits and cleans up
         // Use @_silgen_name to bypass Swift's fork() unavailability on Darwin

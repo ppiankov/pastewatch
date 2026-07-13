@@ -49,7 +49,7 @@ The agent works normally. It reads files, runs commands, writes code. It just ne
 - **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
 - **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
 - **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
-- **API proxy** — catches everything, including subagents and tools that bypass hooks. Last line of defense before the network boundary
+- **API proxy** — catches Anthropic-shaped traffic that bypasses hooks, including from subagents. Last line of defense before the network boundary (refuses unrecognized upstream shapes rather than forward them unscanned)
 - **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
 - **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
 - **One command** — `pastewatch-cli launch claude` and every layer is active. No manual setup, no env vars, no second terminal
@@ -337,7 +337,9 @@ pastewatch-cli config check
 
 ### API Proxy — Last Line of Defense
 
-Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
+Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
+
+> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Cover Codex and other agents with the pastewatch hooks and MCP server instead.
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
@@ -367,10 +369,9 @@ pastewatch-cli launch claude
 
 # With options
 pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
-
-# Any agent
-pastewatch-cli launch -- codex --full-auto
 ```
+
+Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` starts the proxy but does **not** wire that agent to it — the agent runs normally and stays covered by the pastewatch hooks and MCP server.
 
 Or start the proxy manually for more control:
 
@@ -821,7 +822,7 @@ Define additional patterns in a JSON file:
 
 ### Agent Safety Matrix
 
-The API proxy (Layer 0) protects agents that expose an API endpoint override; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth.
+The API proxy (Layer 0) redacts **Anthropic-shaped** (`/v1/messages`) traffic from agents that expose an API endpoint override; it refuses unrecognized upstream body shapes (HTTP 415) rather than forward them unscanned, so it does not redact OpenAI/Gemini-shaped agents. Rows relying on "Proxy" are protected only for Anthropic-shaped traffic; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth and are the primary coverage for non-Anthropic-shaped agents.
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|
@@ -844,8 +845,8 @@ The API proxy (Layer 0) protects agents that expose an API endpoint override; ro
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
 **Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
-**Proxy + MCP** = network-level redaction catches everything, MCP tools provide redacted access, but the agent isn't forced to use them.
-**Proxy only** = all protection comes from the network proxy. Still catches 100% of outbound secrets.
+**Proxy + MCP** = network-level redaction for Anthropic-shaped traffic, plus MCP tools for redacted access (the agent isn't forced to use them). If the agent talks a non-Anthropic wire format, the proxy refuses (HTTP 415) rather than redact — MCP is then the real coverage.
+**Proxy only** = protection comes from the network proxy, and only for Anthropic-shaped traffic. An agent that sends a non-Anthropic body shape is not redacted by the proxy (it is refused) — prefer hooks/MCP where available.
 
 ### Install
 

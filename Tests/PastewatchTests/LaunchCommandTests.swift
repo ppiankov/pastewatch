@@ -1,5 +1,10 @@
 import Foundation
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 final class LaunchCommandTests: XCTestCase {
     private let fixtureContextProbeEnvironmentKey = "PW_LAUNCH_FIXTURE_CONTEXT_PROBE"
@@ -45,6 +50,43 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stdout.contains("OVERVIEW: Start the proxy"), "passthrough help became launch help")
         XCTAssertFalse(result.stderr.contains(FileManager.default.homeDirectoryForCurrentUser.path))
         XCTAssertFalse(result.stderr.contains("user:pass"))
+    }
+
+    // WO-409: a proxy-routed agent (claude) receives ANTHROPIC_BASE_URL pointed at the proxy.
+    func testLaunchClaudeAgentSetsAnthropicBaseURL() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "claude", in: fixture.cwd)
+        let port = try reserveLoopbackPort()
+        let result = try runCLIProcess(
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "\(port)", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+        XCTAssertTrue(
+            result.stdout.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:\(port)"),
+            "claude should be routed through the proxy; stdout: \(result.stdout) stderr: \(result.stderr)"
+        )
+        XCTAssertFalse(result.stderr.contains("redaction is not wired"), "claude should not warn")
+    }
+
+    // WO-409: a non-Anthropic agent (codex) launches WITHOUT ANTHROPIC_BASE_URL, plus a warning.
+    func testLaunchNonAnthropicAgentSkipsBaseURLAndWarns() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        let port = try reserveLoopbackPort()
+        let result = try runCLIProcess(
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "\(port)", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+        XCTAssertTrue(
+            result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"),
+            "codex must not be wired to the proxy; stdout: \(result.stdout) stderr: \(result.stderr)"
+        )
+        XCTAssertTrue(
+            result.stderr.contains("redaction is not wired for agent 'codex'"),
+            "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
+        )
     }
 
     // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.
@@ -274,6 +316,50 @@ final class LaunchCommandTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         tempRoots.append(root)
         return root
+    }
+
+    // WO-409: bind-then-close a loopback socket to obtain a free port for the real launch
+    // proxy (launch's waitForTCP polls a concrete port, so "0" never becomes ready).
+    private func reserveLoopbackPort() throws -> UInt16 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw LaunchPortError.socketFailed }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                #if canImport(Darwin)
+                return Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                return Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
+            }
+        }
+        guard bindResult == 0 else { throw LaunchPortError.bindFailed }
+        var bound = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &bound) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &len)
+            }
+        }
+        guard nameResult == 0 else { throw LaunchPortError.bindFailed }
+        return UInt16(bigEndian: bound.sin_port)
+    }
+
+    private enum LaunchPortError: Error { case socketFailed, bindFailed }
+
+    // WO-409: a dummy agent that prints whether ANTHROPIC_BASE_URL was set in its env,
+    // then exits so the parent launch runner tears down the proxy and returns.
+    private func writeEnvEchoAgent(named name: String, in dir: URL) throws -> URL {
+        let script = dir.appendingPathComponent(name)
+        try "#!/bin/sh\necho \"ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-UNSET}\"\n".write(
+            to: script, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script
     }
 
     private func writeFixtureStartupFile(in home: URL) throws {
