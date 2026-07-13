@@ -100,6 +100,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, "launch should preserve remote gateway; stderr: \(result.stderr)")
         XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic"), result.stdout)
         XCTAssertTrue(result.stderr.contains("preserving existing ANTHROPIC_BASE_URL"), result.stderr)
+        XCTAssertFalse(result.stderr.contains("gateway.example.com"), "warning must not echo gateway URL values")
         XCTAssertFalse(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
         XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
     }
