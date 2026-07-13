@@ -124,6 +124,36 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
     }
 
+    // WO-423: classify stale local proxy URL spellings directly, not only via process launch.
+    func testShouldClearExistingAnthropicBaseURLLoopbackTable() {
+        let shouldClear = [
+            nil,
+            "",
+            "http://127.0.0.1:8443",
+            "http://127.0.0.2:8443",
+            "http://127.255.255.255:8443",
+            "http://0.0.0.0:8443",
+            "http://localhost:8443",
+            "http://[::1]:8443",
+            "http://[::ffff:127.0.0.1]:8443",
+            "127.0.0.1:8443",
+            "localhost:8443",
+        ]
+        let shouldPreserve = [
+            "https://gateway.example.com/anthropic",
+            "http://127.0.0.1.evil.com:8443",
+            "https://api.anthropic.com",
+            "gateway.example.com/anthropic",
+        ]
+
+        for value in shouldClear {
+            XCTAssertTrue(Launch.shouldClearExistingAnthropicBaseURL(value), "expected clear for \(value ?? "nil")")
+        }
+        for value in shouldPreserve {
+            XCTAssertFalse(Launch.shouldClearExistingAnthropicBaseURL(value), "expected preserve for \(value)")
+        }
+    }
+
     // WO-414: unsupported agents must not start an unused proxy or fail on its port.
     func testLaunchNonAnthropicAgentDoesNotRequireProxyPort() throws {
         let fixture = try makeLaunchFixture()

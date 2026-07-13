@@ -697,7 +697,7 @@ public final class ProxyServer {
             return
         }
 
-        // Only scan POST /v1/messages (the endpoint that carries tool results)
+        // Only scan supported Anthropic message POSTs (the endpoints that carry tool results)
         var processedBody = parsed.body
         var processedBodyData = parsed.bodyData
         var redactionCount = 0
@@ -705,7 +705,7 @@ public final class ProxyServer {
         var bodyAdvisoryCount = 0
         var bodyAdvisoryTypes: [String] = []
         var shouldBlockNonUTF8Forwarding = false
-        if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
+        if parsed.method == "POST" && isSupportedAnthropicPostPath(parsed.path) {
             if let body = parsed.body {
                 let result = scanAndRedactBody(body)
                 processedBody = result.body
@@ -1080,12 +1080,22 @@ public final class ProxyServer {
     // forwarded unscanned. Pure and socket-free so it is unit-testable directly.
     func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
         guard method.uppercased() == "POST" else { return .allow }
-        // Non-JSON (incl. non-UTF-8) is not a chat body we own; a non-UTF-8 /v1/messages
-        // body still reaches the existing WO-296 fail-closed path downstream.
-        guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
-            return .allow
+        let supportedAnthropicPath = isSupportedAnthropicPostPath(path)
+        // WO-422: non-JSON and non-UTF-8 bodies on foreign paths cannot be scanned by the
+        // Anthropic-only proxy. Supported paths still fall through to the WO-296 body scan.
+        guard let jsonValue = try? JSONSerialization.jsonObject(with: bodyData, options: [.fragmentsAllowed]) else {
+            return supportedAnthropicPath ? .allow : .refuse("unsupported non-JSON POST body on \(path)")
         }
-        guard isSupportedAnthropicPostPath(path) else {
+        // WO-422: parseable JSON arrays/scalars are JSON bodies, not opaque transport bytes.
+        // Refuse malformed Anthropic JSON on supported paths and any JSON body on unsupported
+        // paths instead of silently forwarding it unscanned.
+        guard let json = jsonValue as? [String: Any] else {
+            let reason = supportedAnthropicPath
+                ? "malformed Anthropic JSON body on \(path)"
+                : "unsupported JSON POST body on \(path)"
+            return .refuse(reason)
+        }
+        guard supportedAnthropicPath else {
             return .refuse("unsupported JSON POST body on \(path)")
         }
         let hasMessages = json["messages"] is [Any]
@@ -1115,9 +1125,13 @@ public final class ProxyServer {
     // WO-408: positive identification of the Anthropic Messages schema. Permissive on
     // unknown keys (Anthropic adds fields over time — fail closed, never over-refuse a
     // genuine future field by being strict), strict on the three load-bearing invariants,
-    // and rejecting OpenAI-only siblings that disambiguate a chat/completions body.
+    // rejects known foreign model markers and OpenAI-only siblings that disambiguate a
+    // chat/completions body.
     func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
         guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        if let model = json["model"] as? String, isKnownForeignMessagesModel(model) {
+            return false
+        }
         for message in messages {
             guard message["role"] is String else { return false }
             // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
@@ -1130,6 +1144,14 @@ public final class ProxyServer {
             }
         }
         return true
+    }
+
+    // WO-422: a plain OpenAI chat body can otherwise look identical to a minimal
+    // Anthropic Messages request once it is delivered to a /v1/messages-suffixed path.
+    private func isKnownForeignMessagesModel(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        let foreignPrefixes = ["gpt-", "chatgpt-", "o1", "o3", "o4", "gemini-", "mistral-"]
+        return foreignPrefixes.contains { lower.hasPrefix($0) }
     }
 
     // WO-408/WO-413: per-request audit signal for a fail-closed refusal (verdict f6978df9).

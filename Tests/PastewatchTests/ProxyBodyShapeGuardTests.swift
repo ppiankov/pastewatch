@@ -16,6 +16,10 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         server().upstreamBodyShapeVerdict(method: method, path: path, bodyData: Data(body.utf8))
     }
 
+    private func verdict(_ method: String, _ path: String, bodyData: Data) -> ProxyServer.BodyShapeVerdict {
+        server().upstreamBodyShapeVerdict(method: method, path: path, bodyData: bodyData)
+    }
+
     // MARK: - Anthropic shapes are allowed
 
     func testAnthropicToolResultBodyAllowed() {
@@ -55,9 +59,10 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"model":"gpt-4","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function"}]}]}
         """
-        guard case .refuse = verdict("POST", "/v1/chat/completions", body) else {
-            return XCTFail("expected refuse for OpenAI chat/completions body")
-        }
+        XCTAssertEqual(
+            verdict("POST", "/v1/chat/completions", body),
+            .refuse("unsupported JSON POST body on /v1/chat/completions")
+        )
     }
 
     func testSimpleOpenAIChatCompletionsRefusedLayerA() {
@@ -66,9 +71,10 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}
         """
-        guard case .refuse = verdict("POST", "/v1/chat/completions", body) else {
-            return XCTFail("expected refuse for simple OpenAI chat/completions body")
-        }
+        XCTAssertEqual(
+            verdict("POST", "/v1/chat/completions", body),
+            .refuse("unsupported JSON POST body on /v1/chat/completions")
+        )
     }
 
     func testUnsupportedJSONPostWithoutMessagesRefused() {
@@ -76,9 +82,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"model":"gpt-4.1","input":"hello"}
         """
-        guard case .refuse = verdict("POST", "/v1/responses", body) else {
-            return XCTFail("expected refuse for unsupported JSON POST body")
-        }
+        XCTAssertEqual(verdict("POST", "/v1/responses", body), .refuse("unsupported JSON POST body on /v1/responses"))
     }
 
     func testForeignGenerateContentBodyWithoutMessagesRefused() {
@@ -87,9 +91,10 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"contents":[{"parts":[{"text":"hello"}]}]}
         """
-        guard case .refuse = verdict("POST", "/v1beta/models/gemini:generateContent", body) else {
-            return XCTFail("expected refuse for foreign JSON POST body")
-        }
+        XCTAssertEqual(
+            verdict("POST", "/v1beta/models/gemini:generateContent", body),
+            .refuse("unsupported JSON POST body on /v1beta/models/gemini:generateContent")
+        )
     }
 
     func testOpenAIShapeOnMessagesEndpointRefusedLayerB() {
@@ -97,9 +102,56 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"model":"gpt-4","messages":[{"role":"user","content":"hi","function_call":{"name":"f"}}]}
         """
-        guard case .refuse = verdict("POST", "/v1/messages", body) else {
-            return XCTFail("expected refuse for OpenAI shape on /v1/messages")
-        }
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", body),
+            .refuse("non-Anthropic messages schema on /v1/messages")
+        )
+    }
+
+    func testPlainOpenAIShapeOnMessagesEndpointRefusedLayerB() {
+        // WO-422: model markers keep plain OpenAI bodies from passing as tiny
+        // Anthropic requests when a gateway misroutes them to /v1/messages.
+        let body = """
+        {"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", body),
+            .refuse("non-Anthropic messages schema on /v1/messages")
+        )
+    }
+
+    func testTopLevelJSONArrayRefusedOnUnsupportedPath() {
+        // WO-422: JSON arrays are parseable JSON bodies, not opaque non-JSON bytes.
+        let body = """
+        [{"role":"user","content":"hello"}]
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/chat/completions", body),
+            .refuse("unsupported JSON POST body on /v1/chat/completions")
+        )
+    }
+
+    func testTopLevelJSONArrayRefusedOnMessagesPath() {
+        let body = """
+        [{"role":"user","content":"hello"}]
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages", body),
+            .refuse("malformed Anthropic JSON body on /v1/messages")
+        )
+    }
+
+    func testNonUTF8ForeignPathRefused() {
+        let data = Data([0xff, 0xfe, 0xfd])
+        XCTAssertEqual(
+            verdict("POST", "/v1/chat/completions", bodyData: data),
+            .refuse("unsupported non-JSON POST body on /v1/chat/completions")
+        )
+    }
+
+    func testNonUTF8MessagesPathAllowedForDownstreamScan() {
+        let data = Data([0xff, 0xfe, 0xfd])
+        XCTAssertEqual(verdict("POST", "/v1/messages", bodyData: data), .allow)
     }
 
     // MARK: - Legitimate non-message traffic is NOT broken
@@ -132,8 +184,15 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/llm-gateway/v1/messages/count_tokens", body), .allow)
     }
 
-    func testNonJSONBodyAllowed() {
-        XCTAssertEqual(verdict("POST", "/v1/anything", "not json at all"), .allow)
+    func testNonJSONBodyOnMessagesPathAllowedForDownstreamScan() {
+        XCTAssertEqual(verdict("POST", "/v1/messages", "not json at all"), .allow)
+    }
+
+    func testNonJSONBodyOnUnsupportedPathRefused() {
+        XCTAssertEqual(
+            verdict("POST", "/v1/anything", "not json at all"),
+            .refuse("unsupported non-JSON POST body on /v1/anything")
+        )
     }
 
     func testEmptyBodyAllowed() {
@@ -146,6 +205,34 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
 
     func testOptionsRequestAllowed() {
         XCTAssertEqual(verdict("OPTIONS", "/v1/messages", ""), .allow)
+    }
+
+    // MARK: - Supported path predicate direct
+
+    func testSupportedAnthropicPathPredicate() {
+        let proxy = server()
+        let allowed = [
+            "/v1/messages",
+            "/v1/messages?beta=true",
+            "/v1/messages/count_tokens",
+            "/v1/llm-gateway/v1/messages",
+            "/anthropic/v1/messages?beta=true",
+            "/v1/llm-gateway/v1/messages/count_tokens",
+        ]
+        let refused = [
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/messages_extra",
+            "/v1/messages/extra",
+            "/v1beta/models/gemini:generateContent",
+        ]
+
+        for path in allowed {
+            XCTAssertTrue(proxy.isSupportedAnthropicPostPath(path), "expected supported path: \(path)")
+        }
+        for path in refused {
+            XCTAssertFalse(proxy.isSupportedAnthropicPostPath(path), "expected unsupported path: \(path)")
+        }
     }
 
     // MARK: - isAnthropicMessagesShape direct

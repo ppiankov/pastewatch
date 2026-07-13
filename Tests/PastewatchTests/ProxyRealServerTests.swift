@@ -91,6 +91,54 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
     }
 
+    // WO-424: gateway-prefixed Anthropic paths must forward through the real proxy.
+    func testGatewayPrefixedAnthropicBodyRedactedAndForwarded() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let credential = "password=gateway-hunter2"
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/llm-gateway/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertFalse(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 1, diagnostic)
+        XCTAssertTrue(forwarded.contains("POST /v1/llm-gateway/v1/messages HTTP/1.1"), forwarded)
+        XCTAssertFalse(forwarded.contains(credential), "upstream request leaked raw credential")
+        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
+    }
+
     // WO-421: streaming Anthropic requests also pass the shape guard and reach upstream.
     func testStreamingAnthropicBodyAllowedThroughShapeGuard() throws {
         let upstream = try StubHTTPServer { _ in
@@ -147,8 +195,57 @@ final class ProxyRealServerTests: XCTestCase {
             timeoutSeconds: 10
         )
         let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
-        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertTrue(response.contains(#""error": "Unsupported upstream body shape""#), diagnostic)
         XCTAssertEqual(upstream.requestCount, 0, "foreign body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-422: parseable JSON arrays on unsupported paths fail closed.
+    func testTopLevelJSONArrayRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/chat/completions", body: #"[{"role":"user","content":"x"}]"#),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "JSON array body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-422: non-UTF-8 bodies on foreign paths fail closed instead of bypassing scanning.
+    func testNonUTF8ForeignPathRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let request = TCPTestSocket.postRequestData(
+            path: "/v1/chat/completions",
+            body: Data([0xff, 0xfe, 0xfd])
+        )
+        let response = try TCPTestSocket.roundTrip(port: proxyPort, requestData: request, timeoutSeconds: 10)
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "non-UTF-8 foreign body must not reach upstream; \(diagnostic)")
     }
 
     // WO-412: unsupported JSON POST bodies without messages arrays are also refused.
@@ -171,7 +268,8 @@ final class ProxyRealServerTests: XCTestCase {
             timeoutSeconds: 10
         )
         let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
-        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertTrue(response.contains(#""error": "Unsupported upstream body shape""#), diagnostic)
         XCTAssertEqual(upstream.requestCount, 0, "unsupported body must not reach upstream; \(diagnostic)")
     }
 
@@ -212,13 +310,49 @@ final class ProxyRealServerTests: XCTestCase {
         proxyStopped = true
 
         let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
-        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
         XCTAssertEqual(upstream.requestCount, 0, "unsupported body must not reach upstream; \(diagnostic)")
 
         let audit = try String(contentsOf: auditPath, encoding: .utf8)
         XCTAssertTrue(audit.contains("PROXY REFUSED unsupported upstream body shape"), audit)
         XCTAssertTrue(audit.contains("/v1/responses"), audit)
         XCTAssertTrue(audit.contains("unsupported JSON POST body"), audit)
+    }
+
+    // WO-424: non-quiet refusals write the same audit signal to stderr.
+    func testUnsupportedBodyShapeRefusalWritesStderrWhenNotQuiet() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            quietLog: false
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        let responseBox = LockedValue("")
+        let stderr = try captureStandardError {
+            try runningProxy.start()
+            defer { runningProxy.stop() }
+            let response = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: "/v1/responses", body: #"{"input":"hello"}"#),
+                timeoutSeconds: 10
+            )
+            responseBox.set(response)
+        }
+
+        let response = responseBox.value
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, diagnostic)
+        XCTAssertTrue(stderr.contains("PROXY REFUSED unsupported upstream body shape"), stderr)
+        XCTAssertTrue(stderr.contains("/v1/responses"), stderr)
+        XCTAssertTrue(stderr.contains("unsupported JSON POST body"), stderr)
     }
 
     // WO-408: an Anthropic-shaped count-tokens body is forwarded, not falsely refused.
@@ -499,6 +633,83 @@ private final class RunningProxy {
     }
 }
 
+private final class LockedValue<Value> {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        storage = value
+    }
+
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func set(_ value: Value) {
+        lock.lock()
+        storage = value
+        lock.unlock()
+    }
+}
+
+private func captureStandardError(_ body: () throws -> Void) throws -> String {
+    var fds = [Int32](repeating: 0, count: 2)
+    guard pipe(&fds) == 0 else { throw ProxyHarnessError.systemError("pipe") }
+    let savedStderr = dup(STDERR_FILENO)
+    guard savedStderr >= 0 else {
+        close(fds[0])
+        close(fds[1])
+        throw ProxyHarnessError.systemError("dup")
+    }
+
+    fflush(stderr)
+    guard dup2(fds[1], STDERR_FILENO) >= 0 else {
+        close(fds[0])
+        close(fds[1])
+        close(savedStderr)
+        throw ProxyHarnessError.systemError("dup2")
+    }
+    close(fds[1])
+
+    var restored = false
+    func restoreStderr() {
+        guard !restored else { return }
+        fflush(stderr)
+        dup2(savedStderr, STDERR_FILENO)
+        close(savedStderr)
+        restored = true
+    }
+
+    do {
+        try body()
+        restoreStderr()
+        let data = try readPipeToEOF(fds[0])
+        close(fds[0])
+        return String(data: data, encoding: .utf8) ?? ""
+    } catch {
+        restoreStderr()
+        close(fds[0])
+        throw error
+    }
+}
+
+private func readPipeToEOF(_ fd: Int32) throws -> Data {
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let n = read(fd, &buffer, buffer.count)
+        if n > 0 {
+            data.append(contentsOf: buffer[0..<n])
+        } else if n == 0 {
+            return data
+        } else if errno != EINTR {
+            throw ProxyHarnessError.systemError("read")
+        }
+    }
+}
+
 private struct StubHTTPResponse {
     let status: Int
     let headers: [String: String]
@@ -609,6 +820,16 @@ private enum TCPTestSocket {
         """
     }
 
+    static func postRequestData(path: String, body: Data, contentType: String = "application/json") -> Data {
+        let head = "POST \(path) HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\n" +
+            "Content-Type: \(contentType)\r\n" +
+            "Content-Length: \(body.count)\r\n\r\n"
+        var request = Data(head.utf8)
+        request.append(body)
+        return request
+    }
+
     static func reserveLoopbackPort() throws -> UInt16 {
         let fd = try listenOnLoopback(port: 0)
         defer { close(fd) }
@@ -678,6 +899,10 @@ private enum TCPTestSocket {
     }
 
     static func roundTrip(port: UInt16, request: String, timeoutSeconds: Int = 3) throws -> String {
+        return try roundTrip(port: port, requestData: Data(request.utf8), timeoutSeconds: timeoutSeconds)
+    }
+
+    static func roundTrip(port: UInt16, requestData: Data, timeoutSeconds: Int = 3) throws -> String {
         let fd = socket(AF_INET, testSocketStreamType, 0)
         guard fd >= 0 else { throw ProxyHarnessError.systemError("socket") }
         defer { close(fd) }
@@ -691,7 +916,7 @@ private enum TCPTestSocket {
             }
         }
         guard connected == 0 else { throw ProxyHarnessError.systemError("connect") }
-        try writeAll(Data(request.utf8), to: fd)
+        try writeAll(requestData, to: fd)
         let data = try readToEOF(from: fd, timeoutSeconds: timeoutSeconds)
         return String(data: data, encoding: .utf8) ?? ""
     }

@@ -107,11 +107,40 @@ struct Launch: ParsableCommand {
     }
 
     static func shouldClearExistingAnthropicBaseURL(_ value: String?) -> Bool {
-        guard let value, !value.isEmpty else { return true }
-        guard let host = URLComponents(string: value)?.host?.lowercased() else {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return true
+        }
+        let candidates = value.contains("://") ? [value] : [value, "http://\(value)"]
+        return candidates.contains { candidate in
+            guard let host = URLComponents(string: candidate)?.host else { return false }
+            return isLocalAnthropicBaseURLHost(host)
+        }
+    }
+
+    // WO-423: stale local proxy URLs can be written in non-canonical forms; preserve
+    // remote gateways, but clear loopback/any-address spellings for non-routed agents.
+    static func isLocalAnthropicBaseURLHost(_ host: String) -> Bool {
+        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if normalized == "localhost" || normalized == "::1" || normalized == "0.0.0.0" {
+            return true
+        }
+        if normalized.hasPrefix("::ffff:") {
+            return isLocalIPv4AnthropicBaseURLHost(String(normalized.dropFirst("::ffff:".count)))
+        }
+        return isLocalIPv4AnthropicBaseURLHost(normalized)
+    }
+
+    static func isLocalIPv4AnthropicBaseURLHost(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else {
             return false
         }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+        let octets = parts.compactMap { part -> Int? in
+            guard let value = Int(part), (0...255).contains(value) else { return nil }
+            return value
+        }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 127 || octets == [0, 0, 0, 0]
     }
 
     static func nonRoutedWarning(agentBinary: String, baseURLState: String) -> String {
