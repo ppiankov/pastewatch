@@ -1,4 +1,5 @@
 import Foundation
+@testable import PastewatchCLI
 import XCTest
 #if canImport(Darwin)
 import Darwin
@@ -52,30 +53,22 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.contains("user:pass"))
     }
 
-    // WO-409: a proxy-routed agent (claude) receives ANTHROPIC_BASE_URL pointed at the proxy.
+    // WO-409/WO-416: a proxy-routed agent receives the local proxy URL without
+    // needing a bind-then-close port reservation in the test.
     func testLaunchClaudeAgentSetsAnthropicBaseURL() throws {
-        let fixture = try makeLaunchFixture()
-        let agent = try writeEnvEchoAgent(named: "claude", in: fixture.cwd)
-        let port = try reserveLoopbackPort()
-        let result = try runCLIProcess(
-            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "\(port)", "--", agent.path],
-            cwd: fixture.cwd,
-            environment: fixture.environment
-        )
-        XCTAssertTrue(
-            result.stdout.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:\(port)"),
-            "claude should be routed through the proxy; stdout: \(result.stdout) stderr: \(result.stderr)"
-        )
-        XCTAssertFalse(result.stderr.contains("redaction is not wired"), "claude should not warn")
+        try withEnvironmentVariable("ANTHROPIC_BASE_URL", nil) {
+            Launch.configureProxyEnv(agentBinary: "claude", port: 49_152)
+
+            XCTAssertEqual(environmentValue("ANTHROPIC_BASE_URL"), "http://127.0.0.1:49152")
+        }
     }
 
     // WO-409: a non-Anthropic agent (codex) launches WITHOUT ANTHROPIC_BASE_URL, plus a warning.
     func testLaunchNonAnthropicAgentSkipsBaseURLAndWarns() throws {
         let fixture = try makeLaunchFixture()
         let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
-        let port = try reserveLoopbackPort()
         let result = try runCLIProcess(
-            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "\(port)", "--", agent.path],
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
             cwd: fixture.cwd,
             environment: fixture.environment
         )
@@ -87,6 +80,47 @@ final class LaunchCommandTests: XCTestCase {
             result.stderr.contains("redaction is not wired for agent 'codex'"),
             "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
         )
+        XCTAssertTrue(result.stderr.hasSuffix("\n"), "warning should end with one newline: \(result.stderr.debugDescription)")
+        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
+    }
+
+    // WO-418: remote/team gateway URLs are operator intent, not stale local proxy state.
+    func testLaunchNonAnthropicAgentPreservesNonLocalBaseURL() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        var environment = fixture.environment
+        environment["ANTHROPIC_BASE_URL"] = "https://gateway.example.com/anthropic"
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: environment
+        )
+
+        XCTAssertEqual(result.status, 0, "launch should preserve remote gateway; stderr: \(result.stderr)")
+        XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic"), result.stdout)
+        XCTAssertTrue(result.stderr.contains("preserving existing ANTHROPIC_BASE_URL"), result.stderr)
+        XCTAssertFalse(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
+        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
+    }
+
+    // WO-418: stale local pastewatch proxy URLs are cleared for unsupported agents.
+    func testLaunchNonAnthropicAgentClearsLocalBaseURL() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        var environment = fixture.environment
+        environment["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:8443"
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: environment
+        )
+
+        XCTAssertEqual(result.status, 0, "launch should clear stale local proxy URL; stderr: \(result.stderr)")
+        XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
+        XCTAssertTrue(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
+        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
     }
 
     // WO-414: unsupported agents must not start an unused proxy or fail on its port.
@@ -258,6 +292,8 @@ final class LaunchCommandTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment.removeValue(forKey: "PW_GUARD")
+        // WO-418: launch env tests must not inherit an operator gateway from the parent shell.
+        environment.removeValue(forKey: "ANTHROPIC_BASE_URL")
         environment.removeValue(forKey: fixtureContextProbeEnvironmentKey)
         try writeFixtureStartupFile(in: home)
 
@@ -340,37 +376,6 @@ final class LaunchCommandTests: XCTestCase {
         return root
     }
 
-    // WO-409: bind-then-close a loopback socket to obtain a free port for the real launch
-    // proxy (launch's waitForTCP polls a concrete port, so "0" never becomes ready).
-    private func reserveLoopbackPort() throws -> UInt16 {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw LaunchPortError.socketFailed }
-        defer { close(fd) }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        addr.sin_port = 0
-        let bindResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                #if canImport(Darwin)
-                return Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                #else
-                return Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                #endif
-            }
-        }
-        guard bindResult == 0 else { throw LaunchPortError.bindFailed }
-        var bound = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &bound) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(fd, $0, &len)
-            }
-        }
-        guard nameResult == 0 else { throw LaunchPortError.bindFailed }
-        return UInt16(bigEndian: bound.sin_port)
-    }
-
     // WO-414: keep the listener open to prove non-routed launches skip proxy startup.
     private func occupyLoopbackPort() throws -> (fd: Int32, port: UInt16) {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -428,6 +433,26 @@ final class LaunchCommandTests: XCTestCase {
         let fixtureValue = "postgres" + "://user:pass@host:5432/db"
         let path = home.appendingPathComponent(".zshrc")
         try "DATABASE_URL=\(fixtureValue)\n".write(to: path, atomically: true, encoding: .utf8)
+    }
+
+    private func environmentValue(_ key: String) -> String? {
+        guard let raw = getenv(key) else { return nil }
+        return String(cString: raw)
+    }
+
+    private func withEnvironmentVariable(_ key: String, _ value: String?, run body: () throws -> Void) throws {
+        let original = environmentValue(key)
+        setEnvironmentValue(key, value)
+        defer { setEnvironmentValue(key, original) }
+        try body()
+    }
+
+    private func setEnvironmentValue(_ key: String, _ value: String?) {
+        if let value {
+            setenv(key, value, 1)
+        } else {
+            unsetenv(key)
+        }
     }
 
     private func pastewatchCLIURL() -> URL {

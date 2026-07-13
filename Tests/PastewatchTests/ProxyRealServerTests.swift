@@ -45,6 +45,87 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains(#"{"ok":true}"#), diagnostic)
     }
 
+    // WO-420: a supported Anthropic body passes the shape guard and is redacted before upstream.
+    func testAnthropicBodyRedactedThroughShapeGuardBeforeUpstream() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let credential = "password=s3cr3t-hunter2"
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 1, diagnostic)
+        XCTAssertFalse(forwarded.contains(credential), "upstream request leaked raw credential")
+        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
+    }
+
+    // WO-421: streaming Anthropic requests also pass the shape guard and reach upstream.
+    func testStreamingAnthropicBodyAllowedThroughShapeGuard() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "text/event-stream"],
+                body: Data("data: [DONE]\n\n".utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = """
+        {"model":"claude-3","stream":true,"messages":[{"role":"user","content":"hello"}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertFalse(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 1, diagnostic)
+    }
+
     // WO-408/WO-411: an OpenAI-shaped body is refused with 415 and never reaches upstream.
     func testUnsupportedBodyShapeRefusedBeforeUpstream() throws {
         let upstream = try StubHTTPServer { _ in

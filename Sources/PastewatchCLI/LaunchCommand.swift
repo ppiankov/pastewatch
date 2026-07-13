@@ -90,24 +90,39 @@ struct Launch: ParsableCommand {
         proxyRoutedAgents.contains(binary)
     }
 
-    // WO-409: only wire ANTHROPIC_BASE_URL for agents the proxy actually redacts. The proxy
-    // scans Anthropic-shaped (/v1/messages) traffic only; routing a non-Anthropic agent
-    // through it would fail closed on every request (WO-408), looking like a proxy bug
-    // rather than a deliberate unsupported-upstream refusal. Gating the setenv (and unsetting
-    // any inherited value) keeps launch coherent with the guard.
+    private static let anthropicBaseURLEnv = "ANTHROPIC_BASE_URL"
+
+    // WO-409/WO-418: only wire ANTHROPIC_BASE_URL for agents the proxy actually redacts.
+    // Clear stale local pastewatch proxy values for unsupported agents, but preserve remote
+    // corporate/team gateways the operator intentionally configured.
     static func configureProxyEnv(agentBinary: String, port: UInt16) {
         if isProxyRoutedAgent(agentBinary) {
-            setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:\(port)", 1)
+            setenv(anthropicBaseURLEnv, "http://127.0.0.1:\(port)", 1)
+        } else if shouldClearExistingAnthropicBaseURL(ProcessInfo.processInfo.environment[anthropicBaseURLEnv]) {
+            unsetenv(anthropicBaseURLEnv)
+            FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "not set").utf8))
         } else {
-            unsetenv("ANTHROPIC_BASE_URL")
-            FileHandle.standardError.write(Data("""
-            warning: pastewatch proxy redaction is not wired for agent '\(agentBinary)'; \
-            launching without proxy interposition (ANTHROPIC_BASE_URL not set). \
-            The proxy layer currently redacts Anthropic-shaped traffic only; 'claude' is \
-            the only agent routed through it. Codex and other agents remain covered by the \
-            pastewatch hooks and MCP server.\n
-            """.utf8))
+            FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "preserved").utf8))
         }
+    }
+
+    static func shouldClearExistingAnthropicBaseURL(_ value: String?) -> Bool {
+        guard let value, !value.isEmpty else { return true }
+        guard let host = URLComponents(string: value)?.host?.lowercased() else {
+            return false
+        }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+
+    static func nonRoutedWarning(agentBinary: String, baseURLState: String) -> String {
+        let baseURLClause = baseURLState == "preserved"
+            ? "preserving existing ANTHROPIC_BASE_URL."
+            : "launching without proxy interposition (ANTHROPIC_BASE_URL not set)."
+        return "warning: pastewatch proxy redaction is not wired for agent '\(agentBinary)'; " +
+            "\(baseURLClause) " +
+            "The proxy layer currently redacts Anthropic-shaped traffic only; 'claude' is " +
+            "the only agent routed through it. Codex and other agents remain covered by the " +
+            "pastewatch hooks and MCP server.\n"
     }
 
     func run() throws {
