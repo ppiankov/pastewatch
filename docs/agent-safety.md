@@ -22,7 +22,7 @@ This is not hypothetical. Config files, .env files, and hardcoded credentials ar
 
 ## Layer 0: API Proxy (Network Boundary)
 
-The strongest layer. Every API call from every process — including agent subprocesses you don't control — passes through a local proxy that scans and redacts secrets before they leave your machine.
+The strongest layer for Claude Code. Anthropic-shaped API calls routed through `ANTHROPIC_BASE_URL` pass through a local proxy that scans and redacts supported secrets before they leave your machine.
 
 ```bash
 # One command — starts proxy, launches agent, cleans up on exit
@@ -32,9 +32,9 @@ pastewatch-cli launch claude
 pastewatch-cli launch --audit-log /tmp/pw-proxy.log -- claude
 ```
 
-This is the default way to run any agent with pastewatch. The `launch` command starts the proxy, sets `ANTHROPIC_BASE_URL`, runs the agent, and stops the proxy on exit.
+This is the default way to run Claude Code with pastewatch. The `launch` command starts the proxy, sets `ANTHROPIC_BASE_URL`, runs the agent, and stops the proxy on exit.
 
-**Why this matters:** Agent subprocesses (subagents, background workers, parallel tasks) bypass tool-level protections like hooks and MCP. They make direct API calls with raw file contents. The proxy is the only layer that catches everything — it operates at the network boundary, not the tool boundary.
+**Why this matters:** Claude Code subprocesses (subagents, background workers, parallel tasks) can bypass tool-level protections like hooks and MCP. The proxy operates at the network boundary for supported Anthropic-shaped traffic, while hooks and MCP remain necessary defense in depth.
 
 **Corporate environments** with mandatory company proxies:
 
@@ -200,7 +200,7 @@ Different agents may need different thresholds. Use `--min-severity` on the MCP 
 
 **Precedence chain:** per-request `min_severity` parameter > `--min-severity` CLI flag > `mcpMinSeverity` config field > default (`high`).
 
-This means you can run Claude Code at `high` (default) and Cline at `medium` - each agent's MCP registration controls its own threshold, and any agent can still override per-request when needed.
+This means you can run Claude Code at `high` (default) and Cline at `medium` - each MCP registration controls its own threshold, and each agent can still override per-request when needed.
 
 ### Audit logging
 

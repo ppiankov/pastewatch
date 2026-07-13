@@ -1075,12 +1075,9 @@ public final class ProxyServer {
         case refuse(String)
     }
 
-    // WO-408: decide whether a request body is a shape pastewatch can redact, so an
-    // unredactable foreign body (e.g. OpenAI /v1/chat/completions) is refused rather than
-    // silently forwarded unscanned. Pure and socket-free so it is unit-testable directly.
-    // Only POST bodies carry tool results; everything else (GET /v1/models, OPTIONS, the
-    // token-counting endpoint's Anthropic body, non-JSON bodies) is allowed through — the
-    // /v1/messages scan branch already structurally skips them.
+    // WO-408/WO-411/WO-412: decide whether a request body is a shape pastewatch can
+    // redact. JSON POSTs to unsupported upstream paths are refused rather than silently
+    // forwarded unscanned. Pure and socket-free so it is unit-testable directly.
     func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
         guard method.uppercased() == "POST" else { return .allow }
         // Non-JSON (incl. non-UTF-8) is not a chat body we own; a non-UTF-8 /v1/messages
@@ -1088,22 +1085,23 @@ public final class ProxyServer {
         guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
             return .allow
         }
+        guard isSupportedAnthropicPostPath(path) else {
+            return .refuse("unsupported JSON POST body on \(path)")
+        }
         let hasMessages = json["messages"] is [Any]
-        if path.contains("/v1/messages") {
-            // Layer B: a foreign body arriving at the Anthropic endpoint. An Anthropic body
-            // with no messages array (or a valid shape) is fine; anything else is refused.
-            guard hasMessages else { return .allow }
-            return isAnthropicMessagesShape(json)
-                ? .allow
-                : .refuse("non-Anthropic messages schema on \(path)")
-        }
-        // Layer A: a chat-shaped body on a non-/v1/messages path (e.g. /v1/chat/completions).
-        // Refuse only when it carries a messages array that is NOT Anthropic-shaped, so an
-        // Anthropic-shaped body on another endpoint (e.g. /v1/messages/count_tokens) passes.
-        if hasMessages && !isAnthropicMessagesShape(json) {
-            return .refuse("chat body on unsupported endpoint \(path)")
-        }
-        return .allow
+        // Some Anthropic endpoints (for example count_tokens variants) may omit a messages
+        // array. Keep those allowed; malformed message arrays are refused below.
+        guard hasMessages else { return .allow }
+        return isAnthropicMessagesShape(json)
+            ? .allow
+            : .refuse("non-Anthropic messages schema on \(path)")
+    }
+
+    // WO-411/WO-412: path allowlist for JSON POST bodies the proxy understands.
+    func isSupportedAnthropicPostPath(_ path: String) -> Bool {
+        let pathOnly = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map(String.init) ?? path
+        return pathOnly == "/v1/messages" || pathOnly == "/v1/messages/count_tokens"
     }
 
     // WO-408: positive identification of the Anthropic Messages schema. Permissive on
@@ -1126,12 +1124,23 @@ public final class ProxyServer {
         return true
     }
 
-    // WO-408: per-request audit signal for a fail-closed refusal (verdict f6978df9).
+    // WO-408/WO-413: per-request audit signal for a fail-closed refusal (verdict f6978df9).
     private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
-        guard !quietLog else { return }
-        FileHandle.standardError.write(Data(
-            "[pastewatch-proxy] refused unsupported upstream body shape: \(reason)\n".utf8
-        ))
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(path) (\(reason))\n"
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {

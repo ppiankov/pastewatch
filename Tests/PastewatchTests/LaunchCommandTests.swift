@@ -89,6 +89,28 @@ final class LaunchCommandTests: XCTestCase {
         )
     }
 
+    // WO-414: unsupported agents must not start an unused proxy or fail on its port.
+    func testLaunchNonAnthropicAgentDoesNotRequireProxyPort() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        let occupied = try occupyLoopbackPort()
+        defer { close(occupied.fd) }
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "\(occupied.port)", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+
+        XCTAssertEqual(result.status, 0, "launch should not touch occupied proxy port; stderr: \(result.stderr)")
+        XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
+        XCTAssertFalse(result.stderr.contains("failed to start proxy"), result.stderr)
+        XCTAssertTrue(
+            result.stderr.contains("redaction is not wired for agent 'codex'"),
+            "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
+        )
+    }
+
     // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.
     func testLaunchFixtureContextProbeUnavailablePathIsSweepSafe() throws {
         let fixture = try makeLaunchFixture()
@@ -347,6 +369,46 @@ final class LaunchCommandTests: XCTestCase {
         }
         guard nameResult == 0 else { throw LaunchPortError.bindFailed }
         return UInt16(bigEndian: bound.sin_port)
+    }
+
+    // WO-414: keep the listener open to prove non-routed launches skip proxy startup.
+    private func occupyLoopbackPort() throws -> (fd: Int32, port: UInt16) {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw LaunchPortError.socketFailed }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                #if canImport(Darwin)
+                return Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                return Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
+            }
+        }
+        guard bindResult == 0 else {
+            close(fd)
+            throw LaunchPortError.bindFailed
+        }
+        let singlePendingConnectionBacklog: Int32 = 1
+        guard listen(fd, singlePendingConnectionBacklog) == 0 else {
+            close(fd)
+            throw LaunchPortError.bindFailed
+        }
+        var bound = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &bound) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &len)
+            }
+        }
+        guard nameResult == 0 else {
+            close(fd)
+            throw LaunchPortError.bindFailed
+        }
+        return (fd, UInt16(bigEndian: bound.sin_port))
     }
 
     private enum LaunchPortError: Error { case socketFailed, bindFailed }

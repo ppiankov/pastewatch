@@ -60,6 +60,38 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         }
     }
 
+    func testSimpleOpenAIChatCompletionsRefusedLayerA() {
+        // WO-411: a simple OpenAI chat body has the same role/string-content surface
+        // as a tiny Anthropic body; the unsupported path is the fail-closed signal.
+        let body = """
+        {"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}
+        """
+        guard case .refuse = verdict("POST", "/v1/chat/completions", body) else {
+            return XCTFail("expected refuse for simple OpenAI chat/completions body")
+        }
+    }
+
+    func testUnsupportedJSONPostWithoutMessagesRefused() {
+        // WO-412: unsupported JSON POSTs without a messages array are still unredactable.
+        let body = """
+        {"model":"gpt-4.1","input":"hello"}
+        """
+        guard case .refuse = verdict("POST", "/v1/responses", body) else {
+            return XCTFail("expected refuse for unsupported JSON POST body")
+        }
+    }
+
+    func testForeignGenerateContentBodyWithoutMessagesRefused() {
+        // WO-412: non-Anthropic JSON shapes must fail closed even when they do not look
+        // like OpenAI chat/completions.
+        let body = """
+        {"contents":[{"parts":[{"text":"hello"}]}]}
+        """
+        guard case .refuse = verdict("POST", "/v1beta/models/gemini:generateContent", body) else {
+            return XCTFail("expected refuse for foreign JSON POST body")
+        }
+    }
+
     func testOpenAIShapeOnMessagesEndpointRefusedLayerB() {
         // A foreign body pointed at the Anthropic endpoint is still refused.
         let body = """

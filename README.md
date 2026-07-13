@@ -29,7 +29,7 @@ Pastewatch refuses that transition.
 
 Every AI agent sends your file contents, command outputs, and tool results to a cloud API. If those contain secrets, the secrets leave your machine — silently, irreversibly, and into infrastructure you don't control.
 
-Pastewatch makes secret leakage **structurally impossible** without breaking any agent functionality:
+Pastewatch prevents supported secret-leakage paths structurally without breaking agent workflows:
 
 ```
   What the agent does                What actually happens
@@ -128,7 +128,7 @@ pastewatch-cli setup claude-code
 pastewatch-cli launch claude
 ```
 
-The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs your agent. When the agent exits, the proxy stops. Every outbound API request is scanned and secrets are redacted before they leave your machine.
+The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs Claude Code. When the agent exits, the proxy stops. The proxy scans Anthropic-shaped API requests and redacts supported secrets before they leave your machine; other agents remain covered by hooks, MCP tools, and agent instructions.
 
 **Important:** The setup step injects credential handling rules into your agent's `CLAUDE.md`. Without these rules, agents may echo passwords in shell output or store plaintext credentials in memory files — formats that bypass regex detection. The rules ensure agents use detectable keywords (`password=`, `secret=`) and never store raw values. See [docs/CLAUDE-SNIPPET.md](docs/CLAUDE-SNIPPET.md) for the full snippet.
 
@@ -371,7 +371,7 @@ pastewatch-cli launch claude
 pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
 ```
 
-Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` starts the proxy but does **not** wire that agent to it — the agent runs normally and stays covered by the pastewatch hooks and MCP server.
+Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy — the agent runs normally and stays covered by the pastewatch hooks and MCP server.
 
 Or start the proxy manually for more control:
 
@@ -383,7 +383,7 @@ pastewatch-cli proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
 ```
 
-**Corporate proxy chaining.** Many organizations require all outbound traffic to go through a corporate proxy. Pastewatch chains transparently — it scans and redacts first, then forwards through the corporate proxy:
+**Corporate proxy chaining.** Many organizations require API traffic to go through a corporate proxy. For routed Claude Code traffic, pastewatch chains transparently — it scans and redacts first, then forwards through the corporate proxy:
 
 ```bash
 # Corporate proxy at proxy.corp:8080

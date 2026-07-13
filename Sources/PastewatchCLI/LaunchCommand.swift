@@ -119,6 +119,21 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data(warning.utf8))
         }
 
+        let agentBinary = (command[0] as NSString).lastPathComponent
+        if !Launch.isProxyRoutedAgent(agentBinary) {
+            // WO-414: do not start an unused proxy for agents whose traffic is not routed.
+            Launch.configureProxyEnv(agentBinary: agentBinary, port: port)
+            if !quiet {
+                let cmdStr = command.joined(separator: " ")
+                FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
+            }
+            let exitCode = try runAgentProcess(command)
+            if exitCode != 0 {
+                throw ExitCode(rawValue: exitCode)
+            }
+            return
+        }
+
         // Resolve our own binary to spawn the proxy subprocess
         let binaryPath = ProcessInfo.processInfo.arguments[0]
 
@@ -157,21 +172,31 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data("error: proxy failed to start (timeout waiting for port \(port))\n".utf8))
             throw ExitCode(rawValue: 3)
         }
+        defer {
+            proxy.terminate()
+            proxy.waitUntilExit()
+            launchProxyProcess = nil
+        }
 
         if !quiet {
             let cmdStr = command.joined(separator: " ")
             FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
         }
 
-        Launch.configureProxyEnv(agentBinary: (command[0] as NSString).lastPathComponent, port: port)
+        Launch.configureProxyEnv(agentBinary: agentBinary, port: port)
 
+        let exitCode = try runAgentProcess(command)
+        if exitCode != 0 {
+            throw ExitCode(rawValue: exitCode)
+        }
+    }
+
+    private func runAgentProcess(_ command: [String]) throws -> Int32 {
         // Fork: child exec's the agent (inherits TTY), parent waits and cleans up
         // Use @_silgen_name to bypass Swift's fork() unavailability on Darwin
         let pid = _pw_fork()
 
         if pid == -1 {
-            proxy.terminate()
-            proxy.waitUntilExit()
             FileHandle.standardError.write(Data("error: fork failed\n".utf8))
             throw ExitCode(rawValue: 3)
         }
@@ -208,14 +233,8 @@ struct Launch: ParsableCommand {
             // Killed by signal
             exitCode = 128 + (status & 0x7f)
         }
-
-        // Clean up proxy
-        proxy.terminate()
-        proxy.waitUntilExit()
-
-        if exitCode != 0 {
-            throw ExitCode(rawValue: exitCode)
-        }
+        launchAgentPid = 0
+        return exitCode
     }
 
     private func runStartupSweepFixtureProbeIfNeeded() throws {

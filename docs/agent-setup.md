@@ -1,6 +1,6 @@
 # Agent Setup
 
-Per-agent instructions for protecting AI coding sessions with pastewatch. The recommended setup is the API proxy via `launch` — it catches **all** outbound secrets including from subagents and tools that bypass hooks and MCP.
+Per-agent instructions for protecting AI coding sessions with pastewatch. For Claude Code, the recommended setup is the API proxy via `launch` — it scans Anthropic-shaped traffic including from subagents and tools that bypass hooks and MCP. Other agents should use their supported hooks, MCP tools, and instructions.
 
 **Install first:**
 ```bash
@@ -11,14 +11,11 @@ brew install ppiankov/tap/pastewatch
 
 ## Recommended: API Proxy via Launch
 
-The proxy sits between your agent and the cloud API, scanning and redacting every outbound request. This is the default way to run any agent with pastewatch:
+The proxy sits between Claude Code and the Anthropic API, scanning and redacting Anthropic-shaped requests:
 
 ```bash
 # One command — starts proxy, launches agent, cleans up on exit
 pastewatch-cli launch claude
-
-# Any agent
-pastewatch-cli launch -- codex --full-auto
 
 # With corporate proxy
 pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
@@ -31,7 +28,7 @@ For persistent setup, add a shell alias:
 alias claude='pastewatch-cli launch claude'
 ```
 
-The proxy is Layer 0 — it catches secrets that bypass hooks, MCP tools, and agent instructions. MCP and hooks below add defense in depth but the proxy is the foundation.
+The proxy is Layer 0 for Claude Code — it catches Anthropic-shaped requests that bypass hooks, MCP tools, and agent instructions. MCP and hooks below add defense in depth and are the primary integration path for agents that are not routed through the proxy.
 
 ---
 

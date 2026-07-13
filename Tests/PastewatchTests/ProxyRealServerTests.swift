@@ -45,7 +45,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains(#"{"ok":true}"#), diagnostic)
     }
 
-    // WO-408: an OpenAI-shaped body is refused with 415 and never reaches upstream.
+    // WO-408/WO-411: an OpenAI-shaped body is refused with 415 and never reaches upstream.
     func testUnsupportedBodyShapeRefusedBeforeUpstream() throws {
         let upstream = try StubHTTPServer { _ in
             StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
@@ -59,7 +59,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let openAIBody = #"{"model":"gpt-4","messages":[{"role":"user","content":"x","tool_calls":[{"id":"c"}]}]}"#
+        let openAIBody = #"{"model":"gpt-4","messages":[{"role":"user","content":"x"}]}"#
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
             request: TCPTestSocket.postRequest(path: "/v1/chat/completions", body: openAIBody),
@@ -68,6 +68,76 @@ final class ProxyRealServerTests: XCTestCase {
         let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
         XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
         XCTAssertEqual(upstream.requestCount, 0, "foreign body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-412: unsupported JSON POST bodies without messages arrays are also refused.
+    func testUnsupportedJSONPostWithoutMessagesRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/responses", body: #"{"input":"hello"}"#),
+            timeoutSeconds: 10
+        )
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "unsupported body must not reach upstream; \(diagnostic)")
+    }
+
+    // WO-413: quiet mode suppresses stderr, not durable audit evidence.
+    func testUnsupportedBodyShapeRefusalWritesAuditLogWhenQuiet() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-refused-shape-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        var proxyStopped = false
+        defer {
+            if !proxyStopped {
+                runningProxy.stop()
+            }
+        }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/responses", body: #"{"input":"hello"}"#),
+            timeoutSeconds: 10
+        )
+        runningProxy.stop()
+        proxyStopped = true
+
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, "unsupported body must not reach upstream; \(diagnostic)")
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertTrue(audit.contains("PROXY REFUSED unsupported upstream body shape"), audit)
+        XCTAssertTrue(audit.contains("/v1/responses"), audit)
+        XCTAssertTrue(audit.contains("unsupported JSON POST body"), audit)
     }
 
     // WO-408: an Anthropic-shaped count-tokens body is forwarded, not falsely refused.
@@ -127,7 +197,7 @@ final class ProxyRealServerTests: XCTestCase {
             runDetached {
                 let response = (try? TCPTestSocket.roundTrip(
                     port: proxyPort,
-                    request: TCPTestSocket.postRequest(path: "/hold-\(index)"),
+                    request: TCPTestSocket.postRequest(path: "/v1/messages"),
                     timeoutSeconds: 5
                 )) ?? ""
                 responseLock.lock()
@@ -146,7 +216,7 @@ final class ProxyRealServerTests: XCTestCase {
 
         let rejected = try TCPTestSocket.roundTrip(
             port: proxyPort,
-            request: TCPTestSocket.postRequest(path: "/rejected"),
+            request: TCPTestSocket.postRequest(path: "/v1/messages"),
             timeoutSeconds: 3
         )
         XCTAssertTrue(rejected.contains("HTTP/1.1 503 Service Unavailable"))
