@@ -34,7 +34,7 @@ struct Launch: ParsableCommand {
         abstract: "Start the proxy and launch an agent through it in one command",
         discussion: """
         Starts the pastewatch proxy in the background, waits for it to be ready,
-        then launches your agent. The proxy redacts Anthropic-shaped (/v1/messages)
+        then launches your agent. The proxy redacts supported Anthropic-shaped
         traffic, so ANTHROPIC_BASE_URL is pointed at it only for 'claude'; other
         agents launch without proxy interposition (a warning is printed) and stay
         covered by the pastewatch hooks and MCP server. When the agent exits, the
@@ -132,15 +132,50 @@ struct Launch: ParsableCommand {
 
     static func isLocalIPv4AnthropicBaseURLHost(_ host: String) -> Bool {
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4 else {
+        guard (1...4).contains(parts.count) else {
             return false
         }
-        let octets = parts.compactMap { part -> Int? in
-            guard let value = Int(part), (0...255).contains(value) else { return nil }
-            return value
+        let numbers = parts.compactMap { parseIPv4Component(String($0)) }
+        guard numbers.count == parts.count else { return false }
+
+        let address: UInt32
+        switch numbers.count {
+        case 1:
+            address = numbers[0]
+        case 2:
+            guard numbers[0] <= 0xff, numbers[1] <= 0x00ff_ffff else { return false }
+            address = (numbers[0] << 24) | numbers[1]
+        case 3:
+            guard numbers[0] <= 0xff, numbers[1] <= 0xff, numbers[2] <= 0xffff else { return false }
+            address = (numbers[0] << 24) | (numbers[1] << 16) | numbers[2]
+        case 4:
+            guard numbers.allSatisfy({ $0 <= 0xff }) else { return false }
+            address = (numbers[0] << 24) | (numbers[1] << 16) | (numbers[2] << 8) | numbers[3]
+        default:
+            return false
         }
-        guard octets.count == 4 else { return false }
-        return octets[0] == 127 || octets == [0, 0, 0, 0]
+
+        return (address >> 24) == 127 || address == 0
+    }
+
+    // WO-423: stale local proxy URLs may use inet_aton-style abbreviated or octal IPv4.
+    private static func parseIPv4Component(_ raw: String) -> UInt32? {
+        guard !raw.isEmpty else { return nil }
+        let lower = raw.lowercased()
+        let radix: Int
+        let digits: String
+        if lower.hasPrefix("0x") {
+            radix = 16
+            digits = String(lower.dropFirst(2))
+        } else if lower.count > 1 && lower.hasPrefix("0") {
+            radix = 8
+            digits = lower
+        } else {
+            radix = 10
+            digits = lower
+        }
+        guard !digits.isEmpty else { return nil }
+        return UInt32(digits, radix: radix)
     }
 
     static func nonRoutedWarning(agentBinary: String, baseURLState: String) -> String {
@@ -165,6 +200,14 @@ struct Launch: ParsableCommand {
 
         let agentBinary = (command[0] as NSString).lastPathComponent
         if !Launch.isProxyRoutedAgent(agentBinary) {
+            // WO-434: proxy audit logs exist only when launch starts the proxy.
+            if auditLog != nil {
+                let message = "error: --audit-log is not supported for non-routed agent '\(agentBinary)'; " +
+                    "proxy audit logging currently requires 'claude'. Remove --audit-log or " +
+                    "run 'pastewatch-cli proxy --audit-log' separately.\n"
+                FileHandle.standardError.write(Data(message.utf8))
+                throw ExitCode(rawValue: 1)
+            }
             // WO-414: do not start an unused proxy for agents whose traffic is not routed.
             Launch.configureProxyEnv(agentBinary: agentBinary, port: port)
             if !quiet {

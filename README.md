@@ -339,7 +339,7 @@ pastewatch-cli config check
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
 
-> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
+> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends) and Message Batch create requests (`/v1/messages/batches`). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Model names are guarded by a known foreign-family denylist, not a positive Anthropic allowlist, so future Anthropic or gateway-rewritten model aliases are accepted only on supported Anthropic paths. Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
@@ -371,7 +371,7 @@ pastewatch-cli launch claude
 pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
 ```
 
-Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy. Protect non-routed agents with configured pastewatch hooks and MCP tools where available.
+Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy. `--audit-log` is rejected for non-routed agents because no proxy audit stream exists for those launches. Protect non-routed agents with configured pastewatch hooks and MCP tools where available.
 
 Or start the proxy manually for more control:
 
@@ -822,7 +822,7 @@ Define additional patterns in a JSON file:
 
 ### Agent Safety Matrix
 
-The API proxy (Layer 0) redacts **Anthropic-shaped** (`/v1/messages`) traffic from agents that expose an API endpoint override; it refuses unrecognized upstream body shapes (HTTP 415) rather than forward them unscanned, so it does not redact OpenAI/Gemini-shaped agents. Rows relying on "Proxy" are protected only for Anthropic-shaped traffic; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth and are the primary coverage for non-Anthropic-shaped agents.
+The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/messages` and `/v1/messages/batches`) from agents that expose an API endpoint override; it refuses unrecognized upstream body shapes (HTTP 415) rather than forward them unscanned, so it does not redact OpenAI/Gemini-shaped agents. Rows relying on "Proxy" are protected only for Anthropic-shaped traffic; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth and are the primary coverage for non-Anthropic-shaped agents.
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|

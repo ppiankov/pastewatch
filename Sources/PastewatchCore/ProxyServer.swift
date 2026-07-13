@@ -683,12 +683,11 @@ public final class ProxyServer {
             return
         }
 
-        // WO-408: fail closed on unsupported upstream body shapes. The scan path below
-        // only redacts POST /v1/messages (Anthropic shape); any other POST body — notably
-        // OpenAI /v1/chat/completions — would otherwise be forwarded UNSCANNED, a silent
+        // WO-408/WO-432: fail closed on unsupported upstream body shapes. The scan path
+        // below only redacts supported Anthropic-shaped POSTs; any other POST body - notably
+        // OpenAI /v1/chat/completions - would otherwise be forwarded UNSCANNED, a silent
         // no-op that makes users believe traffic was redacted when it was not. Refuse an
-        // unrecognized shape rather than forward it. Runs for ALL POSTs, so it sits before
-        // the /v1/messages scan branch.
+        // unrecognized shape rather than forward it. Runs for ALL POSTs before scanning.
         if case .refuse(let reason) = upstreamBodyShapeVerdict(
             method: parsed.method, path: parsed.path, bodyData: parsed.bodyData
         ) {
@@ -697,7 +696,7 @@ public final class ProxyServer {
             return
         }
 
-        // Only scan supported Anthropic message POSTs (the endpoints that carry tool results)
+        // Only scan supported Anthropic-shaped POSTs (the endpoints that carry tool results).
         var processedBody = parsed.body
         var processedBodyData = parsed.bodyData
         var redactionCount = 0
@@ -1041,8 +1040,15 @@ public final class ProxyServer {
         var types: [String] = []
         var advisoryCount = 0
         var advisoryTypes: [String] = []
-        let processed = redactContentArray(
+        let processedMessages = redactContentArray(
             json,
+            redacted: &redacted,
+            types: &types,
+            advisoryCount: &advisoryCount,
+            advisoryTypes: &advisoryTypes
+        )
+        let processed = redactBatchRequestMessages(
+            processedMessages,
             redacted: &redacted,
             types: &types,
             advisoryCount: &advisoryCount,
@@ -1081,6 +1087,9 @@ public final class ProxyServer {
     func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
         guard method.uppercased() == "POST" else { return .allow }
         let supportedAnthropicPath = isSupportedAnthropicPostPath(path)
+        // WO-433: an empty POST body carries no unscanned JSON shape or credential-bearing
+        // request body, so it should reach upstream instead of being refused as malformed.
+        guard !bodyData.isEmpty else { return .allow }
         // WO-425: malformed supported-path bodies are not safe passthrough. The downstream
         // scanner only understands valid Anthropic JSON, so fail closed instead of forwarding
         // an unscanned /v1/messages body.
@@ -1101,6 +1110,12 @@ public final class ProxyServer {
         }
         guard supportedAnthropicPath else {
             return .refuse("unsupported JSON POST body on \(path)")
+        }
+        if isSupportedAnthropicBatchesPath(path) {
+            // WO-432: batch requests carry Messages params under requests[].params.
+            return isAnthropicBatchShape(json)
+                ? .allow
+                : .refuse("malformed Anthropic batch body on \(path)")
         }
         let hasMessages = json["messages"] is [Any]
         // WO-425: /v1/messages must have a messages array so the body scanner has a supported
@@ -1125,8 +1140,10 @@ public final class ProxyServer {
         let pathOnly = requestPathWithoutQuery(path)
         return pathOnly == "/v1/messages"
             || pathOnly == "/v1/messages/count_tokens"
+            || pathOnly == "/v1/messages/batches"
             || pathOnly.hasSuffix("/v1/messages")
             || pathOnly.hasSuffix("/v1/messages/count_tokens")
+            || pathOnly.hasSuffix("/v1/messages/batches")
     }
 
     // WO-425: count-token endpoints share the supported Anthropic path family but can have
@@ -1135,6 +1152,14 @@ public final class ProxyServer {
         let pathOnly = requestPathWithoutQuery(path)
         return pathOnly == "/v1/messages/count_tokens"
             || pathOnly.hasSuffix("/v1/messages/count_tokens")
+    }
+
+    // WO-432: the Message Batches create endpoint is a supported Anthropic request shape,
+    // while batch-result retrieval is not a JSON POST body the request scanner understands.
+    private func isSupportedAnthropicBatchesPath(_ path: String) -> Bool {
+        let pathOnly = requestPathWithoutQuery(path)
+        return pathOnly == "/v1/messages/batches"
+            || pathOnly.hasSuffix("/v1/messages/batches")
     }
 
     // WO-425: classify gateway paths without letting query strings affect endpoint shape.
@@ -1150,6 +1175,9 @@ public final class ProxyServer {
     // chat/completions body.
     func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
         guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        // WO-430: keep model classification as a foreign-family denylist, not a positive
+        // Anthropic allowlist. Gateways and future Anthropic releases may rewrite model
+        // names; supported path plus Messages shape remain the safety boundary.
         if let model = json["model"] as? String, isKnownForeignMessagesModel(model) {
             return false
         }
@@ -1157,7 +1185,10 @@ public final class ProxyServer {
             guard message["role"] is String else { return false }
             // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
             // their presence is a high-signal marker that this is not an Anthropic body.
-            if message["tool_calls"] != nil || message["function_call"] != nil { return false }
+            if hasNonNullJSONField("tool_calls", in: message)
+                || hasNonNullJSONField("function_call", in: message) {
+                return false
+            }
             if let content = message["content"] {
                 if content is NSNull { continue } // WO-427: JSON null is equivalent to absent content.
                 if content is String { continue }
@@ -1166,6 +1197,21 @@ public final class ProxyServer {
             }
         }
         return true
+    }
+
+    // WO-432: Anthropic Message Batches wrap normal Messages params in requests[].params.
+    func isAnthropicBatchShape(_ json: [String: Any]) -> Bool {
+        guard let requests = json["requests"] as? [[String: Any]] else { return false }
+        return requests.allSatisfy { request in
+            guard let params = request["params"] as? [String: Any] else { return false }
+            return isAnthropicMessagesShape(params)
+        }
+    }
+
+    // WO-431: JSON null means the OpenAI-only key is explicitly empty, not present.
+    private func hasNonNullJSONField(_ key: String, in json: [String: Any]) -> Bool {
+        guard let value = json[key] else { return false }
+        return !(value is NSNull)
     }
 
     // WO-422: a plain OpenAI chat body can otherwise look identical to a minimal
@@ -1308,6 +1354,35 @@ public final class ProxyServer {
         }
 
         result["messages"] = messages
+        return result
+    }
+
+    // WO-432: scan nested Message Batch params with the same certainty gate used for
+    // ordinary /v1/messages bodies.
+    private func redactBatchRequestMessages(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        guard var requests = json["requests"] as? [[String: Any]] else {
+            return result
+        }
+
+        for index in requests.indices {
+            guard let params = requests[index]["params"] as? [String: Any] else { continue }
+            requests[index]["params"] = redactContentArray(
+                params,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        }
+
+        result["requests"] = requests
         return result
     }
 

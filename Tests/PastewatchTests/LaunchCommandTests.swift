@@ -134,6 +134,27 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
     }
 
+    // WO-434: audit logs are a proxy artifact; non-routed launches must fail explicitly.
+    func testLaunchNonAnthropicAgentWithAuditLogFailsBeforeRunningAgent() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        let auditPath = fixture.cwd.appendingPathComponent("pastewatch-audit.log")
+
+        let result = try runCLIProcess(
+            arguments: [
+                "launch", "--quiet", "--no-startup-sweep", "--port", "65435",
+                "--audit-log", auditPath.path, "--", agent.path,
+            ],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+
+        XCTAssertEqual(result.status, 1, "non-routed --audit-log must fail; stderr: \(result.stderr)")
+        XCTAssertEqual(result.stdout, "", "agent should not run when audit logging cannot be honored")
+        XCTAssertTrue(result.stderr.contains("--audit-log is not supported for non-routed agent 'codex'"), result.stderr)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: auditPath.path), "proxy audit log should not be created")
+    }
+
     // WO-423: classify stale local proxy URL spellings directly, not only via process launch.
     func testShouldClearExistingAnthropicBaseURLLoopbackTable() {
         let shouldClear = [
@@ -142,7 +163,12 @@ final class LaunchCommandTests: XCTestCase {
             "http://127.0.0.1:8443",
             "http://127.0.0.2:8443",
             "http://127.255.255.255:8443",
+            "http://127.1:8443",
+            "http://127.0.1:8443",
+            "http://0177.0.0.1:8443",
+            "0177.0.0.1:8443",
             "http://0.0.0.0:8443",
+            "http://0:8443",
             "http://localhost:8443",
             "http://[::1]:8443",
             "http://[::ffff:127.0.0.1]:8443",
@@ -152,6 +178,7 @@ final class LaunchCommandTests: XCTestCase {
         let shouldPreserve = [
             "https://gateway.example.com/anthropic",
             "http://127.0.0.1.evil.com:8443",
+            "http://08.0.0.1:8443",
             "https://api.anthropic.com",
             "gateway.example.com/anthropic",
         ]

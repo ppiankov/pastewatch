@@ -59,12 +59,37 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
     }
 
+    func testOpenAIOnlyNullFieldsAllowed() {
+        // WO-431: JSON null does not make the OpenAI-only keys a foreign-shape signal.
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":"hi","tool_calls":null,"function_call":null}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+    }
+
     func testCountTokensEndpointWithoutMessagesArrayAllowed() {
         // Some Anthropic count_tokens variants may omit a messages array.
         let body = """
         {"model":"claude-3","system":"be terse"}
         """
         XCTAssertEqual(verdict("POST", "/v1/messages/count_tokens", body), .allow)
+    }
+
+    func testMessageBatchesEndpointAllowed() {
+        // WO-432: Message Batches wrap normal Messages params under requests[].params.
+        let body = """
+        {"requests":[{"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":"hi"}]}}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages/batches", body), .allow)
+        XCTAssertEqual(verdict("POST", "/gateway/v1/messages/batches?beta=true", body), .allow)
+    }
+
+    func testUnknownModelAliasAllowedOnMessagesPath() {
+        // WO-430: model identity is a foreign-family denylist, not a fragile Anthropic allowlist.
+        let body = """
+        {"model":"company-gateway-claude-alias","messages":[{"role":"user","content":"hi"}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
     }
 
     // MARK: - Foreign shapes are refused
@@ -120,6 +145,36 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(
             verdict("POST", "/v1/messages", body),
             .refuse("non-Anthropic messages schema on /v1/messages")
+        )
+    }
+
+    func testMessageBatchWithForeignParamsRefused() {
+        let body = """
+        {"requests":[{"custom_id":"r1","params":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}]}
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages/batches", body),
+            .refuse("malformed Anthropic batch body on /v1/messages/batches")
+        )
+    }
+
+    func testMalformedMessageBatchRefused() {
+        let body = """
+        {"requests":[{"custom_id":"r1","params":{"model":"claude-3","input":"hi"}}]}
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages/batches", body),
+            .refuse("malformed Anthropic batch body on /v1/messages/batches")
+        )
+    }
+
+    func testBatchResultsPathUnsupported() {
+        let body = """
+        {"requests":[]}
+        """
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages/batches/results", body),
+            .refuse("unsupported JSON POST body on /v1/messages/batches/results")
         )
     }
 
@@ -238,11 +293,12 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
-    func testEmptyMessagesBodyRefused() {
-        XCTAssertEqual(
-            verdict("POST", "/v1/messages", ""),
-            .refuse("malformed Anthropic JSON body on /v1/messages")
-        )
+    func testEmptyMessagesBodyAllowed() {
+        XCTAssertEqual(verdict("POST", "/v1/messages", ""), .allow)
+    }
+
+    func testEmptyUnsupportedPostBodyAllowed() {
+        XCTAssertEqual(verdict("POST", "/v1/anything", ""), .allow)
     }
 
     func testGetRequestAllowed() {
@@ -261,15 +317,18 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
             "/v1/messages",
             "/v1/messages?beta=true",
             "/v1/messages/count_tokens",
+            "/v1/messages/batches",
             "/v1/llm-gateway/v1/messages",
             "/anthropic/v1/messages?beta=true",
             "/v1/llm-gateway/v1/messages/count_tokens",
+            "/v1/llm-gateway/v1/messages/batches?beta=true",
         ]
         let refused = [
             "/v1/chat/completions",
             "/v1/responses",
             "/v1/messages_extra",
             "/v1/messages/extra",
+            "/v1/messages/batches/results",
             "/v1beta/models/gemini:generateContent",
         ]
 
@@ -286,6 +345,28 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
     func testShapeRejectsToolCalls() {
         let json: [String: Any] = ["messages": [["role": "assistant", "tool_calls": [["id": "x"]]]]]
         XCTAssertFalse(server().isAnthropicMessagesShape(json))
+    }
+
+    func testShapeAcceptsNullOpenAIOnlyFields() {
+        let json: [String: Any] = [
+            "messages": [["role": "assistant", "tool_calls": NSNull(), "function_call": NSNull()]]
+        ]
+        XCTAssertTrue(server().isAnthropicMessagesShape(json))
+    }
+
+    func testBatchShapeAcceptsNestedMessagesParams() {
+        let json: [String: Any] = [
+            "requests": [
+                [
+                    "custom_id": "r1",
+                    "params": [
+                        "model": "claude-3",
+                        "messages": [["role": "user", "content": "hi"]],
+                    ],
+                ],
+            ],
+        ]
+        XCTAssertTrue(server().isAnthropicBatchShape(json))
     }
 
     func testShapeRejectsMissingRole() {

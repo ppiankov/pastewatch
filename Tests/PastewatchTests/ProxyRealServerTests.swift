@@ -91,6 +91,86 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
     }
 
+    // WO-432: Message Batch params pass the shape guard and use the same request redactor.
+    func testAnthropicMessageBatchRedactedThroughShapeGuardBeforeUpstream() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"id":"batch_1"}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let credential = "password=batch-hunter2"
+        let body = """
+        {"requests":[{"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages/batches", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 1, diagnostic)
+        XCTAssertTrue(forwarded.contains("POST /v1/messages/batches HTTP/1.1"), forwarded)
+        XCTAssertFalse(forwarded.contains(credential), "upstream batch request leaked raw credential")
+        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream batch request missing redaction placeholder")
+    }
+
+    // WO-433: an empty POST body has no body shape to scan and must still reach upstream.
+    func testEmptyPostBodyForwardedThroughShapeGuard() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: ""),
+            timeoutSeconds: 10
+        )
+
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
+        XCTAssertFalse(response.contains("HTTP/1.1 415"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 1, diagnostic)
+    }
+
     // WO-424: gateway-prefixed Anthropic paths must forward through the real proxy.
     func testGatewayPrefixedAnthropicBodyRedactedAndForwarded() throws {
         let requestLock = NSLock()
