@@ -704,7 +704,7 @@ public final class ProxyServer {
             sendError(to: clientSocket, status: 415, message: "Unsupported upstream body shape")
             return
         }
-        let shouldRecordModelIdentityAdvisory = modelIdentityAdvisoryNeeded(
+        let modelIdentityAdvisory = modelIdentityAdvisory(
             method: parsed.method,
             path: parsed.path,
             bodyData: parsed.bodyData
@@ -751,8 +751,8 @@ public final class ProxyServer {
             redactionCount: redactionCount,
             countForwardedRedaction: !deferForwardedRedactionStats
         )
-        if shouldRecordModelIdentityAdvisory {
-            recordModelIdentityAdvisory(path: parsed.path)
+        if let modelIdentityAdvisory {
+            recordModelIdentityAdvisory(path: parsed.path, dedupKey: modelIdentityAdvisory.dedupKey)
         }
 
         if shouldLogBodyRedactionBeforeForwarding(
@@ -1223,12 +1223,21 @@ public final class ProxyServer {
         return Self.knownForeignMessagesModelPrefixes.contains { lower.hasPrefix($0) }
     }
 
-    // WO-430: model identity is advisory telemetry. A request that speaks the supported
-    // wire shape remains allowed even when a gateway or compatible provider rewrites model.
+    // WO-445: retain model identity only in the in-memory dedup key; audit output stays opaque.
+    private struct ModelIdentityAdvisory {
+        let dedupKey: String
+    }
+
+    // WO-430/WO-446: model identity is advisory telemetry. A request that speaks the
+    // supported wire shape remains allowed, and each batch payload is classified independently.
     func modelIdentityAdvisoryNeeded(method: String, path: String, bodyData: Data) -> Bool {
+        modelIdentityAdvisory(method: method, path: path, bodyData: bodyData) != nil
+    }
+
+    private func modelIdentityAdvisory(method: String, path: String, bodyData: Data) -> ModelIdentityAdvisory? {
         guard method.uppercased() == "POST", isSupportedAnthropicPostPath(path),
               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
-            return false
+            return nil
         }
         let payloads: [[String: Any]]
         if isSupportedAnthropicBatchesPath(path) {
@@ -1237,12 +1246,18 @@ public final class ProxyServer {
         } else {
             payloads = [json]
         }
-        guard !payloads.isEmpty, !payloads.contains(where: containsToolResult) else { return false }
-        return payloads.contains { payload in
-            guard let model = payload["model"] as? String else { return true }
-            if isKnownForeignMessagesModel(model) { return true }
-            return !isRecognizedAnthropicModelName(model)
+        guard !payloads.isEmpty else { return nil }
+        let identities = payloads.compactMap { payload -> String? in
+            guard !containsToolResult(payload) else { return nil }
+            guard let model = payload["model"] as? String else { return "missing" }
+            guard isKnownForeignMessagesModel(model) || !isRecognizedAnthropicModelName(model) else {
+                return nil
+            }
+            return "model:\(model.utf8.count):\(model)"
         }
+        guard !identities.isEmpty else { return nil }
+        let dedupKey = Array(Set(identities)).sorted().joined(separator: "|")
+        return ModelIdentityAdvisory(dedupKey: dedupKey)
     }
 
     // WO-430: telemetry applies only when no request payload was scanned as tool_result.
@@ -1266,6 +1281,8 @@ public final class ProxyServer {
         statsLock.lock()
         let isRepeat = signature == lastRefusalLogSignature
         lastRefusalLogSignature = signature
+        // WO-443: an emitted refusal breaks the model-advisory dedup chain symmetrically.
+        if !isRepeat { lastModelIdentityAdvisorySignature = nil }
         statsLock.unlock()
         guard !isRepeat else { return }
 
@@ -1295,8 +1312,8 @@ public final class ProxyServer {
         )
     }
 
-    // WO-437: count_tokens requests can omit messages; scan top-level system text
-    // before the messages-only tool_result walk would otherwise return unchanged.
+    // WO-444/WO-447: count_tokens and batch params can carry system text as either a
+    // string or typed text blocks; preserve all non-text block metadata.
     private func redactTopLevelStringFields(
         _ json: [String: Any],
         redacted: inout Int,
@@ -1306,18 +1323,51 @@ public final class ProxyServer {
     ) -> [String: Any] {
         var result = json
         for field in ["system"] {
-            guard let value = json[field] as? String else { continue }
-            let matches = scanProxyText(value)
-            let filtered = mutationSafeProxyMatches(matches)
-            let advisories = streamAdvisoryMatches(matches, severity: severity)
-            advisoryCount += advisories.count
-            advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-            guard !filtered.isEmpty else { continue }
-            result[field] = Obfuscator.obfuscate(value, matches: filtered)
-            redacted += filtered.count
-            types.append(contentsOf: filtered.map { $0.displayName })
+            if let value = json[field] as? String {
+                result[field] = redactScannableText(
+                    value,
+                    redacted: &redacted,
+                    types: &types,
+                    advisoryCount: &advisoryCount,
+                    advisoryTypes: &advisoryTypes
+                )
+                continue
+            }
+            guard var blocks = json[field] as? [[String: Any]] else { continue }
+            for index in blocks.indices {
+                guard blocks[index]["type"] as? String == "text",
+                      let text = blocks[index]["text"] as? String else { continue }
+                blocks[index]["text"] = redactScannableText(
+                    text,
+                    redacted: &redacted,
+                    types: &types,
+                    advisoryCount: &advisoryCount,
+                    advisoryTypes: &advisoryTypes
+                )
+            }
+            result[field] = blocks
         }
         return result
+    }
+
+    // WO-444/WO-447: keep certainty-gated mutation and advisory accounting identical
+    // across string and block-array system representations.
+    private func redactScannableText(
+        _ value: String,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> String {
+        let matches = scanProxyText(value)
+        let filtered = mutationSafeProxyMatches(matches)
+        let advisories = streamAdvisoryMatches(matches, severity: severity)
+        advisoryCount += advisories.count
+        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
+        guard !filtered.isEmpty else { return value }
+        redacted += filtered.count
+        types.append(contentsOf: filtered.map { $0.displayName })
+        return Obfuscator.obfuscate(value, matches: filtered)
     }
 
     /// Walk the messages array looking for tool_result content to scan.
@@ -1415,8 +1465,15 @@ public final class ProxyServer {
 
         for index in requests.indices {
             guard let params = requests[index]["params"] as? [String: Any] else { continue }
-            requests[index]["params"] = redactContentArray(
+            let processedSystem = redactTopLevelStringFields(
                 params,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+            requests[index]["params"] = redactContentArray(
+                processedSystem,
                 redacted: &redacted,
                 types: &types,
                 advisoryCount: &advisoryCount,
@@ -1493,14 +1550,20 @@ public final class ProxyServer {
         statsLock.unlock()
     }
 
-    // WO-430: preserve compatible traffic while making model-identity drift measurable.
-    private func recordModelIdentityAdvisory(path: String) {
+    // WO-430/WO-445: preserve compatible traffic while making model drift measurable
+    // and deduplicating only identical path-and-model advisories.
+    private func recordModelIdentityAdvisory(path: String, dedupKey: String) {
         statsLock.lock()
         stats.modelIdentityAdvisories += 1
         let advisoryCount = stats.modelIdentityAdvisories
         let requestCount = stats.requestsProcessed
         statsLock.unlock()
-        logModelIdentityAdvisory(path: path, advisoryCount: advisoryCount, requestCount: requestCount)
+        logModelIdentityAdvisory(
+            path: path,
+            dedupKey: dedupKey,
+            advisoryCount: advisoryCount,
+            requestCount: requestCount
+        )
     }
 
     func recordForwardedBodyRedactionStats(redactionCount: Int) {
@@ -2183,8 +2246,13 @@ public final class ProxyServer {
     }
 
     // WO-430: model names are advisory metadata; log drift without exposing the value.
-    private func logModelIdentityAdvisory(path: String, advisoryCount: Int, requestCount: Int) {
-        let signature = "model-identity:\(path)"
+    private func logModelIdentityAdvisory(
+        path: String,
+        dedupKey: String,
+        advisoryCount: Int,
+        requestCount: Int
+    ) {
+        let signature = "model-identity:\(path):\(dedupKey)"
         statsLock.lock()
         let isRepeat = signature == lastModelIdentityAdvisorySignature
         lastModelIdentityAdvisorySignature = signature

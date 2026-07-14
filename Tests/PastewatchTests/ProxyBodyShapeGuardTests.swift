@@ -199,6 +199,39 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertTrue(modelAdvisory("/v1/messages/batches", body))
     }
 
+    // WO-446: a tool_result suppresses model telemetry only for its own batch payload.
+    func testMixedBatchStillAdvisesForUnscannedNonstandardModel() {
+        let body = """
+        {"requests":[
+          {"custom_id":"scanned","params":{"model":"qwen-max","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"safe"}]}]}},
+          {"custom_id":"unscanned","params":{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}}
+        ]}
+        """
+        XCTAssertTrue(modelAdvisory("/v1/messages/batches", body))
+    }
+
+    // WO-446: batches need no model advisory when every nonstandard payload was scanned.
+    func testAllToolResultBatchSuppressesModelAdvisory() {
+        let body = """
+        {"requests":[
+          {"custom_id":"r1","params":{"model":"qwen-max","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"safe"}]}]}},
+          {"custom_id":"r2","params":{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"safe"}]}]}}
+        ]}
+        """
+        XCTAssertFalse(modelAdvisory("/v1/messages/batches", body))
+    }
+
+    // WO-446: recognized models never create advisory telemetry in a batch.
+    func testRecognizedModelBatchNeedsNoModelAdvisory() {
+        let body = """
+        {"requests":[
+          {"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":"hello"}]}},
+          {"custom_id":"r2","params":{"model":"anthropic.gateway-alias","messages":[{"role":"user","content":"hello"}]}}
+        ]}
+        """
+        XCTAssertFalse(modelAdvisory("/v1/messages/batches", body))
+    }
+
     func testMalformedMessageBatchRefused() {
         let body = """
         {"requests":[{"custom_id":"r1","params":{"model":"claude-3","input":"hi"}}]}

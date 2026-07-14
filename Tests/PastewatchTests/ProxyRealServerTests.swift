@@ -137,6 +137,48 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream system field missing redaction placeholder")
     }
 
+    // WO-447: array-form system text is scanned without dropping block metadata.
+    func testAnthropicSystemTextBlocksRedactedAndMetadataPreserved() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let credential = "password=system-block-hunter2"
+        let body = """
+        {"model":"claude-3","system":[{"type":"text","text":"\(credential)","cache_control":{"type":"ephemeral"}},{"type":"image","source":"unchanged"}],"messages":[{"role":"user","content":"hello"}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertFalse(forwarded.contains(credential), "upstream system block leaked raw credential")
+        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream system block missing placeholder")
+        XCTAssertTrue(forwarded.contains(#""cache_control":{"type":"ephemeral"}"#), forwarded)
+        XCTAssertTrue(forwarded.contains(#""source":"unchanged""#), forwarded)
+    }
+
     // WO-432: Message Batch params pass the shape guard and use the same request redactor.
     func testAnthropicMessageBatchRedactedThroughShapeGuardBeforeUpstream() throws {
         let requestLock = NSLock()
@@ -182,6 +224,56 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("POST /v1/messages/batches HTTP/1.1"), forwarded)
         XCTAssertFalse(forwarded.contains(credential), "upstream batch request leaked raw credential")
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream batch request missing redaction placeholder")
+    }
+
+    // WO-444/WO-447: every batch params.system representation uses the same scanner as
+    // a single Messages request, while the existing tool_result walk remains active.
+    func testAnthropicMessageBatchRedactsSystemFormsAndToolResults() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 202, headers: [:], body: Data(#"{"id":"batch_1"}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let stringCredential = "password=batch-system-string-hunter2"
+        let blockCredential = "password=batch-system-block-hunter2"
+        let toolCredential = "password=batch-tool-hunter2"
+        let body = """
+        {"requests":[
+          {"custom_id":"string","params":{"model":"claude-3","system":"\(stringCredential)","messages":[{"role":"user","content":"hello"}]}},
+          {"custom_id":"blocks","params":{"model":"claude-3","system":[{"type":"text","text":"\(blockCredential)","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hello"}]}},
+          {"custom_id":"tool","params":{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(toolCredential)"}]}]}}
+        ]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages/batches", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 202 Accepted"), TCPTestSocket.describeResponse(response))
+        for credential in [stringCredential, blockCredential, toolCredential] {
+            XCTAssertFalse(forwarded.contains(credential), "upstream batch leaked \(credential)")
+        }
+        XCTAssertTrue(forwarded.contains("<CREDENTIAL_"), "upstream batch missing placeholders")
+        XCTAssertTrue(forwarded.contains(#""cache_control":{"type":"ephemeral"}"#), forwarded)
     }
 
     // WO-433: an empty POST body has no body shape to scan and must still reach upstream.
@@ -687,6 +779,101 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 1, audit)
         XCTAssertTrue(audit.contains("rate=1/2"), audit)
         XCTAssertFalse(audit.contains("qwen-max"), audit)
+    }
+
+    // WO-445: adjacent duplicates are quiet, while a distinct model identity emits a
+    // new opaque advisory without changing aggregate request telemetry.
+    func testModelIdentityAdvisoryDeduplicatesByPathAndModel() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-model-dedup-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let requests = [
+            (model: "qwen-max", path: "/v1/messages"),
+            (model: "qwen-max", path: "/v1/messages"),
+            (model: "deepseek-chat", path: "/v1/messages"),
+            (model: "qwen-max", path: "/gateway/v1/messages"),
+        ]
+        for request in requests {
+            let body = """
+            {"model":"\(request.model)","messages":[{"role":"user","content":"hello"}]}
+            """
+            _ = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: request.path, body: body),
+                timeoutSeconds: 10
+            )
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(upstream.requestCount, 4)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 4)
+        XCTAssertEqual(proxy.stats.modelIdentityAdvisories, 4)
+        XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 3, audit)
+        XCTAssertFalse(audit.contains("qwen-max"), audit)
+        XCTAssertFalse(audit.contains("deepseek-chat"), audit)
+    }
+
+    // WO-443: refusal and model-advisory lines break each other's dedup chain, while
+    // adjacent duplicates within either category remain independently suppressed.
+    func testRefusalAndModelAdvisoryDedupResetSymmetrically() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-cross-dedup-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let advisoryBody = #"{"model":"qwen-max","messages":[{"role":"user","content":"hello"}]}"#
+        let refusedBody = #"{"model":"gpt-4","messages":[{"role":"assistant","content":"hi","function_call":{"name":"f"}}]}"#
+        for body in [advisoryBody, refusedBody, advisoryBody, refusedBody] {
+            _ = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+                timeoutSeconds: 10
+            )
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(upstream.requestCount, 2)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 2)
+        XCTAssertEqual(proxy.stats.modelIdentityAdvisories, 2)
+        XCTAssertEqual(proxy.stats.refusedRequests, 2)
+        XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 2, audit)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REFUSED").count - 1, 2, audit)
     }
 
     // WO-408: an Anthropic-shaped count-tokens body is forwarded, not falsely refused.
