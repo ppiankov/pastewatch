@@ -547,7 +547,7 @@ final class LaunchCommandTests: XCTestCase {
 
     // WO-414: keep the listener open to prove non-routed launches skip proxy startup.
     private func occupyLoopbackPort() throws -> (fd: Int32, port: UInt16) {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        let fd = socket(AF_INET, launchTestSocketStreamType, 0)
         guard fd >= 0 else { throw LaunchPortError.socketFailed }
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -671,7 +671,7 @@ final class LaunchCommandTests: XCTestCase {
     }
 
     private func canConnectToLoopbackPort(_ port: UInt16) -> Bool {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        let fd = socket(AF_INET, launchTestSocketStreamType, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
         var addr = sockaddr_in()
@@ -698,3 +698,10 @@ final class LaunchCommandTests: XCTestCase {
         kill(pid, 0) == 0
     }
 }
+
+// WO-424: Glibc exposes SOCK_STREAM as an enum while Darwin exposes Int32.
+#if canImport(Darwin)
+private let launchTestSocketStreamType = SOCK_STREAM
+#else
+private let launchTestSocketStreamType = Int32(SOCK_STREAM.rawValue)
+#endif
