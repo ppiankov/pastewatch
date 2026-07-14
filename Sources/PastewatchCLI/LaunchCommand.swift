@@ -12,12 +12,25 @@ import Glibc
 
 // File-level refs for signal handler access
 private var launchProxyProcess: Process?
+private var launchProxyPid: pid_t = 0 // WO-438: signal-safe proxy child identity.
 private var launchAgentPid: pid_t = 0
+private var launchPendingSignal: Int32 = 0 // WO-438: deferred termination across startup windows.
+
+// WO-438: handlers only mutate scalar state and call kill(), both safe for this signal path.
+private func handleLaunchSignal(_ signalNumber: Int32) {
+    launchPendingSignal = signalNumber
+    if launchAgentPid > 0 {
+        kill(launchAgentPid, signalNumber)
+    } else if launchProxyPid > 0 {
+        kill(launchProxyPid, SIGTERM)
+    }
+}
 
 // WO-136/WO-137: test fixture HOME redirection must be unavailable in release builds.
 private enum StartupSweepFixtureContext {
     static let probeEnvironmentKey = "PW_LAUNCH_FIXTURE_CONTEXT_PROBE" // WO-137: assertion-only context probe.
     static let probeMarker = "pastewatch-startup-sweep-fixture-context" // WO-137: stable test probe marker.
+    static let preAgentDelayEnvironmentKey = "PW_LAUNCH_PRE_AGENT_DELAY_MS" // WO-438: startup signal seam.
 
     static let isEnabled: Bool = {
         var enabled = false
@@ -114,6 +127,11 @@ struct Launch: ParsableCommand {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return true
         }
+        // WO-423: URLComponents requires brackets around IPv6 hosts; recognize only
+        // unambiguous bare local literals and preserve ambiguous host:port text.
+        if value == "::1" || value == "[::1]" || value == "::" || value == "[::]" {
+            return true
+        }
         let candidates = value.contains("://") ? [value] : [value, "http://\(value)"]
         return candidates.contains { candidate in
             guard let host = URLComponents(string: candidate)?.host else { return false }
@@ -125,7 +143,7 @@ struct Launch: ParsableCommand {
     // remote gateways, but clear loopback/any-address spellings for non-routed agents.
     static func isLocalAnthropicBaseURLHost(_ host: String) -> Bool {
         let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if normalized == "localhost" || normalized == "::1" || normalized == "0.0.0.0" {
+        if normalized == "localhost" || normalized == "::1" || normalized == "::" || normalized == "0.0.0.0" {
             return true
         }
         if normalized.hasPrefix("::ffff:") {
@@ -196,11 +214,11 @@ struct Launch: ParsableCommand {
     func run() throws {
         try runStartupSweepFixtureProbeIfNeeded()
         let command = try normalizedCommand()
+        installLaunchSignalHandlers()
+        try throwIfLaunchTerminationRequested()
         runStartupSweepIfNeeded()
         let config = PastewatchConfig.resolve()
-        if let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) {
-            FileHandle.standardError.write(Data(warning.utf8))
-        }
+        writeBufferModeWarningIfNeeded(config: config)
 
         let agentBinary = (command[0] as NSString).lastPathComponent
         if !Launch.isProxyRoutedAgent(agentBinary) {
@@ -255,19 +273,25 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data("error: failed to start proxy: \(error)\n".utf8))
             throw ExitCode(rawValue: 3)
         }
+        launchProxyPid = proxy.processIdentifier
+        defer {
+            if proxy.isRunning {
+                proxy.terminate()
+            }
+            proxy.waitUntilExit()
+            launchProxyPid = 0
+            launchProxyProcess = nil
+        }
+        delayBeforeAgentForTestingIfNeeded()
+        try throwIfLaunchTerminationRequested()
 
         // Wait for proxy to accept connections
         guard waitForTCP(host: "127.0.0.1", port: port, timeout: 5.0) else {
-            proxy.terminate()
-            proxy.waitUntilExit()
+            try throwIfLaunchTerminationRequested()
             FileHandle.standardError.write(Data("error: proxy failed to start (timeout waiting for port \(port))\n".utf8))
             throw ExitCode(rawValue: 3)
         }
-        defer {
-            proxy.terminate()
-            proxy.waitUntilExit()
-            launchProxyProcess = nil
-        }
+        try throwIfLaunchTerminationRequested()
 
         if !quiet {
             let cmdStr = command.joined(separator: " ")
@@ -283,6 +307,7 @@ struct Launch: ParsableCommand {
     }
 
     private func runAgentProcess(_ command: [String]) throws -> Int32 {
+        try throwIfLaunchTerminationRequested()
         // Fork: child exec's the agent (inherits TTY), parent waits and cleans up
         // Use @_silgen_name to bypass Swift's fork() unavailability on Darwin
         let pid = _pw_fork()
@@ -294,6 +319,10 @@ struct Launch: ParsableCommand {
 
         if pid == 0 {
             // Child process — exec the agent command
+            // WO-438: pre-fork parent handlers must not survive the child launch
+            // window or intercept termination intended for the agent.
+            signal(SIGINT, SIG_DFL)
+            signal(SIGTERM, SIG_DFL)
             // Build null-terminated C string array for execvp
             let args = Array(command)
             let cArgs = args.map { strdup($0) } + [nil]
@@ -303,28 +332,22 @@ struct Launch: ParsableCommand {
             _exit(127)
         }
 
-        // Parent process — wait for child, then clean up proxy
-        // Forward SIGINT to child instead of killing everything
+        // Parent process — wait for child, then clean up proxy.
         launchAgentPid = pid
-        signal(SIGINT) { _ in
-            if launchAgentPid > 0 {
-                kill(launchAgentPid, SIGINT)
-            }
-        }
-        // WO-438: process managers send SIGTERM for graceful shutdown; forward it
-        // to the agent child so waitpid returns and the proxy defer can run.
-        signal(SIGTERM) { _ in
-            if launchAgentPid > 0 {
-                kill(launchAgentPid, SIGTERM)
-            }
+        if launchPendingSignal != 0 {
+            kill(launchAgentPid, launchPendingSignal)
         }
 
         var status: Int32 = 0
-        waitpid(pid, &status, 0)
+        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
 
         // Extract exit code
         let exitCode: Int32
-        if (status & 0x7f) == 0 {
+        // WO-438: a cooperative child may trap SIGTERM and exit zero; the launch
+        // process must still preserve the operator's terminating signal semantics.
+        if launchPendingSignal != 0 {
+            exitCode = 128 + launchPendingSignal
+        } else if (status & 0x7f) == 0 {
             // Exited normally
             exitCode = (status >> 8) & 0xff
         } else {
@@ -333,6 +356,34 @@ struct Launch: ParsableCommand {
         }
         launchAgentPid = 0
         return exitCode
+    }
+
+    // WO-438: install before any child can exist so startup signals become state,
+    // not default process termination that skips child cleanup.
+    private func installLaunchSignalHandlers() {
+        launchProxyPid = 0
+        launchAgentPid = 0
+        launchPendingSignal = 0
+        signal(SIGINT, handleLaunchSignal)
+        signal(SIGTERM, handleLaunchSignal)
+    }
+
+    private func writeBufferModeWarningIfNeeded(config: PastewatchConfig) {
+        guard let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) else { return }
+        FileHandle.standardError.write(Data(warning.utf8))
+    }
+
+    private func throwIfLaunchTerminationRequested() throws {
+        guard launchPendingSignal != 0 else { return }
+        throw ExitCode(rawValue: 128 + launchPendingSignal)
+    }
+
+    // WO-438: assertion-gated delay makes the pre-agent signal window deterministic.
+    private func delayBeforeAgentForTestingIfNeeded() {
+        guard StartupSweepFixtureContext.isEnabled,
+              let raw = ProcessInfo.processInfo.environment[StartupSweepFixtureContext.preAgentDelayEnvironmentKey],
+              let milliseconds = UInt32(raw), milliseconds > 0 else { return }
+        usleep(milliseconds * 1_000)
     }
 
     private func runStartupSweepFixtureProbeIfNeeded() throws {

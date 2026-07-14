@@ -170,9 +170,14 @@ final class LaunchCommandTests: XCTestCase {
             "http://0:8443",
             "http://localhost:8443",
             "http://[::1]:8443",
+            "http://[::]:8443",
             "http://[::ffff:127.0.0.1]:8443",
             "127.0.0.1:8443",
             "localhost:8443",
+            "::1",
+            "[::1]",
+            "::",
+            "[::]",
         ]
         let shouldPreserve = [
             "https://gateway.example.com/anthropic",
@@ -180,6 +185,7 @@ final class LaunchCommandTests: XCTestCase {
             "http://08.0.0.1:8443",
             "https://api.anthropic.com",
             "gateway.example.com/anthropic",
+            "::1:8443",
         ]
 
         for value in shouldClear {
@@ -242,6 +248,7 @@ final class LaunchCommandTests: XCTestCase {
 
         kill(process.processIdentifier, SIGTERM)
         XCTAssertTrue(waitForProcessExit(process, timeoutSeconds: 5), "launch did not exit after SIGTERM")
+        XCTAssertEqual(process.terminationStatus, 128 + SIGTERM)
         XCTAssertTrue(waitForFile(agent.termFile, timeoutSeconds: 2), "agent did not receive SIGTERM")
         XCTAssertTrue(
             waitUntil(timeoutSeconds: 5) { !self.canConnectToLoopbackPort(proxyPort) },
@@ -252,6 +259,47 @@ final class LaunchCommandTests: XCTestCase {
         let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertEqual(out, "", "quiet launch should not write stdout: \(out)")
         XCTAssertEqual(err, "", "quiet launch should not write stderr: \(err)")
+    }
+
+    // WO-438: SIGTERM after proxy spawn but before agent fork must still reap the proxy.
+    func testSIGTERMDuringPreAgentWindowTerminatesProxyWithoutStartingAgent() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeTermTrapAgent(named: "claude", in: fixture.cwd)
+        let proxyPort = try reserveEphemeralLoopbackPort()
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = [
+            "launch", "--quiet", "--no-startup-sweep", "--port", "\(proxyPort)", "--", agent.script.path,
+        ]
+        process.currentDirectoryURL = fixture.cwd
+        var environment = fixture.environment
+        environment["PW_LAUNCH_PRE_AGENT_DELAY_MS"] = "3000"
+        process.environment = environment
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        try process.run()
+        defer {
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+            if let agentPid = readPID(from: agent.pidFile), processIsRunning(agentPid) {
+                kill(agentPid, SIGKILL)
+            }
+        }
+
+        XCTAssertTrue(waitUntil(timeoutSeconds: 5) { self.canConnectToLoopbackPort(proxyPort) }, "proxy did not listen")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: agent.pidFile.path), "agent started before signal seam")
+
+        kill(process.processIdentifier, SIGTERM)
+        XCTAssertTrue(waitForProcessExit(process, timeoutSeconds: 5), "launch did not exit after startup SIGTERM")
+        XCTAssertEqual(process.terminationStatus, 128 + SIGTERM)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: agent.pidFile.path), "agent started after SIGTERM")
+        XCTAssertTrue(
+            waitUntil(timeoutSeconds: 5) { !self.canConnectToLoopbackPort(proxyPort) },
+            "proxy still accepts connections after startup SIGTERM"
+        )
     }
 
     // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.
