@@ -164,6 +164,23 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("/v1/messages"))
     }
 
+    // WO-486: audit paths are bounded single-line path components, never raw request targets.
+    func testAuditSafePathDropsQueryControlsAndBoundsLength() {
+        let queryValue = "synthetic-query-value"
+        let controlled = "/v1/messages\n\r\u{001B}\u{0000}\u{0085}?secret=\(queryValue)"
+        let sanitized = server.auditSafePath(controlled)
+
+        XCTAssertEqual(sanitized, "/v1/messages_____")
+        XCTAssertFalse(sanitized.contains(queryValue))
+        XCTAssertFalse(sanitized.unicodeScalars.contains { scalar in
+            scalar.value <= 0x1f || (0x7f...0x9f).contains(scalar.value)
+        })
+
+        let bounded = server.auditSafePath("/" + String(repeating: "a", count: 700))
+        XCTAssertEqual(bounded.count, 515)
+        XCTAssertTrue(bounded.hasSuffix("..."))
+    }
+
     func testAdvisorySSEDataUsesDistinctEventFrame() throws {
         let data = try XCTUnwrap(server.buildAdvisorySSEData(advisoryCount: 1, types: ["Email"]))
         let frame = String(data: data, encoding: .utf8) ?? ""

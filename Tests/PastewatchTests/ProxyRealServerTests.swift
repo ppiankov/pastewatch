@@ -622,6 +622,33 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(stderr.contains("unsupported JSON POST body"), stderr)
     }
 
+    func testUnsupportedBodyBearingMethodsAreRefusedBeforeUpstream() throws {
+        // WO-422: no method may carry an unscanned body through the proxy.
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":"password=method-hunter2"}]}"#
+        for method in ["post", "PUT", "PATCH", "GET"] {
+            let response = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.request(method: method, path: "/v1/messages", body: body),
+                timeoutSeconds: 10
+            )
+            XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), "\(method): \(response)")
+        }
+        XCTAssertEqual(upstream.requestCount, 0)
+        XCTAssertEqual(proxy.stats.refusedRequests, 4)
+    }
+
     // WO-440/WO-442: repeated unsupported-shape refusals are counted but audit-deduped.
     func testRepeatedUnsupportedBodyShapeRefusalsAreDedupedAndCounted() throws {
         let upstream = try StubHTTPServer { _ in
@@ -728,6 +755,124 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(audit.components(separatedBy: "PROXY REDACTED").count - 1, 1, audit)
         XCTAssertEqual(proxy.stats.refusedRequests, 2)
         XCTAssertEqual(proxy.stats.requestsProcessed, 1)
+    }
+
+    // WO-448: a refusal must also break the preceding redaction dedup chain.
+    func testRedactionDedupResetsAfterRefusalAudit() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-redaction-reset-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"password=reset-hunter2"}]}]}"#
+        for path in ["/v1/messages", "/v1/responses", "/v1/messages"] {
+            let requestBody = path == "/v1/messages" ? body : #"{"input":"hello"}"#
+            _ = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: path, body: requestBody),
+                timeoutSeconds: 10
+            )
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REDACTED").count - 1, 2, audit)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REFUSED").count - 1, 1, audit)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 2)
+        XCTAssertEqual(proxy.stats.refusedRequests, 1)
+    }
+
+    // WO-448: a refusal must break the preceding advisory dedup chain as well.
+    func testAdvisoryDedupResetsAfterRefusalAudit() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data())
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-advisory-reset-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        proxy.recordBodyAdvisoryStats(path: "/v1/messages", count: 1, types: ["Email"])
+        _ = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/responses", body: #"{"input":"hello"}"#),
+            timeoutSeconds: 10
+        )
+        proxy.recordBodyAdvisoryStats(path: "/v1/messages", count: 1, types: ["Email"])
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY ADVISORY").count - 1, 2, audit)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REFUSED").count - 1, 1, audit)
+        XCTAssertEqual(proxy.stats.advisoryMatches, 2)
+        XCTAssertEqual(proxy.stats.refusedRequests, 1)
+    }
+
+    // WO-486: a refused request must not copy query material into an audit record.
+    func testRefusalAuditOmitsQueryMaterial() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data())
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-audit-query-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let queryValue = "synthetic-query-value"
+        _ = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(
+                path: "/v1/responses?secret=\(queryValue)",
+                body: #"{"input":"hello"}"#
+            ),
+            timeoutSeconds: 10
+        )
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertTrue(audit.contains("PROXY REFUSED unsupported upstream body shape in /v1/responses"), audit)
+        XCTAssertFalse(audit.contains("?secret="), audit)
+        XCTAssertFalse(audit.contains(queryValue), audit)
+        XCTAssertEqual(upstream.requestCount, 0)
     }
 
     // WO-430: nonstandard model names are forwarded on a valid Messages wire shape
@@ -901,7 +1046,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(upstream.requestCount, 1, "count_tokens must be forwarded; \(diagnostic)")
     }
 
-    // WO-437: count_tokens bodies without messages still scan top-level system text.
+    // WO-437: valid count_tokens bodies scan top-level system text.
     func testCountTokensSystemFieldCredentialRedacted() throws {
         let requestLock = NSLock()
         var upstreamRequest = ""
@@ -935,7 +1080,7 @@ final class ProxyRealServerTests: XCTestCase {
         }
 
         let credential = "password=count-tokens-hunter2"
-        let body = #"{"model":"claude-3","system":"\#(credential)"}"#
+        let body = #"{"model":"claude-3","system":"\#(credential)","messages":[{"role":"user","content":"count"}]}"#
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
             request: TCPTestSocket.postRequest(path: "/v1/messages/count_tokens", body: body),
@@ -955,6 +1100,84 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
         XCTAssertTrue(audit.contains("PROXY REDACTED 1 secret(s) in /v1/messages/count_tokens"), audit)
         XCTAssertTrue(audit.contains("Credential x1"), audit)
+    }
+
+    func testCountTokensWithoutMessagesIsRefusedBeforeUpstream() throws {
+        // WO-437: arbitrary JSON is not a valid Count Tokens shape and cannot bypass scanning.
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"input_tokens":3}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let body = #"{"input":"password=count-tokens-hunter2"}"#
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/gateway/v1/messages/count_tokens/", body: body),
+            timeoutSeconds: 10
+        )
+
+        XCTAssertTrue(response.contains("HTTP/1.1 415 Unsupported Media Type"), response)
+        XCTAssertEqual(upstream.requestCount, 0)
+        XCTAssertEqual(proxy.stats.refusedRequests, 1)
+    }
+
+    func testSerializationFailureBlocksForwardingAndPreservesAdvisoryEvidence() throws {
+        // WO-452/WO-458: serializer failure is observable and cannot discard scan evidence.
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-redaction-failure-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            severity: .low,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        proxy.requestBodySerializer = { _ in throw CocoaError(.fileWriteUnknown) }
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let rawCredential = "password=serialization-hunter2"
+        let rawEmail = "operator@example.net"
+        let body = """
+        {"model":"claude-3","system":"\(rawCredential) \(rawEmail)","messages":[{"role":"user","content":"hello"}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertTrue(response.contains("HTTP/1.1 500 Internal Server Error"), response)
+        XCTAssertEqual(upstream.requestCount, 0)
+        XCTAssertEqual(proxy.stats.redactionFailures, 1)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 0)
+        XCTAssertEqual(proxy.stats.requestsRedacted, 0)
+        XCTAssertEqual(proxy.stats.secretsRedacted, 0)
+        XCTAssertEqual(proxy.stats.advisoryMatches, 1)
+        XCTAssertTrue(audit.contains("PROXY REDACTION FAILED 1 secret(s) in /v1/messages"), audit)
+        XCTAssertTrue(audit.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"), audit)
+        XCTAssertFalse(audit.contains("PROXY REDACTED"), audit)
+        XCTAssertFalse(audit.contains(rawCredential), audit)
+        XCTAssertFalse(audit.contains(rawEmail), audit)
     }
 
     func testAdmissionCapRejectsFifthConcurrentConnection() throws {
@@ -1388,9 +1611,14 @@ private enum TCPTestSocket {
     static let validAnthropicMessagesBody = #"{"model":"claude-3","messages":[{"role":"user","content":"hello"}]}"#
 
     static func postRequest(path: String, body: String = "{}") -> String {
+        request(method: "POST", path: path, body: body)
+    }
+
+    // WO-422: real-socket tests exercise method admission independently from POST helpers.
+    static func request(method: String, path: String, body: String) -> String {
         let bodyData = Data(body.utf8)
         return """
-        POST \(path) HTTP/1.1\r
+        \(method) \(path) HTTP/1.1\r
         Host: 127.0.0.1\r
         Content-Type: application/json\r
         Content-Length: \(bodyData.count)\r

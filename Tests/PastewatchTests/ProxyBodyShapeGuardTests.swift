@@ -71,12 +71,16 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
     }
 
-    func testCountTokensEndpointWithoutMessagesArrayAllowed() {
-        // Some Anthropic count_tokens variants may omit a messages array.
+    func testCountTokensEndpointWithoutMessagesArrayRefused() {
+        // WO-437: official Count Tokens requests require messages; arbitrary
+        // messages-free objects cannot be positively identified or scanned.
         let body = """
         {"model":"claude-3","system":"be terse"}
         """
-        XCTAssertEqual(verdict("POST", "/v1/messages/count_tokens", body), .allow)
+        XCTAssertEqual(
+            verdict("POST", "/v1/messages/count_tokens", body),
+            .refuse("malformed Anthropic count_tokens body")
+        )
     }
 
     func testMessageBatchesEndpointAllowed() {
@@ -93,7 +97,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         {"model":"claude-3","messages":[{"role":"user","content":"hi"}]}
         """
         let countTokensBody = """
-        {"model":"claude-3","system":"be terse"}
+        {"model":"claude-3","system":"be terse","messages":[{"role":"user","content":"count"}]}
         """
         let batchesBody = """
         {"requests":[{"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":"hi"}]}}]}
@@ -144,7 +148,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/chat/completions", body),
-            .refuse("unsupported JSON POST body on /v1/chat/completions")
+            .refuse("unsupported JSON POST body")
         )
     }
 
@@ -156,7 +160,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/chat/completions", body),
-            .refuse("unsupported JSON POST body on /v1/chat/completions")
+            .refuse("unsupported JSON POST body")
         )
     }
 
@@ -165,7 +169,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let body = """
         {"model":"gpt-4.1","input":"hello"}
         """
-        XCTAssertEqual(verdict("POST", "/v1/responses", body), .refuse("unsupported JSON POST body on /v1/responses"))
+        XCTAssertEqual(verdict("POST", "/v1/responses", body), .refuse("unsupported JSON POST body"))
     }
 
     func testForeignGenerateContentBodyWithoutMessagesRefused() {
@@ -176,7 +180,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1beta/models/gemini:generateContent", body),
-            .refuse("unsupported JSON POST body on /v1beta/models/gemini:generateContent")
+            .refuse("unsupported JSON POST body")
         )
     }
 
@@ -187,7 +191,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/messages", body),
-            .refuse("non-Anthropic messages schema on /v1/messages")
+            .refuse("non-Anthropic messages schema")
         )
     }
 
@@ -238,7 +242,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/messages/batches", body),
-            .refuse("malformed Anthropic batch body on /v1/messages/batches")
+            .refuse("malformed Anthropic batch body")
         )
     }
 
@@ -248,7 +252,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/messages/batches/results", body),
-            .refuse("unsupported JSON POST body on /v1/messages/batches/results")
+            .refuse("unsupported JSON POST body")
         )
     }
 
@@ -288,7 +292,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/chat/completions", body),
-            .refuse("unsupported JSON POST body on /v1/chat/completions")
+            .refuse("unsupported JSON POST body")
         )
     }
 
@@ -298,7 +302,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         """
         XCTAssertEqual(
             verdict("POST", "/v1/messages", body),
-            .refuse("malformed Anthropic JSON body on /v1/messages")
+            .refuse("malformed Anthropic JSON body")
         )
     }
 
@@ -306,7 +310,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let data = Data([0xff, 0xfe, 0xfd])
         XCTAssertEqual(
             verdict("POST", "/v1/chat/completions", bodyData: data),
-            .refuse("unsupported non-JSON POST body on /v1/chat/completions")
+            .refuse("unsupported non-JSON POST body")
         )
     }
 
@@ -314,7 +318,7 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         let data = Data([0xff, 0xfe, 0xfd])
         XCTAssertEqual(
             verdict("POST", "/v1/messages", bodyData: data),
-            .refuse("malformed Anthropic JSON body on /v1/messages")
+            .refuse("malformed Anthropic JSON body")
         )
     }
 
@@ -351,14 +355,14 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
     func testNonJSONBodyOnMessagesPathRefused() {
         XCTAssertEqual(
             verdict("POST", "/v1/messages", "not json at all"),
-            .refuse("malformed Anthropic JSON body on /v1/messages")
+            .refuse("malformed Anthropic JSON body")
         )
     }
 
     func testNonJSONBodyOnUnsupportedPathRefused() {
         XCTAssertEqual(
             verdict("POST", "/v1/anything", "not json at all"),
-            .refuse("unsupported non-JSON POST body on /v1/anything")
+            .refuse("unsupported non-JSON POST body")
         )
     }
 
@@ -376,6 +380,18 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
 
     func testOptionsRequestAllowed() {
         XCTAssertEqual(verdict("OPTIONS", "/v1/messages", ""), .allow)
+    }
+
+    func testNonCanonicalOrUnsupportedMethodsWithBodiesAreRefused() {
+        // WO-422: method admission and body scanning use the same exact POST predicate.
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":"password=hidden"}]}"#
+        for method in ["post", "Post", "PUT", "PATCH", "GET", "DELETE", "PROPFIND"] {
+            XCTAssertEqual(
+                verdict(method, "/v1/messages", body),
+                .refuse("unsupported request method with body"),
+                method
+            )
+        }
     }
 
     // MARK: - Supported path predicate direct

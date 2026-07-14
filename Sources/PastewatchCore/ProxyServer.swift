@@ -50,6 +50,9 @@ let proxyAdmissionQueueTimeoutMilliseconds = 250
 /// WO-335: rejected sockets are written on the accept loop; keep that send bounded.
 let proxyRejectedSocketSendTimeoutSeconds = 2
 
+/// WO-486: audit request targets are bounded independently from forwarded targets.
+let proxyAuditPathMaxCharacters = 512
+
 // MARK: - ProxyServer
 
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
@@ -113,11 +116,16 @@ public final class ProxyServer {
     private let tlsTrustDelegate: TLSTrustDelegate?
     #endif
     private let urlSession: URLSession
+    /// WO-452: injectable serializer makes the fail-closed branch deterministic in tests.
+    var requestBodySerializer: ([String: Any]) throws -> Data = {
+        try JSONSerialization.data(withJSONObject: $0, options: [])
+    }
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
         public var refusedRequests: Int = 0 // WO-442: aggregate fail-closed 415 refusals.
         public var modelIdentityAdvisories: Int = 0 // WO-430: nonstandard model names are observable, never refusal gates.
+        public var redactionFailures: Int = 0 // WO-452: detected mutations blocked by serialization failure.
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
         public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
@@ -717,17 +725,30 @@ public final class ProxyServer {
         var redactedTypes: [String] = []
         var bodyAdvisoryCount = 0
         var bodyAdvisoryTypes: [String] = []
-        if parsed.method == "POST" && isSupportedAnthropicPostPath(parsed.path) {
+        if isCanonicalScannablePostMethod(parsed.method) && isSupportedAnthropicPostPath(parsed.path) {
             // WO-429: malformed/non-UTF-8 supported-path bodies are already refused by
             // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
             if let body = parsed.body {
                 let result = scanAndRedactBody(body)
-                processedBody = result.body
-                processedBodyData = Data(result.body.utf8)
                 redactionCount = result.redacted
                 redactedTypes = result.redactedTypes
                 bodyAdvisoryCount = result.advisoryCount
                 bodyAdvisoryTypes = result.advisoryTypes
+                // WO-452/WO-458: preserve all scan evidence, but never forward the
+                // original body when an authorized mutation cannot be serialized.
+                if result.serializationFailed {
+                    recordRedactionFailure()
+                    logRedactionFailure(path: parsed.path, count: redactionCount, types: redactedTypes)
+                    recordBodyAdvisoryStats(
+                        path: parsed.path,
+                        count: bodyAdvisoryCount,
+                        types: bodyAdvisoryTypes
+                    )
+                    sendError(to: clientSocket, status: 500, message: "Proxy redaction error")
+                    return
+                }
+                processedBody = result.body
+                processedBodyData = Data(result.body.utf8)
             }
         }
 
@@ -1020,12 +1041,16 @@ public final class ProxyServer {
         let redactedTypes: [String]
         let advisoryCount: Int
         let advisoryTypes: [String]
+        let serializationFailed: Bool // WO-452: caller must block forwarding on failure.
     }
 
     func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [], advisoryCount: 0, advisoryTypes: [])
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: 0, advisoryTypes: [], serializationFailed: false
+            )
         }
 
         var redacted = 0
@@ -1057,20 +1082,23 @@ public final class ProxyServer {
         guard redacted > 0 else {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
-                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+                serializationFailed: false
             )
         }
-        guard let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
+        guard let resultData = try? requestBodySerializer(processed),
               let resultString = String(data: resultData, encoding: .utf8) else {
             return ScanResult(
-                body: body, redacted: 0, redactedTypes: [],
-                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+                body: body, redacted: redacted, redactedTypes: types,
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+                serializationFailed: true
             )
         }
 
         return ScanResult(
             body: resultString, redacted: redacted, redactedTypes: types,
-            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+            serializationFailed: false
         )
     }
 
@@ -1084,7 +1112,11 @@ public final class ProxyServer {
     // redact. JSON POSTs to unsupported upstream paths are refused rather than silently
     // forwarded unscanned. Pure and socket-free so it is unit-testable directly.
     func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
-        guard method.uppercased() == "POST" else { return .allow }
+        // WO-422: only canonical POST has a request-body scanner. Refuse every
+        // other non-empty method body instead of admitting bytes the scan branch skips.
+        guard isCanonicalScannablePostMethod(method) else {
+            return bodyData.isEmpty ? .allow : .refuse("unsupported request method with body")
+        }
         let supportedAnthropicPath = isSupportedAnthropicPostPath(path)
         // WO-433: an empty POST body carries no unscanned JSON shape or credential-bearing
         // request body, so it should reach upstream instead of being refused as malformed.
@@ -1094,8 +1126,8 @@ public final class ProxyServer {
         // an unscanned /v1/messages body.
         guard let jsonValue = try? JSONSerialization.jsonObject(with: bodyData, options: [.fragmentsAllowed]) else {
             let reason = supportedAnthropicPath
-                ? "malformed Anthropic JSON body on \(path)"
-                : "unsupported non-JSON POST body on \(path)"
+                ? "malformed Anthropic JSON body"
+                : "unsupported non-JSON POST body"
             return .refuse(reason)
         }
         // WO-422: parseable JSON arrays/scalars are JSON bodies, not opaque transport bytes.
@@ -1103,30 +1135,34 @@ public final class ProxyServer {
         // paths instead of silently forwarding it unscanned.
         guard let json = jsonValue as? [String: Any] else {
             let reason = supportedAnthropicPath
-                ? "malformed Anthropic JSON body on \(path)"
-                : "unsupported JSON POST body on \(path)"
+                ? "malformed Anthropic JSON body"
+                : "unsupported JSON POST body"
             return .refuse(reason)
         }
         guard supportedAnthropicPath else {
-            return .refuse("unsupported JSON POST body on \(path)")
+            return .refuse("unsupported JSON POST body")
         }
         if isSupportedAnthropicBatchesPath(path) {
             // WO-432: batch requests carry Messages params under requests[].params.
             return isAnthropicBatchShape(json)
                 ? .allow
-                : .refuse("malformed Anthropic batch body on \(path)")
+                : .refuse("malformed Anthropic batch body")
         }
         let hasMessages = json["messages"] is [Any]
-        // WO-425: /v1/messages must have a messages array so the body scanner has a supported
-        // shape. Count-token gateway variants are allowed to omit it.
+        // WO-425/WO-437: Messages and Count Tokens both require a messages array.
+        // The prior count_tokens exception admitted arbitrary unscanned JSON objects.
         guard hasMessages else {
-            return isSupportedAnthropicCountTokensPath(path)
-                ? .allow
-                : .refuse("malformed Anthropic messages body on \(path)")
+            let endpoint = isSupportedAnthropicCountTokensPath(path) ? "count_tokens" : "messages"
+            return .refuse("malformed Anthropic \(endpoint) body")
         }
         return isAnthropicMessagesShape(json)
             ? .allow
-            : .refuse("non-Anthropic messages schema on \(path)")
+            : .refuse("non-Anthropic messages schema")
+    }
+
+    // WO-422: admission and scanning must use one exact method predicate.
+    private func isCanonicalScannablePostMethod(_ method: String) -> Bool {
+        method == "POST"
     }
 
     // WO-411/WO-412: path allowlist for JSON POST bodies the proxy understands.
@@ -1235,7 +1271,7 @@ public final class ProxyServer {
     }
 
     private func modelIdentityAdvisory(method: String, path: String, bodyData: Data) -> ModelIdentityAdvisory? {
-        guard method.uppercased() == "POST", isSupportedAnthropicPostPath(path),
+        guard isCanonicalScannablePostMethod(method), isSupportedAnthropicPostPath(path),
               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
             return nil
         }
@@ -1277,16 +1313,21 @@ public final class ProxyServer {
 
     // WO-408/WO-413/WO-440: audit fail-closed refusals without repeating identical noise.
     private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
-        let signature = "refused:\(path):\(reason)"
+        let safePath = auditSafePath(path)
+        let signature = "refused:\(safePath):\(reason)"
         statsLock.lock()
         let isRepeat = signature == lastRefusalLogSignature
         lastRefusalLogSignature = signature
-        // WO-443: an emitted refusal breaks the model-advisory dedup chain symmetrically.
-        if !isRepeat { lastModelIdentityAdvisorySignature = nil }
+        // WO-443/WO-448: an emitted refusal breaks every other audit dedup chain.
+        if !isRepeat {
+            lastRedactionLogSignatures.removeAll()
+            lastAdvisoryLogSignatures.removeAll()
+            lastModelIdentityAdvisorySignature = nil
+        }
         statsLock.unlock()
         guard !isRepeat else { return }
 
-        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(path) (\(reason))\n"
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(safePath) (\(reason))\n"
         if !quietLog {
             FileHandle.standardError.write(Data(line.utf8))
         }
@@ -1301,6 +1342,20 @@ public final class ProxyServer {
                 }
             }
         }
+    }
+
+    // WO-486: request targets are forwarded verbatim but audit output never includes
+    // query values or terminal/log control bytes.
+    func auditSafePath(_ rawPath: String) -> String {
+        let pathOnly = rawPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? rawPath
+        let sanitized = pathOnly.unicodeScalars.map { scalar -> String in
+            let value = scalar.value
+            let isControl = value <= 0x1f || (0x7f...0x9f).contains(value)
+            return isControl ? "_" : String(scalar)
+        }.joined()
+        guard sanitized.count > proxyAuditPathMaxCharacters else { return sanitized }
+        return String(sanitized.prefix(proxyAuditPathMaxCharacters)) + "..."
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {
@@ -1547,6 +1602,13 @@ public final class ProxyServer {
     private func recordRefusedRequest() {
         statsLock.lock()
         stats.refusedRequests += 1
+        statsLock.unlock()
+    }
+
+    // WO-452: failure accounting is distinct from successfully forwarded redactions.
+    private func recordRedactionFailure() {
+        statsLock.lock()
+        stats.redactionFailures += 1
         statsLock.unlock()
     }
 
@@ -2144,6 +2206,34 @@ public final class ProxyServer {
         }
     }
 
+    // WO-452: serialization failures are never represented as successful redactions
+    // and are intentionally not deduplicated away.
+    private func logRedactionFailure(path: String, count: Int, types: [String]) {
+        var typeCounts: [String: Int] = [:]
+        for type in types { typeCounts[type, default: 0] += 1 }
+        let breakdown = typeCounts.sorted { $0.key < $1.key }
+            .map { "\($0.key) x\($0.value)" }
+            .joined(separator: ", ")
+        let safePath = auditSafePath(path)
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REDACTION FAILED \(count) secret(s) in "
+            + "\(safePath) (\(breakdown))\n"
+
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
     private func logRedaction(
         path: String,
         count: Int,
@@ -2162,7 +2252,8 @@ public final class ProxyServer {
         // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
         // concurrent connections do not race on the dedup check.
         // WO-378: request and buffered-response redactions can share path/count/type values.
-        let signature = "\(source.rawValue):\(path):\(count):\(breakdown)"
+        let safePath = auditSafePath(path)
+        let signature = "\(source.rawValue):\(safePath):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastRedactionLogSignatures[source]
         lastRedactionLogSignatures[source] = signature
@@ -2172,7 +2263,7 @@ public final class ProxyServer {
         let timestamp = formatAuditTimestamp(Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
-        let location = "\(source.auditLocationPrefix)\(path)"
+        let location = "\(source.auditLocationPrefix)\(safePath)"
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(location) (\(breakdown))\n"
         let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
@@ -2217,7 +2308,8 @@ public final class ProxyServer {
             .map { "\($0.key) x\($0.value)" }
             .joined(separator: ", ")
 
-        let signature = "advisory:\(source.rawValue):\(path):\(count):\(breakdown)"
+        let safePath = auditSafePath(path)
+        let signature = "advisory:\(source.rawValue):\(safePath):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastAdvisoryLogSignatures[source]
         lastAdvisoryLogSignatures[source] = signature
@@ -2225,7 +2317,7 @@ public final class ProxyServer {
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
-        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(path) (\(breakdown))\n"
+        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(safePath) (\(breakdown))\n"
         if !quietLog && !isRepeat {
             FileHandle.standardError.write(Data(line.utf8))
         }
@@ -2252,7 +2344,8 @@ public final class ProxyServer {
         advisoryCount: Int,
         requestCount: Int
     ) {
-        let signature = "model-identity:\(path):\(dedupKey)"
+        let safePath = auditSafePath(path)
+        let signature = "model-identity:\(safePath):\(dedupKey)"
         statsLock.lock()
         let isRepeat = signature == lastModelIdentityAdvisorySignature
         lastModelIdentityAdvisorySignature = signature
@@ -2260,7 +2353,7 @@ public final class ProxyServer {
         statsLock.unlock()
         guard !isRepeat else { return }
 
-        let line = "[\(formatAuditTimestamp(Date()))] PROXY MODEL ADVISORY nonstandard model identity in \(path) "
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY MODEL ADVISORY nonstandard model identity in \(safePath) "
             + "(wire shape allowed; rate=\(advisoryCount)/\(requestCount))\n"
         if !quietLog {
             FileHandle.standardError.write(Data(line.utf8))
@@ -2281,7 +2374,8 @@ public final class ProxyServer {
     func logAlertInjectionSkipped(path: String, contentType: String) {
         let timestamp = formatAuditTimestamp(Date())
         let normalizedType = contentType.isEmpty ? "missing" : contentType
-        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(path) (non-json response: \(normalizedType))\n"
+        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(auditSafePath(path)) "
+            + "(non-json response: \(normalizedType))\n"
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
@@ -2297,7 +2391,7 @@ public final class ProxyServer {
 
     func logAlertInjectedAsSSEComment(path: String) {
         let timestamp = formatAuditTimestamp(Date())
-        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(path) (sse-comment)\n"
+        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(auditSafePath(path)) (sse-comment)\n"
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
