@@ -20,6 +20,10 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         server().upstreamBodyShapeVerdict(method: method, path: path, bodyData: bodyData)
     }
 
+    private func modelAdvisory(_ path: String, _ body: String) -> Bool {
+        server().modelIdentityAdvisoryNeeded(method: "POST", path: path, bodyData: Data(body.utf8))
+    }
+
     // MARK: - Anthropic shapes are allowed
 
     func testAnthropicToolResultBodyAllowed() {
@@ -101,12 +105,34 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages/batches/", batchesBody), .allow)
     }
 
-    func testUnknownModelAliasAllowedOnMessagesPath() {
-        // WO-430: model identity is a foreign-family denylist, not a fragile Anthropic allowlist.
+    func testNonstandardModelNamesAreAllowedAndAdvisoryOnly() {
+        // WO-430: vendor identity cannot refuse a valid Anthropic wire shape.
+        for model in [
+            "company-gateway-claude-alias", "qwen-max", "deepseek-chat",
+            "o7-preview", "command-r", "kimi-k2", "gpt-4", "o1-mini",
+        ] {
+            let body = """
+            {"model":"\(model)","messages":[{"role":"user","content":"hi"}]}
+            """
+            XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow, model)
+            XCTAssertTrue(modelAdvisory("/v1/messages", body), model)
+        }
+    }
+
+    func testRecognizedAnthropicModelDoesNotRaiseModelAdvisory() {
         let body = """
-        {"model":"company-gateway-claude-alias","messages":[{"role":"user","content":"hi"}]}
+        {"model":"claude-3","messages":[{"role":"user","content":"hi"}]}
         """
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+        XCTAssertFalse(modelAdvisory("/v1/messages", body))
+    }
+
+    func testNonstandardModelWithToolResultDoesNotRaiseModelAdvisory() {
+        let body = """
+        {"model":"qwen-max","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"safe"}]}]}
+        """
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+        XCTAssertFalse(modelAdvisory("/v1/messages", body))
     }
 
     // MARK: - Foreign shapes are refused
@@ -165,14 +191,12 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
-    func testMessageBatchWithForeignParamsRefused() {
+    func testMessageBatchWithNonstandardModelIsAllowedAndAdvisoryOnly() {
         let body = """
         {"requests":[{"custom_id":"r1","params":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}]}
         """
-        XCTAssertEqual(
-            verdict("POST", "/v1/messages/batches", body),
-            .refuse("malformed Anthropic batch body on /v1/messages/batches")
-        )
+        XCTAssertEqual(verdict("POST", "/v1/messages/batches", body), .allow)
+        XCTAssertTrue(modelAdvisory("/v1/messages/batches", body))
     }
 
     func testMalformedMessageBatchRefused() {
@@ -195,38 +219,33 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         )
     }
 
-    func testPlainOpenAIShapeOnMessagesEndpointRefusedLayerB() {
-        // WO-422: model markers keep plain OpenAI bodies from passing as tiny
-        // Anthropic requests when a gateway misroutes them to /v1/messages.
+    func testPlainOpenAIModelOnMessagesEndpointIsAdvisoryOnly() {
+        // WO-430: a model marker is not a wire-shape discriminator.
         let body = """
         {"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}
         """
-        XCTAssertEqual(
-            verdict("POST", "/v1/messages", body),
-            .refuse("non-Anthropic messages schema on /v1/messages")
-        )
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+        XCTAssertTrue(modelAdvisory("/v1/messages", body))
     }
 
-    func testOFamilyModelDashPrefixesRefusedLayerB() {
-        // WO-428: future OpenAI o-family dash-prefixed models must fail closed.
+    func testOFamilyModelDashPrefixesAreAdvisoryOnly() {
+        // WO-430 supersedes WO-428's refusal posture: model identity cannot block traffic.
         for model in ["o1-mini", "o2-mini", "o3-mini", "o4-mini", "o5-mini", "o6-mini"] {
             let body = """
             {"model":"\(model)","messages":[{"role":"user","content":"hello"}]}
             """
-            XCTAssertEqual(
-                verdict("POST", "/v1/messages", body),
-                .refuse("non-Anthropic messages schema on /v1/messages"),
-                "expected \(model) to be refused"
-            )
+            XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow, model)
+            XCTAssertTrue(modelAdvisory("/v1/messages", body), model)
         }
     }
 
-    func testOFamilyBareLookalikeDoesNotMatchForeignPrefix() {
-        // WO-428: avoid the old broad "o1*" match; unknown future fields stay permissive.
+    func testOFamilyBareLookalikeRemainsAllowedButAdvisory() {
+        // WO-430: unknown model names stay permissive regardless of prefix classification.
         let body = """
         {"model":"o1fast","messages":[{"role":"user","content":"hello"}]}
         """
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+        XCTAssertTrue(modelAdvisory("/v1/messages", body))
     }
 
     func testTopLevelJSONArrayRefusedOnUnsupportedPath() {

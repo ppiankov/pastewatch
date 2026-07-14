@@ -638,6 +638,57 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(proxy.stats.requestsProcessed, 1)
     }
 
+    // WO-430: nonstandard model names are forwarded on a valid Messages wire shape
+    // and surfaced only through aggregate telemetry plus an off-band audit advisory.
+    func testNonstandardModelIdentityIsForwardedAndAdvisoryOnly() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-model-advisory-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        for model in ["claude-3", "qwen-max"] {
+            let body = """
+            {"model":"\(model)","messages":[{"role":"user","content":"hello"}]}
+            """
+            let response = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+                timeoutSeconds: 10
+            )
+            XCTAssertFalse(response.contains("HTTP/1.1 415"), model)
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(upstream.requestCount, 2)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 2)
+        XCTAssertEqual(proxy.stats.modelIdentityAdvisories, 1)
+        XCTAssertEqual(proxy.stats.modelIdentityAdvisoryRate, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 1, audit)
+        XCTAssertTrue(audit.contains("rate=1/2"), audit)
+        XCTAssertFalse(audit.contains("qwen-max"), audit)
+    }
+
     // WO-408: an Anthropic-shaped count-tokens body is forwarded, not falsely refused.
     func testAnthropicCountTokensNotRefused() throws {
         let upstream = try StubHTTPServer { _ in

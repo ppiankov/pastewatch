@@ -117,9 +117,16 @@ public final class ProxyServer {
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
         public var refusedRequests: Int = 0 // WO-442: aggregate fail-closed 415 refusals.
+        public var modelIdentityAdvisories: Int = 0 // WO-430: nonstandard model names are observable, never refusal gates.
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
         public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
+
+        // WO-430: surface model-identity drift relative to forwarded requests.
+        public var modelIdentityAdvisoryRate: Double {
+            guard requestsProcessed > 0 else { return 0 }
+            return Double(modelIdentityAdvisories) / Double(requestsProcessed)
+        }
     }
 
     struct StreamingAuditStats {
@@ -697,6 +704,11 @@ public final class ProxyServer {
             sendError(to: clientSocket, status: 415, message: "Unsupported upstream body shape")
             return
         }
+        let shouldRecordModelIdentityAdvisory = modelIdentityAdvisoryNeeded(
+            method: parsed.method,
+            path: parsed.path,
+            bodyData: parsed.bodyData
+        )
 
         // Only scan supported Anthropic-shaped POSTs (the endpoints that carry tool results).
         var processedBody = parsed.body
@@ -739,6 +751,9 @@ public final class ProxyServer {
             redactionCount: redactionCount,
             countForwardedRedaction: !deferForwardedRedactionStats
         )
+        if shouldRecordModelIdentityAdvisory {
+            recordModelIdentityAdvisory(path: parsed.path)
+        }
 
         if shouldLogBodyRedactionBeforeForwarding(
             redactionCount: redactionCount,
@@ -1158,19 +1173,11 @@ public final class ProxyServer {
         return pathOnly
     }
 
-    // WO-408: positive identification of the Anthropic Messages schema. Permissive on
-    // unknown keys (Anthropic adds fields over time — fail closed, never over-refuse a
-    // genuine future field by being strict), strict on the three load-bearing invariants,
-    // rejects known foreign model markers and OpenAI-only siblings that disambiguate a
-    // chat/completions body.
+    // WO-408/WO-430: identify the Messages wire shape, not the model vendor. Model names
+    // are sender-mutable and may name Anthropic-compatible providers, so only structural
+    // OpenAI siblings participate in refusal.
     func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
         guard let messages = json["messages"] as? [[String: Any]] else { return false }
-        // WO-430: keep model classification as a foreign-family denylist, not a positive
-        // Anthropic allowlist. Gateways and future Anthropic releases may rewrite model
-        // names; supported path plus Messages shape remain the safety boundary.
-        if let model = json["model"] as? String, isKnownForeignMessagesModel(model) {
-            return false
-        }
         for message in messages {
             guard message["role"] is String else { return false }
             // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
@@ -1204,10 +1211,8 @@ public final class ProxyServer {
         return !(value is NSNull)
     }
 
-    // WO-422: a plain OpenAI chat body can otherwise look identical to a minimal
-    // Anthropic Messages request once it is delivered to a /v1/messages-suffixed path.
-    // WO-428: keep the o-family matches dash-scoped and static so broad "o1*" prefixes
-    // do not classify arbitrary lookalikes as OpenAI-family models.
+    // WO-430: retain known foreign families only for advisory classification, never
+    // refusal. Keep o-family matches dash-scoped so telemetry remains deterministic.
     private static let knownForeignMessagesModelPrefixes = [
         "gpt-", "chatgpt-", "o1-", "o2-", "o3-", "o4-", "o5-", "o6-",
         "gemini-", "mistral-", "llama-", "grok-",
@@ -1216,6 +1221,43 @@ public final class ProxyServer {
     private func isKnownForeignMessagesModel(_ model: String) -> Bool {
         let lower = model.lowercased()
         return Self.knownForeignMessagesModelPrefixes.contains { lower.hasPrefix($0) }
+    }
+
+    // WO-430: model identity is advisory telemetry. A request that speaks the supported
+    // wire shape remains allowed even when a gateway or compatible provider rewrites model.
+    func modelIdentityAdvisoryNeeded(method: String, path: String, bodyData: Data) -> Bool {
+        guard method.uppercased() == "POST", isSupportedAnthropicPostPath(path),
+              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            return false
+        }
+        let payloads: [[String: Any]]
+        if isSupportedAnthropicBatchesPath(path) {
+            let requests = json["requests"] as? [[String: Any]] ?? []
+            payloads = requests.compactMap { $0["params"] as? [String: Any] }
+        } else {
+            payloads = [json]
+        }
+        guard !payloads.isEmpty, !payloads.contains(where: containsToolResult) else { return false }
+        return payloads.contains { payload in
+            guard let model = payload["model"] as? String else { return true }
+            if isKnownForeignMessagesModel(model) { return true }
+            return !isRecognizedAnthropicModelName(model)
+        }
+    }
+
+    // WO-430: telemetry applies only when no request payload was scanned as tool_result.
+    private func containsToolResult(_ json: [String: Any]) -> Bool {
+        guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        return messages.contains { message in
+            guard let content = message["content"] as? [[String: Any]] else { return false }
+            return content.contains { ($0["type"] as? String) == "tool_result" }
+        }
+    }
+
+    // WO-430: recognized names suppress advisory noise but never decide admission.
+    private func isRecognizedAnthropicModelName(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        return lower.hasPrefix("claude-") || lower.hasPrefix("anthropic.")
     }
 
     // WO-408/WO-413/WO-440: audit fail-closed refusals without repeating identical noise.
@@ -1449,6 +1491,16 @@ public final class ProxyServer {
         statsLock.lock()
         stats.refusedRequests += 1
         statsLock.unlock()
+    }
+
+    // WO-430: preserve compatible traffic while making model-identity drift measurable.
+    private func recordModelIdentityAdvisory(path: String) {
+        statsLock.lock()
+        stats.modelIdentityAdvisories += 1
+        let advisoryCount = stats.modelIdentityAdvisories
+        let requestCount = stats.requestsProcessed
+        statsLock.unlock()
+        logModelIdentityAdvisory(path: path, advisoryCount: advisoryCount, requestCount: requestCount)
     }
 
     func recordForwardedBodyRedactionStats(redactionCount: Int) {
@@ -2015,6 +2067,7 @@ public final class ProxyServer {
     private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
     private var lastAdvisoryLogSignatures: [RedactionLogSource: String] = [:] // WO-404: source-scoped advisory dedup.
     private var lastRefusalLogSignature: String? // WO-440: throttle repeated unsupported-shape audit lines.
+    private var lastModelIdentityAdvisorySignature: String? // WO-430: throttle repeated model-identity audit lines.
 
     private enum RedactionLogSource: String {
         case request
@@ -2116,6 +2169,34 @@ public final class ProxyServer {
 
         guard !isRepeat else { return }
 
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    // WO-430: model names are advisory metadata; log drift without exposing the value.
+    private func logModelIdentityAdvisory(path: String, advisoryCount: Int, requestCount: Int) {
+        let signature = "model-identity:\(path)"
+        statsLock.lock()
+        let isRepeat = signature == lastModelIdentityAdvisorySignature
+        lastModelIdentityAdvisorySignature = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
+        statsLock.unlock()
+        guard !isRepeat else { return }
+
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY MODEL ADVISORY nonstandard model identity in \(path) "
+            + "(wire shape allowed; rate=\(advisoryCount)/\(requestCount))\n"
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
