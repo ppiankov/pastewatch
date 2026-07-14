@@ -68,7 +68,7 @@ final class LaunchCommandTests: XCTestCase {
         let fixture = try makeLaunchFixture()
         let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
         let result = try runCLIProcess(
-            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
+            arguments: ["launch", "--no-startup-sweep", "--port", "65435", "--", agent.path],
             cwd: fixture.cwd,
             environment: fixture.environment
         )
@@ -85,8 +85,7 @@ final class LaunchCommandTests: XCTestCase {
             "warning should avoid blanket coverage claims; stderr: \(result.stderr)"
         )
         XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
-        XCTAssertTrue(result.stderr.hasSuffix("\n"), "warning should end with one newline: \(result.stderr.debugDescription)")
-        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
+        XCTAssertTrue(result.stderr.contains("launching: "), "non-quiet launch should announce command")
     }
 
     // WO-418: remote/team gateway URLs are operator intent, not stale local proxy state.
@@ -97,7 +96,7 @@ final class LaunchCommandTests: XCTestCase {
         environment["ANTHROPIC_BASE_URL"] = "https://gateway.example.com/anthropic"
 
         let result = try runCLIProcess(
-            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
+            arguments: ["launch", "--no-startup-sweep", "--port", "65435", "--", agent.path],
             cwd: fixture.cwd,
             environment: environment
         )
@@ -112,7 +111,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
         XCTAssertFalse(result.stderr.contains("gateway.example.com"), "warning must not echo gateway URL values")
         XCTAssertFalse(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
-        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
+        XCTAssertTrue(result.stderr.contains("launching: "), "non-quiet launch should announce command")
     }
 
     // WO-418: stale local pastewatch proxy URLs are cleared for unsupported agents.
@@ -123,7 +122,7 @@ final class LaunchCommandTests: XCTestCase {
         environment["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:8443"
 
         let result = try runCLIProcess(
-            arguments: ["launch", "--quiet", "--no-startup-sweep", "--port", "65435", "--", agent.path],
+            arguments: ["launch", "--no-startup-sweep", "--port", "65435", "--", agent.path],
             cwd: fixture.cwd,
             environment: environment
         )
@@ -131,7 +130,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, "launch should clear stale local proxy URL; stderr: \(result.stderr)")
         XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
         XCTAssertTrue(result.stderr.contains("ANTHROPIC_BASE_URL not set"), result.stderr)
-        XCTAssertFalse(result.stderr.hasSuffix("\n\n"), "warning should not end with a blank line")
+        XCTAssertTrue(result.stderr.contains("launching: "), "non-quiet launch should announce command")
     }
 
     // WO-434: audit logs are a proxy artifact; non-routed launches must fail explicitly.
@@ -207,15 +206,52 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, "launch should not touch occupied proxy port; stderr: \(result.stderr)")
         XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
         XCTAssertFalse(result.stderr.contains("failed to start proxy"), result.stderr)
+        XCTAssertEqual(result.stderr, "", "--quiet should suppress non-routed advisory stderr")
+    }
+
+    // WO-438: SIGTERM should take the normal child-exit path so the proxy defer runs.
+    func testSIGTERMTerminatesAgentAndProxy() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeTermTrapAgent(named: "claude", in: fixture.cwd)
+        let proxyPort = try reserveEphemeralLoopbackPort()
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = [
+            "launch", "--quiet", "--no-startup-sweep", "--port", "\(proxyPort)", "--", agent.script.path,
+        ]
+        process.currentDirectoryURL = fixture.cwd
+        process.environment = fixture.environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        defer {
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+            if let agentPid = readPID(from: agent.pidFile), processIsRunning(agentPid) {
+                kill(agentPid, SIGKILL)
+            }
+        }
+
+        XCTAssertTrue(waitForFile(agent.pidFile, timeoutSeconds: 5), "agent did not start")
+        XCTAssertTrue(waitUntil(timeoutSeconds: 5) { self.canConnectToLoopbackPort(proxyPort) }, "proxy did not listen")
+
+        kill(process.processIdentifier, SIGTERM)
+        XCTAssertTrue(waitForProcessExit(process, timeoutSeconds: 5), "launch did not exit after SIGTERM")
+        XCTAssertTrue(waitForFile(agent.termFile, timeoutSeconds: 2), "agent did not receive SIGTERM")
         XCTAssertTrue(
-            result.stderr.contains("redaction is not wired for agent 'codex'"),
-            "codex should warn about missing proxy interposition; stderr: \(result.stderr)"
+            waitUntil(timeoutSeconds: 5) { !self.canConnectToLoopbackPort(proxyPort) },
+            "proxy still accepts connections after launch SIGTERM"
         )
-        XCTAssertTrue(
-            result.stderr.contains("Protect non-routed agents with configured pastewatch hooks and MCP tools where available."),
-            "warning should avoid blanket coverage claims; stderr: \(result.stderr)"
-        )
-        XCTAssertFalse(result.stderr.contains("remain covered"), "warning must not overclaim coverage: \(result.stderr)")
+
+        let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(out, "", "quiet launch should not write stdout: \(out)")
+        XCTAssertEqual(err, "", "quiet launch should not write stderr: \(err)")
     }
 
     // WO-137: seam-unavailable probe fallback must not reach startup sweep or proxy.
@@ -315,6 +351,12 @@ final class LaunchCommandTests: XCTestCase {
         let home: URL
         let cwd: URL
         let environment: [String: String]
+    }
+
+    private struct TermTrapAgent {
+        let script: URL
+        let pidFile: URL
+        let termFile: URL
     }
 
     private struct ProcessResult {
@@ -449,6 +491,12 @@ final class LaunchCommandTests: XCTestCase {
         return root
     }
 
+    private func reserveEphemeralLoopbackPort() throws -> UInt16 {
+        let occupied = try occupyLoopbackPort()
+        close(occupied.fd)
+        return occupied.port
+    }
+
     // WO-414: keep the listener open to prove non-routed launches skip proxy startup.
     private func occupyLoopbackPort() throws -> (fd: Int32, port: UInt16) {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -502,6 +550,21 @@ final class LaunchCommandTests: XCTestCase {
         return script
     }
 
+    private func writeTermTrapAgent(named name: String, in dir: URL) throws -> TermTrapAgent {
+        let script = dir.appendingPathComponent(name)
+        let pidFile = dir.appendingPathComponent("\(name).pid")
+        let termFile = dir.appendingPathComponent("\(name).term")
+        let body = """
+        #!/bin/sh
+        printf '%s\\n' "$$" > '\(pidFile.path)'
+        trap 'printf term > "\(termFile.path)"; exit 0' TERM
+        while :; do sleep 1; done
+        """
+        try body.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return TermTrapAgent(script: script, pidFile: pidFile, termFile: termFile)
+    }
+
     private func writeFixtureStartupFile(in home: URL) throws {
         let fixtureValue = "postgres" + "://user:pass@host:5432/db"
         let path = home.appendingPathComponent(".zshrc")
@@ -536,5 +599,54 @@ final class LaunchCommandTests: XCTestCase {
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/debug/PastewatchCLI")
+    }
+
+    private func waitForFile(_ url: URL, timeoutSeconds: TimeInterval) -> Bool {
+        waitUntil(timeoutSeconds: timeoutSeconds) {
+            FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+
+    private func waitForProcessExit(_ process: Process, timeoutSeconds: TimeInterval) -> Bool {
+        waitUntil(timeoutSeconds: timeoutSeconds) {
+            !process.isRunning
+        }
+    }
+
+    private func waitUntil(timeoutSeconds: TimeInterval, predicate: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if predicate() { return true }
+            usleep(50_000)
+        }
+        return predicate()
+    }
+
+    private func canConnectToLoopbackPort(_ port: UInt16) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = port.bigEndian
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
+    }
+
+    private func readPID(from url: URL) -> Int32? {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8),
+              let value = Int32(contents.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return value
+    }
+
+    private func processIsRunning(_ pid: Int32) -> Bool {
+        kill(pid, 0) == 0
     }
 }

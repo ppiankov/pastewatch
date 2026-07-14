@@ -84,6 +84,23 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/gateway/v1/messages/batches?beta=true", body), .allow)
     }
 
+    func testTrailingSlashSupportedAnthropicPathsAllowed() {
+        let messagesBody = """
+        {"model":"claude-3","messages":[{"role":"user","content":"hi"}]}
+        """
+        let countTokensBody = """
+        {"model":"claude-3","system":"be terse"}
+        """
+        let batchesBody = """
+        {"requests":[{"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":"hi"}]}}]}
+        """
+
+        XCTAssertEqual(verdict("POST", "/v1/messages/", messagesBody), .allow)
+        XCTAssertEqual(verdict("POST", "/gateway/v1/messages/", messagesBody), .allow)
+        XCTAssertEqual(verdict("POST", "/v1/messages/count_tokens/", countTokensBody), .allow)
+        XCTAssertEqual(verdict("POST", "/v1/messages/batches/", batchesBody), .allow)
+    }
+
     func testUnknownModelAliasAllowedOnMessagesPath() {
         // WO-430: model identity is a foreign-family denylist, not a fragile Anthropic allowlist.
         let body = """
@@ -318,6 +335,9 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
             "/v1/messages?beta=true",
             "/v1/messages/count_tokens",
             "/v1/messages/batches",
+            "/v1/messages/",
+            "/v1/messages/count_tokens/",
+            "/v1/messages/batches/",
             "/v1/llm-gateway/v1/messages",
             "/anthropic/v1/messages?beta=true",
             "/v1/llm-gateway/v1/messages/count_tokens",

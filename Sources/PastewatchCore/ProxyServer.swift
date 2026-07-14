@@ -116,6 +116,7 @@ public final class ProxyServer {
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
+        public var refusedRequests: Int = 0 // WO-442: aggregate fail-closed 415 refusals.
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
         public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
@@ -691,6 +692,7 @@ public final class ProxyServer {
         if case .refuse(let reason) = upstreamBodyShapeVerdict(
             method: parsed.method, path: parsed.path, bodyData: parsed.bodyData
         ) {
+            recordRefusedRequest()
             logUnsupportedBodyShapeRefusal(path: parsed.path, reason: reason)
             sendError(to: clientSocket, status: 415, message: "Unsupported upstream body shape")
             return
@@ -703,8 +705,9 @@ public final class ProxyServer {
         var redactedTypes: [String] = []
         var bodyAdvisoryCount = 0
         var bodyAdvisoryTypes: [String] = []
-        var shouldBlockNonUTF8Forwarding = false
         if parsed.method == "POST" && isSupportedAnthropicPostPath(parsed.path) {
+            // WO-429: malformed/non-UTF-8 supported-path bodies are already refused by
+            // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
             if let body = parsed.body {
                 let result = scanAndRedactBody(body)
                 processedBody = result.body
@@ -713,15 +716,6 @@ public final class ProxyServer {
                 redactedTypes = result.redactedTypes
                 bodyAdvisoryCount = result.advisoryCount
                 bodyAdvisoryTypes = result.advisoryTypes
-            } else {
-                // WO-296: scan a lossy text view of non-UTF-8 bodies for audit
-                // coverage, then fail closed if a secret is detected.
-                let result = scanNonUTF8BodyForRedactions(processedBodyData)
-                redactionCount = result.redacted
-                redactedTypes = result.redactedTypes
-                bodyAdvisoryCount = result.advisoryCount
-                bodyAdvisoryTypes = result.advisoryTypes
-                shouldBlockNonUTF8Forwarding = result.shouldBlockForwarding
             }
         }
 
@@ -743,25 +737,16 @@ public final class ProxyServer {
 
         recordInitialRequestStats(
             redactionCount: redactionCount,
-            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding,
             countForwardedRedaction: !deferForwardedRedactionStats
         )
 
         if shouldLogBodyRedactionBeforeForwarding(
             redactionCount: redactionCount,
-            requestWantsStream: requestWantsStream,
-            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+            requestWantsStream: requestWantsStream
         ) {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
         recordBodyAdvisoryStats(path: parsed.path, count: bodyAdvisoryCount, types: bodyAdvisoryTypes)
-        if shouldBlockNonUTF8Forwarding {
-            // WO-296: /v1/messages bodies are UTF-8 JSON by contract; if a lossy
-            // scan finds a secret in malformed bytes, fail closed instead of
-            // forwarding the original credential upstream.
-            sendError(to: clientSocket, status: 400, message: "Bad Request")
-            return
-        }
 
         // Platform dispatch: returns a BufferedResponse for the convergence tail,
         // or nil when the response was fully handled (streamed or error sent to client).
@@ -1022,14 +1007,6 @@ public final class ProxyServer {
         let advisoryTypes: [String]
     }
 
-    struct RedactionDetectionSummary {
-        let redacted: Int
-        let redactedTypes: [String]
-        let advisoryCount: Int
-        let advisoryTypes: [String]
-        let shouldBlockForwarding: Bool
-    }
-
     func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1040,8 +1017,15 @@ public final class ProxyServer {
         var types: [String] = []
         var advisoryCount = 0
         var advisoryTypes: [String] = []
-        let processedMessages = redactContentArray(
+        let processedTopLevel = redactTopLevelStringFields(
             json,
+            redacted: &redacted,
+            types: &types,
+            advisoryCount: &advisoryCount,
+            advisoryTypes: &advisoryTypes
+        )
+        let processedMessages = redactContentArray(
+            processedTopLevel,
             redacted: &redacted,
             types: &types,
             advisoryCount: &advisoryCount,
@@ -1164,8 +1148,14 @@ public final class ProxyServer {
 
     // WO-425: classify gateway paths without letting query strings affect endpoint shape.
     private func requestPathWithoutQuery(_ path: String) -> String {
-        path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+        var pathOnly = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
             .map(String.init) ?? path
+        // WO-436: gateway/client-normalized trailing slashes still identify the
+        // same Anthropic endpoints and should not trip fail-closed shape refusal.
+        while pathOnly.count > 1 && pathOnly.hasSuffix("/") {
+            pathOnly.removeLast()
+        }
+        return pathOnly
     }
 
     // WO-408: positive identification of the Anthropic Messages schema. Permissive on
@@ -1228,8 +1218,15 @@ public final class ProxyServer {
         return Self.knownForeignMessagesModelPrefixes.contains { lower.hasPrefix($0) }
     }
 
-    // WO-408/WO-413: per-request audit signal for a fail-closed refusal (verdict f6978df9).
+    // WO-408/WO-413/WO-440: audit fail-closed refusals without repeating identical noise.
     private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
+        let signature = "refused:\(path):\(reason)"
+        statsLock.lock()
+        let isRepeat = signature == lastRefusalLogSignature
+        lastRefusalLogSignature = signature
+        statsLock.unlock()
+        guard !isRepeat else { return }
+
         let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(path) (\(reason))\n"
         if !quietLog {
             FileHandle.standardError.write(Data(line.utf8))
@@ -1256,26 +1253,29 @@ public final class ProxyServer {
         )
     }
 
-    func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
-        guard !bodyData.isEmpty else {
-            return RedactionDetectionSummary(
-                redacted: 0, redactedTypes: [],
-                advisoryCount: 0, advisoryTypes: [],
-                shouldBlockForwarding: false
-            )
+    // WO-437: count_tokens requests can omit messages; scan top-level system text
+    // before the messages-only tool_result walk would otherwise return unchanged.
+    private func redactTopLevelStringFields(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        for field in ["system"] {
+            guard let value = json[field] as? String else { continue }
+            let matches = scanProxyText(value)
+            let filtered = mutationSafeProxyMatches(matches)
+            let advisories = streamAdvisoryMatches(matches, severity: severity)
+            advisoryCount += advisories.count
+            advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
+            guard !filtered.isEmpty else { continue }
+            result[field] = Obfuscator.obfuscate(value, matches: filtered)
+            redacted += filtered.count
+            types.append(contentsOf: filtered.map { $0.displayName })
         }
-        // swiftlint:disable:next optional_data_string_conversion
-        let lossyBody = String(decoding: bodyData, as: UTF8.self)
-        let matches = scanProxyText(lossyBody)
-        let filtered = mutationSafeProxyMatches(matches)
-        let advisories = streamAdvisoryMatches(matches, severity: severity)
-        return RedactionDetectionSummary(
-            redacted: filtered.count,
-            redactedTypes: filtered.map { $0.displayName },
-            advisoryCount: advisories.count,
-            advisoryTypes: advisories.map { $0.displayName },
-            shouldBlockForwarding: !filtered.isEmpty
-        )
+        return result
     }
 
     /// Walk the messages array looking for tool_result content to scan.
@@ -1412,17 +1412,9 @@ public final class ProxyServer {
 
     func shouldLogBodyRedactionBeforeForwarding(
         redactionCount: Int,
-        requestWantsStream: Bool,
-        shouldBlockNonUTF8Forwarding: Bool
+        requestWantsStream: Bool
     ) -> Bool {
         guard redactionCount > 0 else { return false }
-        // WO-304/WO-307: if malformed bytes caused a fail-closed request, no
-        // streaming relay will run later, so the request-body redaction must be
-        // audited before returning 400.
-        if shouldBlockNonUTF8Forwarding {
-            return true
-        }
-
         // WO-304: non-streaming and buffer-mode body redactions must be logged
         // before forwarding so upstream failures cannot hide them. Streaming
         // mode defers the body count so body + SSE redactions are logged once.
@@ -1441,17 +1433,21 @@ public final class ProxyServer {
 
     func recordInitialRequestStats(
         redactionCount: Int,
-        shouldBlockNonUTF8Forwarding: Bool,
         countForwardedRedaction: Bool = true
     ) {
-        // WO-317: a fail-closed malformed body is audited but was never forwarded
-        // with redacted bytes, so it must not inflate requestsRedacted/secretsRedacted.
         statsLock.lock()
         stats.requestsProcessed += 1
-        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding && countForwardedRedaction {
+        if redactionCount > 0 && countForwardedRedaction {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
         }
+        statsLock.unlock()
+    }
+
+    // WO-442: refusals are not processed requests, but operators still need an aggregate count.
+    private func recordRefusedRequest() {
+        statsLock.lock()
+        stats.refusedRequests += 1
         statsLock.unlock()
     }
 
@@ -2018,6 +2014,7 @@ public final class ProxyServer {
 
     private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
     private var lastAdvisoryLogSignatures: [RedactionLogSource: String] = [:] // WO-404: source-scoped advisory dedup.
+    private var lastRefusalLogSignature: String? // WO-440: throttle repeated unsupported-shape audit lines.
 
     private enum RedactionLogSource: String {
         case request
@@ -2053,6 +2050,7 @@ public final class ProxyServer {
         statsLock.lock()
         let isRepeat = signature == lastRedactionLogSignatures[source]
         lastRedactionLogSignatures[source] = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
@@ -2107,6 +2105,7 @@ public final class ProxyServer {
         statsLock.lock()
         let isRepeat = signature == lastAdvisoryLogSignatures[source]
         lastAdvisoryLogSignatures[source] = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())

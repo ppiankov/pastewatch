@@ -95,14 +95,18 @@ struct Launch: ParsableCommand {
     // WO-409/WO-418: only wire ANTHROPIC_BASE_URL for agents the proxy actually redacts.
     // Clear stale local pastewatch proxy values for unsupported agents, but preserve remote
     // corporate/team gateways the operator intentionally configured.
-    static func configureProxyEnv(agentBinary: String, port: UInt16) {
+    static func configureProxyEnv(agentBinary: String, port: UInt16, quiet: Bool = false) {
         if isProxyRoutedAgent(agentBinary) {
             setenv(anthropicBaseURLEnv, "http://127.0.0.1:\(port)", 1)
         } else if shouldClearExistingAnthropicBaseURL(ProcessInfo.processInfo.environment[anthropicBaseURLEnv]) {
             unsetenv(anthropicBaseURLEnv)
-            FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "not set").utf8))
+            if !quiet {
+                FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "not set").utf8))
+            }
         } else {
-            FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "preserved").utf8))
+            if !quiet {
+                FileHandle.standardError.write(Data(nonRoutedWarning(agentBinary: agentBinary, baseURLState: "preserved").utf8))
+            }
         }
     }
 
@@ -209,7 +213,7 @@ struct Launch: ParsableCommand {
                 throw ExitCode(rawValue: 1)
             }
             // WO-414: do not start an unused proxy for agents whose traffic is not routed.
-            Launch.configureProxyEnv(agentBinary: agentBinary, port: port)
+            Launch.configureProxyEnv(agentBinary: agentBinary, port: port, quiet: quiet)
             if !quiet {
                 let cmdStr = command.joined(separator: " ")
                 FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
@@ -270,7 +274,7 @@ struct Launch: ParsableCommand {
             FileHandle.standardError.write(Data("launching: \(cmdStr)\n\n".utf8))
         }
 
-        Launch.configureProxyEnv(agentBinary: agentBinary, port: port)
+        Launch.configureProxyEnv(agentBinary: agentBinary, port: port, quiet: quiet)
 
         let exitCode = try runAgentProcess(command)
         if exitCode != 0 {
@@ -305,6 +309,13 @@ struct Launch: ParsableCommand {
         signal(SIGINT) { _ in
             if launchAgentPid > 0 {
                 kill(launchAgentPid, SIGINT)
+            }
+        }
+        // WO-438: process managers send SIGTERM for graceful shutdown; forward it
+        // to the agent child so waitpid returns and the proxy defer can run.
+        signal(SIGTERM) { _ in
+            if launchAgentPid > 0 {
+                kill(launchAgentPid, SIGTERM)
             }
         }
 

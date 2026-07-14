@@ -200,43 +200,6 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertFalse(serverNoAlert.injectAlert)
     }
 
-    func testNonUTF8RequestBodyStillScansLossyTextForAudit() {
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("password=s3cr3t-hunter2".utf8))
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 1)
-        XCTAssertEqual(result.redactedTypes, ["Credential"])
-        XCTAssertTrue(result.shouldBlockForwarding)
-    }
-
-    func testNonUTF8RequestBodyHonorsCustomRules() {
-        var config = PastewatchConfig.defaultConfig
-        config.customRules = [
-            CustomRuleConfig(name: "ACME Proxy Token", pattern: #"ACME-PROXY-[A-Z]+"#, severity: "high")
-        ]
-        let customServer = ProxyServer(port: 0, config: config, severity: .high)
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("token ACME-PROXY-ALPHA".utf8))
-
-        let result = customServer.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 1)
-        XCTAssertEqual(result.redactedTypes, ["ACME Proxy Token"])
-        XCTAssertTrue(result.shouldBlockForwarding)
-    }
-
-    func testNonUTF8RequestBodyWithoutSecretDoesNotBlockForwarding() {
-        let body = Data([0xFF, 0xFE, 0x00, 0x41])
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 0)
-        XCTAssertEqual(result.redactedTypes, [])
-        XCTAssertFalse(result.shouldBlockForwarding)
-    }
-
     func testUTF8ToolResultBodyHonorsCustomRules() {
         var config = PastewatchConfig.defaultConfig
         config.customRules = [
@@ -258,16 +221,7 @@ final class ProxyAlertTests: XCTestCase {
     func testBodyRedactionAuditIsDeferredForStreamingRequests() {
         XCTAssertFalse(server.shouldLogBodyRedactionBeforeForwarding(
             redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: false
-        ))
-    }
-
-    func testBodyRedactionAuditIsNotDeferredWhenMalformedBodyBlocksForwarding() {
-        XCTAssertTrue(server.shouldLogBodyRedactionBeforeForwarding(
-            redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: true
+            requestWantsStream: true
         ))
     }
 
@@ -278,25 +232,14 @@ final class ProxyAlertTests: XCTestCase {
 
         XCTAssertTrue(bufferModeServer.shouldLogBodyRedactionBeforeForwarding(
             redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: false
+            requestWantsStream: true
         ))
-    }
-
-    func testBlockedNonUTF8RedactionDoesNotCountAsForwardedRedaction() {
-        let blockedServer = ProxyServer(port: 0)
-
-        blockedServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: true)
-
-        XCTAssertEqual(blockedServer.stats.requestsProcessed, 1)
-        XCTAssertEqual(blockedServer.stats.requestsRedacted, 0)
-        XCTAssertEqual(blockedServer.stats.secretsRedacted, 0)
     }
 
     func testForwardedBodyRedactionStillCountsAsForwardedRedaction() {
         let forwardedServer = ProxyServer(port: 0)
 
-        forwardedServer.recordInitialRequestStats(redactionCount: 2, shouldBlockNonUTF8Forwarding: false)
+        forwardedServer.recordInitialRequestStats(redactionCount: 2)
 
         XCTAssertEqual(forwardedServer.stats.requestsProcessed, 1)
         XCTAssertEqual(forwardedServer.stats.requestsRedacted, 1)
@@ -308,7 +251,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 1,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
 
@@ -329,7 +271,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 1,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
         streamingServer.recordRejectedStreamingBodyRedactionIfNeeded(
@@ -353,8 +294,7 @@ final class ProxyAlertTests: XCTestCase {
         let streamingServer = ProxyServer(port: 0, auditLogPath: path)
 
         streamingServer.recordInitialRequestStats(
-            redactionCount: 0,
-            shouldBlockNonUTF8Forwarding: false
+            redactionCount: 0
         )
         streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
             path: "/v1/messages",
@@ -419,7 +359,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 0,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
         streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
@@ -494,7 +433,7 @@ final class ProxyAlertTests: XCTestCase {
 
     func testBufferedResponseRedactionStatsDoNotDoubleCountRequest() {
         let responseOnlyServer = ProxyServer(port: 0)
-        responseOnlyServer.recordInitialRequestStats(redactionCount: 0, shouldBlockNonUTF8Forwarding: false)
+        responseOnlyServer.recordInitialRequestStats(redactionCount: 0)
         responseOnlyServer.recordBufferedResponseRedactionStats(requestRedactionCount: 0, responseRedactionCount: 1)
 
         XCTAssertEqual(responseOnlyServer.stats.requestsProcessed, 1)
@@ -502,7 +441,7 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(responseOnlyServer.stats.secretsRedacted, 1)
 
         let requestAndResponseServer = ProxyServer(port: 0)
-        requestAndResponseServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: false)
+        requestAndResponseServer.recordInitialRequestStats(redactionCount: 1)
         requestAndResponseServer.recordBufferedResponseRedactionStats(requestRedactionCount: 1, responseRedactionCount: 1)
 
         XCTAssertEqual(requestAndResponseServer.stats.requestsProcessed, 1)

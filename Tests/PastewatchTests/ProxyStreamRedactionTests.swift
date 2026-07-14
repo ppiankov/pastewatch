@@ -431,20 +431,6 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"))
     }
 
-    func testNonUTF8RequestBodyHighBuiltInDoesNotBlockForwarding() {
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("operator@example.com".utf8))
-        let server = ProxyServer(port: 0, severity: .high)
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 0)
-        XCTAssertEqual(result.redactedTypes, [])
-        XCTAssertEqual(result.advisoryCount, 1)
-        XCTAssertEqual(result.advisoryTypes, ["Email"])
-        XCTAssertFalse(result.shouldBlockForwarding)
-    }
-
     func testCurlNonUTF8ResponseHighBuiltInIsByteIdentical() {
         let email = "operator@example.com"
         var body = Data([0xFF, 0xFE])
