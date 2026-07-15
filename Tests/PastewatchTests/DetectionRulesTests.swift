@@ -1363,16 +1363,32 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertFalse(redacted.contains("REVG"))
     }
 
-    func testSSHPrivateKeyRejectsIncompleteOrMismatchedBlocks() {
+    // WO-478: malformed recognized private-key blocks are advisory findings, not
+    // successful secret containment matches.
+    func testSSHPrivateKeyReportsMalformedBlocksWithoutAuthorizingMutation() {
         let incomplete = "-----BEGIN OPENSSH PRIVATE " + "KEY-----\n" + String(repeating: "QUJD", count: 12)
         let mismatched = incomplete + "\n-----END RSA PRIVATE KEY-----"
+        let nested = incomplete + "\n" + pemFixture(
+            label: "RSA PRIVATE KEY", payload: String(repeating: "REVG", count: 12), newline: "\n"
+        )
         let oversized = pemFixture(
             label: "PRIVATE KEY", payload: String(repeating: "A", count: 262_145), newline: "\n"
         )
 
-        for value in [incomplete, mismatched, oversized,
-                      "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----"] {
-            XCTAssertFalse(DetectionRules.scan(value, config: config).contains { $0.type == .sshPrivateKey })
+        for value in [incomplete, mismatched, nested, oversized] {
+            let matches = DetectionRules.scan(value, config: config)
+            let privateKeyMatches = matches.filter { $0.type == .sshPrivateKey }
+            XCTAssertFalse(privateKeyMatches.isEmpty)
+            XCTAssertTrue(privateKeyMatches.allSatisfy { $0.advisory == .malformedPrivateKey })
+            XCTAssertTrue(privateKeyMatches.allSatisfy { !$0.mutationSafe })
+            XCTAssertEqual(Obfuscator.obfuscate(value, matches: matches), value)
+        }
+
+        for value in [
+            "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----",
+            "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----"
+        ] {
+            XCTAssertFalse(DetectionRules.scan(value, config: config).contains { $0.advisory != nil })
         }
     }
 
@@ -1413,6 +1429,45 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertFalse(DetectionRules.scan(content, config: config).contains { $0.type == .gcpServiceAccount })
         XCTAssertFalse(DetectionRules.scan(#"{"type":"service_account"}"#, config: config)
             .contains { $0.type == .gcpServiceAccount })
+    }
+
+    // WO-479: authorization belongs to an exact object path/range, never to an
+    // equal value elsewhere in the JSON document.
+    func testGCPServiceAccountRangesDoNotAuthorizeEqualSiblingValues() throws {
+        let key = "gcp-private-material-\r\n" + String(repeating: "R0NQ", count: 12)
+        let keyID = String(repeating: "b2", count: 20)
+        let object: [String: Any] = [
+            "service": [
+                "private_key": key,
+                "nested": ["private_key": key, "private_key_id": keyID],
+                "type": "service_account",
+                "private_key_id": keyID
+            ],
+            "benign": ["type": "user", "private_key": key, "private_key_id": keyID],
+            "services": [["private_key_id": keyID, "type": "service_account", "private_key": key]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let matches = DetectionRules.scan(content, config: config).filter { $0.type == .gcpServiceAccount }
+
+        XCTAssertEqual(matches.count, 4)
+        let redacted = Obfuscator.obfuscate(content, matches: matches)
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(redacted.utf8)) as? [String: Any]
+        )
+        let service = try XCTUnwrap(parsed["service"] as? [String: Any])
+        let nested = try XCTUnwrap(service["nested"] as? [String: Any])
+        let benign = try XCTUnwrap(parsed["benign"] as? [String: Any])
+        let services = try XCTUnwrap(parsed["services"] as? [[String: Any]])
+
+        XCTAssertNotEqual(service["private_key"] as? String, key)
+        XCTAssertNotEqual(service["private_key_id"] as? String, keyID)
+        XCTAssertEqual(nested["private_key"] as? String, key)
+        XCTAssertEqual(nested["private_key_id"] as? String, keyID)
+        XCTAssertEqual(benign["private_key"] as? String, key)
+        XCTAssertEqual(benign["private_key_id"] as? String, keyID)
+        XCTAssertNotEqual(services.first?["private_key"] as? String, key)
+        XCTAssertNotEqual(services.first?["private_key_id"] as? String, keyID)
     }
 
     private func pemFixture(label: String, payload: String, newline: String) -> String {

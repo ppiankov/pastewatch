@@ -74,4 +74,13 @@ final class ObfuscatorTests: XCTestCase {
         XCTAssertTrue(result.contains("<API_KEY_1>"))
         XCTAssertFalse(result.contains("token_abc"))
     }
+
+    // WO-478: advisory diagnostics must never be interpreted as replacement ranges.
+    func testLeavesMalformedPrivateKeyAdvisoryUnchanged() {
+        let content = "-----BEGIN PRIVATE " + "KEY-----\nmalformed"
+        let matches = DetectionRules.scan(content, config: config)
+
+        XCTAssertEqual(matches.map(\.advisory), [.malformedPrivateKey])
+        XCTAssertEqual(Obfuscator.obfuscate(content, matches: matches), content)
+    }
 }

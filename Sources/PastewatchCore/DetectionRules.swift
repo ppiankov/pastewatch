@@ -636,40 +636,73 @@ public struct DetectionRules {
         return matches
     }
 
-    // WO-478: match one complete, correctly paired PEM block and stop at a nested
-    // BEGIN marker instead of crossing into an adjacent or malformed key.
+    // WO-478: valid blocks authorize complete containment; malformed recognized
+    // blocks reserve their bounded region as advisory-only evidence.
     private static func scanCompletePrivateKeyBlocks(
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
         matchedRanges: inout [Range<String.Index>]
     ) {
+        let labelPattern = "RSA PRIVATE KEY|DSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY|PRIVATE KEY"
         guard config.isTypeEnabled(.sshPrivateKey),
-              let beginRegex = try? NSRegularExpression(
-                  pattern: #"-----BEGIN (RSA PRIVATE KEY|DSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY|PRIVATE KEY)-----"#
-              ) else { return }
+              let beginRegex = try? NSRegularExpression(pattern: "-----BEGIN (\(labelPattern))-----"),
+              let endRegex = try? NSRegularExpression(pattern: "-----END (\(labelPattern))-----") else { return }
 
         let fullRange = NSRange(content.startIndex..., in: content)
-        for candidate in beginRegex.matches(in: content, range: fullRange) {
+        let beginCandidates = beginRegex.matches(in: content, range: fullRange)
+        let endCandidates = endRegex.matches(in: content, range: fullRange)
+        var malformedSuppressionEnd: String.Index?
+        var endCandidateIndex = 0
+        for (candidateIndex, candidate) in beginCandidates.enumerated() {
             guard let beginRange = Range(candidate.range, in: content),
                   let labelRange = Range(candidate.range(at: 1), in: content) else { continue }
-            let endMarker = "-----END \(content[labelRange])-----"
             let searchLimit = content.index(
                 beginRange.lowerBound,
                 offsetBy: maximumPrivateKeyBlockCharacters,
                 limitedBy: content.endIndex
             ) ?? content.endIndex
-            let searchRange = beginRange.upperBound..<searchLimit
-            guard let endRange = content.range(of: endMarker, range: searchRange) else { continue }
+            let nextBeginRange = candidateIndex + 1 < beginCandidates.count
+                ? Range(beginCandidates[candidateIndex + 1].range, in: content)
+                : nil
+            while endCandidateIndex < endCandidates.count,
+                  endCandidates[endCandidateIndex].range.location <= candidate.range.location {
+                endCandidateIndex += 1
+            }
+            let firstEndCandidate = endCandidateIndex < endCandidates.count
+                ? endCandidates[endCandidateIndex]
+                : nil
+            let firstEndRange = firstEndCandidate.flatMap { Range($0.range, in: content) }
+            let firstEndLabel = firstEndCandidate.flatMap { Range($0.range(at: 1), in: content) }
+                .map { String(content[$0]) }
+            let isSuppressed = malformedSuppressionEnd.map { beginRange.lowerBound < $0 } ?? false
+            if isSuppressed { continue }
+            let hasNestedBegin = nextBeginRange.map { nextBegin in
+                firstEndRange.map { nextBegin.lowerBound < $0.lowerBound } ?? true
+            } ?? false
+            let isCorrectEnd = firstEndLabel == String(content[labelRange])
+            let isWithinBound = firstEndRange.map { $0.upperBound <= searchLimit } ?? false
+
+            guard !hasNestedBegin, isCorrectEnd, isWithinBound,
+                  let endRange = firstEndRange else {
+                let malformedEnd = firstEndRange?.upperBound ?? searchLimit
+                let malformedRange = beginRange.lowerBound..<max(beginRange.upperBound, malformedEnd)
+                malformedSuppressionEnd = max(malformedSuppressionEnd ?? beginRange.upperBound, malformedEnd)
+                matches.removeAll { $0.range.overlaps(malformedRange) }
+                matchedRanges.removeAll { $0.overlaps(malformedRange) }
+                matches.append(DetectedMatch(
+                    type: .sshPrivateKey,
+                    value: String(content[beginRange]),
+                    range: malformedRange,
+                    line: lineNumber(of: beginRange.lowerBound, in: content),
+                    advisory: .malformedPrivateKey
+                ))
+                matchedRanges.append(malformedRange)
+                continue
+            }
+
             let blockRange = beginRange.lowerBound..<endRange.upperBound
-            guard content.distance(from: blockRange.lowerBound, to: blockRange.upperBound)
-                    <= maximumPrivateKeyBlockCharacters,
-                  !matchedRanges.contains(where: { $0.overlaps(blockRange) }) else { continue }
-            let between = beginRange.upperBound..<endRange.lowerBound
-            guard beginRegex.firstMatch(
-                in: content,
-                range: NSRange(between, in: content)
-            ) == nil else { continue }
+            guard !matchedRanges.contains(where: { $0.overlaps(blockRange) }) else { continue }
 
             let value = String(content[blockRange])
             matches.append(DetectedMatch(
@@ -691,52 +724,181 @@ public struct DetectionRules {
         matchedRanges: inout [Range<String.Index>]
     ) {
         guard config.isTypeEnabled(.gcpServiceAccount),
-              let root = try? JSONSerialization.jsonObject(with: Data(content.utf8)) else { return }
-        var authorized: [String: Set<String>] = [:]
-        collectGCPServiceAccountSecrets(root, into: &authorized)
-        guard !authorized.isEmpty else { return }
+              (try? JSONSerialization.jsonObject(with: Data(content.utf8))) != nil else { return }
+        var parser = JSONSourceRangeParser(content: content)
+        guard let root = parser.parseDocument() else { return }
+        var authorizedRanges: [Range<String.Index>] = []
+        collectGCPServiceAccountRanges(root, into: &authorizedRanges)
 
-        for key in ["private_key", "private_key_id"] {
-            guard let values = authorized[key], !values.isEmpty,
-                  let regex = try? NSRegularExpression(
-                      pattern: "\"\(key)\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\""
-                  ) else { continue }
-            let fullRange = NSRange(content.startIndex..., in: content)
-            for candidate in regex.matches(in: content, range: fullRange) {
-                guard let valueRange = Range(candidate.range(at: 1), in: content),
-                      !matchedRanges.contains(where: { $0.overlaps(valueRange) }) else { continue }
-                let encoded = String(content[valueRange])
-                guard let decoded = decodeJSONStringContent(encoded), values.contains(decoded) else { continue }
-                matches.append(DetectedMatch(
-                    type: .gcpServiceAccount,
-                    value: encoded,
-                    range: valueRange,
-                    line: lineNumber(of: valueRange.lowerBound, in: content)
-                ))
-                matchedRanges.append(valueRange)
-            }
+        for valueRange in authorizedRanges where !matchedRanges.contains(where: { $0.overlaps(valueRange) }) {
+            let encoded = String(content[valueRange])
+            matches.append(DetectedMatch(
+                type: .gcpServiceAccount,
+                value: encoded,
+                range: valueRange,
+                line: lineNumber(of: valueRange.lowerBound, in: content)
+            ))
+            matchedRanges.append(valueRange)
         }
     }
 
-    private static func collectGCPServiceAccountSecrets(
-        _ value: Any,
-        into result: inout [String: Set<String>]
+    // WO-479: collect source ranges from the same object that carries the direct
+    // service-account marker; equal decoded values elsewhere grant no authority.
+    private static func collectGCPServiceAccountRanges(
+        _ value: JSONSourceValue,
+        into result: inout [Range<String.Index>]
     ) {
-        if let object = value as? [String: Any] {
-            if object["type"] as? String == "service_account" {
-                for key in ["private_key", "private_key_id"] {
-                    if let secret = object[key] as? String, !secret.isEmpty {
-                        result[key, default: []].insert(secret)
+        switch value {
+        case .object(let members):
+            let directType = members.last { $0.key == "type" }?.value.stringValue
+            if directType?.decoded == "service_account" {
+                for member in members where member.key == "private_key" || member.key == "private_key_id" {
+                    if let secret = member.value.stringValue, !secret.decoded.isEmpty {
+                        result.append(secret.contentRange)
                     }
                 }
             }
-            for child in object.values {
-                collectGCPServiceAccountSecrets(child, into: &result)
+            for member in members {
+                collectGCPServiceAccountRanges(member.value, into: &result)
             }
-        } else if let array = value as? [Any] {
-            for child in array {
-                collectGCPServiceAccountSecrets(child, into: &result)
+        case .array(let values):
+            for child in values {
+                collectGCPServiceAccountRanges(child, into: &result)
             }
+        case .string, .scalar:
+            break
+        }
+    }
+
+    private struct JSONSourceString {
+        let decoded: String
+        let contentRange: Range<String.Index>
+    }
+
+    private struct JSONSourceMember {
+        let key: String
+        let value: JSONSourceValue
+    }
+
+    private indirect enum JSONSourceValue {
+        case object([JSONSourceMember])
+        case array([JSONSourceValue])
+        case string(JSONSourceString)
+        case scalar
+
+        var stringValue: JSONSourceString? {
+            guard case .string(let value) = self else { return nil }
+            return value
+        }
+    }
+
+    // WO-479: JSONSerialization proves validity; this deterministic companion
+    // parser retains exact raw string ranges needed for context-bound mutation.
+    private struct JSONSourceRangeParser {
+        let content: String
+        var index: String.Index
+
+        init(content: String) {
+            self.content = content
+            self.index = content.startIndex
+        }
+
+        mutating func parseDocument() -> JSONSourceValue? {
+            skipWhitespace()
+            guard let value = parseValue() else { return nil }
+            skipWhitespace()
+            return index == content.endIndex ? value : nil
+        }
+
+        private mutating func parseValue() -> JSONSourceValue? {
+            skipWhitespace()
+            guard index < content.endIndex else { return nil }
+            switch content[index] {
+            case "{": return parseObject()
+            case "[": return parseArray()
+            case "\"": return parseString().map(JSONSourceValue.string)
+            default: return parseScalar()
+            }
+        }
+
+        private mutating func parseObject() -> JSONSourceValue? {
+            advance()
+            skipWhitespace()
+            var members: [JSONSourceMember] = []
+            if consume("}") { return .object(members) }
+
+            while true {
+                guard let key = parseString() else { return nil }
+                skipWhitespace()
+                guard consume(":") else { return nil }
+                guard let value = parseValue() else { return nil }
+                members.append(JSONSourceMember(key: key.decoded, value: value))
+                skipWhitespace()
+                if consume("}") { return .object(members) }
+                guard consume(",") else { return nil }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseArray() -> JSONSourceValue? {
+            advance()
+            skipWhitespace()
+            var values: [JSONSourceValue] = []
+            if consume("]") { return .array(values) }
+
+            while true {
+                guard let value = parseValue() else { return nil }
+                values.append(value)
+                skipWhitespace()
+                if consume("]") { return .array(values) }
+                guard consume(",") else { return nil }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseString() -> JSONSourceString? {
+            guard consume("\"") else { return nil }
+            let contentStart = index
+            while index < content.endIndex {
+                let character = content[index]
+                if character == "\"" {
+                    let range = contentStart..<index
+                    advance()
+                    guard let decoded = decodeJSONStringContent(String(content[range])) else { return nil }
+                    return JSONSourceString(decoded: decoded, contentRange: range)
+                }
+                if character == "\\" {
+                    advance()
+                    guard index < content.endIndex else { return nil }
+                }
+                advance()
+            }
+            return nil
+        }
+
+        private mutating func parseScalar() -> JSONSourceValue? {
+            let start = index
+            while index < content.endIndex,
+                  ![",", "]", "}", " ", "\t", "\r", "\n"].contains(content[index]) {
+                advance()
+            }
+            return start == index ? nil : .scalar
+        }
+
+        private mutating func skipWhitespace() {
+            while index < content.endIndex, [" ", "\t", "\r", "\n"].contains(content[index]) {
+                advance()
+            }
+        }
+
+        private mutating func consume(_ expected: Character) -> Bool {
+            guard index < content.endIndex, content[index] == expected else { return false }
+            advance()
+            return true
+        }
+
+        private mutating func advance() {
+            index = content.index(after: index)
         }
     }
 
@@ -811,6 +973,7 @@ public struct DetectionRules {
         )
     }
 
+    // WO-478: malformed container evidence overrides overlapping mutation rules.
     /// Scan with allowlist filtering and custom rules.
     public static func scan(
         _ content: String,
@@ -847,7 +1010,15 @@ public struct DetectionRules {
             }
         }
 
-        for match in scan(content, config: config) where !matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+        for match in scan(content, config: config) {
+            // WO-478: malformed private-key evidence overrides overlapping custom
+            // matches so malformed input cannot be reported as successful mutation.
+            if match.advisory != nil {
+                matches.removeAll { $0.range.overlaps(match.range) }
+                matchedRanges.removeAll { $0.overlaps(match.range) }
+            } else if matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+                continue
+            }
             matches.append(match)
             matchedRanges.append(match.range)
         }

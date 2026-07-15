@@ -748,6 +748,14 @@ public final class ProxyServer {
             // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
             if let body = parsed.body {
                 let result = scanAndRedactBody(body)
+                // WO-478: malformed recognized private-key material cannot be
+                // contained reliably, so refuse before resolving the upstream URL.
+                if result.blockingAdvisory == .malformedPrivateKey {
+                    recordRefusedRequest()
+                    logUnsafeBodyRefusal(path: parsed.path, reason: "malformed private key block")
+                    sendError(to: clientSocket, status: 400, message: "Unsafe request body")
+                    return
+                }
                 redactionCount = result.redacted
                 redactedTypes = result.redactedTypes
                 bodyAdvisoryCount = result.advisoryCount
@@ -1061,14 +1069,27 @@ public final class ProxyServer {
         let advisoryCount: Int
         let advisoryTypes: [String]
         let serializationFailed: Bool // WO-452: caller must block forwarding on failure.
+        let blockingAdvisory: DetectionAdvisory? // WO-478: fail-closed request evidence.
     }
 
+    // WO-478: malformed recognized key containers fail closed before mutation.
     func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
-                advisoryCount: 0, advisoryTypes: [], serializationFailed: false
+                advisoryCount: 0, advisoryTypes: [], serializationFailed: false,
+                blockingAdvisory: nil
+            )
+        }
+
+        // WO-478: preflight the raw JSON text so malformed PEM markers remain
+        // visible even when they occur in a structured field not rewritten below.
+        if scanProxyText(body).contains(where: { $0.advisory == .malformedPrivateKey }) {
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: 1, advisoryTypes: ["Malformed private key"],
+                serializationFailed: false, blockingAdvisory: .malformedPrivateKey
             )
         }
 
@@ -1102,7 +1123,7 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
                 advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-                serializationFailed: false
+                serializationFailed: false, blockingAdvisory: nil
             )
         }
         guard let resultData = try? requestBodySerializer(processed),
@@ -1110,14 +1131,14 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: redacted, redactedTypes: types,
                 advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-                serializationFailed: true
+                serializationFailed: true, blockingAdvisory: nil
             )
         }
 
         return ScanResult(
             body: resultString, redacted: redacted, redactedTypes: types,
             advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-            serializationFailed: false
+            serializationFailed: false, blockingAdvisory: nil
         )
     }
 
@@ -1347,6 +1368,39 @@ public final class ProxyServer {
         guard !isRepeat else { return }
 
         let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(safePath) (\(reason))\n"
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    // WO-478: malformed secret-container refusals are audited without recording
+    // any marker payload or request-body bytes.
+    private func logUnsafeBodyRefusal(path: String, reason: String) {
+        let safePath = auditSafePath(path)
+        let signature = "refused:\(safePath):\(reason)"
+        statsLock.lock()
+        let isRepeat = signature == lastRefusalLogSignature
+        lastRefusalLogSignature = signature
+        if !isRepeat {
+            lastRedactionLogSignatures.removeAll()
+            lastAdvisoryLogSignatures.removeAll()
+            lastModelIdentityAdvisorySignature = nil
+        }
+        statsLock.unlock()
+        guard !isRepeat else { return }
+
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsafe request body in \(safePath) (\(reason))\n"
         if !quietLog {
             FileHandle.standardError.write(Data(line.utf8))
         }

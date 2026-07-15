@@ -221,6 +221,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     }
 }
 
+/// WO-478: scanner conditions that are observable but never authorize mutation.
+public enum DetectionAdvisory: String, Equatable {
+    case malformedPrivateKey
+}
+
 /// A single detected match in the clipboard content.
 public struct DetectedMatch: Identifiable, Equatable {
     public let id = UUID()
@@ -231,6 +236,7 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let filePath: String?
     public let customRuleName: String?
     public let customSeverity: Severity?
+    public let advisory: DetectionAdvisory? // WO-478: non-mutating malformed-input evidence.
 
     public init(
         type: SensitiveDataType,
@@ -239,7 +245,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         line: Int = 1,
         filePath: String? = nil,
         customRuleName: String? = nil,
-        customSeverity: Severity? = nil
+        customSeverity: Severity? = nil,
+        advisory: DetectionAdvisory? = nil
     ) {
         self.type = type
         self.value = value
@@ -248,6 +255,7 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.filePath = filePath
         self.customRuleName = customRuleName
         self.customSeverity = customSeverity
+        self.advisory = advisory
     }
 
     /// Effective severity: custom override if set, otherwise type default.
@@ -257,12 +265,13 @@ public struct DetectedMatch: Identifiable, Equatable {
 
     /// WO-404: custom rules are explicit operator approval to mutate matches.
     public var mutationSafe: Bool {
-        customRuleName != nil || type.mutationSafe
+        advisory == nil && (customRuleName != nil || type.mutationSafe)
     }
 
     /// Display name for output (custom rule name or type rawValue).
     public var displayName: String {
-        customRuleName ?? type.rawValue
+        if advisory == .malformedPrivateKey { return "Malformed private key" }
+        return customRuleName ?? type.rawValue
     }
 
     public static func == (lhs: DetectedMatch, rhs: DetectedMatch) -> Bool {

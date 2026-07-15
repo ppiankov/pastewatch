@@ -159,6 +159,125 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(proxy.stats.requestsRedacted, 1)
     }
 
+    // WO-478: malformed recognized private-key material must fail closed before
+    // the proxy opens or writes an upstream request.
+    func testMalformedPrivateKeyRefusedBeforeUpstream() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-malformed-key-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        var proxyStopped = false
+        defer {
+            if !proxyStopped { runningProxy.stop() }
+        }
+
+        let malformed = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + String(repeating: "QUJD", count: 12)
+        let object: [String: Any] = [
+            "model": "claude-3",
+            "messages": [["role": "user", "content": malformed]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        let diagnostic = TCPTestSocket.describeResponse(response) + " upstream_requests=\(upstream.requestCount)"
+        XCTAssertTrue(response.contains("HTTP/1.1 400 Bad Request"), diagnostic)
+        XCTAssertTrue(response.contains(#""error": "Unsafe request body""#), diagnostic)
+        XCTAssertFalse(response.contains("QUJD"), diagnostic)
+        XCTAssertEqual(upstream.requestCount, 0, diagnostic)
+        XCTAssertEqual(proxy.stats.refusedRequests, 1)
+        XCTAssertEqual(proxy.stats.requestsRedacted, 0)
+        runningProxy.stop()
+        proxyStopped = true
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertTrue(audit.contains("PROXY REFUSED unsafe request body"), audit)
+        XCTAssertTrue(audit.contains("malformed private key block"), audit)
+        XCTAssertFalse(audit.contains("QUJD"), audit)
+    }
+
+    // WO-479: equal private material in a benign sibling object is not authorized
+    // merely because a service-account object contains the same value.
+    func testGCPServiceAccountRedactionPreservesEqualBenignSiblingUpstream() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!)
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let keyID = String(repeating: "c3", count: 20)
+        let key = "gcp-private-material-\r\n" + String(repeating: "R0NQ", count: 12)
+        let nested: [String: Any] = [
+            "service": ["type": "service_account", "private_key": key, "private_key_id": keyID],
+            "benign": ["type": "user", "private_key": key, "private_key_id": keyID]
+        ]
+        let nestedData = try JSONSerialization.data(withJSONObject: nested, options: [.sortedKeys])
+        let nestedJSON = try XCTUnwrap(String(data: nestedData, encoding: .utf8))
+        let requestObject: [String: Any] = [
+            "model": "claude-3",
+            "messages": [["role": "user", "content": [[
+                "type": "tool_result", "tool_use_id": "toolu_1", "content": nestedJSON
+            ]]]]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: requestObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let forwardedBody = try XCTUnwrap(forwarded.components(separatedBy: "\r\n\r\n").last)
+        let forwardedObject = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(forwardedBody.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(forwardedObject["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
+        let forwardedNestedJSON = try XCTUnwrap(content.first?["content"] as? String)
+        let forwardedNested = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(forwardedNestedJSON.utf8)) as? [String: Any]
+        )
+        let service = try XCTUnwrap(forwardedNested["service"] as? [String: Any])
+        let benign = try XCTUnwrap(forwardedNested["benign"] as? [String: Any])
+
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertNotEqual(service["private_key"] as? String, key)
+        XCTAssertNotEqual(service["private_key_id"] as? String, keyID)
+        XCTAssertEqual(benign["private_key"] as? String, key)
+        XCTAssertEqual(benign["private_key_id"] as? String, keyID)
+    }
+
     // WO-437: top-level system text is part of the Anthropic request shape and must be scanned.
     func testAnthropicSystemFieldCredentialRedactedThroughShapeGuardBeforeUpstream() throws {
         let requestLock = NSLock()
