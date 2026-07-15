@@ -74,11 +74,12 @@ final class DetectionRulesTests: XCTestCase {
 
     // MARK: - API Key Detection
 
-    func testDetectsGitHubToken() {
+    // WO-485: preserve the established type for classic GitHub token prefixes.
+    func testDetectsClassicGitHubTokenAsGenericAPIKey() {
         let content = "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         let matches = DetectionRules.scan(content, config: config)
 
-        let apiKeyMatches = matches.filter { $0.type == .githubToken }
+        let apiKeyMatches = matches.filter { $0.type == .genericApiKey }
         XCTAssertGreaterThanOrEqual(apiKeyMatches.count, 1)
     }
 
