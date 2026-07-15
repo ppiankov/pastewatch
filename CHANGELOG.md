@@ -7,21 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-15
+
+### Added
+
+- Standalone detection for provider tokens that were previously only caught next to a
+  keyword: HashiCorp Vault (`hvs.`/`hvb.`/`hvr.` and legacy one-letter tokens), Slack
+  (`xoxb-`/`xoxp-`/`xapp-`/…), Google API keys (`AIza…`), Docker access tokens, and the
+  current GitHub token formats. A real token now redacts wherever it appears, not only in
+  `KEY=value` context.
+- Whole-secret containment for structured credentials: SSH private-key PEM blocks and GCP
+  service-account JSON are captured as complete payloads instead of a single marker line,
+  without overcapturing adjacent content.
+
 ### Changed
 
-- Mutation authorization now comes from intrinsic secret format, exact known-value
-  evidence, or an operator custom rule. Severity and request-field context affect
-  advisory reporting only; format-only DSN/JDBC and generic credential matches remain
-  visible without being rewritten.
-- The Anthropic request scanner now covers tool contracts, input examples, message text,
-  tool inputs/results, and stop sequences, and rejects malformed tool/stop containers.
-- Proxy replacement is documented as one-way. Reversible local restoration remains an
-  MCP read/write capability.
+- **Mutation is now authorized by evidence, not by shape alone.** A value is rewritten only
+  when it is an intrinsic (unambiguous-format) secret, an exact known value, or a match for
+  an operator custom rule. Format-only ambiguous matches — DSNs, JDBC URLs, and generic
+  `credential`/API-key keyword hits — are now **advisory-only**: detected and reported
+  off-band but never rewritten, so a DSN-shaped example in a schema, prompt, or tool
+  description no longer corrupts a working request. `--severity` and request-field context
+  affect advisory volume only, never what gets mutated. Promote a value to mutation with a
+  custom rule.
+- The Anthropic request scanner now covers tool contracts, `input_schema`, input examples,
+  message text, tool inputs/results, and stop sequences under the same evidence policy, and
+  fails closed on malformed tool/stop containers, malformed private-key containers, invalid
+  routed-proxy custom rules, and request-body serialization failures.
+- The proxy is documented as **one-way** (redact outbound). Reversible restoration — the
+  agent works with real values while the model sees only placeholders — remains the MCP
+  read/write round-trip, not a proxy-response capability.
 
 ### Fixed
 
+- The Vault legacy one-letter token grammar (`s.`/`b.`/`r.`) is tightened to exactly 24
+  base62 characters, so code-like dotted identifiers (`s.someMethodName`,
+  `r.snake_case_ident`) are never mistaken for a token and rewritten.
 - Azure Storage connection-string detection no longer consumes bytes following the
   base64 `AccountKey` value.
+- The proxy no longer logs a benign client disconnect (Esc/interrupt closing the socket
+  mid-response) as an error under `launch`; `EPIPE`/`ECONNRESET` and quiet mode are honored.
+- Launch loopback cleanup, termination handling, and refused-request accounting hardened.
 
 ## [0.29.0] - 2026-07-12
 
