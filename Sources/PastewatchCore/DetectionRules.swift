@@ -3,8 +3,8 @@ import Foundation
 /// Deterministic detection rules for sensitive data.
 /// No ML. No confidence scores. No guessing.
 ///
-/// Each rule is a regex pattern that matches high-confidence patterns only.
-/// False negatives are preferred over false positives.
+/// Rules provide deterministic detection. WO-487: mutation authorization is
+/// separately attached only when a grammar proves provider-specific evidence.
 public struct DetectionRules {
     private static let maximumPrivateKeyBlockCharacters = 262_144 // WO-478: bound malformed PEM scans.
     // WO-487: these sourced grammars authorize mutation independently of the
@@ -402,16 +402,6 @@ public struct DetectionRules {
             result.append((.xmlHostname, regex))
         }
 
-        // Generic API Key patterns - high confidence
-        // Common prefixes: sk-, pk-, api_, key_, token_
-        // Placed AFTER specific providers (OpenAI sk-proj-, Anthropic sk-ant-, Groq gsk_)
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(sk|pk|api|key|token|secret|bearer)[_-][A-Za-z0-9]{20,}\b"#,
-            options: [.caseInsensitive]
-        ) {
-            result.append((.genericApiKey, regex))
-        }
-
         // GitHub Token - high confidence
         if let regex = githubClassicTokenRegex {
             result.append((.genericApiKey, regex))
@@ -425,6 +415,15 @@ public struct DetectionRules {
         // Stripe Webhook Secret - high confidence
         // whsec_ prefix not covered by the generic sk/pk/api/key/token catch-all
         if let regex = stripeWebhookSecretRegex {
+            result.append((.genericApiKey, regex))
+        }
+
+        // WO-487: broad prefixed lookalikes remain visible but advisory-only.
+        // Keep this fallback after every sourced provider grammar.
+        if let regex = try? NSRegularExpression(
+            pattern: #"\b(sk|pk|api|key|token|secret|bearer)[_-][A-Za-z0-9]{20,}\b"#,
+            options: [.caseInsensitive]
+        ) {
             result.append((.genericApiKey, regex))
         }
 
