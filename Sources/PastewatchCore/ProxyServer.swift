@@ -1372,6 +1372,17 @@ public final class ProxyServer {
 
     // WO-408/WO-413/WO-440: audit fail-closed refusals without repeating identical noise.
     private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
+        logBodyRefusal(path: path, reason: reason, description: "unsupported upstream body shape")
+    }
+
+    // WO-478: malformed secret-container refusals are audited without recording
+    // any marker payload or request-body bytes.
+    private func logUnsafeBodyRefusal(path: String, reason: String) {
+        logBodyRefusal(path: path, reason: reason, description: "unsafe request body")
+    }
+
+    // WO-494: refusal categories share one dedup and cross-chain reset state machine.
+    private func logBodyRefusal(path: String, reason: String, description: String) {
         let safePath = auditSafePath(path)
         let signature = "refused:\(safePath):\(reason)"
         statsLock.lock()
@@ -1386,40 +1397,7 @@ public final class ProxyServer {
         statsLock.unlock()
         guard !isRepeat else { return }
 
-        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsupported upstream body shape in \(safePath) (\(reason))\n"
-        if !quietLog {
-            FileHandle.standardError.write(Data(line.utf8))
-        }
-        if let logPath = auditLogPath {
-            logQueue.async {
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write(Data(line.utf8))
-                    handle.closeFile()
-                } else {
-                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
-                }
-            }
-        }
-    }
-
-    // WO-478: malformed secret-container refusals are audited without recording
-    // any marker payload or request-body bytes.
-    private func logUnsafeBodyRefusal(path: String, reason: String) {
-        let safePath = auditSafePath(path)
-        let signature = "refused:\(safePath):\(reason)"
-        statsLock.lock()
-        let isRepeat = signature == lastRefusalLogSignature
-        lastRefusalLogSignature = signature
-        if !isRepeat {
-            lastRedactionLogSignatures.removeAll()
-            lastAdvisoryLogSignatures.removeAll()
-            lastModelIdentityAdvisorySignature = nil
-        }
-        statsLock.unlock()
-        guard !isRepeat else { return }
-
-        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED unsafe request body in \(safePath) (\(reason))\n"
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED \(description) in \(safePath) (\(reason))\n"
         if !quietLog {
             FileHandle.standardError.write(Data(line.utf8))
         }

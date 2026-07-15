@@ -410,4 +410,4 @@ Once configured, the agent has access to:
 | `pastewatch_scan_diff` | Scan git diff for secrets in changed lines |
 | `pastewatch_inventory` | Generate secret posture report for a directory |
 
-Secrets never leave your machine. Only placeholders reach the AI provider's API.
+Intrinsically identifiable, exact-known, and custom-rule matches leave only as placeholders. Advisory-only matches remain visible so the operator can decide whether to authorize mutation.

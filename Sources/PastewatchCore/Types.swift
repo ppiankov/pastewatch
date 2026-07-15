@@ -279,6 +279,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.customSeverity = customSeverity
         self.advisory = advisory
         var sources = mutationAuthorizationSources ?? []
+        // WO-488: type-level intrinsic formats authorize dedicated detector types;
+        // genericApiKey provider grammars attach the same source in DetectionRules.
         if advisory == nil && type.intrinsicMutationAuthorized {
             sources.insert(.intrinsicFormat)
         }

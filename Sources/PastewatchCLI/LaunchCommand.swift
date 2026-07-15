@@ -218,7 +218,6 @@ struct Launch: ParsableCommand {
         try throwIfLaunchTerminationRequested()
         runStartupSweepIfNeeded()
         let config = PastewatchConfig.resolve()
-        _ = try requireValidProxyCustomRules(config)
         writeBufferModeWarningIfNeeded(config: config)
 
         let agentBinary = (command[0] as NSString).lastPathComponent
@@ -243,6 +242,9 @@ struct Launch: ParsableCommand {
             }
             return
         }
+
+        // WO-491: only routed launches start a proxy that consumes custom rules.
+        _ = try requireValidProxyCustomRules(config)
 
         // Resolve our own binary to spawn the proxy subprocess
         let binaryPath = ProcessInfo.processInfo.arguments[0]

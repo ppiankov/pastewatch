@@ -48,8 +48,8 @@ operator-authorized secrets are replaced before supported traffic reaches the cl
 
 ## Why Pastewatch
 
-- **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
-- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
+- **Before-paste boundary** — authorized secret matches are rewritten before supported traffic leaves. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
+- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. Authorized matches become reversible placeholders while the secret map stays local
 - **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
 - **API proxy** — catches Anthropic-shaped traffic that bypasses hooks, including from subagents. Last line of defense before the network boundary (refuses unrecognized upstream shapes rather than forward them unscanned)
 - **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
@@ -483,7 +483,7 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 
 ### MCP Server - Redacted Read/Write
 
-AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**
+AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
 
 ```
   Your machine (local only)
@@ -493,7 +493,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
   │  read: scan + redact ──┼──────────────────────► Agent sees placeholders
   │  write: resolve local ◄┼────────────────────── Agent returns placeholders
   │                        │
-  │  secrets stay in RAM   │   Secrets never leave.
+  │  secret map stays local│   Authorized matches leave only as placeholders.
   └────────────────────────┘
 ```
 
@@ -538,7 +538,7 @@ The server holds mappings in memory for the session. Same file re-read returns t
 
 Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret values.
 
-**What this protects:** API keys, DB credentials, SSH keys, tokens, emails, IPs - secrets never leave your machine. **What this doesn't protect:** prompt content, code structure, business logic - these still reach the API. Pastewatch protects your keys; for protecting your ideas, use a local model.
+**What this protects:** Intrinsically identifiable secrets, exact known values, and custom-rule matches are rewritten before supported API requests leave. Format-only credentials and DSNs are advisory-only by default and can still reach upstream unless exact-value or custom-rule evidence authorizes mutation. **What this doesn't protect:** prompt content, code structure, and business logic still reach the API; use a local model when those must remain local.
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 

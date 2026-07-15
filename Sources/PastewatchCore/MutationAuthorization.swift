@@ -1,6 +1,7 @@
 import Foundation
 
-/// WO-454: semantic location of a mutation decision; no caller receives a permissive default.
+/// WO-454/WO-488: exhaustive site classification keeps every caller explicit.
+/// Authorization is deliberately evidence-based and uniform across these sites.
 public enum MutationSite: CaseIterable {
     case clipboard
     case cliScan
@@ -32,13 +33,13 @@ public struct MutationOutcome {
     public let advisoryBelowThreshold: [DetectedMatch]
 }
 
-/// WO-454: evidence authorizes mutation; site and severity only classify reporting.
+/// WO-454/WO-488: evidence authorizes mutation; the required site label classifies
+/// callers for exhaustive tests but cannot silently widen or narrow authorization.
 public func partitionMutationMatches(
     _ matches: [DetectedMatch],
-    site: MutationSite,
+    site _: MutationSite,
     minAdvisorySeverity: Severity
 ) -> MutationPartition {
-    _ = site
     var authorized: [DetectedMatch] = []
     var advisory: [DetectedMatch] = []
     var belowThreshold: [DetectedMatch] = []

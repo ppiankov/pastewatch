@@ -304,9 +304,10 @@ public struct DetectionRules {
         }
 
         // WO-462: https://developer.hashicorp.com/vault/docs/concepts/tokens
-        // Reviewed 2026-07-14. Vault documents six prefixes and a 24+ character suffix.
+        // Reviewed 2026-07-15. Modern hv* tokens use 24+ URL-safe characters;
+        // legacy one-letter tokens use exactly 24 base62 characters.
         if let regex = try? NSRegularExpression(
-            pattern: #"(?<![A-Za-z0-9_.-])(?:hv[bsr]|[sbr])\.[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_.-])"#
+            pattern: #"(?<![A-Za-z0-9_.-])(?:hv[bsr]\.[A-Za-z0-9_-]{24,}|[sbr]\.[A-Za-z0-9]{24})(?![A-Za-z0-9_.-])"#
         ) {
             result.append((.vaultToken, regex))
         }
@@ -677,8 +678,8 @@ public struct DetectionRules {
         return matches
     }
 
-    // WO-487: provider evidence is attached to the exact detector grammar, not
-    // inferred from the broader public result type.
+    // WO-487/WO-488: genericApiKey provider evidence is attached to exact grammars;
+    // dedicated intrinsic types are authorized centrally by DetectedMatch.init.
     private static func mutationAuthorizationSources(
         for type: SensitiveDataType,
         value: String

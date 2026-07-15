@@ -216,9 +216,8 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.stderr, "", "--quiet should suppress non-routed advisory stderr")
     }
 
-    // WO-473: launch must reject invalid protection configuration before
-    // starting either the proxy or even a non-routed agent process.
-    func testLaunchRejectsInvalidCustomRuleBeforeAgentStart() throws {
+    // WO-491: non-routed launches do not consume proxy custom rules.
+    func testNonRoutedLaunchIgnoresInvalidProxyCustomRule() throws {
         let fixture = try makeLaunchFixture()
         let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
         let invalidPattern = "[" + "unclosed"
@@ -235,8 +234,33 @@ final class LaunchCommandTests: XCTestCase {
             environment: fixture.environment
         )
 
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
+        XCTAssertFalse(result.stderr.contains("Broken rule"), result.stderr)
+        XCTAssertFalse(result.stderr.contains(invalidPattern), "diagnostic disclosed configured pattern")
+        XCTAssertFalse(result.stderr.contains("proxy listening"), result.stderr)
+    }
+
+    // WO-473/WO-491: routed launches still fail before proxy startup when a rule is invalid.
+    func testRoutedLaunchRejectsInvalidCustomRuleBeforeProxyStart() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "claude", in: fixture.cwd)
+        let invalidPattern = "[" + "unclosed"
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [CustomRuleConfig(name: "Broken rule", pattern: invalidPattern)]
+        try JSONEncoder().encode(config).write(
+            to: fixture.cwd.appendingPathComponent(".pastewatch.json"),
+            options: .atomic
+        )
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--no-startup-sweep", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+
         XCTAssertEqual(result.status, 2, result.stderr)
-        XCTAssertEqual(result.stdout, "", "agent ran despite invalid custom rule")
+        XCTAssertEqual(result.stdout, "", "routed agent ran despite invalid custom rule")
         XCTAssertTrue(result.stderr.contains("Broken rule"), result.stderr)
         XCTAssertFalse(result.stderr.contains(invalidPattern), "diagnostic disclosed configured pattern")
         XCTAssertFalse(result.stderr.contains("proxy listening"), result.stderr)
