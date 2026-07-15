@@ -46,7 +46,7 @@ The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
 | Goose | Advisory | Advisory | MCP only | No hook support |
 | Kilo Code | Advisory | Advisory | MCP only | No hook support |
-| Aider | Advisory | Advisory | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
+| Aider | Not covered | Not covered | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
 | Gemini | Advisory | Advisory | MCP only | No hook support |
 | Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |

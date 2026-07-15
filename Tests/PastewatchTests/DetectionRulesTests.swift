@@ -1288,7 +1288,11 @@ final class DetectionRulesTests: XCTestCase {
         let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
         let fixtures: [(SensitiveDataType, String)] = [
             (.vaultToken, "hvs." + String(repeating: "A1", count: 12)),
+            (.vaultToken, "hvb." + String(repeating: "B2", count: 12)),
+            (.vaultToken, "hvr." + String(repeating: "C3", count: 12)),
             (.vaultToken, "s." + String(repeating: "b2", count: 12)),
+            (.vaultToken, "b." + String(repeating: "c3", count: 12)),
+            (.vaultToken, "r." + String(repeating: "d4", count: 12)),
             (.slackToken, slackStem + "b-1234567890-" + String(repeating: "Ab", count: 12)),
             (.slackToken, slackStem + "p-1234567890-" + String(repeating: "Bc", count: 12)),
             (.slackToken, "xapp-1-A1234567890-" + String(repeating: "Cd", count: 12)),
@@ -1322,9 +1326,19 @@ final class DetectionRulesTests: XCTestCase {
             slackStem + "e." + slackStem + "p-" + String(repeating: "D", count: 24),
             slackStem + "e-not-a-version-" + String(repeating: "E", count: 24),
             "AIza" + String(repeating: "F", count: 34),
+            "AIza" + String(repeating: "G", count: 36),
+            "AIza" + String(repeating: "H", count: 17) + "!" + String(repeating: "I", count: 17),
+            "prefixAIza" + String(repeating: "J", count: 35),
             "dckr_pat_short",
+            "dckr_oat_" + String(repeating: "K", count: 15),
+            "dckr_pat_" + String(repeating: "L", count: 8) + "!" + String(repeating: "L", count: 8),
+            "prefixdckr_pat_" + String(repeating: "M", count: 16),
             "github_pat_short",
-            "ghs_not-an-app-id_" + jwtFixture()
+            "github_pat_" + String(repeating: "N", count: 19),
+            "github_pat_" + String(repeating: "O", count: 10) + "-" + String(repeating: "O", count: 10),
+            "prefixgithub_pat_" + String(repeating: "P", count: 20),
+            "ghs_not-an-app-id_" + jwtFixture(),
+            "ghs_12345_not-a-jwt"
         ]
 
         for value in nearMisses {
