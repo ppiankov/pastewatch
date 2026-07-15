@@ -2128,11 +2128,11 @@ public final class ProxyServer {
         }
     }
 
-    // WO-275: EPIPE/ECONNRESET/EBADF mean the local client is already gone.
+    // WO-275: EPIPE/ECONNRESET mean the local client is already gone.
     // Interrupting a stream is normal and must not look like a proxy failure.
     static func shouldLogSocketDeliveryFailure(errorCode: Int32, quiet: Bool) -> Bool {
         guard !quiet else { return false }
-        return errorCode != EPIPE && errorCode != ECONNRESET && errorCode != EBADF
+        return errorCode != EPIPE && errorCode != ECONNRESET
     }
 
     // MARK: - Alert injection

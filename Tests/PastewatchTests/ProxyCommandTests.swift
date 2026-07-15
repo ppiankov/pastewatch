@@ -36,8 +36,8 @@ final class ProxyCommandTests: XCTestCase {
     func testSocketDeliveryFailureLoggingPolicy() {
         XCTAssertFalse(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: EPIPE, quiet: false))
         XCTAssertFalse(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: ECONNRESET, quiet: false))
-        XCTAssertFalse(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: EBADF, quiet: false))
         XCTAssertFalse(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: EIO, quiet: true))
+        XCTAssertTrue(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: EBADF, quiet: false))
         XCTAssertTrue(ProxyServer.shouldLogSocketDeliveryFailure(errorCode: EIO, quiet: false))
     }
 
