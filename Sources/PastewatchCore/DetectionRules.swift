@@ -290,9 +290,10 @@ public struct DetectionRules {
         }
 
         // WO-483: https://docs.docker.com/reference/api/ai-governance/
-        // Reviewed 2026-07-14. Docker publishes PAT/OAT prefixes but not a fixed length.
+        // Reviewed 2026-07-15. Docker publishes PAT/OAT prefixes but not a fixed length;
+        // its Hub API reference includes a valid 15-character PAT suffix.
         if let regex = try? NSRegularExpression(
-            pattern: #"(?<![A-Za-z0-9_-])dckr_(?:pat|oat)_[A-Za-z0-9_-]{16,255}(?![A-Za-z0-9_-])"#
+            pattern: #"(?<![A-Za-z0-9_-])dckr_(?:pat|oat)_[A-Za-z0-9_-]{15,255}(?![A-Za-z0-9_-])"#
         ) {
             result.append((.dockerAccessToken, regex))
         }

@@ -1301,8 +1301,8 @@ final class DetectionRulesTests: XCTestCase {
             (.slackToken, slackStem + "e." + slackStem + "p-1-" + String(repeating: "Gh", count: 12)),
             (.slackToken, "xoxe-1-" + String(repeating: "Ij", count: 12)),
             (.googleApiKey, "AIza" + String(repeating: "K", count: 35)),
-            (.dockerAccessToken, "dckr_pat_" + String(repeating: "Lm", count: 12)),
-            (.dockerAccessToken, "dckr_oat_" + String(repeating: "No", count: 12)),
+            (.dockerAccessToken, "dckr_pat_" + String(repeating: "L", count: 15)),
+            (.dockerAccessToken, "dckr_oat_" + String(repeating: "N", count: 15)),
             (.githubToken, "github_pat_" + String(repeating: "Pq", count: 20)),
             (.githubToken, "ghs_12345_" + jwtFixture())
         ]
@@ -1331,9 +1331,9 @@ final class DetectionRulesTests: XCTestCase {
             "AIza" + String(repeating: "H", count: 17) + "!" + String(repeating: "I", count: 17),
             "prefixAIza" + String(repeating: "J", count: 35),
             "dckr_pat_short",
-            "dckr_oat_" + String(repeating: "K", count: 15),
-            "dckr_pat_" + String(repeating: "L", count: 8) + "!" + String(repeating: "L", count: 8),
-            "prefixdckr_pat_" + String(repeating: "M", count: 16),
+            "dckr_oat_" + String(repeating: "K", count: 14),
+            "dckr_pat_" + String(repeating: "L", count: 7) + "!" + String(repeating: "L", count: 8),
+            "prefixdckr_pat_" + String(repeating: "M", count: 15),
             "github_pat_short",
             "github_pat_" + String(repeating: "N", count: 19),
             "github_pat_" + String(repeating: "O", count: 10) + "-" + String(repeating: "O", count: 10),
