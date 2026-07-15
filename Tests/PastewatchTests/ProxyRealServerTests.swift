@@ -114,7 +114,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let slackStem = String(decoding: [120, 111, 120], as: UTF8.self)
+        let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
         let providerSecrets = [
             "hvs." + String(repeating: "A1", count: 12),
             slackStem + "b-1234567890-" + String(repeating: "Ab", count: 12),

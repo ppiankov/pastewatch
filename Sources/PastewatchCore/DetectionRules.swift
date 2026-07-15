@@ -371,7 +371,7 @@ public struct DetectionRules {
             pattern: #"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"#,
             options: []
         ) {
-            result.append((.githubToken, regex))
+            result.append((.genericApiKey, regex))
         }
 
         // Stripe API Key - high confidence

@@ -1285,7 +1285,7 @@ final class DetectionRulesTests: XCTestCase {
     // WO-462/WO-481/WO-482/WO-483/WO-485: standalone provider tokens must be
     // recognized from their documented intrinsic format, without keyword context.
     func testDetectsStandaloneProviderTokens() {
-        let slackStem = String(decoding: [120, 111, 120], as: UTF8.self)
+        let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
         let fixtures: [(SensitiveDataType, String)] = [
             (.vaultToken, "hvs." + String(repeating: "A1", count: 12)),
             (.vaultToken, "s." + String(repeating: "b2", count: 12)),
@@ -1311,7 +1311,7 @@ final class DetectionRulesTests: XCTestCase {
     }
 
     func testProviderTokenNearMissesDoNotMatch() {
-        let slackStem = String(decoding: [120, 111, 120], as: UTF8.self)
+        let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
         let nearMisses = [
             "hvs.short",
             "prefixhvb." + String(repeating: "A", count: 24),
