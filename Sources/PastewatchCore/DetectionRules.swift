@@ -272,8 +272,8 @@ public struct DetectionRules {
         // bounded token characters, and a conservative suffix floor carry certainty.
         let slackPatterns = [
             #"(?<![A-Za-z0-9_.-])(?:xox[bp]|xapp|xwfp)-[A-Za-z0-9-]{20,255}(?![A-Za-z0-9_.-])"#,
-            #"(?<![A-Za-z0-9_.-])xoxe\.xox[bp]-[A-Za-z0-9-]{20,255}(?![A-Za-z0-9_.-])"#,
-            #"(?<![A-Za-z0-9_.-])xoxe-[A-Za-z0-9-]{20,255}(?![A-Za-z0-9_.-])"#
+            #"(?<![A-Za-z0-9_.-])xoxe\.xox[bp]-[0-9]+-[A-Za-z0-9-]{16,255}(?![A-Za-z0-9_.-])"#,
+            #"(?<![A-Za-z0-9_.-])xoxe-[0-9]+-[A-Za-z0-9-]{16,255}(?![A-Za-z0-9_.-])"#
         ]
         for pattern in slackPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern) {
