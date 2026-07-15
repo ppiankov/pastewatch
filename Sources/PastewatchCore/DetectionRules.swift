@@ -7,11 +7,24 @@ import Foundation
 /// False negatives are preferred over false positives.
 public struct DetectionRules {
     private static let maximumPrivateKeyBlockCharacters = 262_144 // WO-478: bound malformed PEM scans.
+    // WO-487: these sourced grammars authorize mutation independently of the
+    // advisory-only genericApiKey type.
+    private static let githubClassicTokenRegex = try? NSRegularExpression(
+        pattern: #"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"#
+    )
+    private static let stripeAPIKeyRegex = try? NSRegularExpression(
+        pattern: #"\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{24,}\b"#
+    )
+    private static let stripeWebhookSecretRegex = try? NSRegularExpression(
+        pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#
+    )
 
     // WO-484: reviewed primary references travel with the intrinsic provider set.
     public static let providerTokenPatternManifest: [ProviderTokenPatternMetadata] = [
         .init(type: .awsKey, provider: "AWS", tokenFamily: "access keys", primarySource: "https://docs.aws.amazon.com/IAM/latest/UserGuide/security-creds.html", reviewedOn: "2026-07-15", fixtureID: "aws-access-key"),
-        .init(type: .genericApiKey, provider: "Prefixed tokens", tokenFamily: "GitHub and Stripe legacy tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "generic-prefixed-token"),
+        .init(type: .genericApiKey, provider: "GitHub", tokenFamily: "classic tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "github-classic-token"),
+        .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "API keys", primarySource: "https://docs.stripe.com/keys", reviewedOn: "2026-07-15", fixtureID: "stripe-api-key"),
+        .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "webhook signing secrets", primarySource: "https://docs.stripe.com/webhooks/signature", reviewedOn: "2026-07-15", fixtureID: "stripe-webhook-secret"),
         .init(type: .slackWebhook, provider: "Slack", tokenFamily: "incoming webhook", primarySource: "https://api.slack.com/messaging/webhooks", reviewedOn: "2026-07-15", fixtureID: "slack-webhook"),
         .init(type: .discordWebhook, provider: "Discord", tokenFamily: "webhook", primarySource: "https://discord.com/developers/docs/resources/webhook", reviewedOn: "2026-07-15", fixtureID: "discord-webhook"),
         .init(type: .openaiKey, provider: "OpenAI", tokenFamily: "API key", primarySource: "https://platform.openai.com/docs/api-reference/authentication", reviewedOn: "2026-07-15", fixtureID: "openai-key"),
@@ -400,27 +413,18 @@ public struct DetectionRules {
         }
 
         // GitHub Token - high confidence
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"#,
-            options: []
-        ) {
+        if let regex = githubClassicTokenRegex {
             result.append((.genericApiKey, regex))
         }
 
         // Stripe API Key - high confidence
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{24,}\b"#,
-            options: []
-        ) {
+        if let regex = stripeAPIKeyRegex {
             result.append((.genericApiKey, regex))
         }
 
         // Stripe Webhook Secret - high confidence
         // whsec_ prefix not covered by the generic sk/pk/api/key/token catch-all
-        if let regex = try? NSRegularExpression(
-            pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#,
-            options: []
-        ) {
+        if let regex = stripeWebhookSecretRegex {
             result.append((.genericApiKey, regex))
         }
 
@@ -633,7 +637,13 @@ public struct DetectionRules {
                 if !isValidMatch(value, type: type, config: config) { continue }
 
                 let line = lineNumber(of: range.lowerBound, in: content)
-                matches.append(DetectedMatch(type: type, value: value, range: range, line: line))
+                matches.append(DetectedMatch(
+                    type: type,
+                    value: value,
+                    range: range,
+                    line: line,
+                    mutationAuthorizationSources: mutationAuthorizationSources(for: type, value: value)
+                ))
                 matchedRanges.append(range)
             }
         }
@@ -666,6 +676,25 @@ public struct DetectionRules {
         }
 
         return matches
+    }
+
+    // WO-487: provider evidence is attached to the exact detector grammar, not
+    // inferred from the broader public result type.
+    private static func mutationAuthorizationSources(
+        for type: SensitiveDataType,
+        value: String
+    ) -> Set<MutationAuthorizationSource> {
+        guard type == .genericApiKey else { return [] }
+        let range = NSRange(value.startIndex..., in: value)
+        let sourcedRegexes = [
+            githubClassicTokenRegex,
+            stripeAPIKeyRegex,
+            stripeWebhookSecretRegex,
+        ].compactMap { $0 }
+        let isSourcedProviderToken = sourcedRegexes.contains { regex in
+            regex.firstMatch(in: value, options: [], range: range)?.range == range
+        }
+        return isSourcedProviderToken ? [.intrinsicFormat] : []
     }
 
     // WO-478: valid blocks authorize complete containment; malformed recognized

@@ -7,7 +7,7 @@ final class MutationAuthorizationTests: XCTestCase {
     func testIntrinsicAuthorizationSetIsExplicit() {
         // WO-454: this literal set makes detector promotion a reviewed policy change.
         let expected: Set<SensitiveDataType> = [
-            .awsKey, .genericApiKey, .sshPrivateKey, .jwtToken, .creditCard,
+            .awsKey, .sshPrivateKey, .jwtToken, .creditCard,
             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
             .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey, .npmToken,
             .pypiToken, .rubygemsToken, .gitlabToken, .telegramBotToken, .sendgridKey,
@@ -23,6 +23,7 @@ final class MutationAuthorizationTests: XCTestCase {
         XCTAssertFalse(SensitiveDataType.dbConnectionString.intrinsicMutationAuthorized)
         XCTAssertFalse(SensitiveDataType.jdbcUrl.intrinsicMutationAuthorized)
         XCTAssertFalse(SensitiveDataType.credential.intrinsicMutationAuthorized)
+        XCTAssertFalse(SensitiveDataType.genericApiKey.intrinsicMutationAuthorized)
     }
 
     func testPartitionConservesEveryMatchAndSeverityDoesNotAuthorize() {
@@ -82,6 +83,42 @@ final class MutationAuthorizationTests: XCTestCase {
         )
         XCTAssertEqual(outcome.mutated.count, 1)
         XCTAssertFalse(outcome.text.contains(value))
+    }
+
+    func testBroadGenericKeyRequiresExplicitAuthorization() throws {
+        // WO-487: the broad fallback remains visible but cannot mutate from its
+        // prefix alone; an operator rule can promote the same exact match.
+        let value = ["token", "_", String(repeating: "z", count: 24)].joined()
+        let builtInMatches = DetectionRules.scan(value, config: config)
+        let builtIn = try XCTUnwrap(builtInMatches.first { $0.type == .genericApiKey })
+        XCTAssertTrue(builtIn.mutationAuthorizationSources.isEmpty)
+        XCTAssertTrue(
+            partitionMutationMatches(
+                builtInMatches,
+                site: .proxyUserText,
+                minAdvisorySeverity: .critical
+            ).authorized.isEmpty
+        )
+
+        let rule = CustomRule(
+            name: "Approved generic token",
+            regex: try NSRegularExpression(
+                pattern: NSRegularExpression.escapedPattern(for: value)
+            ),
+            severity: .critical,
+            type: .genericApiKey
+        )
+        let promoted = DetectionRules.scan(value, config: config, customRules: [rule])
+        XCTAssertEqual(promoted.count, 1)
+        XCTAssertTrue(promoted[0].mutationAuthorizationSources.contains(.customRule))
+        XCTAssertEqual(
+            partitionMutationMatches(
+                promoted,
+                site: .proxyUserText,
+                minAdvisorySeverity: .critical
+            ).authorized.count,
+            1
+        )
     }
 
     func testProxyUsesEvidenceAcrossRequestSites() throws {

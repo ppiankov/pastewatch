@@ -100,10 +100,10 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         }
     }
 
-    /// WO-454: only formats whose matched bytes prove a secret authorize mutation.
+    /// WO-454/WO-487: only formats whose matched bytes prove a secret authorize mutation.
     public var intrinsicMutationAuthorized: Bool {
         switch self {
-        case .awsKey, .genericApiKey, .sshPrivateKey,
+        case .awsKey, .sshPrivateKey,
              .jwtToken, .creditCard,
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
@@ -112,7 +112,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
              .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken:
             return true
-        case .dbConnectionString, .jdbcUrl, .credential, .xmlCredential,
+        case .genericApiKey, .dbConnectionString, .jdbcUrl, .credential, .xmlCredential,
              .email, .phone, .xmlUsername,
              .ipAddress, .filePath, .hostname, .xmlHostname,
              .uuid, .highEntropyString:

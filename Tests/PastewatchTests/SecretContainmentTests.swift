@@ -7,7 +7,6 @@ final class SecretContainmentTests: XCTestCase {
     private var fixtures: [SensitiveDataType: String] {
         [
             .awsKey: "AKIA" + String(repeating: "A", count: 16),
-            .genericApiKey: "sk_live_" + String(repeating: "B", count: 24),
             .sshPrivateKey: "-----BEGIN " + "PRIVATE KEY-----\n" + String(repeating: "QUJD", count: 12) + "\n-----END PRIVATE KEY-----",
             .jwtToken: "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0In0." + String(repeating: "c", count: 32),
             .creditCard: "4111111111111111",
@@ -37,6 +36,16 @@ final class SecretContainmentTests: XCTestCase {
             .googleApiKey: "AIza" + String(repeating: "U", count: 35),
             .dockerAccessToken: "dckr_pat_" + String(repeating: "V", count: 15),
             .githubToken: "github_pat_" + String(repeating: "W", count: 20),
+        ]
+    }
+
+    // WO-487: these share the compatibility type but receive authorization from
+    // their exact provider grammar rather than from the type itself.
+    private var sourcedGenericFixtures: [String] {
+        [
+            "ghp_" + String(repeating: "B", count: 36),
+            "sk_live_" + String(repeating: "C", count: 24),
+            "whsec_" + String(repeating: "D", count: 24),
         ]
     }
 
@@ -85,6 +94,28 @@ final class SecretContainmentTests: XCTestCase {
                     .authorized.isEmpty,
                 "partial shape authorized mutation"
             )
+        }
+    }
+
+    func testSourcedGenericProviderGrammarsContainCompleteMatchedBytes() {
+        for fixture in sourcedGenericFixtures {
+            let content = "prefix|\(fixture)|suffix"
+            let matches = DetectionRules.scan(content, config: .defaultConfig)
+            let authorized = matches.filter {
+                $0.type == .genericApiKey
+                    && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+            }
+            XCTAssertEqual(authorized.count, 1)
+
+            let outcome = applyAuthorizedMutations(
+                to: content,
+                matches: matches,
+                site: .cliScan,
+                minAdvisorySeverity: .low
+            )
+            XCTAssertFalse(outcome.text.contains(fixture))
+            XCTAssertTrue(outcome.text.hasPrefix("prefix|"))
+            XCTAssertTrue(outcome.text.hasSuffix("|suffix"))
         }
     }
 }

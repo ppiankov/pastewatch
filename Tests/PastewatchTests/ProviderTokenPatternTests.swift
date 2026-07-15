@@ -6,13 +6,29 @@ final class ProviderTokenPatternTests: XCTestCase {
         let type: SensitiveDataType
         let positive: String
         let negative: String
+        let fixtureID: String?
+
+        init(
+            type: SensitiveDataType,
+            positive: String,
+            negative: String,
+            fixtureID: String? = nil
+        ) {
+            self.type = type
+            self.positive = positive
+            self.negative = negative
+            self.fixtureID = fixtureID
+        }
     }
 
     // WO-484: fixtures are synthetic and offline; none are usable credentials.
     private var fixtures: [Fixture] {
         [
             .init(type: .awsKey, positive: "AKIA" + String(repeating: "A", count: 16), negative: "AKIA" + String(repeating: "A", count: 15)),
-            .init(type: .genericApiKey, positive: "sk_live_" + String(repeating: "B", count: 24), negative: "sk_live_" + String(repeating: "B", count: 23)),
+            // WO-487: each sourced genericApiKey grammar has its own boundary fixture.
+            .init(type: .genericApiKey, positive: "ghp_" + String(repeating: "B", count: 36), negative: "ghp_" + String(repeating: "B", count: 35), fixtureID: "github-classic-token"),
+            .init(type: .genericApiKey, positive: "sk_live_" + String(repeating: "C", count: 24), negative: "sk_live_" + String(repeating: "C", count: 23), fixtureID: "stripe-api-key"),
+            .init(type: .genericApiKey, positive: "whsec_" + String(repeating: "D", count: 24), negative: "whsec_" + String(repeating: "D", count: 23), fixtureID: "stripe-webhook-secret"),
             .init(type: .slackWebhook, positive: "https://hooks.slack.com/services/TABC/BDEF/Token123", negative: "https://hooks.slack.com/services/ABC/BDEF/Token123"),
             .init(type: .discordWebhook, positive: "https://discord.com/api/webhooks/123456/Token_123", negative: "https://discord.com/api/webhooks/id/Token_123"),
             .init(type: .openaiKey, positive: "sk-proj-" + String(repeating: "C", count: 20), negative: "sk-proj-" + String(repeating: "C", count: 19)),
@@ -53,7 +69,18 @@ final class ProviderTokenPatternTests: XCTestCase {
 
         XCTAssertEqual(Set(manifest.map(\.type)), expected)
         XCTAssertEqual(Set(fixtures.map(\.type)), expected)
+        XCTAssertEqual(manifest.count, expected.count + 2)
+        XCTAssertEqual(fixtures.count, expected.count + 2)
         XCTAssertEqual(Set(manifest.map(\.fixtureID)).count, manifest.count)
+        XCTAssertEqual(
+            Set(manifest.filter { $0.type == .genericApiKey }.map(\.fixtureID)),
+            ["github-classic-token", "stripe-api-key", "stripe-webhook-secret"]
+        )
+        XCTAssertEqual(
+            Set(fixtures.compactMap(\.fixtureID)),
+            Set(manifest.filter { $0.type == .genericApiKey }.map(\.fixtureID))
+        )
+        XCTAssertFalse(manifest.contains { $0.provider == "Prefixed tokens" })
         XCTAssertTrue(manifest.allSatisfy { $0.primarySource.hasPrefix("https://") })
         XCTAssertTrue(manifest.allSatisfy { $0.reviewedOn == "2026-07-15" })
     }
