@@ -493,7 +493,7 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
   │  read: scan + redact ──┼──────────────────────► Agent sees placeholders
   │  write: resolve local ◄┼────────────────────── Agent returns placeholders
   │                        │
-  │  secret map stays local│   Authorized matches leave only as placeholders.
+  │  mapping stays local   │   Authorized matches leave only as placeholders.
   └────────────────────────┘
 ```
 
