@@ -67,6 +67,8 @@ public final class ProxyServer {
     private let upstream: URL
     private let forwardProxy: URL?
     private let config: PastewatchConfig
+    private let customRules: [CustomRule] // WO-473: one precompiled set for every proxy scan path.
+    private let customRuleStartupError: Error? // WO-473: direct server users fail before socket creation.
     private let severity: Severity
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
@@ -250,6 +252,7 @@ public final class ProxyServer {
         upstream: URL = URL(string: "https://api.anthropic.com")!,
         forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
+        compiledCustomRules: [CustomRule]? = nil,
         severity: Severity = .high,
         auditLogPath: String? = nil,
         injectAlert: Bool = true,
@@ -261,6 +264,18 @@ public final class ProxyServer {
         self.upstream = upstream
         self.forwardProxy = forwardProxy
         self.config = config
+        if let compiledCustomRules {
+            self.customRules = compiledCustomRules
+            self.customRuleStartupError = nil
+        } else {
+            do {
+                self.customRules = try CustomRule.compileForProxyStartup(config.customRules)
+                self.customRuleStartupError = nil
+            } catch {
+                self.customRules = []
+                self.customRuleStartupError = error
+            }
+        }
         self.severity = severity
         self.auditLogPath = auditLogPath
         self.injectAlert = injectAlert
@@ -405,6 +420,9 @@ public final class ProxyServer {
 
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
+        if let customRuleStartupError {
+            throw ProxyError.invalidCustomRules(customRuleStartupError.localizedDescription)
+        }
         #if canImport(Darwin)
         let listenSocket = socket(AF_INET, SOCK_STREAM, 0)
         #else
@@ -960,7 +978,8 @@ public final class ProxyServer {
                 insecure: insecureTLS, streaming: shouldStream,
                 clientSocket: ctx.clientSocket, sendFlags: sendFlags,
                 streamingRedactionMode: streamingMode,
-                proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
+                proxyConfig: config, proxyCustomRules: customRules,
+                proxySeverity: severity, alertBeforeDone: alertBeforeDone
             )
         } catch CurlHTTPClient.ExecuteError.timeout {
             // WO-386: curl exit 28 is an upstream timeout, not a bad gateway.
@@ -1363,7 +1382,7 @@ public final class ProxyServer {
         DetectionRules.scan(
             text,
             config: config,
-            customRules: CustomRule.compileValid(config.customRules)
+            customRules: customRules
         )
     }
 
@@ -1763,6 +1782,7 @@ public final class ProxyServer {
             sendFlags: sendFlags,
             redactionMode: mode,
             config: config,
+            customRules: customRules,
             severity: severity,
             idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds,
             tlsChallengeHandler: tlsTrustDelegate.map { delegate in
@@ -2071,9 +2091,14 @@ public final class ProxyServer {
         let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)
         responseData.append(bodyBytes)
-        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        // WO-212/218: use sendAll(); unexpected delivery failures remain observable.
         if !sendAll(responseData, to: socket, flags: sendFlags) {
-            FileHandle.standardError.write(Data("[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8))
+            let errorCode = errno
+            if Self.shouldLogSocketDeliveryFailure(errorCode: errorCode, quiet: quietLog) {
+                FileHandle.standardError.write(Data(
+                    "[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8
+                ))
+            }
         }
     }
 
@@ -2092,10 +2117,22 @@ public final class ProxyServer {
 
         var responseData = Data(response.utf8)
         responseData.append(body)
-        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        // WO-212/218: use sendAll(); unexpected delivery failures remain observable.
         if !sendAll(responseData, to: socket, flags: sendFlags) {
-            FileHandle.standardError.write(Data("[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8))
+            let errorCode = errno
+            if Self.shouldLogSocketDeliveryFailure(errorCode: errorCode, quiet: quietLog) {
+                FileHandle.standardError.write(Data(
+                    "[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8
+                ))
+            }
         }
+    }
+
+    // WO-275: EPIPE/ECONNRESET/EBADF mean the local client is already gone.
+    // Interrupting a stream is normal and must not look like a proxy failure.
+    static func shouldLogSocketDeliveryFailure(errorCode: Int32, quiet: Bool) -> Bool {
+        guard !quiet else { return false }
+        return errorCode != EPIPE && errorCode != ECONNRESET && errorCode != EBADF
     }
 
     // MARK: - Alert injection
@@ -2413,18 +2450,22 @@ public final class ProxyServer {
 
 // MARK: - Errors
 
-public enum ProxyError: Error, CustomStringConvertible {
+public enum ProxyError: Error, CustomStringConvertible, LocalizedError {
+    case invalidCustomRules(String) // WO-473: invalid protection config cannot bind a listener.
     case socketCreationFailed
     case bindFailed(port: UInt16)
     case listenFailed
 
     public var description: String {
         switch self {
+        case .invalidCustomRules(let message): return message
         case .socketCreationFailed: return "Failed to create socket"
         case .bindFailed(let port): return "Failed to bind to port \(port) (already in use?)"
         case .listenFailed: return "Failed to listen on socket"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 #if canImport(Darwin)

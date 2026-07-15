@@ -119,6 +119,7 @@ struct CurlHTTPClient {
         sendFlags: Int32 = 0,
         streamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
+        proxyCustomRules: [CustomRule]? = nil,
         proxySeverity: Severity = .high,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
@@ -126,6 +127,7 @@ struct CurlHTTPClient {
     ) throws -> Response {
         let curlPath = "/usr/bin/curl"
         guard FileManager.default.fileExists(atPath: curlPath) else { throw ExecuteError.failure }
+        let customRules = proxyCustomRules ?? CustomRule.compileValid(proxyConfig.customRules)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: curlPath)
@@ -176,6 +178,7 @@ struct CurlHTTPClient {
                 sendFlags: sendFlags,
                 redactionMode: streamingRedactionMode,
                 config: proxyConfig,
+                customRules: customRules,
                 severity: proxySeverity
             )
             // WO-196: alertBeforeDone passed directly, not through StreamContext.
@@ -215,7 +218,8 @@ struct CurlHTTPClient {
             responseRedaction = redactNonUTF8ResponseBody(
                 parsedOutput.body,
                 config: proxyConfig,
-                severity: proxySeverity
+                severity: proxySeverity,
+                customRules: customRules
             )
             responseBody = responseRedaction.data
             FileHandle.standardError.write(Data(
@@ -362,7 +366,24 @@ struct CurlHTTPClient {
         let sendFlags: Int32
         let redactionMode: StreamingRedactionMode
         let config: PastewatchConfig
+        let customRules: [CustomRule] // WO-473: startup-validated rules shared by Linux relay paths.
         let severity: Severity
+
+        init(
+            clientSocket: Int32,
+            sendFlags: Int32,
+            redactionMode: StreamingRedactionMode,
+            config: PastewatchConfig,
+            customRules: [CustomRule]? = nil,
+            severity: Severity
+        ) {
+            self.clientSocket = clientSocket
+            self.sendFlags = sendFlags
+            self.redactionMode = redactionMode
+            self.config = config
+            self.customRules = customRules ?? CustomRule.compileValid(config.customRules)
+            self.severity = severity
+        }
     }
 
     /// WO-336/WO-404: named Linux relay result carries mutation-safe and advisory stream totals.
@@ -719,7 +740,12 @@ struct CurlHTTPClient {
                 if result.overflowFlushed {
                     // WO-164: a 4MB+ frame bypassed the normal per-frame path; redact it
                     // as raw text rather than forwarding secrets unscanned.
-                    let r = redactRawBytes(result.overflowBytes, config: ctx.config, severity: ctx.severity)
+                    let r = redactRawBytes(
+                        result.overflowBytes,
+                        config: ctx.config,
+                        severity: ctx.severity,
+                        customRules: ctx.customRules
+                    )
                     outData = r.data
                     // WO-256: record detections before sendAll() — if the client EPIPEs, the
                     // credential was still present in the stream and was redacted from the bytes
@@ -763,7 +789,12 @@ struct CurlHTTPClient {
                         // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
                         // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
                         guard frame.data != "[DONE]" else { assembled.append(frame.raw); continue }
-                        let r = redactSSEFrame(frame, config: ctx.config, severity: ctx.severity)
+                        let r = redactSSEFrame(
+                            frame,
+                            config: ctx.config,
+                            severity: ctx.severity,
+                            customRules: ctx.customRules
+                        )
                         assembled.append(r.data)
                         pendingCount += r.count
                         pendingTypes.append(contentsOf: r.types)
@@ -872,7 +903,9 @@ struct CurlHTTPClient {
     ) {
         let rem = parser.remainingBytes
         guard !rem.isEmpty else { return }
-        let redaction = redactRawBytes(rem, config: ctx.config, severity: ctx.severity)
+        let redaction = redactRawBytes(
+            rem, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
+        )
         totals.recordCritical(redaction)
         // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
         let alert = alertBeforeDone?(
@@ -922,7 +955,12 @@ struct CurlHTTPClient {
     ) -> StreamChunkRelayResult? {
         guard alert.alertBeforeDone != nil else {
             // WO-324/WO-404: raw_stream skips SSE parsing but still honors the certainty gate.
-            let redaction = redactRawBytes(chunk, config: alert.stream.config, severity: alert.stream.severity)
+            let redaction = redactRawBytes(
+                chunk,
+                config: alert.stream.config,
+                severity: alert.stream.severity,
+                customRules: alert.stream.customRules
+            )
             totals.recordCritical(redaction)
             return StreamChunkRelayResult(
                 data: redaction.data,
@@ -971,13 +1009,19 @@ struct CurlHTTPClient {
         totals: inout StreamScanTotals,
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult {
-        let redaction = redactRawBytes(data, config: alert.stream.config, severity: alert.stream.severity)
+        let redaction = redactRawBytes(
+            data,
+            config: alert.stream.config,
+            severity: alert.stream.severity,
+            customRules: alert.stream.customRules
+        )
         totals.recordCritical(redaction)
         let advisory = detectNewRawStreamAdvisories(
             data,
             state: &alertState,
             config: alert.stream.config,
-            severity: alert.stream.severity
+            severity: alert.stream.severity,
+            customRules: alert.stream.customRules
         )
         var output = redaction.data
         if doneLineStart != nil,
@@ -1017,13 +1061,16 @@ struct CurlHTTPClient {
 
         let data = state.pending
         state.pending.removeAll(keepingCapacity: true)
-        let redaction = redactRawBytes(data, config: ctx.config, severity: ctx.severity)
+        let redaction = redactRawBytes(
+            data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
+        )
         totals.recordCritical(redaction)
         let advisory = detectNewRawStreamAdvisories(
             data,
             state: &state,
             config: ctx.config,
-            severity: ctx.severity
+            severity: ctx.severity,
+            customRules: ctx.customRules
         )
         var output = redaction.data
         // WO-352: no [DONE] arrived, so deliver the advisory event after the final bytes.
@@ -1046,7 +1093,8 @@ struct CurlHTTPClient {
         _ delivered: Data,
         state: inout RawStreamAlertState,
         config: PastewatchConfig,
-        severity: Severity
+        severity: Severity,
+        customRules: [CustomRule]
     ) -> (count: Int, types: [String]) {
         guard !delivered.isEmpty else { return (0, []) }
         state.advisoryScanTail.append(delivered)
@@ -1067,7 +1115,10 @@ struct CurlHTTPClient {
         let text = String(bytes: state.advisoryScanTail, encoding: .utf8) ??
             String(decoding: Array(state.advisoryScanTail), as: UTF8.self)
         // swiftlint:enable optional_data_string_conversion
-        let matches = streamAdvisoryMatches(scanStreamText(text, config: config), severity: severity)
+        let matches = streamAdvisoryMatches(
+            scanStreamText(text, config: config, customRules: customRules),
+            severity: severity
+        )
         var types: [String] = []
         for match in matches {
             let lowerOffset = text[..<match.range.lowerBound].utf8.count
@@ -1107,7 +1158,9 @@ struct CurlHTTPClient {
         ) -> Data?)?,
         totals: inout StreamScanTotals
     ) -> StreamChunkRelayResult {
-        let redaction = redactRawBytes(data, config: ctx.config, severity: ctx.severity)
+        let redaction = redactRawBytes(
+            data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
+        )
         totals.recordCritical(redaction)
         let alert = alertBeforeDone?(
             totals.redactionCount,
@@ -1124,8 +1177,13 @@ struct CurlHTTPClient {
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
     /// Treats the whole buffer as plain text, scans it, and obfuscates in-place.
-    private static func redactRawBytes(_ raw: Data, config: PastewatchConfig, severity: Severity) -> SSEFrameRedactionResult {
-        redactRawStreamBytes(raw, config: config, severity: severity)
+    private static func redactRawBytes(
+        _ raw: Data,
+        config: PastewatchConfig,
+        severity: Severity,
+        customRules: [CustomRule]
+    ) -> SSEFrameRedactionResult {
+        redactRawStreamBytes(raw, config: config, severity: severity, customRules: customRules)
     }
 
     /// WO-359: detect ASCII credentials inside otherwise non-UTF-8 response bodies
@@ -1133,7 +1191,8 @@ struct CurlHTTPClient {
     static func redactNonUTF8ResponseBody(
         _ body: Data,
         config: PastewatchConfig,
-        severity: Severity
+        severity: Severity,
+        customRules: [CustomRule]? = nil
     ) -> SSEFrameRedactionResult {
         guard !body.isEmpty else {
             return SSEFrameRedactionResult(data: body, count: 0, types: [])
@@ -1143,7 +1202,7 @@ struct CurlHTTPClient {
         let matches = DetectionRules.scan(
             lossyText,
             config: config,
-            customRules: CustomRule.compileValid(config.customRules)
+            customRules: customRules ?? CustomRule.compileValid(config.customRules)
         )
         let redactionMatches = mutationSafeProxyMatches(matches)
             .sorted { $0.range.lowerBound < $1.range.lowerBound }

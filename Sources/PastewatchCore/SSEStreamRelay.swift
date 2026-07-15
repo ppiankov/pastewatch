@@ -29,6 +29,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let sendFlags: Int32
     private let redactionMode: StreamingRedactionMode
     private let config: PastewatchConfig
+    private let customRules: [CustomRule] // WO-473: validated once before proxy startup.
     private let severity: Severity
     private let idleTimeoutSeconds: Double
     private let maxSessionSeconds: Double // WO-292: hard ceiling before cancelling active stream task
@@ -107,6 +108,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         sendFlags: Int32,
         redactionMode: StreamingRedactionMode,
         config: PastewatchConfig,
+        customRules: [CustomRule]? = nil,
         severity: Severity,
         idleTimeoutSeconds: Double,
         maxSessionSeconds: Double = sseStreamMaxSessionSeconds,
@@ -117,6 +119,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         self.sendFlags = sendFlags
         self.redactionMode = redactionMode
         self.config = config
+        self.customRules = customRules ?? CustomRule.compileValid(config.customRules)
         self.severity = severity
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.maxSessionSeconds = maxSessionSeconds
@@ -384,7 +387,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             return relayFrameData(toSend)
         }
         // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
-        let redaction = redactSSEFrame(frame, config: config, severity: severity)
+        let redaction = redactSSEFrame(
+            frame,
+            config: config,
+            severity: severity,
+            customRules: customRules
+        )
         let delivered = relayFrameData(redaction.data)
         // WO-372/WO-404: mutation-safe redactions stay attempted-detection scoped, but
         // advisory-only matches are in-band guidance and must be delivery-scoped.
@@ -647,7 +655,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// WO-164: redact raw bytes that bypassed the SSE frame parser (overflow path).
     private func redactRawBytes(_ raw: Data) -> SSEFrameRedactionResult {
-        redactRawStreamBytes(raw, config: config, severity: severity)
+        redactRawStreamBytes(raw, config: config, severity: severity, customRules: customRules)
     }
 
     private func sendIdleTimeoutErrorIfNeeded() {

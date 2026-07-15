@@ -77,11 +77,15 @@ func streamAdvisoryMatches(_ matches: [DetectedMatch], severity: Severity) -> [D
 }
 
 /// WO-399: include configured custom rules on the streaming response path.
-func scanStreamText(_ text: String, config: PastewatchConfig) -> [DetectedMatch] {
+func scanStreamText(
+    _ text: String,
+    config: PastewatchConfig,
+    customRules: [CustomRule]? = nil
+) -> [DetectedMatch] {
     DetectionRules.scan(
         text,
         config: config,
-        customRules: CustomRule.compileValid(config.customRules)
+        customRules: customRules ?? CustomRule.compileValid(config.customRules)
     )
 }
 
@@ -91,14 +95,15 @@ func scanStreamText(_ text: String, config: PastewatchConfig) -> [DetectedMatch]
 func redactRawStreamBytes(
     _ raw: Data,
     config: PastewatchConfig,
-    severity: Severity
+    severity: Severity,
+    customRules: [CustomRule]? = nil
 ) -> SSEFrameRedactionResult {
     guard !raw.isEmpty else {
         return SSEFrameRedactionResult(data: raw, count: 0, types: [])
     }
     // swiftlint:disable:next optional_data_string_conversion
     let text = String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
-    let matches = scanStreamText(text, config: config)
+    let matches = scanStreamText(text, config: config, customRules: customRules)
     let filtered = mutationSafeProxyMatches(matches)
     let advisories = streamAdvisoryMatches(matches, severity: severity)
     let advisoryTypes = advisories.map { $0.displayName }
@@ -155,10 +160,11 @@ private func rawSSEDoneFrameStart(in data: Data) -> Data.Index? {
 func redactSSEFrame(
     _ frame: SSEFrameParser.Frame,
     config: PastewatchConfig,
-    severity: Severity
+    severity: Severity,
+    customRules: [CustomRule]? = nil
 ) -> SSEFrameRedactionResult {
     guard let dataPayload = frame.data else {
-        return redactRawStreamBytes(frame.raw, config: config, severity: severity)
+        return redactRawStreamBytes(frame.raw, config: config, severity: severity, customRules: customRules)
     }
     guard dataPayload != "[DONE]" else {
         return SSEFrameRedactionResult(data: frame.raw, count: 0, types: [])
@@ -166,7 +172,7 @@ func redactSSEFrame(
     guard let jsonData = dataPayload.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
           let delta = json["delta"] as? [String: Any] else {
-        return redactRawStreamBytes(frame.raw, config: config, severity: severity)
+        return redactRawStreamBytes(frame.raw, config: config, severity: severity, customRules: customRules)
     }
     var modifiedDelta = delta
     var redacted = 0
@@ -176,7 +182,7 @@ func redactSSEFrame(
 
     for (field, value) in delta {
         guard field != "type", let text = value as? String else { continue }
-        let matches = scanStreamText(text, config: config)
+        let matches = scanStreamText(text, config: config, customRules: customRules)
         let filtered = mutationSafeProxyMatches(matches)
         let advisories = streamAdvisoryMatches(matches, severity: severity)
         advisoryCount += advisories.count

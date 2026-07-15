@@ -67,7 +67,7 @@ Pastewatch started as a clipboard monitor — scan before paste, replace secrets
 | **Startup sweep** | Warns about pre-existing shell config credentials | `pastewatch-cli launch` scans common startup files once per changed finding summary |
 | **MCP server** | Redacted read/write for AI agents | Agent sees placeholders, originals stay in RAM |
 | **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor, Windsurf, Continue, Amazon Q |
-| **API proxy** | Redacts secrets from outbound API traffic | Sits between agent and cloud, scans every request |
+| **API proxy** | Redacts secrets from supported outbound API traffic | Scans Anthropic-shaped requests and refuses unsupported body shapes |
 | **VS Code extension** | Real-time detection in the editor | Highlights secrets as you type |
 
 All layers share the same detection engine — 30+ pattern types, deterministic regex, no ML. Every layer operates locally. Nothing phones home.
@@ -822,7 +822,7 @@ Define additional patterns in a JSON file:
 
 ### Agent Safety Matrix
 
-The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/messages` and `/v1/messages/batches`) from agents that expose an API endpoint override; it refuses unrecognized upstream body shapes (HTTP 415) rather than forward them unscanned, so it does not redact OpenAI/Gemini-shaped agents. Rows relying on "Proxy" are protected only for Anthropic-shaped traffic; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth and are the primary coverage for non-Anthropic-shaped agents.
+The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/messages` and `/v1/messages/batches`) and refuses unrecognized upstream body shapes (HTTP 415). `pastewatch-cli launch` wires only Claude Code to this proxy. Other clients need hooks or MCP unless the operator separately configures an Anthropic-compatible client to use `pastewatch-cli proxy`; OpenAI/Gemini-shaped bodies are not redacted.
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|
@@ -836,17 +836,16 @@ The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/mes
 | Copilot | **Structural** | preToolUse (`.github/hooks/`) | Yes | `pastewatch-cli setup copilot` |
 | Codex CLI | **Structural** | PreToolUse (exit 2) | Manual | `pastewatch-cli setup codex` |
 | Qwen Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup qwen-code` |
-| Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
-| Kilo Code | Proxy + MCP | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
-| Gemini | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup gemini` |
+| Goose | MCP only | No hooks | Yes | `pastewatch-cli setup goose` |
+| Kilo Code | MCP only | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
+| Gemini | MCP only | No hooks | Yes | `pastewatch-cli setup gemini` |
 | Antigravity (agy) | Proxy not applicable + MCP only (voluntary tools; no Structural read blocking) | [No](docs/research/agy-hooks-follow-up.md) - handler registration fails | [Yes](docs/research/agy-hooks-discovery.md) | Not yet supported by `pastewatch-cli setup`; edit `~/.gemini/config/mcp_config.json` manually |
-| OpenCode | Proxy + MCP | No hooks | Yes | Manual |
-| Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
+| OpenCode | MCP only | No hooks | Yes | Manual |
+| Aider | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | N/A |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
 **Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
-**Proxy + MCP** = network-level redaction for Anthropic-shaped traffic, plus MCP tools for redacted access (the agent isn't forced to use them). If the agent talks a non-Anthropic wire format, the proxy refuses (HTTP 415) rather than redact — MCP is then the real coverage.
-**Proxy only** = protection comes from the network proxy, and only for Anthropic-shaped traffic. An agent that sends a non-Anthropic body shape is not redacted by the proxy (it is refused) — prefer hooks/MCP where available.
+**MCP only** = redaction applies only when the agent uses the configured Pastewatch MCP tools. Native file or network access is not intercepted.
 
 ### Install
 

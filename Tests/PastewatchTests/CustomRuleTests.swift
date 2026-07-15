@@ -35,6 +35,26 @@ final class CustomRuleTests: XCTestCase {
         ]))
     }
 
+    // WO-473: startup validation rejects the whole configured protection set.
+    func testProxyStartupCompilationRejectsInvalidRuleMetadataWithoutPatternDisclosure() {
+        let invalidPattern = "[" + "unclosed"
+        XCTAssertThrowsError(try CustomRule.compileForProxyStartup([
+            CustomRuleConfig(name: "Broken rule", pattern: invalidPattern)
+        ])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Broken rule"))
+            XCTAssertFalse(error.localizedDescription.contains(invalidPattern))
+        }
+        XCTAssertThrowsError(try CustomRule.compileForProxyStartup([
+            CustomRuleConfig(name: "Bad severity", pattern: "SAFE-[0-9]+", severity: "extreme")
+        ]))
+        XCTAssertThrowsError(try CustomRule.compileForProxyStartup([
+            CustomRuleConfig(name: "", pattern: "SAFE-[0-9]+")
+        ]))
+        XCTAssertThrowsError(try CustomRule.compileForProxyStartup([
+            CustomRuleConfig(name: "Empty pattern", pattern: "   ")
+        ]))
+    }
+
     func testLoadFromFile() throws {
         let path = NSTemporaryDirectory() + "test-rules-\(UUID().uuidString).json"
         let json = "[{\"name\": \"Test\", \"pattern\": \"TEST-[0-9]+\"}]"

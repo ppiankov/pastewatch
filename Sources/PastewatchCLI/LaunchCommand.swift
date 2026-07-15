@@ -218,6 +218,7 @@ struct Launch: ParsableCommand {
         try throwIfLaunchTerminationRequested()
         runStartupSweepIfNeeded()
         let config = PastewatchConfig.resolve()
+        _ = try requireValidProxyCustomRules(config)
         writeBufferModeWarningIfNeeded(config: config)
 
         let agentBinary = (command[0] as NSString).lastPathComponent

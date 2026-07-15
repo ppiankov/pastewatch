@@ -1,5 +1,6 @@
 import Foundation
 @testable import PastewatchCLI
+import PastewatchCore
 import XCTest
 #if canImport(Darwin)
 import Darwin
@@ -213,6 +214,32 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
         XCTAssertFalse(result.stderr.contains("failed to start proxy"), result.stderr)
         XCTAssertEqual(result.stderr, "", "--quiet should suppress non-routed advisory stderr")
+    }
+
+    // WO-473: launch must reject invalid protection configuration before
+    // starting either the proxy or even a non-routed agent process.
+    func testLaunchRejectsInvalidCustomRuleBeforeAgentStart() throws {
+        let fixture = try makeLaunchFixture()
+        let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
+        let invalidPattern = "[" + "unclosed"
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [CustomRuleConfig(name: "Broken rule", pattern: invalidPattern)]
+        try JSONEncoder().encode(config).write(
+            to: fixture.cwd.appendingPathComponent(".pastewatch.json"),
+            options: .atomic
+        )
+
+        let result = try runCLIProcess(
+            arguments: ["launch", "--no-startup-sweep", "--", agent.path],
+            cwd: fixture.cwd,
+            environment: fixture.environment
+        )
+
+        XCTAssertEqual(result.status, 2, result.stderr)
+        XCTAssertEqual(result.stdout, "", "agent ran despite invalid custom rule")
+        XCTAssertTrue(result.stderr.contains("Broken rule"), result.stderr)
+        XCTAssertFalse(result.stderr.contains(invalidPattern), "diagnostic disclosed configured pattern")
+        XCTAssertFalse(result.stderr.contains("proxy listening"), result.stderr)
     }
 
     // WO-438: SIGTERM should take the normal child-exit path so the proxy defer runs.

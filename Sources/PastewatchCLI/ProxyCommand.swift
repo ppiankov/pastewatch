@@ -15,6 +15,25 @@ private let proxyStartupSignalGraceMilliseconds = 100
 // WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
 let proxyInterruptedExitCode: Int32 = 130
 
+// WO-473: proxy and launch share one strict startup gate; runtime scan paths
+// must never silently reduce configured coverage to the valid subset.
+func compileProxyCustomRules(_ config: PastewatchConfig) throws -> [CustomRule] {
+    try CustomRule.compileForProxyStartup(config.customRules)
+}
+
+func writeProxyCustomRuleError(_ error: Error) {
+    FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+}
+
+func requireValidProxyCustomRules(_ config: PastewatchConfig) throws -> [CustomRule] {
+    do {
+        return try compileProxyCustomRules(config)
+    } catch {
+        writeProxyCustomRuleError(error)
+        throw ExitCode(rawValue: 2)
+    }
+}
+
 func proxyShutdownExitCode(didStart: Bool) -> Int32 {
     didStart ? 0 : proxyInterruptedExitCode
 }
@@ -72,11 +91,13 @@ struct Proxy: ParsableCommand {
         }
 
         let config = PastewatchConfig.resolve()
+        let compiledCustomRules = try requireValidProxyCustomRules(config)
         let server = ProxyServer(
             port: port,
             upstream: upstreamURL,
             forwardProxy: forwardProxyURL,
             config: config,
+            compiledCustomRules: compiledCustomRules,
             severity: severity,
             auditLogPath: auditLog,
             injectAlert: alert,

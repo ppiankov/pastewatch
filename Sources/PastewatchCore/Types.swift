@@ -67,6 +67,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case oraculKey = "Oracul Key"
     case obstalabsKey = "ObstaLabs Key"
     case resendKey = "Resend Key"
+    case vaultToken = "Vault Token" // WO-462: intrinsically formatted Vault bearer token.
+    case slackToken = "Slack Token" // WO-481: documented Slack token families.
+    case googleApiKey = "Google API Key" // WO-482: exact AIza key format.
+    case dockerAccessToken = "Docker Access Token" // WO-483: Docker PAT/OAT formats.
+    case githubToken = "GitHub Token" // WO-485: current GitHub token formats.
     case jdbcUrl = "JDBC URL"
     case xmlCredential = "XML Credential"
     case xmlUsername = "XML Username"
@@ -83,6 +88,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
+             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken,
              .jdbcUrl, .xmlCredential:
             return .critical
         case .email, .phone, .xmlUsername:
@@ -104,6 +110,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
+             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken,
              .jdbcUrl, .xmlCredential:
             return true
         case .email, .phone, .xmlUsername,
@@ -123,7 +130,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .genericApiKey: return "API keys and tokens (GitHub, Stripe, generic secret_ prefixes)"
         case .uuid: return "UUIDs (version 1-5 format)"
         case .dbConnectionString: return "Database connection strings (postgres://, mysql://, mongodb://)"
-        case .sshPrivateKey: return "SSH/PGP private key headers (BEGIN RSA/DSA/EC/OPENSSH PRIVATE KEY)"
+        case .sshPrivateKey: return "Complete RSA, DSA, EC, OpenSSH, and PKCS#8 private-key PEM blocks"
         case .jwtToken: return "JSON Web Tokens (three base64url-encoded segments)"
         case .creditCard: return "Credit card numbers (Visa, Mastercard, Amex) with Luhn validation"
         case .filePath: return "Sensitive file paths (/etc/*, /home/*/.ssh/*, etc.)"
@@ -150,6 +157,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .oraculKey: return "Oracul API keys (vc_<role>_ prefix)"
         case .obstalabsKey: return "ObstaLabs Ed25519-signed license keys (ol_ prefix with payload.signature structure)"
         case .resendKey: return "Resend transactional email API keys (re_ prefix)"
+        case .vaultToken: return "HashiCorp Vault service, batch, and recovery tokens"
+        case .slackToken: return "Slack bot, user, app, workflow, and rotating tokens"
+        case .googleApiKey: return "Google API keys (AIza prefix and exact length)"
+        case .dockerAccessToken: return "Docker personal and organization access tokens"
+        case .githubToken: return "GitHub personal, OAuth, app, installation, and refresh tokens"
         case .jdbcUrl: return "JDBC connection URLs (jdbc:oracle, jdbc:db2, jdbc:mysql, jdbc:postgresql, jdbc:sqlserver)"
         case .xmlCredential: return "Credentials in XML tags (password, secret, access_key)"
         case .xmlUsername: return "Usernames in XML tags (user, name within users context)"
@@ -168,7 +180,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .genericApiKey: return ["ghp_<36-character token>", "sk_live_<key>"]
         case .uuid: return ["550e8400-e29b-41d4-a716-446655440000"]
         case .dbConnectionString: return ["postgres://... (connection URI)", "mongodb://... (connection URI)"]
-        case .sshPrivateKey: return ["-----BEGIN <type> PRIVATE KEY-----"]
+        case .sshPrivateKey: return ["-----BEGIN <type> PRIVATE KEY----- ... -----END <type> PRIVATE KEY-----"]
         case .jwtToken: return ["<header>.<payload>.<signature> (base64url)"]
         case .creditCard: return ["4111 1111 1111 1111", "5500 0000 0000 0004"]
         case .filePath: return ["/etc/nginx/nginx.conf", "/home/deploy/.ssh/id_rsa"]
@@ -195,6 +207,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .oraculKey: return ["vc_admin_<32-hex-chars>", "vc_pro_<32-hex-chars>"]
         case .obstalabsKey: return ["ol_<base64url-payload>.<base64url-ed25519-sig>"]
         case .resendKey: return ["re_<24+-alphanumeric-chars>"]
+        case .vaultToken: return ["hvs.<24+-character-token>", "s.<legacy-token>"]
+        case .slackToken: return ["xoxb-<bot-token>", "xapp-<app-token>"]
+        case .googleApiKey: return ["AIza<35-character-key>"]
+        case .dockerAccessToken: return ["dckr_pat_<token>", "dckr_oat_<token>"]
+        case .githubToken: return ["github_pat_<token>", "ghs_<installation-token>"]
         case .jdbcUrl: return ["jdbc:oracle:thin:@host:1521:SID", "jdbc:postgresql://host:5432/db"]
         case .xmlCredential: return ["<password>secret123</password>", "<secret_access_key>KEY</secret_access_key>"]
         case .xmlUsername: return ["<user>admin</user>", "<name>deploy</name>"]

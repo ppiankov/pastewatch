@@ -91,6 +91,74 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
     }
 
+    // WO-462/WO-478/WO-479/WO-481/WO-482/WO-483/WO-485: the real proxy
+    // must contain complete intrinsic tokens and payload-bearing credentials.
+    func testIntrinsicProviderTokensAndPayloadsDoNotReachUpstream() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let slackStem = String(decoding: [120, 111, 120], as: UTF8.self)
+        let providerSecrets = [
+            "hvs." + String(repeating: "A1", count: 12),
+            slackStem + "b-1234567890-" + String(repeating: "Ab", count: 12),
+            "AIza" + String(repeating: "K", count: 35),
+            "dckr_pat_" + String(repeating: "Lm", count: 12),
+            "github_pat_" + String(repeating: "Pq", count: 20),
+            providerPEMFixture(label: "OPENSSH PRIVATE KEY", payload: String(repeating: "QUJD", count: 12))
+        ]
+        let gcpKeyID = String(repeating: "a1", count: 20)
+        let gcpKey = providerPEMFixture(label: "PRIVATE KEY", payload: String(repeating: "R0NQ", count: 12))
+        let gcpData = try JSONSerialization.data(withJSONObject: [
+            "type": "service_account",
+            "private_key_id": gcpKeyID,
+            "private_key": gcpKey
+        ], options: [.sortedKeys])
+        let gcpJSON = try XCTUnwrap(String(data: gcpData, encoding: .utf8))
+        let requestObject: [String: Any] = [
+            "model": "claude-3",
+            "messages": [[
+                "role": "user",
+                "content": [
+                    ["type": "tool_result", "tool_use_id": "toolu_1", "content": providerSecrets.joined(separator: "\n")],
+                    ["type": "tool_result", "tool_use_id": "toolu_2", "content": gcpJSON]
+                ]
+            ]]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: requestObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        for secret in providerSecrets + [gcpKeyID, gcpKey] {
+            XCTAssertFalse(forwarded.contains(secret), "upstream request leaked a raw intrinsic secret")
+        }
+        XCTAssertGreaterThanOrEqual(proxy.stats.requestsRedacted, 1)
+    }
+
     // WO-437: top-level system text is part of the Anthropic request shape and must be scanned.
     func testAnthropicSystemFieldCredentialRedactedThroughShapeGuardBeforeUpstream() throws {
         let requestLock = NSLock()
@@ -1396,6 +1464,10 @@ final class ProxyRealServerTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.01)
         }
         XCTFail("condition not satisfied before timeout", file: file, line: line)
+    }
+
+    private func providerPEMFixture(label: String, payload: String) -> String {
+        "-----BEGIN \(label)-----\n\(payload)\n-----END \(label)-----"
     }
 }
 
