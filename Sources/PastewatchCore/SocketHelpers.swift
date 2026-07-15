@@ -66,14 +66,18 @@ struct SSEFrameRedactionResult {
     var types: [String] { redactionTypes }
 }
 
-/// WO-404: mutation is certainty-gated, not severity-gated.
-func mutationSafeProxyMatches(_ matches: [DetectedMatch]) -> [DetectedMatch] {
-    matches.filter(\.mutationSafe)
+/// WO-454: compatibility filter backed by the evidence partition.
+func mutationSafeProxyMatches(_ matches: [DetectedMatch], site: MutationSite) -> [DetectedMatch] {
+    partitionMutationMatches(matches, site: site, minAdvisorySeverity: .low).authorized
 }
 
-/// WO-404: --severity controls advisory volume, never mutation.
-func streamAdvisoryMatches(_ matches: [DetectedMatch], severity: Severity) -> [DetectedMatch] {
-    matches.filter { !$0.mutationSafe && $0.effectiveSeverity >= severity }
+/// WO-454: --severity controls advisory volume, never mutation authorization.
+func streamAdvisoryMatches(
+    _ matches: [DetectedMatch],
+    severity: Severity,
+    site: MutationSite
+) -> [DetectedMatch] {
+    partitionMutationMatches(matches, site: site, minAdvisorySeverity: severity).advisory
 }
 
 /// WO-399: include configured custom rules on the streaming response path.
@@ -104,22 +108,25 @@ func redactRawStreamBytes(
     // swiftlint:disable:next optional_data_string_conversion
     let text = String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
     let matches = scanStreamText(text, config: config, customRules: customRules)
-    let filtered = mutationSafeProxyMatches(matches)
-    let advisories = streamAdvisoryMatches(matches, severity: severity)
-    let advisoryTypes = advisories.map { $0.displayName }
-    guard !filtered.isEmpty else {
+    let outcome = applyAuthorizedMutations(
+        to: text,
+        matches: matches,
+        site: .proxyResponse,
+        minAdvisorySeverity: severity
+    )
+    let advisoryTypes = outcome.advisory.map { $0.displayName }
+    guard !outcome.mutated.isEmpty else {
         return SSEFrameRedactionResult(
             data: raw, count: 0, types: [],
-            advisoryCount: advisories.count,
+            advisoryCount: outcome.advisory.count,
             advisoryTypes: advisoryTypes
         )
     }
-    let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
     return SSEFrameRedactionResult(
-        data: Data(obfuscated.utf8),
-        count: filtered.count,
-        types: filtered.map { $0.displayName },
-        advisoryCount: advisories.count,
+        data: Data(outcome.text.utf8),
+        count: outcome.mutated.count,
+        types: outcome.mutated.map { $0.displayName },
+        advisoryCount: outcome.advisory.count,
         advisoryTypes: advisoryTypes
     )
 }
@@ -183,16 +190,20 @@ func redactSSEFrame(
     for (field, value) in delta {
         guard field != "type", let text = value as? String else { continue }
         let matches = scanStreamText(text, config: config, customRules: customRules)
-        let filtered = mutationSafeProxyMatches(matches)
-        let advisories = streamAdvisoryMatches(matches, severity: severity)
-        advisoryCount += advisories.count
-        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-        guard !filtered.isEmpty else { continue }
+        let outcome = applyAuthorizedMutations(
+            to: text,
+            matches: matches,
+            site: .proxyResponse,
+            minAdvisorySeverity: severity
+        )
+        advisoryCount += outcome.advisory.count
+        advisoryTypes.append(contentsOf: outcome.advisory.map { $0.displayName })
+        guard !outcome.mutated.isEmpty else { continue }
         // WO-295: redact thinking_delta/input_json_delta and future text-bearing
         // delta string fields, not only text_delta's `text` field.
-        modifiedDelta[field] = Obfuscator.obfuscate(text, matches: filtered)
-        redacted += filtered.count
-        types.append(contentsOf: filtered.map { $0.displayName })
+        modifiedDelta[field] = outcome.text
+        redacted += outcome.mutated.count
+        types.append(contentsOf: outcome.mutated.map { $0.displayName })
     }
 
     guard redacted > 0 else {

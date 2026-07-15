@@ -9,6 +9,11 @@ import Foundation
 /// - After paste, the system returns to rest
 public struct Obfuscator {
 
+    /// WO-454: explicit display-hygiene exception for commands echoed to diagnostics.
+    public static func redactForDisplay(_ content: String, matches: [DetectedMatch]) -> String {
+        obfuscate(content, matches: matches)
+    }
+
     // WO-478: advisory scanner outcomes cannot authorize content replacement.
     /// Obfuscate all matches in the content.
     /// Returns the obfuscated content with matches replaced by placeholders.

@@ -48,6 +48,41 @@ final class ProxyBodyShapeGuardTests: XCTestCase {
         XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
     }
 
+    func testMalformedToolsContainersAreRefused() {
+        // WO-456: every present tools value must be a supported array of tool objects.
+        let bodies = [
+            #"{"messages":[],"tools":null}"#,
+            #"{"messages":[],"tools":"lookup"}"#,
+            #"{"messages":[],"tools":[{"name":"lookup"}]}"#,
+            #"{"messages":[],"tools":[{"name":"lookup","input_schema":{}},1]}"#,
+        ]
+        for body in bodies {
+            XCTAssertEqual(
+                verdict("POST", "/v1/messages", body),
+                .refuse("non-Anthropic messages schema")
+            )
+        }
+    }
+
+    func testValidToolsAndStopSequencesAreAllowed() {
+        let body = #"{"messages":[],"tools":[{"name":"lookup","description":"safe","input_schema":{"type":"object"},"input_examples":[{"query":"x"}]}],"stop_sequences":["done"]}"#
+        XCTAssertEqual(verdict("POST", "/v1/messages", body), .allow)
+    }
+
+    func testMalformedStopSequencesAreRefused() {
+        // WO-457: mixed and scalar containers cannot skip string scanning.
+        for body in [
+            #"{"messages":[],"stop_sequences":null}"#,
+            #"{"messages":[],"stop_sequences":"done"}"#,
+            #"{"messages":[],"stop_sequences":["done",1]}"#,
+        ] {
+            XCTAssertEqual(
+                verdict("POST", "/v1/messages", body),
+                .refuse("non-Anthropic messages schema")
+            )
+        }
+    }
+
     func testContentNullAllowed() {
         // WO-427: JSON null maps to NSNull and is equivalent to absent content.
         let body = """

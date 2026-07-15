@@ -172,7 +172,7 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
     }
 
     func testCurlNonUTF8ResponseBodyRedactsASCIICredentialBytePreserving() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "Y", count: 35)
         var body = Data([0xFF, 0xFE])
         body.append(Data("prefix \(credential) suffix".utf8))
         body.append(0x00)
@@ -184,11 +184,11 @@ final class ProxyHTTPRequestReadTests: XCTestCase {
         )
 
         XCTAssertEqual(redaction.count, 1)
-        XCTAssertEqual(redaction.types, ["Credential"])
+        XCTAssertEqual(redaction.types, ["Google API Key"])
         XCTAssertEqual(redaction.data.prefix(2), Data([0xFF, 0xFE]))
         XCTAssertEqual(redaction.data.last, 0x00)
         XCTAssertNil(redaction.data.range(of: Data(credential.utf8)))
-        XCTAssertNotNil(redaction.data.range(of: Data("<CREDENTIAL_1>".utf8)))
+        XCTAssertNotNil(redaction.data.range(of: Data("<GOOGLE_API_KEY_1>".utf8)))
     }
 
     func testCurlNonUTF8ResponseBodyHonorsCustomRules() {

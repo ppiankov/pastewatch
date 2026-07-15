@@ -71,7 +71,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "A", count: 35)
         let body = """
         {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}
         """
@@ -88,7 +88,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
         XCTAssertEqual(upstream.requestCount, 1, diagnostic)
         XCTAssertFalse(forwarded.contains(credential), "upstream request leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream request missing redaction placeholder")
     }
 
     // WO-462/WO-478/WO-479/WO-481/WO-482/WO-483/WO-485: the real proxy
@@ -157,6 +157,64 @@ final class ProxyRealServerTests: XCTestCase {
             XCTAssertFalse(forwarded.contains(secret), "upstream request leaked a raw intrinsic secret")
         }
         XCTAssertGreaterThanOrEqual(proxy.stats.requestsRedacted, 1)
+    }
+
+    // WO-454/WO-461: evidence, not request authorship, controls every field while
+    // advisory-only values remain byte-identical and absent from audit output.
+    func testMutationEvidenceIsConsistentAcrossAllRequestSites() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-evidence-matrix-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            severity: .low,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let token = "AIza" + String(repeating: "Z", count: 35)
+        let dsn = "postgres" + "://user:example@localhost/db"
+        let paired = "\(dsn) \(token)"
+        let body = """
+        {"model":"claude-3","system":"\(paired)","tools":[{"name":"lookup","description":"\(paired)","input_schema":{"type":"object","default":"\(paired)"},"input_examples":[{"value":"\(paired)"}]}],"messages":[{"role":"user","content":"\(paired)"},{"role":"assistant","content":[{"type":"text","text":"\(paired)"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"value":"\(paired)"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(paired)"}]}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+        proxy.drainAuditLogForTesting()
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        let forwardedBody = try XCTUnwrap(forwarded.components(separatedBy: "\r\n\r\n").last)
+        let forwardedJSON = try JSONSerialization.jsonObject(with: Data(forwardedBody.utf8))
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertEqual(countStringLeafOccurrences(in: forwardedJSON, of: dsn), 8, forwarded)
+        XCTAssertFalse(forwarded.contains(token), "intrinsic token reached upstream")
+        XCTAssertEqual(forwarded.components(separatedBy: "<GOOGLE_API_KEY_").count - 1, 8, forwarded)
+        XCTAssertEqual(proxy.stats.secretsRedacted, 8)
+        XCTAssertEqual(proxy.stats.advisoryMatches, 8)
+        XCTAssertFalse(audit.contains(token), audit)
+        XCTAssertFalse(audit.contains(dsn), audit)
     }
 
     // WO-478: malformed recognized private-key material must fail closed before
@@ -304,7 +362,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let credential = "password=system-hunter2"
+        let credential = "AIza" + String(repeating: "B", count: 35)
         let body = """
         {"model":"claude-3","system":"\(credential)","messages":[{"role":"user","content":"hello"}]}
         """
@@ -321,7 +379,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
         XCTAssertEqual(upstream.requestCount, 1, diagnostic)
         XCTAssertFalse(forwarded.contains(credential), "upstream system field leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream system field missing redaction placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream system field missing redaction placeholder")
     }
 
     // WO-447: array-form system text is scanned without dropping block metadata.
@@ -346,7 +404,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let credential = "password=system-block-hunter2"
+        let credential = "AIza" + String(repeating: "C", count: 35)
         let body = """
         {"model":"claude-3","system":[{"type":"text","text":"\(credential)","cache_control":{"type":"ephemeral"}},{"type":"image","source":"unchanged"}],"messages":[{"role":"user","content":"hello"}]}
         """
@@ -361,7 +419,7 @@ final class ProxyRealServerTests: XCTestCase {
         requestLock.unlock()
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
         XCTAssertFalse(forwarded.contains(credential), "upstream system block leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream system block missing placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream system block missing placeholder")
         XCTAssertTrue(forwarded.contains(#""cache_control":{"type":"ephemeral"}"#), forwarded)
         XCTAssertTrue(forwarded.contains(#""source":"unchanged""#), forwarded)
     }
@@ -392,7 +450,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let credential = "password=batch-hunter2"
+        let credential = "AIza" + String(repeating: "D", count: 35)
         let body = """
         {"requests":[{"custom_id":"r1","params":{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}}]}
         """
@@ -410,7 +468,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(upstream.requestCount, 1, diagnostic)
         XCTAssertTrue(forwarded.contains("POST /v1/messages/batches HTTP/1.1"), forwarded)
         XCTAssertFalse(forwarded.contains(credential), "upstream batch request leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream batch request missing redaction placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream batch request missing redaction placeholder")
     }
 
     // WO-444/WO-447: every batch params.system representation uses the same scanner as
@@ -436,9 +494,9 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let stringCredential = "password=batch-system-string-hunter2"
-        let blockCredential = "password=batch-system-block-hunter2"
-        let toolCredential = "password=batch-tool-hunter2"
+        let stringCredential = "AIza" + String(repeating: "E", count: 35)
+        let blockCredential = "AIza" + String(repeating: "F", count: 35)
+        let toolCredential = "AIza" + String(repeating: "G", count: 35)
         let body = """
         {"requests":[
           {"custom_id":"string","params":{"model":"claude-3","system":"\(stringCredential)","messages":[{"role":"user","content":"hello"}]}},
@@ -459,7 +517,7 @@ final class ProxyRealServerTests: XCTestCase {
         for credential in [stringCredential, blockCredential, toolCredential] {
             XCTAssertFalse(forwarded.contains(credential), "upstream batch leaked \(credential)")
         }
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_"), "upstream batch missing placeholders")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_"), "upstream batch missing placeholders")
         XCTAssertTrue(forwarded.contains(#""cache_control":{"type":"ephemeral"}"#), forwarded)
     }
 
@@ -522,7 +580,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let credential = "password=gateway-hunter2"
+        let credential = "AIza" + String(repeating: "H", count: 35)
         let body = """
         {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(credential)"}]}]}
         """
@@ -541,7 +599,7 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(upstream.requestCount, 1, diagnostic)
         XCTAssertTrue(forwarded.contains("POST /v1/llm-gateway/v1/messages HTTP/1.1"), forwarded)
         XCTAssertFalse(forwarded.contains(credential), "upstream request leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream request missing redaction placeholder")
     }
 
     // WO-421: streaming Anthropic requests also pass the shape guard and reach upstream.
@@ -916,8 +974,9 @@ final class ProxyRealServerTests: XCTestCase {
             }
         }
 
+        let dedupToken = "AIza" + String(repeating: "I", count: 35)
         let redactedBody = """
-        {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"password=reset-hunter2"}]}]}
+        {"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\(dedupToken)"}]}]}
         """
         _ = try TCPTestSocket.roundTrip(
             port: proxyPort,
@@ -966,7 +1025,8 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let body = #"{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"password=reset-hunter2"}]}]}"#
+        let dedupToken = "AIza" + String(repeating: "J", count: 35)
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"\#(dedupToken)"}]}]}"#
         for path in ["/v1/messages", "/v1/responses", "/v1/messages"] {
             let requestBody = path == "/v1/messages" ? body : #"{"input":"hello"}"#
             _ = try TCPTestSocket.roundTrip(
@@ -1266,7 +1326,7 @@ final class ProxyRealServerTests: XCTestCase {
             }
         }
 
-        let credential = "password=count-tokens-hunter2"
+        let credential = "AIza" + String(repeating: "K", count: 35)
         let body = #"{"model":"claude-3","system":"\#(credential)","messages":[{"role":"user","content":"count"}]}"#
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
@@ -1284,9 +1344,9 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), diagnostic)
         XCTAssertEqual(upstream.requestCount, 1, diagnostic)
         XCTAssertFalse(forwarded.contains(credential), "upstream count_tokens request leaked raw credential")
-        XCTAssertTrue(forwarded.contains("<CREDENTIAL_1>"), "upstream request missing redaction placeholder")
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream request missing redaction placeholder")
         XCTAssertTrue(audit.contains("PROXY REDACTED 1 secret(s) in /v1/messages/count_tokens"), audit)
-        XCTAssertTrue(audit.contains("Credential x1"), audit)
+        XCTAssertTrue(audit.contains("Google API Key x1"), audit)
     }
 
     func testCountTokensWithoutMessagesIsRefusedBeforeUpstream() throws {
@@ -1340,7 +1400,7 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
-        let rawCredential = "password=serialization-hunter2"
+        let rawCredential = "AIza" + String(repeating: "L", count: 35)
         let rawEmail = "operator@example.net"
         let body = """
         {"model":"claude-3","system":"\(rawCredential) \(rawEmail)","messages":[{"role":"user","content":"hello"}]}
@@ -1587,6 +1647,20 @@ final class ProxyRealServerTests: XCTestCase {
 
     private func providerPEMFixture(label: String, payload: String) -> String {
         "-----BEGIN \(label)-----\n\(payload)\n-----END \(label)-----"
+    }
+
+    // WO-454: compare parsed leaves so JSON escaping cannot weaken the matrix test.
+    private func countStringLeafOccurrences(in value: Any, of expected: String) -> Int {
+        if let text = value as? String {
+            return text.components(separatedBy: expected).count - 1
+        }
+        if let array = value as? [Any] {
+            return array.reduce(0) { $0 + countStringLeafOccurrences(in: $1, of: expected) }
+        }
+        if let object = value as? [String: Any] {
+            return object.values.reduce(0) { $0 + countStringLeafOccurrences(in: $1, of: expected) }
+        }
+        return 0
     }
 }
 

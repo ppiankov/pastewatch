@@ -8,6 +8,36 @@ import Foundation
 public struct DetectionRules {
     private static let maximumPrivateKeyBlockCharacters = 262_144 // WO-478: bound malformed PEM scans.
 
+    // WO-484: reviewed primary references travel with the intrinsic provider set.
+    public static let providerTokenPatternManifest: [ProviderTokenPatternMetadata] = [
+        .init(type: .awsKey, provider: "AWS", tokenFamily: "access keys", primarySource: "https://docs.aws.amazon.com/IAM/latest/UserGuide/security-creds.html", reviewedOn: "2026-07-15", fixtureID: "aws-access-key"),
+        .init(type: .genericApiKey, provider: "Prefixed tokens", tokenFamily: "GitHub and Stripe legacy tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "generic-prefixed-token"),
+        .init(type: .slackWebhook, provider: "Slack", tokenFamily: "incoming webhook", primarySource: "https://api.slack.com/messaging/webhooks", reviewedOn: "2026-07-15", fixtureID: "slack-webhook"),
+        .init(type: .discordWebhook, provider: "Discord", tokenFamily: "webhook", primarySource: "https://discord.com/developers/docs/resources/webhook", reviewedOn: "2026-07-15", fixtureID: "discord-webhook"),
+        .init(type: .openaiKey, provider: "OpenAI", tokenFamily: "API key", primarySource: "https://platform.openai.com/docs/api-reference/authentication", reviewedOn: "2026-07-15", fixtureID: "openai-key"),
+        .init(type: .anthropicKey, provider: "Anthropic", tokenFamily: "API key", primarySource: "https://docs.anthropic.com/en/api/getting-started", reviewedOn: "2026-07-15", fixtureID: "anthropic-key"),
+        .init(type: .huggingfaceToken, provider: "Hugging Face", tokenFamily: "user access token", primarySource: "https://huggingface.co/docs/hub/security-tokens", reviewedOn: "2026-07-15", fixtureID: "huggingface-token"),
+        .init(type: .groqKey, provider: "Groq", tokenFamily: "API key", primarySource: "https://console.groq.com/docs/quickstart", reviewedOn: "2026-07-15", fixtureID: "groq-key"),
+        .init(type: .npmToken, provider: "npm", tokenFamily: "access token", primarySource: "https://docs.npmjs.com/about-access-tokens", reviewedOn: "2026-07-15", fixtureID: "npm-token"),
+        .init(type: .pypiToken, provider: "PyPI", tokenFamily: "API token", primarySource: "https://pypi.org/help/#apitoken", reviewedOn: "2026-07-15", fixtureID: "pypi-token"),
+        .init(type: .rubygemsToken, provider: "RubyGems", tokenFamily: "API key", primarySource: "https://guides.rubygems.org/rubygems-org-api/", reviewedOn: "2026-07-15", fixtureID: "rubygems-token"),
+        .init(type: .gitlabToken, provider: "GitLab", tokenFamily: "personal access token", primarySource: "https://docs.gitlab.com/user/profile/personal_access_tokens/", reviewedOn: "2026-07-15", fixtureID: "gitlab-token"),
+        .init(type: .telegramBotToken, provider: "Telegram", tokenFamily: "bot token", primarySource: "https://core.telegram.org/bots/api", reviewedOn: "2026-07-15", fixtureID: "telegram-bot-token"),
+        .init(type: .sendgridKey, provider: "SendGrid", tokenFamily: "API key", primarySource: "https://www.twilio.com/docs/sendgrid/api-reference/how-to-use-the-sendgrid-v3-api/authentication", reviewedOn: "2026-07-15", fixtureID: "sendgrid-key"),
+        .init(type: .shopifyToken, provider: "Shopify", tokenFamily: "access token", primarySource: "https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens", reviewedOn: "2026-07-15", fixtureID: "shopify-token"),
+        .init(type: .digitaloceanToken, provider: "DigitalOcean", tokenFamily: "personal and OAuth tokens", primarySource: "https://docs.digitalocean.com/reference/api/create-personal-access-token/", reviewedOn: "2026-07-15", fixtureID: "digitalocean-token"),
+        .init(type: .perplexityKey, provider: "Perplexity", tokenFamily: "API key", primarySource: "https://docs.perplexity.ai/guides/getting-started", reviewedOn: "2026-07-15", fixtureID: "perplexity-key"),
+        .init(type: .workledgerKey, provider: "Workledger", tokenFamily: "API key", primarySource: "https://github.com/ppiankov/workledger", reviewedOn: "2026-07-15", fixtureID: "workledger-key"),
+        .init(type: .oraculKey, provider: "Oracul", tokenFamily: "API key", primarySource: "https://github.com/ppiankov/oracul", reviewedOn: "2026-07-15", fixtureID: "oracul-key"),
+        .init(type: .obstalabsKey, provider: "ObstaLabs", tokenFamily: "license key", primarySource: "https://github.com/ppiankov/obstalabs", reviewedOn: "2026-07-15", fixtureID: "obstalabs-key"),
+        .init(type: .resendKey, provider: "Resend", tokenFamily: "API key", primarySource: "https://resend.com/docs/dashboard/api-keys/introduction", reviewedOn: "2026-07-15", fixtureID: "resend-key"),
+        .init(type: .vaultToken, provider: "HashiCorp Vault", tokenFamily: "service and batch tokens", primarySource: "https://developer.hashicorp.com/vault/docs/concepts/tokens", reviewedOn: "2026-07-15", fixtureID: "vault-token"),
+        .init(type: .slackToken, provider: "Slack", tokenFamily: "bot, app, and rotating tokens", primarySource: "https://api.slack.com/authentication/token-types", reviewedOn: "2026-07-15", fixtureID: "slack-token"),
+        .init(type: .googleApiKey, provider: "Google Cloud", tokenFamily: "API key", primarySource: "https://cloud.google.com/docs/authentication/api-keys", reviewedOn: "2026-07-15", fixtureID: "google-api-key"),
+        .init(type: .dockerAccessToken, provider: "Docker", tokenFamily: "personal and organization access tokens", primarySource: "https://docs.docker.com/security/for-developers/access-tokens/", reviewedOn: "2026-07-15", fixtureID: "docker-access-token"),
+        .init(type: .githubToken, provider: "GitHub", tokenFamily: "fine-grained and installation tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "github-token"),
+    ]
+
     /// Safe hosts that should not trigger hostname detection.
     /// Matches chainwatch's safeHosts for consistency across tools.
     static let safeHosts: Set<String> = [
@@ -108,7 +138,9 @@ public struct DetectionRules {
 
         // Azure Storage Connection String - high confidence
         if let regex = try? NSRegularExpression(
-            pattern: #"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[^;]+"#,
+            // WO-480: contain the key value itself; do not consume adjacent JSON,
+            // punctuation, or prose merely because no trailing semicolon exists.
+            pattern: #"DefaultEndpointsProtocol=https;AccountName=[^;\s\"']+;AccountKey=[A-Za-z0-9+/=]+"#,
             options: []
         ) {
             result.append((.azureConnectionString, regex))
@@ -979,7 +1011,8 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         allowlist: Allowlist = Allowlist(),
-        customRules: [CustomRule] = []
+        customRules: [CustomRule] = [],
+        knownSecretValues: Set<String> = []
     ) -> [DetectedMatch] {
         var matches: [DetectedMatch] = []
         var matchedRanges: [Range<String.Index>] = []
@@ -1016,6 +1049,13 @@ public struct DetectionRules {
             if match.advisory != nil {
                 matches.removeAll { $0.range.overlaps(match.range) }
                 matchedRanges.removeAll { $0.overlaps(match.range) }
+            } else if let index = matches.firstIndex(where: { $0.range == match.range }) {
+                // WO-454: an exact built-in/custom overlap retains evidence from both
+                // detectors instead of allowing deduplication to weaken authorization.
+                matches[index] = matches[index].addingMutationAuthorizationSources(
+                    match.mutationAuthorizationSources
+                )
+                continue
             } else if matchedRanges.contains(where: { $0.overlaps(match.range) }) {
                 continue
             }
@@ -1026,6 +1066,13 @@ public struct DetectionRules {
         // Apply allowlist filtering
         if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty {
             matches = allowlist.filter(matches)
+        }
+
+        if !knownSecretValues.isEmpty {
+            matches = matches.map { match in
+                guard knownSecretValues.contains(match.value), match.advisory == nil else { return match }
+                return match.addingMutationAuthorizationSources([.exactKnownSecret])
+            }
         }
 
         return matches

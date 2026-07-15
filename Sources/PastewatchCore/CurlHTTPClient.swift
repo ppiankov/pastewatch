@@ -1117,7 +1117,8 @@ struct CurlHTTPClient {
         // swiftlint:enable optional_data_string_conversion
         let matches = streamAdvisoryMatches(
             scanStreamText(text, config: config, customRules: customRules),
-            severity: severity
+            severity: severity,
+            site: .proxyResponse
         )
         var types: [String] = []
         for match in matches {
@@ -1204,9 +1205,13 @@ struct CurlHTTPClient {
             config: config,
             customRules: customRules ?? CustomRule.compileValid(config.customRules)
         )
-        let redactionMatches = mutationSafeProxyMatches(matches)
+        let redactionMatches = mutationSafeProxyMatches(matches, site: .proxyResponse)
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
-        let advisories = streamAdvisoryMatches(matches, severity: severity)
+        let advisories = streamAdvisoryMatches(
+            matches,
+            severity: severity,
+            site: .proxyResponse
+        )
         let advisoryTypes = advisories.map { $0.displayName }
         guard !redactionMatches.isEmpty else {
             return SSEFrameRedactionResult(

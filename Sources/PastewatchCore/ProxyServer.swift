@@ -1097,27 +1097,24 @@ public final class ProxyServer {
         var types: [String] = []
         var advisoryCount = 0
         var advisoryTypes: [String] = []
-        let processedTopLevel = redactTopLevelStringFields(
-            json,
-            redacted: &redacted,
-            types: &types,
-            advisoryCount: &advisoryCount,
-            advisoryTypes: &advisoryTypes
-        )
-        let processedMessages = redactContentArray(
-            processedTopLevel,
-            redacted: &redacted,
-            types: &types,
-            advisoryCount: &advisoryCount,
-            advisoryTypes: &advisoryTypes
-        )
-        let processed = redactBatchRequestMessages(
-            processedMessages,
-            redacted: &redacted,
-            types: &types,
-            advisoryCount: &advisoryCount,
-            advisoryTypes: &advisoryTypes
-        )
+        let processed: [String: Any]
+        if json["requests"] != nil {
+            processed = redactBatchRequestMessages(
+                json,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        } else {
+            processed = redactRequestPayload(
+                json,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        }
 
         guard redacted > 0 else {
             return ScanResult(
@@ -1254,6 +1251,8 @@ public final class ProxyServer {
     // OpenAI siblings participate in refusal.
     func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
         guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        guard hasValidAnthropicTools(json["tools"]),
+              hasValidStopSequences(json["stop_sequences"]) else { return false }
         for message in messages {
             guard message["role"] is String else { return false }
             // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
@@ -1270,6 +1269,26 @@ public final class ProxyServer {
             }
         }
         return true
+    }
+
+    // WO-456: malformed tool containers cannot bypass the request scanner.
+    private func hasValidAnthropicTools(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard !(value is NSNull), let tools = value as? [[String: Any]] else { return false }
+        return tools.allSatisfy { tool in
+            guard let name = tool["name"] as? String, !name.isEmpty,
+                  tool["input_schema"] is [String: Any] else { return false }
+            if let description = tool["description"], !(description is String) { return false }
+            if let examples = tool["input_examples"], !(examples is [Any]) { return false }
+            return true
+        }
+    }
+
+    // WO-457: stop sequences are scannable strings, never an opaque mixed array.
+    private func hasValidStopSequences(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard !(value is NSNull), let sequences = value as? [Any] else { return false }
+        return sequences.allSatisfy { $0 is String }
     }
 
     // WO-432: Anthropic Message Batches wrap normal Messages params in requests[].params.
@@ -1454,6 +1473,7 @@ public final class ProxyServer {
             if let value = json[field] as? String {
                 result[field] = redactScannableText(
                     value,
+                    site: .proxySystem,
                     redacted: &redacted,
                     types: &types,
                     advisoryCount: &advisoryCount,
@@ -1467,6 +1487,7 @@ public final class ProxyServer {
                       let text = blocks[index]["text"] as? String else { continue }
                 blocks[index]["text"] = redactScannableText(
                     text,
+                    site: .proxySystem,
                     redacted: &redacted,
                     types: &types,
                     advisoryCount: &advisoryCount,
@@ -1480,25 +1501,108 @@ public final class ProxyServer {
 
     // WO-444/WO-447: keep certainty-gated mutation and advisory accounting identical
     // across string and block-array system representations.
+    // swiftlint:disable:next function_parameter_count
     private func redactScannableText(
         _ value: String,
+        site: MutationSite,
         redacted: inout Int,
         types: inout [String],
         advisoryCount: inout Int,
         advisoryTypes: inout [String]
     ) -> String {
         let matches = scanProxyText(value)
-        let filtered = mutationSafeProxyMatches(matches)
-        let advisories = streamAdvisoryMatches(matches, severity: severity)
-        advisoryCount += advisories.count
-        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-        guard !filtered.isEmpty else { return value }
-        redacted += filtered.count
-        types.append(contentsOf: filtered.map { $0.displayName })
-        return Obfuscator.obfuscate(value, matches: filtered)
+        let outcome = applyAuthorizedMutations(
+            to: value,
+            matches: matches,
+            site: site,
+            minAdvisorySeverity: severity
+        )
+        advisoryCount += outcome.advisory.count
+        advisoryTypes.append(contentsOf: outcome.advisory.map { $0.displayName })
+        redacted += outcome.mutated.count
+        types.append(contentsOf: outcome.mutated.map { $0.displayName })
+        return outcome.text
     }
 
-    /// Walk the messages array looking for tool_result content to scan.
+    // WO-454/WO-461: recursively scan structured values without changing keys or
+    // non-string leaves; the caller supplies the evidence-reporting site.
+    // swiftlint:disable:next function_parameter_count
+    private func redactJSONStrings(
+        _ value: Any,
+        site: MutationSite,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> Any {
+        if let text = value as? String {
+            return redactScannableText(
+                text,
+                site: site,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        }
+        if let array = value as? [Any] {
+            return array.map {
+                redactJSONStrings(
+                    $0, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        if let object = value as? [String: Any] {
+            return object.mapValues {
+                redactJSONStrings(
+                    $0, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        return value
+    }
+
+    // WO-454/WO-461: tool contracts and examples are visible to the scanner and
+    // use explicit sites; evidence, not field context, controls replacement.
+    private func redactTools(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        guard var tools = json["tools"] as? [[String: Any]] else { return result }
+        for index in tools.indices {
+            if let description = tools[index]["description"] as? String {
+                tools[index]["description"] = redactScannableText(
+                    description, site: .proxyToolDescription,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+            if let schema = tools[index]["input_schema"] {
+                tools[index]["input_schema"] = redactJSONStrings(
+                    schema, site: .proxyInputSchema,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+            if let examples = tools[index]["input_examples"] {
+                tools[index]["input_examples"] = redactJSONStrings(
+                    examples, site: .proxyToolInputExample,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        result["tools"] = tools
+        return result
+    }
+
+    /// WO-454: scan authored text and execution payloads with explicit sites.
     private func redactContentArray(
         _ json: [String: Any],
         redacted: inout Int,
@@ -1512,69 +1616,74 @@ public final class ProxyServer {
             return result
         }
 
-        for i in 0..<messages.count {
-            let msg = messages[i]
-            guard let role = msg["role"] as? String, role == "user" else { continue }
-
-            if let content = msg["content"] as? [[String: Any]] {
-                var newContent: [[String: Any]] = []
-                for block in content {
-                    if let type = block["type"] as? String, type == "tool_result",
-                       let blockContent = block["content"] as? String {
-                        let matches = scanProxyText(blockContent)
-                        let filtered = mutationSafeProxyMatches(matches)
-                        let advisories = streamAdvisoryMatches(matches, severity: severity)
-                        advisoryCount += advisories.count
-                        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-                        if !filtered.isEmpty {
-                            let obfuscated = Obfuscator.obfuscate(blockContent, matches: filtered)
-                            var newBlock = block
-                            newBlock["content"] = obfuscated
-                            newContent.append(newBlock)
-                            redacted += filtered.count
-                            types.append(contentsOf: filtered.map { $0.displayName })
-                        } else {
-                            newContent.append(block)
-                        }
-                    } else if let type = block["type"] as? String, type == "tool_result",
-                              let nestedContent = block["content"] as? [[String: Any]] {
-                        // Content can be array of {type: "text", text: "..."} blocks
-                        var newNested: [[String: Any]] = []
-                        for nested in nestedContent {
-                            if let nType = nested["type"] as? String, nType == "text",
-                               let text = nested["text"] as? String {
-                                let matches = scanProxyText(text)
-                                let filtered = mutationSafeProxyMatches(matches)
-                                let advisories = streamAdvisoryMatches(matches, severity: severity)
-                                advisoryCount += advisories.count
-                                advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-                                if !filtered.isEmpty {
-                                    let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
-                                    var newNest = nested
-                                    newNest["text"] = obfuscated
-                                    newNested.append(newNest)
-                                    redacted += filtered.count
-                                    types.append(contentsOf: filtered.map { $0.displayName })
-                                } else {
-                                    newNested.append(nested)
-                                }
-                            } else {
-                                newNested.append(nested)
-                            }
-                        }
-                        var newBlock = block
-                        newBlock["content"] = newNested
-                        newContent.append(newBlock)
-                    } else {
-                        newContent.append(block)
-                    }
-                }
-                messages[i]["content"] = newContent
+        for index in messages.indices {
+            let role = messages[index]["role"] as? String
+            let textSite: MutationSite = role == "user" ? .proxyUserText : .proxyAssistantText
+            if let text = messages[index]["content"] as? String {
+                messages[index]["content"] = redactScannableText(
+                    text, site: textSite, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+                continue
             }
+            guard var blocks = messages[index]["content"] as? [[String: Any]] else { continue }
+            for blockIndex in blocks.indices {
+                let blockType = blocks[blockIndex]["type"] as? String
+                if blockType == "tool_result", let content = blocks[blockIndex]["content"] {
+                    blocks[blockIndex]["content"] = redactJSONStrings(
+                        content, site: .proxyToolResult,
+                        redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                } else if blockType == "tool_use", let input = blocks[blockIndex]["input"] {
+                    blocks[blockIndex]["input"] = redactJSONStrings(
+                        input, site: .proxyToolUseInput,
+                        redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                } else if let text = blocks[blockIndex]["text"] as? String {
+                    blocks[blockIndex]["text"] = redactScannableText(
+                        text, site: textSite, redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                }
+            }
+            messages[index]["content"] = blocks
         }
 
         result["messages"] = messages
         return result
+    }
+
+    // WO-454/WO-457: one request-body walk covers ordinary and batch params.
+    private func redactRequestPayload(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = redactTopLevelStringFields(
+            json, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
+        result = redactTools(
+            result, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
+        if let sequences = result["stop_sequences"] as? [String] {
+            result["stop_sequences"] = sequences.map {
+                redactScannableText(
+                    $0, site: .proxyStopSequence,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        return redactContentArray(
+            result, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
     }
 
     // WO-432: scan nested Message Batch params with the same certainty gate used for
@@ -1593,19 +1702,9 @@ public final class ProxyServer {
 
         for index in requests.indices {
             guard let params = requests[index]["params"] as? [String: Any] else { continue }
-            let processedSystem = redactTopLevelStringFields(
-                params,
-                redacted: &redacted,
-                types: &types,
-                advisoryCount: &advisoryCount,
-                advisoryTypes: &advisoryTypes
-            )
-            requests[index]["params"] = redactContentArray(
-                processedSystem,
-                redacted: &redacted,
-                types: &types,
-                advisoryCount: &advisoryCount,
-                advisoryTypes: &advisoryTypes
+            requests[index]["params"] = redactRequestPayload(
+                params, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
             )
         }
 

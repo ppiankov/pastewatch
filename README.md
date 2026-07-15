@@ -40,9 +40,11 @@ Pastewatch prevents supported secret-leakage paths structurally without breaking
   Write code with placeholders →    MCP resolves originals locally on write-back
 ```
 
-The agent works normally. It reads files, runs commands, writes code. It just never sees the real values — and neither does the cloud.
+The agent works normally. It reads files, runs commands, and writes code. Through MCP,
+the agent sees reversible placeholders; through the proxy, intrinsically identifiable or
+operator-authorized secrets are replaced before supported traffic reaches the cloud.
 
-**No behavioral rules. No trust assumptions. No ML. The architecture prevents the leak.**
+**No ML and no probabilistic mutation. Authorization comes from secret evidence, not severity.**
 
 ## Why Pastewatch
 
@@ -76,8 +78,8 @@ All layers share the same detection engine — 30+ pattern types, deterministic 
 
 Pastewatch rewrites your data only when it is **certain** the value is a secret. This is a hard rule, not a tuning knob:
 
-- **Mutated (obfuscated/restored):** deterministic secret classes only — API keys, tokens, DSNs, JWTs, SSH keys, credit cards (Luhn-validated), and any pattern **you** approve via a custom rule.
-- **Advisory only (never mutated):** inherently ambiguous detections — emails, phone numbers, IPs, hostnames, file paths, UUIDs. A legitimate email or hostname in a real response is not a leak, and pastewatch will never corrupt a valid response by rewriting one. Instead it **nags you off-band** so you can decide whether to promote the pattern by adding a custom rule.
+- **Mutated:** intrinsically identifiable secrets such as provider tokens, complete private keys, validated JWTs and cards; exact values supplied by a trusted local source; and patterns **you** approve with a custom rule.
+- **Advisory only:** format-only DSN/JDBC URLs, generic credential assignments, XML credential-shaped text, and ambiguous detections such as emails, phone numbers, IPs, hostnames, file paths, and UUIDs. Pastewatch reports these off-band without rewriting them unless exact-value or custom-rule evidence authorizes mutation.
 - **`--severity` controls how much it nags, never what it rewrites.** Lowering severity surfaces more advisories; it never widens the set of values that get mutated.
 
 The result: false negatives are preferred over false positives, and mutation false positives are driven to ~zero by construction. Pastewatch never breaks a working agent response to redact something it only *might* be.
@@ -106,8 +108,9 @@ Pastewatch does not:
 Pastewatch scans text for sensitive patterns and replaces them with non-sensitive placeholders. The same engine powers all six layers:
 
 1. **Detection** — regex-based pattern matching across 30+ secret types (API keys, DSNs, tokens, credentials, PII)
-2. **Obfuscation** — matched values are replaced with typed placeholders (`<AWS_KEY_1>`, `<DB_CONNECTION_1>`)
-3. **Resolution** — MCP server stores originals in local RAM, restores them on write-back. Secrets never leave the machine
+2. **Authorization** — evidence partitions matches into mutation or advisory-only outcomes
+3. **Obfuscation** — authorized values are replaced with typed placeholders (`<AWS_KEY_1>`)
+4. **Resolution** — only the MCP server stores originals in local RAM and restores them on write-back
 
 The clipboard monitor scans before paste. The CLI scans files on demand. The MCP server scans on read and resolves on write. The guard scans commands before execution. The proxy scans API requests before they leave the network. Each layer catches what the others miss.
 
@@ -251,9 +254,9 @@ If detection is ambiguous, Pastewatch does nothing.
 Detected values are replaced with typed, numbered placeholders:
 
 ```
-john.doe@example.com  →  <EMAIL_1>
 AKIAIOSFODNN7EXAMPLE  →  <AWS_KEY_1>
-192.168.1.100         →  <IP_1>
+AIza...               →  <GOOGLE_API_KEY_1>
+github_pat_...        →  <GITHUB_TOKEN_1>
 ```
 
 How placeholders work depends on the layer:
@@ -261,17 +264,20 @@ How placeholders work depends on the layer:
 | Layer | Placeholder lifetime | Recovery |
 |-------|---------------------|----------|
 | **Clipboard** | Discarded after paste | None — one-way |
-| **CLI scan** | Output only | None — report only |
+| **CLI scan** | Output only | None — source files are never modified |
 | **MCP server** | Stored in RAM for the session | Write-back resolves originals locally |
 | **API proxy** | Replaced in-flight | None — redacted before it leaves |
 
-The MCP server is the only layer that maintains a mapping — it must, because the agent needs to write code with real values restored. The mapping lives in process memory and is lost when the session ends. No persistence, no disk, no cloud.
+The MCP server is the only layer that maintains a mapping, because it must restore
+placeholders locally when the agent writes a file. Clipboard and proxy replacement is
+one-way; responses are scanned independently rather than deobfuscated. The MCP mapping
+lives in process memory and is lost when the session ends.
 
 ---
 
 ## User Experience
 
-- **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: Email (1), API Key (1)`
+- **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: AWS Key (1), Google API Key (1)`
 - **CLI** — findings printed to stdout, exit code 6 if secrets found
 - **Startup sweep** — one stderr warning per changed shell config finding summary during `launch`; disable with `--no-startup-sweep` ([details](docs/startup-sweep.md))
 - **MCP** — transparent to the agent. It reads placeholders and writes them back. No user interaction needed
@@ -339,7 +345,7 @@ pastewatch-cli config check
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
 
-> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends) and Message Batch create requests (`/v1/messages/batches`). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Model names are guarded by a known foreign-family denylist, not a positive Anthropic allowlist, so future Anthropic or gateway-rewritten model aliases are accepted only on supported Anthropic paths. Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
+> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends) and Message Batch create requests (`/v1/messages/batches`). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Model names are advisory telemetry only because gateways and Anthropic-compatible providers may rewrite them; path and structural body checks form the admission boundary. Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
@@ -360,7 +366,7 @@ Every tool call an AI agent makes — including internal subprocesses you don't 
   └───────────┼──────────────────────────┘
               │
               ▼  Cloud API
-         api.anthropic.com (secrets never arrive)
+         api.anthropic.com (authorized matches removed)
 ```
 
 ```bash

@@ -391,11 +391,18 @@ final class MCPServer {
             return errorResult(id: id, text: "Shared pattern load failed: \(reason)")
         }
 
-        let allMatches = scanResult.matches
-        let matches = allMatches.filter { $0.effectiveSeverity >= minSeverity }
+        let partition = partitionMutationMatches(
+            scanResult.matches,
+            site: .mcpRead,
+            minAdvisorySeverity: minSeverity
+        )
+        let matches = partition.authorized
 
         if matches.isEmpty {
-            auditLogger?.log("READ  \(path)  clean")
+            let advisorySuffix = partition.advisory.isEmpty
+                ? "clean"
+                : "advisory=\(partition.advisory.count)"
+            auditLogger?.log("READ  \(path)  \(advisorySuffix)")
             let result: JSONValue = .array([
                 .object([
                     "type": .string("text"),

@@ -100,25 +100,28 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         }
     }
 
-    /// WO-404: only deterministic secret classes are safe to mutate automatically.
-    public var mutationSafe: Bool {
+    /// WO-454: only formats whose matched bytes prove a secret authorize mutation.
+    public var intrinsicMutationAuthorized: Bool {
         switch self {
-        case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
-             .jwtToken, .creditCard, .credential,
+        case .awsKey, .genericApiKey, .sshPrivateKey,
+             .jwtToken, .creditCard,
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
-             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken,
-             .jdbcUrl, .xmlCredential:
+             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken:
             return true
-        case .email, .phone, .xmlUsername,
+        case .dbConnectionString, .jdbcUrl, .credential, .xmlCredential,
+             .email, .phone, .xmlUsername,
              .ipAddress, .filePath, .hostname, .xmlHostname,
              .uuid, .highEntropyString:
             return false
         }
     }
+
+    /// Backward-compatible certainty name. New mutation code uses evidence sources.
+    public var mutationSafe: Bool { intrinsicMutationAuthorized }
 
     /// Human-readable explanation of what this type detects.
     public var explanation: String {
@@ -226,6 +229,23 @@ public enum DetectionAdvisory: String, Equatable {
     case malformedPrivateKey
 }
 
+/// WO-484: offline provenance for every intrinsically authorized provider pattern.
+public struct ProviderTokenPatternMetadata {
+    public let type: SensitiveDataType
+    public let provider: String
+    public let tokenFamily: String
+    public let primarySource: String
+    public let reviewedOn: String
+    public let fixtureID: String
+}
+
+/// WO-454: evidence that independently authorizes replacement of matched bytes.
+public enum MutationAuthorizationSource: Hashable {
+    case intrinsicFormat
+    case exactKnownSecret
+    case customRule
+}
+
 /// A single detected match in the clipboard content.
 public struct DetectedMatch: Identifiable, Equatable {
     public let id = UUID()
@@ -237,6 +257,7 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let customRuleName: String?
     public let customSeverity: Severity?
     public let advisory: DetectionAdvisory? // WO-478: non-mutating malformed-input evidence.
+    public let mutationAuthorizationSources: Set<MutationAuthorizationSource> // WO-454: OR-merged provenance.
 
     public init(
         type: SensitiveDataType,
@@ -246,7 +267,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         filePath: String? = nil,
         customRuleName: String? = nil,
         customSeverity: Severity? = nil,
-        advisory: DetectionAdvisory? = nil
+        advisory: DetectionAdvisory? = nil,
+        mutationAuthorizationSources: Set<MutationAuthorizationSource>? = nil
     ) {
         self.type = type
         self.value = value
@@ -256,6 +278,14 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.customRuleName = customRuleName
         self.customSeverity = customSeverity
         self.advisory = advisory
+        var sources = mutationAuthorizationSources ?? []
+        if advisory == nil && type.intrinsicMutationAuthorized {
+            sources.insert(.intrinsicFormat)
+        }
+        if advisory == nil && customRuleName != nil {
+            sources.insert(.customRule)
+        }
+        self.mutationAuthorizationSources = sources
     }
 
     /// Effective severity: custom override if set, otherwise type default.
@@ -263,9 +293,24 @@ public struct DetectedMatch: Identifiable, Equatable {
         customSeverity ?? type.severity
     }
 
-    /// WO-404: custom rules are explicit operator approval to mutate matches.
+    /// Compatibility surface for callers not yet interested in provenance.
     public var mutationSafe: Bool {
-        advisory == nil && (customRuleName != nil || type.mutationSafe)
+        advisory == nil && !mutationAuthorizationSources.isEmpty
+    }
+
+    /// WO-454: merge authorization with OR semantics during overlap resolution.
+    func addingMutationAuthorizationSources(_ sources: Set<MutationAuthorizationSource>) -> DetectedMatch {
+        DetectedMatch(
+            type: type,
+            value: value,
+            range: range,
+            line: line,
+            filePath: filePath,
+            customRuleName: customRuleName,
+            customSeverity: customSeverity,
+            advisory: advisory,
+            mutationAuthorizationSources: mutationAuthorizationSources.union(sources)
+        )
     }
 
     /// Display name for output (custom rule name or type rawValue).

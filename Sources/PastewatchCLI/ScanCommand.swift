@@ -152,7 +152,12 @@ struct Scan: ParsableCommand {
         if check {
             outputCheckMode(matches: matches, filePath: file)
         } else {
-            let obfuscated = Obfuscator.obfuscate(input, matches: matches)
+            let obfuscated = applyAuthorizedMutations(
+                to: input,
+                matches: matches,
+                site: .cliScan,
+                minAdvisorySeverity: .low
+            ).text
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
         if shouldFail(matches: matches) {

@@ -40,7 +40,7 @@ struct Guard: ParsableCommand {
             $0.effectiveSeverity >= failOnSeverity
         }
         // WO-138: JSON output must preserve command context without echoing inline credential values.
-        let redactedCommand = Obfuscator.obfuscate(command, matches: commandDisplayMatches)
+        let redactedCommand = Obfuscator.redactForDisplay(command, matches: commandDisplayMatches)
 
         if !commandFiltered.isEmpty {
             shouldBlock = true
