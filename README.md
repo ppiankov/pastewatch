@@ -79,7 +79,7 @@ All layers share the same detection engine — 30+ pattern types, deterministic 
 Pastewatch rewrites your data only when it is **certain** the value is a secret. This is a hard rule, not a tuning knob:
 
 - **Mutated:** intrinsically identifiable secrets such as provider tokens, complete private keys, validated JWTs and cards; exact values supplied by a trusted local source; and patterns **you** approve with a custom rule.
-- **Advisory only:** format-only DSN/JDBC URLs, generic credential assignments, XML credential-shaped text, and ambiguous detections such as emails, phone numbers, IPs, hostnames, file paths, and UUIDs. Pastewatch reports these off-band without rewriting them unless exact-value or custom-rule evidence authorizes mutation.
+- **Advisory only:** format-only DSN/JDBC URLs, broad generic API-key prefixes (`sk-`, `pk-`, `api_`), generic credential assignments, XML credential-shaped text, and ambiguous detections such as emails, phone numbers, IPs, hostnames, file paths, and UUIDs. Pastewatch reports these off-band without rewriting them unless exact-value or custom-rule evidence authorizes mutation. Exact sourced-provider grammars, including GitHub classic tokens and Stripe keys, remain intrinsically authorized.
 - **`--severity` controls how much it nags, never what it rewrites.** Lowering severity surfaces more advisories; it never widens the set of values that get mutated.
 
 The result: false negatives are preferred over false positives, and mutation false positives are driven to ~zero by construction. Pastewatch never breaks a working agent response to redact something it only *might* be.
