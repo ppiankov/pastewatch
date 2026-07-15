@@ -1427,6 +1427,51 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertFalse(audit.contains(rawEmail), audit)
     }
 
+    func testBatchSerializationFailureBlocksForwarding() throws {
+        // WO-465: batch params share the fail-closed serializer boundary with
+        // ordinary Messages requests and must never fall back to the raw body.
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-batch-redaction-failure-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        proxy.requestBodySerializer = { _ in throw CocoaError(.fileWriteUnknown) }
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let token = "AIza" + String(repeating: "M", count: 35)
+        let body = """
+        {"requests":[{"custom_id":"request-1","params":{"model":"claude-3","messages":[{"role":"user","content":"\(token)"}]}}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages/batches", body: body),
+            timeoutSeconds: 10
+        )
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertTrue(response.contains("HTTP/1.1 500 Internal Server Error"), response)
+        XCTAssertEqual(upstream.requestCount, 0)
+        XCTAssertEqual(proxy.stats.redactionFailures, 1)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 0)
+        XCTAssertTrue(audit.contains("PROXY REDACTION FAILED 1 secret(s) in /v1/messages/batches"), audit)
+        XCTAssertFalse(audit.contains(token), audit)
+    }
+
     func testAdmissionCapRejectsFifthConcurrentConnection() throws {
         let upstreamEntered = DispatchSemaphore(value: 0)
         let upstreamRelease = DispatchSemaphore(value: 0)

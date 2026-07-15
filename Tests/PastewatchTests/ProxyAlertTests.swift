@@ -235,6 +235,69 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"), result.body)
     }
 
+    func testAssistantOnlyToolUseRecursesIntoExplicitlyAuthorizedInput() throws {
+        // WO-463/WO-467: tool_use.input is CONTRACT context, so only explicit
+        // operator authorization may mutate a deeply nested value.
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(
+                name: "Approved nested token",
+                pattern: #"ACME-NESTED-[A-Z]+"#,
+                severity: "high"
+            )
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .high)
+        let value = "ACME-NESTED-ALPHA"
+        let body = """
+        {"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"outer":[{"inner":"\(value)"}]}}]}]}
+        """
+
+        let result = customServer.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(value))
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+        let input = try XCTUnwrap(content[0]["input"] as? [String: Any])
+        let outer = try XCTUnwrap(input["outer"] as? [[String: Any]])
+        XCTAssertEqual(outer[0]["inner"] as? String, "<CREDENTIAL_1>")
+    }
+
+    func testToolSchemaEnumPreservesBuiltInAndMutatesCustomRule() throws {
+        // WO-468: schema enums are recursively scanned as CONTRACT material.
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(
+                name: "Approved schema token",
+                pattern: #"ACME-SCHEMA-[A-Z]+"#,
+                severity: "high"
+            )
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .low)
+        let dsn = "postgres" + "://user:example@localhost/db"
+        let approved = "ACME-SCHEMA-ALPHA"
+        let body = """
+        {"tools":[{"name":"lookup","input_schema":{"type":"string","enum":["\(dsn)","\(approved)","safe"]}}],"messages":[]}
+        """
+
+        let result = customServer.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.advisoryCount, 1)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let tools = try XCTUnwrap(json["tools"] as? [[String: Any]])
+        let schema = try XCTUnwrap(tools[0]["input_schema"] as? [String: Any])
+        let values = try XCTUnwrap(schema["enum"] as? [String])
+        XCTAssertEqual(values[0], dsn)
+        XCTAssertEqual(values[1], "<CREDENTIAL_1>")
+        XCTAssertEqual(values[2], "safe")
+    }
+
     func testBodyRedactionAuditIsDeferredForStreamingRequests() {
         XCTAssertFalse(server.shouldLogBodyRedactionBeforeForwarding(
             redactionCount: 1,
