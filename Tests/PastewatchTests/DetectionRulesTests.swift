@@ -74,7 +74,8 @@ final class DetectionRulesTests: XCTestCase {
 
     // MARK: - API Key Detection
 
-    func testDetectsGitHubToken() {
+    // WO-485: preserve the established type for classic GitHub token prefixes.
+    func testDetectsClassicGitHubTokenAsGenericAPIKey() {
         let content = "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         let matches = DetectionRules.scan(content, config: config)
 
@@ -159,7 +160,11 @@ final class DetectionRulesTests: XCTestCase {
     // MARK: - SSH Key Detection
 
     func testDetectsSSHPrivateKey() {
-        let content = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA..."
+        let content = pemFixture(
+            label: "RSA PRIVATE KEY",
+            payload: String(repeating: "QUJD", count: 12),
+            newline: "\n"
+        )
         let matches = DetectionRules.scan(content, config: config)
 
         let sshMatches = matches.filter { $0.type == .sshPrivateKey }
@@ -474,15 +479,14 @@ final class DetectionRulesTests: XCTestCase {
     // MARK: - GCP Service Account Detection
 
     func testDetectsGCPServiceAccount() {
-        let content = """
-        {"type": "service_account", "project_id": "my-project"}
-        """
+        XCTAssertTrue(config.isTypeEnabled(.gcpServiceAccount))
+        let content = #"{"type":"service_account","private_key_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"}"#
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .gcpServiceAccount })
     }
 
     func testDetectsGCPServiceAccountWithSpacing() {
-        let content = #""type" :  "service_account""#
+        let content = #"{"private_key_id" : "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "type" : "service_account"}"#
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .gcpServiceAccount })
     }
@@ -1277,5 +1281,211 @@ final class DetectionRulesTests: XCTestCase {
         // Short value — should not be detected as genericApiKey via whsec_ rule
         XCTAssertFalse(matches.contains { $0.type == .genericApiKey && $0.value.hasPrefix("whsec_") },
                        "whsec_ value shorter than 24 chars should not match")
+    }
+
+    // WO-462/WO-481/WO-482/WO-483/WO-485: standalone provider tokens must be
+    // recognized from their documented intrinsic format, without keyword context.
+    func testDetectsStandaloneProviderTokens() {
+        let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
+        let fixtures: [(SensitiveDataType, String)] = [
+            (.vaultToken, "hvs." + String(repeating: "A1", count: 12)),
+            (.vaultToken, "hvb." + String(repeating: "B2", count: 12)),
+            (.vaultToken, "hvr." + String(repeating: "C3", count: 12)),
+            (.vaultToken, "s.iyNUgdDrn8sBHtdb9Vjfhk3n"),
+            (.vaultToken, "b." + String(repeating: "c3", count: 12)),
+            (.vaultToken, "r." + String(repeating: "d4", count: 12)),
+            (.slackToken, slackStem + "b-1234567890-" + String(repeating: "Ab", count: 12)),
+            (.slackToken, slackStem + "p-1234567890-" + String(repeating: "Bc", count: 12)),
+            (.slackToken, "xapp-1-A1234567890-" + String(repeating: "Cd", count: 12)),
+            (.slackToken, "xwfp-" + String(repeating: "Ef", count: 12)),
+            (.slackToken, slackStem + "e." + slackStem + "p-1-" + String(repeating: "Gh", count: 12)),
+            (.slackToken, "xoxe-1-" + String(repeating: "Ij", count: 12)),
+            (.googleApiKey, "AIza" + String(repeating: "K", count: 35)),
+            (.dockerAccessToken, "dckr_pat_" + String(repeating: "L", count: 15)),
+            (.dockerAccessToken, "dckr_oat_" + String(repeating: "N", count: 15)),
+            (.githubToken, "github_pat_" + String(repeating: "Pq", count: 20)),
+            (.githubToken, "ghs_12345_" + jwtFixture())
+        ]
+
+        for (type, fixture) in fixtures {
+            let matches = DetectionRules.scan(fixture, config: config)
+            XCTAssertTrue(
+                matches.contains { $0.type == type && $0.value == fixture && $0.mutationSafe },
+                "expected complete intrinsic match for \(type.rawValue)"
+            )
+        }
+    }
+
+    func testProviderTokenNearMissesDoNotMatch() {
+        let slackStem = String(bytes: [120, 111, 120], encoding: .utf8) ?? ""
+        let nearMisses = [
+            "hvs.short",
+            "prefixhvb." + String(repeating: "A", count: 24),
+            "s.formatMessageWithAllArgumentsProvidedHere",
+            "r.status_code_was_definitely_not_two_hundred_here",
+            "b.filesWithVeryLongDescriptiveNamesInAModuleHere",
+            "s." + String(repeating: "A", count: 25),
+            "b." + String(repeating: "B", count: 23),
+            "xoxa-" + String(repeating: "B", count: 24),
+            slackStem + "b-short",
+            slackStem + "e." + slackStem + "a-1-" + String(repeating: "C", count: 24),
+            slackStem + "e." + slackStem + "p-" + String(repeating: "D", count: 24),
+            slackStem + "e-not-a-version-" + String(repeating: "E", count: 24),
+            "AIza" + String(repeating: "F", count: 34),
+            "AIza" + String(repeating: "G", count: 36),
+            "AIza" + String(repeating: "H", count: 17) + "!" + String(repeating: "I", count: 17),
+            "prefixAIza" + String(repeating: "J", count: 35),
+            "dckr_pat_short",
+            "dckr_oat_" + String(repeating: "K", count: 14),
+            "dckr_pat_" + String(repeating: "L", count: 7) + "!" + String(repeating: "L", count: 8),
+            "prefixdckr_pat_" + String(repeating: "M", count: 15),
+            "github_pat_short",
+            "github_pat_" + String(repeating: "N", count: 19),
+            "github_pat_" + String(repeating: "O", count: 10) + "-" + String(repeating: "O", count: 10),
+            "prefixgithub_pat_" + String(repeating: "P", count: 20),
+            "ghs_not-an-app-id_" + jwtFixture(),
+            "ghs_12345_not-a-jwt"
+        ]
+
+        for value in nearMisses {
+            let matches = DetectionRules.scan(value, config: config)
+            XCTAssertFalse(matches.contains { [.vaultToken, .slackToken, .googleApiKey,
+                .dockerAccessToken, .githubToken].contains($0.type) }, "unexpected match for \(value.prefix(16))")
+        }
+    }
+
+    // WO-478: the match must contain the full private payload, not only its marker.
+    func testSSHPrivateKeyMatchesCompleteBoundedPEMBlocks() {
+        let first = pemFixture(label: "OPENSSH PRIVATE KEY", payload: String(repeating: "QUJD", count: 12), newline: "\n")
+        let second = pemFixture(label: "RSA PRIVATE KEY", payload: String(repeating: "REVG", count: 12), newline: "\r\n")
+        let content = first + "\npublic text\n" + second
+        let matches = DetectionRules.scan(content, config: config).filter { $0.type == .sshPrivateKey }
+
+        XCTAssertEqual(matches.map(\.value), [first, second])
+        let redacted = Obfuscator.obfuscate(content, matches: matches)
+        XCTAssertFalse(redacted.contains("PRIVATE KEY-----"))
+        XCTAssertFalse(redacted.contains("QUJD"))
+        XCTAssertFalse(redacted.contains("REVG"))
+    }
+
+    // WO-478: malformed recognized private-key blocks are advisory findings, not
+    // successful secret containment matches.
+    func testSSHPrivateKeyReportsMalformedBlocksWithoutAuthorizingMutation() {
+        let incomplete = "-----BEGIN OPENSSH PRIVATE " + "KEY-----\n" + String(repeating: "QUJD", count: 12)
+        let mismatched = incomplete + "\n-----END RSA PRIVATE KEY-----"
+        let nested = incomplete + "\n" + pemFixture(
+            label: "RSA PRIVATE KEY", payload: String(repeating: "REVG", count: 12), newline: "\n"
+        )
+        let oversized = pemFixture(
+            label: "PRIVATE KEY", payload: String(repeating: "A", count: 262_145), newline: "\n"
+        )
+
+        for value in [incomplete, mismatched, nested, oversized] {
+            let matches = DetectionRules.scan(value, config: config)
+            let privateKeyMatches = matches.filter { $0.type == .sshPrivateKey }
+            XCTAssertFalse(privateKeyMatches.isEmpty)
+            XCTAssertTrue(privateKeyMatches.allSatisfy { $0.advisory == .malformedPrivateKey })
+            XCTAssertTrue(privateKeyMatches.allSatisfy { !$0.mutationSafe })
+            XCTAssertEqual(Obfuscator.obfuscate(value, matches: matches), value)
+        }
+
+        for value in [
+            "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----",
+            "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----"
+        ] {
+            XCTAssertFalse(DetectionRules.scan(value, config: config).contains { $0.advisory != nil })
+        }
+    }
+
+    // WO-479: only secret-bearing fields in a structurally identified service-account
+    // object are authorized; the type marker itself is context, not a secret.
+    func testGCPServiceAccountMatchesPrivateFieldsAndPreservesJSON() throws {
+        let key = pemFixture(label: "PRIVATE KEY", payload: String(repeating: "R0NQ", count: 12), newline: "\n")
+        let keyID = String(repeating: "a1", count: 20)
+        let object: [String: Any] = [
+            "wrapper": [
+                "type": "service_account",
+                "private_key_id": keyID,
+                "private_key": key,
+                "unknown": true
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let matches = DetectionRules.scan(content, config: config).filter { $0.type == .gcpServiceAccount }
+
+        XCTAssertEqual(Set(matches.map(\.value)), Set([keyID, try jsonEscapedStringContent(key)]))
+        let redacted = Obfuscator.obfuscate(content, matches: matches)
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: Data(redacted.utf8)))
+        XCTAssertFalse(redacted.contains(keyID))
+        XCTAssertFalse(redacted.contains("R0NQ"))
+        XCTAssertTrue(redacted.contains("service_account"))
+    }
+
+    func testGCPMarkerAloneAndBenignPrivateFieldsDoNotAuthorizeMutation() throws {
+        let benign: [String: Any] = [
+            "type": "user",
+            "private_key_id": String(repeating: "a1", count: 20),
+            "private_key": "not a service account key"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: benign, options: [.sortedKeys])
+        let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertFalse(DetectionRules.scan(content, config: config).contains { $0.type == .gcpServiceAccount })
+        XCTAssertFalse(DetectionRules.scan(#"{"type":"service_account"}"#, config: config)
+            .contains { $0.type == .gcpServiceAccount })
+    }
+
+    // WO-479: authorization belongs to an exact object path/range, never to an
+    // equal value elsewhere in the JSON document.
+    func testGCPServiceAccountRangesDoNotAuthorizeEqualSiblingValues() throws {
+        let key = "gcp-private-material-\r\n" + String(repeating: "R0NQ", count: 12)
+        let keyID = String(repeating: "b2", count: 20)
+        let object: [String: Any] = [
+            "service": [
+                "private_key": key,
+                "nested": ["private_key": key, "private_key_id": keyID],
+                "type": "service_account",
+                "private_key_id": keyID
+            ],
+            "benign": ["type": "user", "private_key": key, "private_key_id": keyID],
+            "services": [["private_key_id": keyID, "type": "service_account", "private_key": key]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let matches = DetectionRules.scan(content, config: config).filter { $0.type == .gcpServiceAccount }
+
+        XCTAssertEqual(matches.count, 4)
+        let redacted = Obfuscator.obfuscate(content, matches: matches)
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(redacted.utf8)) as? [String: Any]
+        )
+        let service = try XCTUnwrap(parsed["service"] as? [String: Any])
+        let nested = try XCTUnwrap(service["nested"] as? [String: Any])
+        let benign = try XCTUnwrap(parsed["benign"] as? [String: Any])
+        let services = try XCTUnwrap(parsed["services"] as? [[String: Any]])
+
+        XCTAssertNotEqual(service["private_key"] as? String, key)
+        XCTAssertNotEqual(service["private_key_id"] as? String, keyID)
+        XCTAssertEqual(nested["private_key"] as? String, key)
+        XCTAssertEqual(nested["private_key_id"] as? String, keyID)
+        XCTAssertEqual(benign["private_key"] as? String, key)
+        XCTAssertEqual(benign["private_key_id"] as? String, keyID)
+        XCTAssertNotEqual(services.first?["private_key"] as? String, key)
+        XCTAssertNotEqual(services.first?["private_key_id"] as? String, keyID)
+    }
+
+    private func pemFixture(label: String, payload: String, newline: String) -> String {
+        "-----BEGIN \(label)-----\(newline)\(payload)\(newline)-----END \(label)-----"
+    }
+
+    private func jsonEscapedStringContent(_ value: String) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: [value])
+        let encoded = try XCTUnwrap(String(data: data, encoding: .utf8))
+        return String(encoded.dropFirst(2).dropLast(2))
+    }
+
+    private func jwtFixture() -> String {
+        "eyJ" + String(repeating: "A", count: 12) + ".eyJ" + String(repeating: "B", count: 12) + "." + String(repeating: "C", count: 20)
     }
 }

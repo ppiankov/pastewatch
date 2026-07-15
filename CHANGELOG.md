@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Mutation authorization now comes from intrinsic secret format, exact known-value
+  evidence, or an operator custom rule. Severity and request-field context affect
+  advisory reporting only; format-only DSN/JDBC and generic credential matches remain
+  visible without being rewritten.
+- The Anthropic request scanner now covers tool contracts, input examples, message text,
+  tool inputs/results, and stop sequences, and rejects malformed tool/stop containers.
+- Proxy replacement is documented as one-way. Reversible local restoration remains an
+  MCP read/write capability.
+
+### Fixed
+
+- Azure Storage connection-string detection no longer consumes bytes following the
+  base64 `AccountKey` value.
+
 ## [0.29.0] - 2026-07-12
 
 ### Added

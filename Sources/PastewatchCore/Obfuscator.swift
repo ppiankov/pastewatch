@@ -9,9 +9,18 @@ import Foundation
 /// - After paste, the system returns to rest
 public struct Obfuscator {
 
+    /// WO-454: explicit display-hygiene exception for commands echoed to diagnostics.
+    public static func redactForDisplay(_ content: String, matches: [DetectedMatch]) -> String {
+        obfuscate(content, matches: matches)
+    }
+
+    // WO-478: advisory scanner outcomes cannot authorize content replacement.
     /// Obfuscate all matches in the content.
     /// Returns the obfuscated content with matches replaced by placeholders.
     public static func obfuscate(_ content: String, matches: [DetectedMatch]) -> String {
+        // WO-478: advisory diagnostics reserve ranges for reporting but never
+        // authorize replacement, even when a caller passes the full scan result.
+        let matches = matches.filter { $0.advisory == nil }
         guard !matches.isEmpty else { return content }
 
         // Sort matches by range start position (descending) to replace from end

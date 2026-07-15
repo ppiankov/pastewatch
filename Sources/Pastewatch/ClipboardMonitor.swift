@@ -117,18 +117,28 @@ final class ClipboardMonitor: ObservableObject {
         guard config.enabled else { return }
 
         // Scan for sensitive data
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(
+            content,
+            config: config,
+            customRules: CustomRule.compileValid(config.customRules)
+        )
 
         // No matches — nothing to do
-        guard !matches.isEmpty else { return }
+        let outcome = applyAuthorizedMutations(
+            to: content,
+            matches: matches,
+            site: .clipboard,
+            minAdvisorySeverity: .low
+        )
+        guard !outcome.mutated.isEmpty else { return }
 
         // Obfuscate and replace clipboard content
-        let obfuscatedContent = Obfuscator.obfuscate(content, matches: matches)
+        let obfuscatedContent = outcome.text
 
         // Create scan result
         let result = ScanResult(
             originalContent: content,
-            matches: matches,
+            matches: outcome.mutated,
             obfuscatedContent: obfuscatedContent,
             timestamp: Date()
         )
@@ -143,7 +153,7 @@ final class ClipboardMonitor: ObservableObject {
         // Update state
         DispatchQueue.main.async { [weak self] in
             self?.lastScanResult = result
-            self?.sessionObfuscationCount += matches.count
+            self?.sessionObfuscationCount += outcome.mutated.count
             self?.onObfuscation?(result)
         }
     }
@@ -154,13 +164,22 @@ final class ClipboardMonitor: ObservableObject {
         guard let content = NSPasteboard.general.string(forType: .string) else { return nil }
         guard !content.isEmpty else { return nil }
 
-        let matches = DetectionRules.scan(content, config: config)
-        let obfuscatedContent = Obfuscator.obfuscate(content, matches: matches)
+        let matches = DetectionRules.scan(
+            content,
+            config: config,
+            customRules: CustomRule.compileValid(config.customRules)
+        )
+        let outcome = applyAuthorizedMutations(
+            to: content,
+            matches: matches,
+            site: .clipboard,
+            minAdvisorySeverity: .low
+        )
 
         return ScanResult(
             originalContent: content,
-            matches: matches,
-            obfuscatedContent: obfuscatedContent,
+            matches: outcome.mutated,
+            obfuscatedContent: outcome.text,
             timestamp: Date()
         )
     }

@@ -164,6 +164,23 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("/v1/messages"))
     }
 
+    // WO-486: audit paths are bounded single-line path components, never raw request targets.
+    func testAuditSafePathDropsQueryControlsAndBoundsLength() {
+        let queryValue = "synthetic-query-value"
+        let controlled = "/v1/messages\n\r\u{001B}\u{0000}\u{0085}?secret=\(queryValue)"
+        let sanitized = server.auditSafePath(controlled)
+
+        XCTAssertEqual(sanitized, "/v1/messages_____")
+        XCTAssertFalse(sanitized.contains(queryValue))
+        XCTAssertFalse(sanitized.unicodeScalars.contains { scalar in
+            scalar.value <= 0x1f || (0x7f...0x9f).contains(scalar.value)
+        })
+
+        let bounded = server.auditSafePath("/" + String(repeating: "a", count: 700))
+        XCTAssertEqual(bounded.count, 515)
+        XCTAssertTrue(bounded.hasSuffix("..."))
+    }
+
     func testAdvisorySSEDataUsesDistinctEventFrame() throws {
         let data = try XCTUnwrap(server.buildAdvisorySSEData(advisoryCount: 1, types: ["Email"]))
         let frame = String(data: data, encoding: .utf8) ?? ""
@@ -200,43 +217,6 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertFalse(serverNoAlert.injectAlert)
     }
 
-    func testNonUTF8RequestBodyStillScansLossyTextForAudit() {
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("password=s3cr3t-hunter2".utf8))
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 1)
-        XCTAssertEqual(result.redactedTypes, ["Credential"])
-        XCTAssertTrue(result.shouldBlockForwarding)
-    }
-
-    func testNonUTF8RequestBodyHonorsCustomRules() {
-        var config = PastewatchConfig.defaultConfig
-        config.customRules = [
-            CustomRuleConfig(name: "ACME Proxy Token", pattern: #"ACME-PROXY-[A-Z]+"#, severity: "high")
-        ]
-        let customServer = ProxyServer(port: 0, config: config, severity: .high)
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("token ACME-PROXY-ALPHA".utf8))
-
-        let result = customServer.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 1)
-        XCTAssertEqual(result.redactedTypes, ["ACME Proxy Token"])
-        XCTAssertTrue(result.shouldBlockForwarding)
-    }
-
-    func testNonUTF8RequestBodyWithoutSecretDoesNotBlockForwarding() {
-        let body = Data([0xFF, 0xFE, 0x00, 0x41])
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 0)
-        XCTAssertEqual(result.redactedTypes, [])
-        XCTAssertFalse(result.shouldBlockForwarding)
-    }
-
     func testUTF8ToolResultBodyHonorsCustomRules() {
         var config = PastewatchConfig.defaultConfig
         config.customRules = [
@@ -255,19 +235,73 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"), result.body)
     }
 
+    func testAssistantOnlyToolUseRecursesIntoExplicitlyAuthorizedInput() throws {
+        // WO-463/WO-467: tool_use.input is CONTRACT context, so only explicit
+        // operator authorization may mutate a deeply nested value.
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(
+                name: "Approved nested token",
+                pattern: #"ACME-NESTED-[A-Z]+"#,
+                severity: "high"
+            )
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .high)
+        let value = "ACME-NESTED-ALPHA"
+        let body = """
+        {"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"outer":[{"inner":"\(value)"}]}}]}]}
+        """
+
+        let result = customServer.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(value))
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+        let input = try XCTUnwrap(content[0]["input"] as? [String: Any])
+        let outer = try XCTUnwrap(input["outer"] as? [[String: Any]])
+        XCTAssertEqual(outer[0]["inner"] as? String, "<CREDENTIAL_1>")
+    }
+
+    func testToolSchemaEnumPreservesBuiltInAndMutatesCustomRule() throws {
+        // WO-468: schema enums are recursively scanned as CONTRACT material.
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(
+                name: "Approved schema token",
+                pattern: #"ACME-SCHEMA-[A-Z]+"#,
+                severity: "high"
+            )
+        ]
+        let customServer = ProxyServer(port: 0, config: config, severity: .low)
+        let dsn = "postgres" + "://user:example@localhost/db"
+        let approved = "ACME-SCHEMA-ALPHA"
+        let body = """
+        {"tools":[{"name":"lookup","input_schema":{"type":"string","enum":["\(dsn)","\(approved)","safe"]}}],"messages":[]}
+        """
+
+        let result = customServer.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(result.advisoryCount, 1)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let tools = try XCTUnwrap(json["tools"] as? [[String: Any]])
+        let schema = try XCTUnwrap(tools[0]["input_schema"] as? [String: Any])
+        let values = try XCTUnwrap(schema["enum"] as? [String])
+        XCTAssertEqual(values[0], dsn)
+        XCTAssertEqual(values[1], "<CREDENTIAL_1>")
+        XCTAssertEqual(values[2], "safe")
+    }
+
     func testBodyRedactionAuditIsDeferredForStreamingRequests() {
         XCTAssertFalse(server.shouldLogBodyRedactionBeforeForwarding(
             redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: false
-        ))
-    }
-
-    func testBodyRedactionAuditIsNotDeferredWhenMalformedBodyBlocksForwarding() {
-        XCTAssertTrue(server.shouldLogBodyRedactionBeforeForwarding(
-            redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: true
+            requestWantsStream: true
         ))
     }
 
@@ -278,25 +312,14 @@ final class ProxyAlertTests: XCTestCase {
 
         XCTAssertTrue(bufferModeServer.shouldLogBodyRedactionBeforeForwarding(
             redactionCount: 1,
-            requestWantsStream: true,
-            shouldBlockNonUTF8Forwarding: false
+            requestWantsStream: true
         ))
-    }
-
-    func testBlockedNonUTF8RedactionDoesNotCountAsForwardedRedaction() {
-        let blockedServer = ProxyServer(port: 0)
-
-        blockedServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: true)
-
-        XCTAssertEqual(blockedServer.stats.requestsProcessed, 1)
-        XCTAssertEqual(blockedServer.stats.requestsRedacted, 0)
-        XCTAssertEqual(blockedServer.stats.secretsRedacted, 0)
     }
 
     func testForwardedBodyRedactionStillCountsAsForwardedRedaction() {
         let forwardedServer = ProxyServer(port: 0)
 
-        forwardedServer.recordInitialRequestStats(redactionCount: 2, shouldBlockNonUTF8Forwarding: false)
+        forwardedServer.recordInitialRequestStats(redactionCount: 2)
 
         XCTAssertEqual(forwardedServer.stats.requestsProcessed, 1)
         XCTAssertEqual(forwardedServer.stats.requestsRedacted, 1)
@@ -308,7 +331,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 1,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
 
@@ -329,7 +351,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 1,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
         streamingServer.recordRejectedStreamingBodyRedactionIfNeeded(
@@ -353,8 +374,7 @@ final class ProxyAlertTests: XCTestCase {
         let streamingServer = ProxyServer(port: 0, auditLogPath: path)
 
         streamingServer.recordInitialRequestStats(
-            redactionCount: 0,
-            shouldBlockNonUTF8Forwarding: false
+            redactionCount: 0
         )
         streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
             path: "/v1/messages",
@@ -419,7 +439,6 @@ final class ProxyAlertTests: XCTestCase {
 
         streamingServer.recordInitialRequestStats(
             redactionCount: 0,
-            shouldBlockNonUTF8Forwarding: false,
             countForwardedRedaction: false
         )
         streamingServer.recordStreamingAuditStats(ProxyServer.StreamingAuditStats(
@@ -494,7 +513,7 @@ final class ProxyAlertTests: XCTestCase {
 
     func testBufferedResponseRedactionStatsDoNotDoubleCountRequest() {
         let responseOnlyServer = ProxyServer(port: 0)
-        responseOnlyServer.recordInitialRequestStats(redactionCount: 0, shouldBlockNonUTF8Forwarding: false)
+        responseOnlyServer.recordInitialRequestStats(redactionCount: 0)
         responseOnlyServer.recordBufferedResponseRedactionStats(requestRedactionCount: 0, responseRedactionCount: 1)
 
         XCTAssertEqual(responseOnlyServer.stats.requestsProcessed, 1)
@@ -502,7 +521,7 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(responseOnlyServer.stats.secretsRedacted, 1)
 
         let requestAndResponseServer = ProxyServer(port: 0)
-        requestAndResponseServer.recordInitialRequestStats(redactionCount: 1, shouldBlockNonUTF8Forwarding: false)
+        requestAndResponseServer.recordInitialRequestStats(redactionCount: 1)
         requestAndResponseServer.recordBufferedResponseRedactionStats(requestRedactionCount: 1, responseRedactionCount: 1)
 
         XCTAssertEqual(requestAndResponseServer.stats.requestsProcessed, 1)

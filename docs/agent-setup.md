@@ -1,6 +1,6 @@
 # Agent Setup
 
-Per-agent instructions for protecting AI coding sessions with pastewatch. The recommended setup is the API proxy via `launch` — it catches **all** outbound secrets including from subagents and tools that bypass hooks and MCP.
+Per-agent instructions for protecting AI coding sessions with pastewatch. For Claude Code, the recommended setup is the API proxy via `launch` — it scans Anthropic-shaped traffic including from subagents and tools that bypass hooks and MCP. Other agents should use their supported hooks, MCP tools, and instructions.
 
 **Install first:**
 ```bash
@@ -11,14 +11,11 @@ brew install ppiankov/tap/pastewatch
 
 ## Recommended: API Proxy via Launch
 
-The proxy sits between your agent and the cloud API, scanning and redacting every outbound request. This is the default way to run any agent with pastewatch:
+The proxy sits between Claude Code and the Anthropic API, scanning and redacting Anthropic-shaped requests:
 
 ```bash
 # One command — starts proxy, launches agent, cleans up on exit
 pastewatch-cli launch claude
-
-# Any agent
-pastewatch-cli launch -- codex --full-auto
 
 # With corporate proxy
 pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
@@ -31,7 +28,7 @@ For persistent setup, add a shell alias:
 alias claude='pastewatch-cli launch claude'
 ```
 
-The proxy is Layer 0 — it catches secrets that bypass hooks, MCP tools, and agent instructions. MCP and hooks below add defense in depth but the proxy is the foundation.
+The proxy is Layer 0 for Claude Code — it catches Anthropic-shaped requests that bypass hooks, MCP tools, and agent instructions. Use the MCP tools and hooks below as defense in depth, and for agents not routed through the proxy where those integrations are available.
 
 ---
 
@@ -345,17 +342,13 @@ Or auto-setup:
 pastewatch-cli setup gemini
 ```
 
-Note: Gemini has no hook support — enforcement is advisory. Enable Agent mode for MCP tools. Use `pastewatch-cli launch` for proxy-level protection.
+Note: Gemini has no hook support — enforcement is advisory. Enable Agent mode for MCP tools. Gemini-shaped API traffic is not supported by the proxy.
 
 ---
 
 ## Aider
 
-Aider CLI has no native MCP or hook support. Use the proxy for protection:
-
-```bash
-pastewatch-cli launch -- aider
-```
+Aider CLI has no native MCP or hook support. Pastewatch does not currently provide an automatic local protection layer for Aider; the proxy accepts Anthropic-shaped traffic only and `launch` wires only Claude Code.
 
 Upstream: [aider-ai/aider#4506](https://github.com/aider-ai/aider/issues/4506) (MCP support requested)
 
@@ -548,5 +541,5 @@ This is agent-proof by design: the guard runs in the hook's process, not the age
 | OpenCode | Advisory | Advisory | MCP only (hook PR closed without merge) |
 | Goose | Advisory | Advisory | MCP only (no hook support) |
 | Kilo Code | Advisory | Advisory | MCP only ([hooks declined](https://github.com/Kilo-Org/kilocode/issues/7859)) |
-| Aider | Advisory | Advisory | Proxy only ([no MCP yet](https://github.com/aider-ai/aider/issues/4506)) |
+| Aider | Not covered | Not covered | No automatic local layer ([no MCP yet](https://github.com/aider-ai/aider/issues/4506)) |
 | Gemini | Advisory | Advisory | MCP only (no hook support) |

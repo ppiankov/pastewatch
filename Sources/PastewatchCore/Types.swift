@@ -67,6 +67,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case oraculKey = "Oracul Key"
     case obstalabsKey = "ObstaLabs Key"
     case resendKey = "Resend Key"
+    case vaultToken = "Vault Token" // WO-462: intrinsically formatted Vault bearer token.
+    case slackToken = "Slack Token" // WO-481: documented Slack token families.
+    case googleApiKey = "Google API Key" // WO-482: exact AIza key format.
+    case dockerAccessToken = "Docker Access Token" // WO-483: Docker PAT/OAT formats.
+    case githubToken = "GitHub Token" // WO-485: current GitHub token formats.
     case jdbcUrl = "JDBC URL"
     case xmlCredential = "XML Credential"
     case xmlUsername = "XML Username"
@@ -83,6 +88,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
+             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken,
              .jdbcUrl, .xmlCredential:
             return .critical
         case .email, .phone, .xmlUsername:
@@ -94,24 +100,28 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         }
     }
 
-    /// WO-404: only deterministic secret classes are safe to mutate automatically.
-    public var mutationSafe: Bool {
+    /// WO-454/WO-487: only formats whose matched bytes prove a secret authorize mutation.
+    public var intrinsicMutationAuthorized: Bool {
         switch self {
-        case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
-             .jwtToken, .creditCard, .credential,
+        case .awsKey, .sshPrivateKey,
+             .jwtToken, .creditCard,
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
              .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
-             .jdbcUrl, .xmlCredential:
+             .vaultToken, .slackToken, .googleApiKey, .dockerAccessToken, .githubToken:
             return true
-        case .email, .phone, .xmlUsername,
+        case .genericApiKey, .dbConnectionString, .jdbcUrl, .credential, .xmlCredential,
+             .email, .phone, .xmlUsername,
              .ipAddress, .filePath, .hostname, .xmlHostname,
              .uuid, .highEntropyString:
             return false
         }
     }
+
+    /// Backward-compatible certainty name. New mutation code uses evidence sources.
+    public var mutationSafe: Bool { intrinsicMutationAuthorized }
 
     /// Human-readable explanation of what this type detects.
     public var explanation: String {
@@ -123,7 +133,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .genericApiKey: return "API keys and tokens (GitHub, Stripe, generic secret_ prefixes)"
         case .uuid: return "UUIDs (version 1-5 format)"
         case .dbConnectionString: return "Database connection strings (postgres://, mysql://, mongodb://)"
-        case .sshPrivateKey: return "SSH/PGP private key headers (BEGIN RSA/DSA/EC/OPENSSH PRIVATE KEY)"
+        case .sshPrivateKey: return "Complete RSA, DSA, EC, OpenSSH, and PKCS#8 private-key PEM blocks"
         case .jwtToken: return "JSON Web Tokens (three base64url-encoded segments)"
         case .creditCard: return "Credit card numbers (Visa, Mastercard, Amex) with Luhn validation"
         case .filePath: return "Sensitive file paths (/etc/*, /home/*/.ssh/*, etc.)"
@@ -150,6 +160,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .oraculKey: return "Oracul API keys (vc_<role>_ prefix)"
         case .obstalabsKey: return "ObstaLabs Ed25519-signed license keys (ol_ prefix with payload.signature structure)"
         case .resendKey: return "Resend transactional email API keys (re_ prefix)"
+        case .vaultToken: return "HashiCorp Vault service, batch, and recovery tokens"
+        case .slackToken: return "Slack bot, user, app, workflow, and rotating tokens"
+        case .googleApiKey: return "Google API keys (AIza prefix and exact length)"
+        case .dockerAccessToken: return "Docker personal and organization access tokens"
+        case .githubToken: return "GitHub personal, OAuth, app, installation, and refresh tokens"
         case .jdbcUrl: return "JDBC connection URLs (jdbc:oracle, jdbc:db2, jdbc:mysql, jdbc:postgresql, jdbc:sqlserver)"
         case .xmlCredential: return "Credentials in XML tags (password, secret, access_key)"
         case .xmlUsername: return "Usernames in XML tags (user, name within users context)"
@@ -168,7 +183,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .genericApiKey: return ["ghp_<36-character token>", "sk_live_<key>"]
         case .uuid: return ["550e8400-e29b-41d4-a716-446655440000"]
         case .dbConnectionString: return ["postgres://... (connection URI)", "mongodb://... (connection URI)"]
-        case .sshPrivateKey: return ["-----BEGIN <type> PRIVATE KEY-----"]
+        case .sshPrivateKey: return ["-----BEGIN <type> PRIVATE KEY----- ... -----END <type> PRIVATE KEY-----"]
         case .jwtToken: return ["<header>.<payload>.<signature> (base64url)"]
         case .creditCard: return ["4111 1111 1111 1111", "5500 0000 0000 0004"]
         case .filePath: return ["/etc/nginx/nginx.conf", "/home/deploy/.ssh/id_rsa"]
@@ -195,6 +210,11 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .oraculKey: return ["vc_admin_<32-hex-chars>", "vc_pro_<32-hex-chars>"]
         case .obstalabsKey: return ["ol_<base64url-payload>.<base64url-ed25519-sig>"]
         case .resendKey: return ["re_<24+-alphanumeric-chars>"]
+        case .vaultToken: return ["hvs.<24+-character-token>", "s.<legacy-token>"]
+        case .slackToken: return ["xoxb-<bot-token>", "xapp-<app-token>"]
+        case .googleApiKey: return ["AIza<35-character-key>"]
+        case .dockerAccessToken: return ["dckr_pat_<token>", "dckr_oat_<token>"]
+        case .githubToken: return ["github_pat_<token>", "ghs_<installation-token>"]
         case .jdbcUrl: return ["jdbc:oracle:thin:@host:1521:SID", "jdbc:postgresql://host:5432/db"]
         case .xmlCredential: return ["<password>secret123</password>", "<secret_access_key>KEY</secret_access_key>"]
         case .xmlUsername: return ["<user>admin</user>", "<name>deploy</name>"]
@@ -202,6 +222,28 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .highEntropyString: return ["xK9mP2qL8nR5vT1wY6hJ3dF0s (20+ chars, mixed case/digits)"]
         }
     }
+}
+
+/// WO-478: scanner conditions that are observable but never authorize mutation.
+public enum DetectionAdvisory: String, Equatable {
+    case malformedPrivateKey
+}
+
+/// WO-484: offline provenance for every intrinsically authorized provider pattern.
+public struct ProviderTokenPatternMetadata {
+    public let type: SensitiveDataType
+    public let provider: String
+    public let tokenFamily: String
+    public let primarySource: String
+    public let reviewedOn: String
+    public let fixtureID: String
+}
+
+/// WO-454: evidence that independently authorizes replacement of matched bytes.
+public enum MutationAuthorizationSource: Hashable {
+    case intrinsicFormat
+    case exactKnownSecret
+    case customRule
 }
 
 /// A single detected match in the clipboard content.
@@ -214,6 +256,8 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let filePath: String?
     public let customRuleName: String?
     public let customSeverity: Severity?
+    public let advisory: DetectionAdvisory? // WO-478: non-mutating malformed-input evidence.
+    public let mutationAuthorizationSources: Set<MutationAuthorizationSource> // WO-454: OR-merged provenance.
 
     public init(
         type: SensitiveDataType,
@@ -222,7 +266,9 @@ public struct DetectedMatch: Identifiable, Equatable {
         line: Int = 1,
         filePath: String? = nil,
         customRuleName: String? = nil,
-        customSeverity: Severity? = nil
+        customSeverity: Severity? = nil,
+        advisory: DetectionAdvisory? = nil,
+        mutationAuthorizationSources: Set<MutationAuthorizationSource>? = nil
     ) {
         self.type = type
         self.value = value
@@ -231,6 +277,17 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.filePath = filePath
         self.customRuleName = customRuleName
         self.customSeverity = customSeverity
+        self.advisory = advisory
+        var sources = mutationAuthorizationSources ?? []
+        // WO-488: type-level intrinsic formats authorize dedicated detector types;
+        // genericApiKey provider grammars attach the same source in DetectionRules.
+        if advisory == nil && type.intrinsicMutationAuthorized {
+            sources.insert(.intrinsicFormat)
+        }
+        if advisory == nil && customRuleName != nil {
+            sources.insert(.customRule)
+        }
+        self.mutationAuthorizationSources = sources
     }
 
     /// Effective severity: custom override if set, otherwise type default.
@@ -238,14 +295,30 @@ public struct DetectedMatch: Identifiable, Equatable {
         customSeverity ?? type.severity
     }
 
-    /// WO-404: custom rules are explicit operator approval to mutate matches.
+    /// Compatibility surface for callers not yet interested in provenance.
     public var mutationSafe: Bool {
-        customRuleName != nil || type.mutationSafe
+        advisory == nil && !mutationAuthorizationSources.isEmpty
+    }
+
+    /// WO-454: merge authorization with OR semantics during overlap resolution.
+    func addingMutationAuthorizationSources(_ sources: Set<MutationAuthorizationSource>) -> DetectedMatch {
+        DetectedMatch(
+            type: type,
+            value: value,
+            range: range,
+            line: line,
+            filePath: filePath,
+            customRuleName: customRuleName,
+            customSeverity: customSeverity,
+            advisory: advisory,
+            mutationAuthorizationSources: mutationAuthorizationSources.union(sources)
+        )
     }
 
     /// Display name for output (custom rule name or type rawValue).
     public var displayName: String {
-        customRuleName ?? type.rawValue
+        if advisory == .malformedPrivateKey { return "Malformed private key" }
+        return customRuleName ?? type.rawValue
     }
 
     public static func == (lhs: DetectedMatch, rhs: DetectedMatch) -> Bool {

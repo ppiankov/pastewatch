@@ -85,7 +85,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testFrameBeforeInvalidUTF8RemainderCanBeRedacted() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "M", count: 35)
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
         var frame = sseFrame(eventType: "content_block_delta", data: payload)
         frame.append(contentsOf: [0xFF])
@@ -107,29 +107,29 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testThinkingDeltaSecretIsRedacted() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "N", count: 35)
         let payload = #"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"\#(credential)"}}"#
         let redaction = redactFirstFrame(payload: payload)
 
         let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
         XCTAssertEqual(redaction.count, 1)
         XCTAssertFalse(redacted.contains(credential))
-        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testInputJSONDeltaSecretIsRedacted() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "P", count: 35)
         let payload = #"{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"\#(credential)"}}"#
         let redaction = redactFirstFrame(payload: payload)
 
         let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
         XCTAssertEqual(redaction.count, 1)
         XCTAssertFalse(redacted.contains(credential))
-        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testCriticalMatchMutatesStreamBytes() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "Q", count: 35)
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
         let redaction = redactFirstFrame(payload: payload)
         let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
@@ -137,11 +137,11 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.count, 1)
         XCTAssertEqual(redaction.advisoryCount, 0)
         XCTAssertFalse(redacted.contains(credential))
-        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testCriticalMutationSetIgnoresSeverityThreshold() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "R", count: 35)
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
@@ -156,9 +156,9 @@ final class ProxyStreamRedactionTests: XCTestCase {
             let redacted = String(data: redaction.data, encoding: .utf8) ?? ""
 
             XCTAssertEqual(redaction.count, 1, "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.types, ["Credential"], "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, ["Google API Key"], "severity \(severity.rawValue)")
             XCTAssertFalse(redacted.contains(credential), "severity \(severity.rawValue)")
-            XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"), "severity \(severity.rawValue)")
+            XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"), "severity \(severity.rawValue)")
         }
     }
 
@@ -244,7 +244,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testSeverityControlsAdvisoryVolumeNotMutationSet() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "S", count: 35)
         let email = "operator@example.com"
         let ipAddress = "10.1.2.3"
         let uuid = "550e8400-e29b-41d4-a716-446655440000"
@@ -270,7 +270,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
             let output = String(data: redaction.data, encoding: .utf8) ?? ""
 
             XCTAssertEqual(redaction.count, 1, "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.types, ["Credential"], "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, ["Google API Key"], "severity \(severity.rawValue)")
             XCTAssertEqual(Set(redaction.advisoryTypes), advisoryTypes, "severity \(severity.rawValue)")
             XCTAssertFalse(output.contains(credential), "severity \(severity.rawValue)")
             XCTAssertTrue(output.contains(email), "severity \(severity.rawValue)")
@@ -281,7 +281,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
     // WO-371: mixed critical and advisory severities keep independent outcomes.
     func testMixedCriticalAndMediumFrameRedactsOnlyCriticalAndAdvisesMedium() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "T", count: 35)
         let ipAddress = "10.1.2.3"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential) from \#(ipAddress)"}}"#
         var parser = SSEFrameParser()
@@ -296,16 +296,16 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let output = String(data: redaction.data, encoding: .utf8) ?? ""
 
         XCTAssertEqual(redaction.count, 1)
-        XCTAssertEqual(redaction.types, ["Credential"])
+        XCTAssertEqual(redaction.types, ["Google API Key"])
         XCTAssertEqual(redaction.advisoryCount, 1)
         XCTAssertEqual(redaction.advisoryTypes, ["IP"])
         XCTAssertFalse(output.contains(credential))
-        XCTAssertTrue(output.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(output.contains("<GOOGLE_API_KEY_1>"))
         XCTAssertTrue(output.contains(ipAddress))
     }
 
     func testInvalidUTF8RawFrameWithCredentialIsRedacted() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "U", count: 35)
         var raw = Data([0xFF, 0xFE])
         raw.append(Data("data: \(credential)\n\n".utf8))
         let frame = SSEFrameParser.Frame(raw: raw, eventType: nil, data: nil)
@@ -319,7 +319,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
         XCTAssertEqual(redaction.count, 1)
         XCTAssertFalse(redacted.contains(credential))
-        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testRawStreamFallbackPreservesInvalidBytesWithoutCriticalMatch() {
@@ -337,7 +337,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testRawStreamFallbackRedactsCredentialWithMalformedUTF8() {
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "V", count: 35)
         var raw = Data([0xFF, 0xFE])
         raw.append(Data(" \(credential)".utf8))
 
@@ -350,7 +350,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
         XCTAssertEqual(redaction.count, 1)
         XCTAssertFalse(redacted.contains(credential))
-        XCTAssertTrue(redacted.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(redacted.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testRawDoneInsertionPlacesAlertBeforeDoneFrame() {
@@ -429,20 +429,6 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(result.advisoryCount, 0)
         XCTAssertFalse(result.body.contains(email))
         XCTAssertTrue(result.body.contains("<CREDENTIAL_1>"))
-    }
-
-    func testNonUTF8RequestBodyHighBuiltInDoesNotBlockForwarding() {
-        var body = Data([0xFF, 0xFE, 0x00])
-        body.append(Data("operator@example.com".utf8))
-        let server = ProxyServer(port: 0, severity: .high)
-
-        let result = server.scanNonUTF8BodyForRedactions(body)
-
-        XCTAssertEqual(result.redacted, 0)
-        XCTAssertEqual(result.redactedTypes, [])
-        XCTAssertEqual(result.advisoryCount, 1)
-        XCTAssertEqual(result.advisoryTypes, ["Email"])
-        XCTAssertFalse(result.shouldBlockForwarding)
     }
 
     func testCurlNonUTF8ResponseHighBuiltInIsByteIdentical() {
@@ -582,7 +568,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
     func testLinuxRelayRawStreamAlertSurvivesRedactionBeforeDone() {
         // WO-388: post-redaction byte shifts before [DONE] must not suppress alert injection.
-        let credential = "password=s3cr3t-hunter2"
+        let credential = "AIza" + String(repeating: "W", count: 35)
         var stream = Data("data: \(credential)\n\n".utf8)
         stream.append(Data("data: [DONE]\n\n".utf8))
 
@@ -595,7 +581,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
         XCTAssertEqual(relay.result.redactionCount, 1)
         XCTAssertFalse(relay.output.contains(credential))
-        XCTAssertTrue(relay.output.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(relay.output.contains("<GOOGLE_API_KEY_1>"))
         guard let alertRange = relay.output.range(of: "event: pastewatch_alert"),
               let doneRange = relay.output.range(of: "data: [DONE]") else {
             XCTFail(relay.output)
@@ -636,8 +622,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
     }
 
     func testLinuxRelayRawStreamEOFOverlapRedactsCriticalCredential() {
-        let credential = "password=s3cr3t-hunter2"
-        let stream = Data(("data: " + String(repeating: "a", count: 5_000) + credential + "\n\n").utf8)
+        let credential = "AIza" + String(repeating: "X", count: 35)
+        let stream = Data(("data: " + String(repeating: "a", count: 5_000) + " " + credential + "\n\n").utf8)
         let relay = relayStream(
             stream,
             mode: .rawStream,
@@ -646,9 +632,9 @@ final class ProxyStreamRedactionTests: XCTestCase {
         )
 
         XCTAssertEqual(relay.result.redactionCount, 1)
-        XCTAssertEqual(relay.result.redactionTypes, ["Credential"])
+        XCTAssertEqual(relay.result.redactionTypes, ["Google API Key"])
         XCTAssertFalse(relay.output.contains(credential))
-        XCTAssertTrue(relay.output.contains("<CREDENTIAL_1>"))
+        XCTAssertTrue(relay.output.contains("<GOOGLE_API_KEY_1>"))
     }
 
     func testLinuxRelayRawStreamAdvisoryStatsSkipFailedSend() {

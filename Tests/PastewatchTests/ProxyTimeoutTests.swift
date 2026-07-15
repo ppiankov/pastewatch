@@ -391,7 +391,7 @@ final class ProxyTimeoutTests: XCTestCase {
         wait(for: [finished], timeout: 2)
         let stats = relay.snapshotStreamStats()
         XCTAssertEqual(stats.redactionCount, 2)
-        XCTAssertEqual(stats.redactionTypes, ["Credential", "Credential"])
+        XCTAssertEqual(stats.redactionTypes, ["Google API Key", "Google API Key"])
         XCTAssertEqual(stats.advisoryCount, 1)
         XCTAssertEqual(stats.advisoryTypes, ["IP"])
     }
@@ -493,7 +493,8 @@ final class ProxyTimeoutTests: XCTestCase {
 
     func testSSEStreamRelayRawStreamEOFWithoutDoneAppendsAdvisory() {
         // WO-398: truncated raw_stream responses still surface the final advisory event.
-        NoDoneStreamURLProtocol.reset(payload: Data("data: password=s3cr3t-hunter2\n\n".utf8))
+        let credential = "AIza" + String(repeating: "M", count: 35)
+        NoDoneStreamURLProtocol.reset(payload: Data("data: \(credential)\n\n".utf8))
         var sockets = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
         defer {
@@ -530,7 +531,7 @@ final class ProxyTimeoutTests: XCTestCase {
 
         wait(for: [finished], timeout: 2)
         let response = readSocketDrainString(from: sockets[0])
-        guard let redactionRange = response.range(of: "<CREDENTIAL_1>"),
+        guard let redactionRange = response.range(of: "<GOOGLE_API_KEY_1>"),
               let advisoryRange = response.range(of: "event: pastewatch_advisory") else {
             XCTFail(response)
             return
@@ -585,7 +586,8 @@ final class ProxyTimeoutTests: XCTestCase {
         let previousHandler = signal(SIGPIPE, SIG_IGN)
         defer { _ = signal(SIGPIPE, previousHandler) }
 
-        FirstDataGateStreamURLProtocol.reset(payload: Data("data: password=s3cr3t-hunter2\n\n".utf8))
+        let credential = "AIza" + String(repeating: "N", count: 35)
+        FirstDataGateStreamURLProtocol.reset(payload: Data("data: \(credential)\n\n".utf8))
         var sockets = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
         defer { close(sockets[1]) }
@@ -658,10 +660,10 @@ final class ProxyTimeoutTests: XCTestCase {
 
         XCTAssertTrue(AdvisoryAfterCloseStreamURLProtocol.waitForFirstChunk(timeout: 2))
         var firstResponse = readSocketString(from: sockets[0])
-        if !firstResponse.contains("<CREDENTIAL_1>") {
+        if !firstResponse.contains("<GOOGLE_API_KEY_1>") {
             firstResponse += readSocketString(from: sockets[0])
         }
-        XCTAssertTrue(firstResponse.contains("<CREDENTIAL_1>"), firstResponse)
+        XCTAssertTrue(firstResponse.contains("<GOOGLE_API_KEY_1>"), firstResponse)
         close(sockets[0])
         AdvisoryAfterCloseStreamURLProtocol.allowSecondChunk()
 
@@ -710,16 +712,16 @@ final class ProxyTimeoutTests: XCTestCase {
 
         XCTAssertTrue(ControlledDoneStreamURLProtocol.waitForFirstChunk(timeout: 2))
         var firstResponse = readSocketString(from: sockets[0])
-        if !firstResponse.contains("<CREDENTIAL_1>") {
+        if !firstResponse.contains("<GOOGLE_API_KEY_1>") {
             firstResponse += readSocketString(from: sockets[0])
         }
-        XCTAssertTrue(firstResponse.contains("<CREDENTIAL_1>"), firstResponse)
+        XCTAssertTrue(firstResponse.contains("<GOOGLE_API_KEY_1>"), firstResponse)
         close(sockets[0])
         ControlledDoneStreamURLProtocol.allowDone()
 
         wait(for: [finished], timeout: 2)
         XCTAssertEqual(relay.streamRedactionCount, 1)
-        XCTAssertEqual(relay.streamRedactionTypes, ["Credential"])
+        XCTAssertEqual(relay.streamRedactionTypes, ["Google API Key"])
     }
 
     private func assertNoDataAvailable(
@@ -876,8 +878,10 @@ private class StatsThenHangStreamURLProtocol: URLProtocol {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        let first = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=s3cr3t-hunter2"}}"#
-        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=another-s3cr3t"}}"#
+        let firstCredential = "AIza" + String(repeating: "O", count: 35)
+        let secondCredential = "AIza" + String(repeating: "P", count: 35)
+        let first = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(firstCredential)"}}"#
+        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(secondCredential)"}}"#
         let advisory = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"host 10.1.2.3"}}"#
         client?.urlProtocol(self, didLoad: Data("data: \(first)\n\n".utf8))
         client?.urlProtocol(self, didLoad: Data("data: \(second)\n\n".utf8))
@@ -967,7 +971,8 @@ private class ControlledDoneStreamURLProtocol: URLProtocol {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=s3cr3t-hunter2"}}"#
+        let credential = "AIza" + String(repeating: "Q", count: 35)
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
         client?.urlProtocol(self, didLoad: Data("data: \(payload)\n\n".utf8))
         Self.firstChunkSemaphore.signal()
         _ = Self.allowDoneSemaphore.wait(timeout: .now() + 1)
@@ -1156,7 +1161,8 @@ private class AdvisoryAfterCloseStreamURLProtocol: URLProtocol {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        let first = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"password=s3cr3t-hunter2"}}"#
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        let first = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
         client?.urlProtocol(self, didLoad: Data("data: \(first)\n\n".utf8))
         Self.firstChunkSemaphore.signal()
         _ = Self.allowSecondSemaphore.wait(timeout: .now() + 1)

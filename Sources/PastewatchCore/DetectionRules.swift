@@ -3,9 +3,53 @@ import Foundation
 /// Deterministic detection rules for sensitive data.
 /// No ML. No confidence scores. No guessing.
 ///
-/// Each rule is a regex pattern that matches high-confidence patterns only.
-/// False negatives are preferred over false positives.
+/// Rules provide deterministic detection. WO-487: mutation authorization is
+/// separately attached only when a grammar proves provider-specific evidence.
 public struct DetectionRules {
+    private static let maximumPrivateKeyBlockCharacters = 262_144 // WO-478: bound malformed PEM scans.
+    // WO-487: these sourced grammars authorize mutation independently of the
+    // advisory-only genericApiKey type.
+    private static let githubClassicTokenRegex = try? NSRegularExpression(
+        pattern: #"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"#
+    )
+    private static let stripeAPIKeyRegex = try? NSRegularExpression(
+        pattern: #"\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{24,}\b"#
+    )
+    private static let stripeWebhookSecretRegex = try? NSRegularExpression(
+        pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#
+    )
+
+    // WO-484: reviewed primary references travel with the intrinsic provider set.
+    public static let providerTokenPatternManifest: [ProviderTokenPatternMetadata] = [
+        .init(type: .awsKey, provider: "AWS", tokenFamily: "access keys", primarySource: "https://docs.aws.amazon.com/IAM/latest/UserGuide/security-creds.html", reviewedOn: "2026-07-15", fixtureID: "aws-access-key"),
+        .init(type: .genericApiKey, provider: "GitHub", tokenFamily: "classic tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "github-classic-token"),
+        .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "API keys", primarySource: "https://docs.stripe.com/keys", reviewedOn: "2026-07-15", fixtureID: "stripe-api-key"),
+        .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "webhook signing secrets", primarySource: "https://docs.stripe.com/webhooks/signature", reviewedOn: "2026-07-15", fixtureID: "stripe-webhook-secret"),
+        .init(type: .slackWebhook, provider: "Slack", tokenFamily: "incoming webhook", primarySource: "https://api.slack.com/messaging/webhooks", reviewedOn: "2026-07-15", fixtureID: "slack-webhook"),
+        .init(type: .discordWebhook, provider: "Discord", tokenFamily: "webhook", primarySource: "https://discord.com/developers/docs/resources/webhook", reviewedOn: "2026-07-15", fixtureID: "discord-webhook"),
+        .init(type: .openaiKey, provider: "OpenAI", tokenFamily: "API key", primarySource: "https://platform.openai.com/docs/api-reference/authentication", reviewedOn: "2026-07-15", fixtureID: "openai-key"),
+        .init(type: .anthropicKey, provider: "Anthropic", tokenFamily: "API key", primarySource: "https://docs.anthropic.com/en/api/getting-started", reviewedOn: "2026-07-15", fixtureID: "anthropic-key"),
+        .init(type: .huggingfaceToken, provider: "Hugging Face", tokenFamily: "user access token", primarySource: "https://huggingface.co/docs/hub/security-tokens", reviewedOn: "2026-07-15", fixtureID: "huggingface-token"),
+        .init(type: .groqKey, provider: "Groq", tokenFamily: "API key", primarySource: "https://console.groq.com/docs/quickstart", reviewedOn: "2026-07-15", fixtureID: "groq-key"),
+        .init(type: .npmToken, provider: "npm", tokenFamily: "access token", primarySource: "https://docs.npmjs.com/about-access-tokens", reviewedOn: "2026-07-15", fixtureID: "npm-token"),
+        .init(type: .pypiToken, provider: "PyPI", tokenFamily: "API token", primarySource: "https://pypi.org/help/#apitoken", reviewedOn: "2026-07-15", fixtureID: "pypi-token"),
+        .init(type: .rubygemsToken, provider: "RubyGems", tokenFamily: "API key", primarySource: "https://guides.rubygems.org/rubygems-org-api/", reviewedOn: "2026-07-15", fixtureID: "rubygems-token"),
+        .init(type: .gitlabToken, provider: "GitLab", tokenFamily: "personal access token", primarySource: "https://docs.gitlab.com/user/profile/personal_access_tokens/", reviewedOn: "2026-07-15", fixtureID: "gitlab-token"),
+        .init(type: .telegramBotToken, provider: "Telegram", tokenFamily: "bot token", primarySource: "https://core.telegram.org/bots/api", reviewedOn: "2026-07-15", fixtureID: "telegram-bot-token"),
+        .init(type: .sendgridKey, provider: "SendGrid", tokenFamily: "API key", primarySource: "https://www.twilio.com/docs/sendgrid/api-reference/how-to-use-the-sendgrid-v3-api/authentication", reviewedOn: "2026-07-15", fixtureID: "sendgrid-key"),
+        .init(type: .shopifyToken, provider: "Shopify", tokenFamily: "access token", primarySource: "https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens", reviewedOn: "2026-07-15", fixtureID: "shopify-token"),
+        .init(type: .digitaloceanToken, provider: "DigitalOcean", tokenFamily: "personal and OAuth tokens", primarySource: "https://docs.digitalocean.com/reference/api/create-personal-access-token/", reviewedOn: "2026-07-15", fixtureID: "digitalocean-token"),
+        .init(type: .perplexityKey, provider: "Perplexity", tokenFamily: "API key", primarySource: "https://docs.perplexity.ai/guides/getting-started", reviewedOn: "2026-07-15", fixtureID: "perplexity-key"),
+        .init(type: .workledgerKey, provider: "Workledger", tokenFamily: "API key", primarySource: "https://github.com/ppiankov/workledger", reviewedOn: "2026-07-15", fixtureID: "workledger-key"),
+        .init(type: .oraculKey, provider: "Oracul", tokenFamily: "API key", primarySource: "https://github.com/ppiankov/oracul", reviewedOn: "2026-07-15", fixtureID: "oracul-key"),
+        .init(type: .obstalabsKey, provider: "ObstaLabs", tokenFamily: "license key", primarySource: "https://github.com/ppiankov/obstalabs", reviewedOn: "2026-07-15", fixtureID: "obstalabs-key"),
+        .init(type: .resendKey, provider: "Resend", tokenFamily: "API key", primarySource: "https://resend.com/docs/dashboard/api-keys/introduction", reviewedOn: "2026-07-15", fixtureID: "resend-key"),
+        .init(type: .vaultToken, provider: "HashiCorp Vault", tokenFamily: "service and batch tokens", primarySource: "https://developer.hashicorp.com/vault/docs/concepts/tokens", reviewedOn: "2026-07-15", fixtureID: "vault-token"),
+        .init(type: .slackToken, provider: "Slack", tokenFamily: "bot, app, and rotating tokens", primarySource: "https://api.slack.com/authentication/token-types", reviewedOn: "2026-07-15", fixtureID: "slack-token"),
+        .init(type: .googleApiKey, provider: "Google Cloud", tokenFamily: "API key", primarySource: "https://cloud.google.com/docs/authentication/api-keys", reviewedOn: "2026-07-15", fixtureID: "google-api-key"),
+        .init(type: .dockerAccessToken, provider: "Docker", tokenFamily: "personal and organization access tokens", primarySource: "https://docs.docker.com/security/for-developers/access-tokens/", reviewedOn: "2026-07-15", fixtureID: "docker-access-token"),
+        .init(type: .githubToken, provider: "GitHub", tokenFamily: "fine-grained and installation tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "github-token"),
+    ]
 
     /// Safe hosts that should not trigger hostname detection.
     /// Matches chainwatch's safeHosts for consistency across tools.
@@ -51,15 +95,6 @@ public struct DetectionRules {
     /// All detection rules, ordered by specificity (most specific first).
     public static let rules: [(SensitiveDataType, NSRegularExpression)] = {
         var result: [(SensitiveDataType, NSRegularExpression)] = []
-
-        // SSH Private Key - very high confidence
-        // Matches the header of SSH private keys
-        if let regex = try? NSRegularExpression(
-            pattern: #"-----BEGIN\s+(RSA|DSA|EC|OPENSSH)\s+PRIVATE\s+KEY-----"#,
-            options: []
-        ) {
-            result.append((.sshPrivateKey, regex))
-        }
 
         // AWS Access Key ID - high confidence
         // Format: AKIA followed by 16 alphanumeric characters
@@ -116,18 +151,12 @@ public struct DetectionRules {
 
         // Azure Storage Connection String - high confidence
         if let regex = try? NSRegularExpression(
-            pattern: #"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[^;]+"#,
+            // WO-480: contain the key value itself; do not consume adjacent JSON,
+            // punctuation, or prose merely because no trailing semicolon exists.
+            pattern: #"DefaultEndpointsProtocol=https;AccountName=[^;\s\"']+;AccountKey=[A-Za-z0-9+/=]+"#,
             options: []
         ) {
             result.append((.azureConnectionString, regex))
-        }
-
-        // GCP Service Account JSON - high confidence
-        if let regex = try? NSRegularExpression(
-            pattern: #""type"\s*:\s*"service_account""#,
-            options: []
-        ) {
-            result.append((.gcpServiceAccount, regex))
         }
 
         // OpenAI API Key - high confidence
@@ -274,6 +303,61 @@ public struct DetectionRules {
             result.append((.resendKey, regex))
         }
 
+        // WO-462: https://developer.hashicorp.com/vault/docs/concepts/tokens
+        // Reviewed 2026-07-15. Modern hv* tokens use 24+ URL-safe characters;
+        // legacy one-letter tokens use exactly 24 base62 characters.
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_.-])(?:hv[bsr]\.[A-Za-z0-9_-]{24,}|[sbr]\.[A-Za-z0-9]{24})(?![A-Za-z0-9_.-])"#
+        ) {
+            result.append((.vaultToken, regex))
+        }
+
+        // WO-481: https://docs.slack.dev/authentication/tokens/ and
+        // https://api.slack.com/authentication/rotation, reviewed 2026-07-14.
+        // Slack intentionally keeps token lengths variable, so prefix, separators,
+        // bounded token characters, and a conservative suffix floor carry certainty.
+        let slackPatterns = [
+            #"(?<![A-Za-z0-9_.-])(?:xox[bp]|xapp|xwfp)-[A-Za-z0-9-]{20,255}(?![A-Za-z0-9_.-])"#,
+            #"(?<![A-Za-z0-9_.-])xoxe\.xox[bp]-[0-9]+-[A-Za-z0-9-]{16,255}(?![A-Za-z0-9_.-])"#,
+            #"(?<![A-Za-z0-9_.-])xoxe-[0-9]+-[A-Za-z0-9-]{16,255}(?![A-Za-z0-9_.-])"#
+        ]
+        for pattern in slackPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                result.append((.slackToken, regex))
+            }
+        }
+
+        // WO-482: https://cloud.google.com/docs/authentication/api-keys
+        // Reviewed 2026-07-14. Google's published example confirms AIza + 35 key characters.
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"#
+        ) {
+            result.append((.googleApiKey, regex))
+        }
+
+        // WO-483: https://docs.docker.com/reference/api/ai-governance/
+        // Reviewed 2026-07-15. Docker publishes PAT/OAT prefixes but not a fixed length;
+        // its Hub API reference includes a valid 15-character PAT suffix.
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_-])dckr_(?:pat|oat)_[A-Za-z0-9_-]{15,255}(?![A-Za-z0-9_-])"#
+        ) {
+            result.append((.dockerAccessToken, regex))
+        }
+
+        // WO-485: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github
+        // Reviewed 2026-07-14. Fine-grained PAT lengths are variable; stateless
+        // installation tokens use the documented ghs_APPID_JWT structure.
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,255}(?![A-Za-z0-9_])"#
+        ) {
+            result.append((.githubToken, regex))
+        }
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])ghs_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_.-])"#
+        ) {
+            result.append((.githubToken, regex))
+        }
+
         // Perplexity API Key - high confidence
         // pplx- prefix followed by 48 alphanumeric characters
         if let regex = try? NSRegularExpression(
@@ -319,37 +403,27 @@ public struct DetectionRules {
             result.append((.xmlHostname, regex))
         }
 
-        // Generic API Key patterns - high confidence
-        // Common prefixes: sk-, pk-, api_, key_, token_
-        // Placed AFTER specific providers (OpenAI sk-proj-, Anthropic sk-ant-, Groq gsk_)
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(sk|pk|api|key|token|secret|bearer)[_-][A-Za-z0-9]{20,}\b"#,
-            options: [.caseInsensitive]
-        ) {
-            result.append((.genericApiKey, regex))
-        }
-
         // GitHub Token - high confidence
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"#,
-            options: []
-        ) {
+        if let regex = githubClassicTokenRegex {
             result.append((.genericApiKey, regex))
         }
 
         // Stripe API Key - high confidence
-        if let regex = try? NSRegularExpression(
-            pattern: #"\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{24,}\b"#,
-            options: []
-        ) {
+        if let regex = stripeAPIKeyRegex {
             result.append((.genericApiKey, regex))
         }
 
         // Stripe Webhook Secret - high confidence
         // whsec_ prefix not covered by the generic sk/pk/api/key/token catch-all
+        if let regex = stripeWebhookSecretRegex {
+            result.append((.genericApiKey, regex))
+        }
+
+        // WO-487: broad prefixed lookalikes remain visible but advisory-only.
+        // Keep this fallback after every sourced provider grammar.
         if let regex = try? NSRegularExpression(
-            pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#,
-            options: []
+            pattern: #"\b(sk|pk|api|key|token|secret|bearer)[_-][A-Za-z0-9]{20,}\b"#,
+            options: [.caseInsensitive]
         ) {
             result.append((.genericApiKey, regex))
         }
@@ -533,6 +607,11 @@ public struct DetectionRules {
         var matches: [DetectedMatch] = []
         var matchedRanges: [Range<String.Index>] = []
 
+        // WO-478/WO-479: payload-bearing formats must authorize complete secret
+        // ranges before ordinary regex rules can claim marker-only success.
+        scanGCPServiceAccountSecrets(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+        scanCompletePrivateKeyBlocks(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+
         for (type, regex) in rules {
             // Skip disabled types
             guard config.isTypeEnabled(type) else { continue }
@@ -558,7 +637,13 @@ public struct DetectionRules {
                 if !isValidMatch(value, type: type, config: config) { continue }
 
                 let line = lineNumber(of: range.lowerBound, in: content)
-                matches.append(DetectedMatch(type: type, value: value, range: range, line: line))
+                matches.append(DetectedMatch(
+                    type: type,
+                    value: value,
+                    range: range,
+                    line: line,
+                    mutationAuthorizationSources: mutationAuthorizationSources(for: type, value: value)
+                ))
                 matchedRanges.append(range)
             }
         }
@@ -591,6 +676,299 @@ public struct DetectionRules {
         }
 
         return matches
+    }
+
+    // WO-487/WO-488: genericApiKey provider evidence is attached to exact grammars;
+    // dedicated intrinsic types are authorized centrally by DetectedMatch.init.
+    private static func mutationAuthorizationSources(
+        for type: SensitiveDataType,
+        value: String
+    ) -> Set<MutationAuthorizationSource> {
+        guard type == .genericApiKey else { return [] }
+        let range = NSRange(value.startIndex..., in: value)
+        let sourcedRegexes = [
+            githubClassicTokenRegex,
+            stripeAPIKeyRegex,
+            stripeWebhookSecretRegex,
+        ].compactMap { $0 }
+        let isSourcedProviderToken = sourcedRegexes.contains { regex in
+            regex.firstMatch(in: value, options: [], range: range)?.range == range
+        }
+        return isSourcedProviderToken ? [.intrinsicFormat] : []
+    }
+
+    // WO-478: valid blocks authorize complete containment; malformed recognized
+    // blocks reserve their bounded region as advisory-only evidence.
+    private static func scanCompletePrivateKeyBlocks(
+        _ content: String,
+        config: PastewatchConfig,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        let labelPattern = "RSA PRIVATE KEY|DSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY|PRIVATE KEY"
+        guard config.isTypeEnabled(.sshPrivateKey),
+              let beginRegex = try? NSRegularExpression(pattern: "-----BEGIN (\(labelPattern))-----"),
+              let endRegex = try? NSRegularExpression(pattern: "-----END (\(labelPattern))-----") else { return }
+
+        let fullRange = NSRange(content.startIndex..., in: content)
+        let beginCandidates = beginRegex.matches(in: content, range: fullRange)
+        let endCandidates = endRegex.matches(in: content, range: fullRange)
+        var malformedSuppressionEnd: String.Index?
+        var endCandidateIndex = 0
+        for (candidateIndex, candidate) in beginCandidates.enumerated() {
+            guard let beginRange = Range(candidate.range, in: content),
+                  let labelRange = Range(candidate.range(at: 1), in: content) else { continue }
+            let searchLimit = content.index(
+                beginRange.lowerBound,
+                offsetBy: maximumPrivateKeyBlockCharacters,
+                limitedBy: content.endIndex
+            ) ?? content.endIndex
+            let nextBeginRange = candidateIndex + 1 < beginCandidates.count
+                ? Range(beginCandidates[candidateIndex + 1].range, in: content)
+                : nil
+            while endCandidateIndex < endCandidates.count,
+                  endCandidates[endCandidateIndex].range.location <= candidate.range.location {
+                endCandidateIndex += 1
+            }
+            let firstEndCandidate = endCandidateIndex < endCandidates.count
+                ? endCandidates[endCandidateIndex]
+                : nil
+            let firstEndRange = firstEndCandidate.flatMap { Range($0.range, in: content) }
+            let firstEndLabel = firstEndCandidate.flatMap { Range($0.range(at: 1), in: content) }
+                .map { String(content[$0]) }
+            let isSuppressed = malformedSuppressionEnd.map { beginRange.lowerBound < $0 } ?? false
+            if isSuppressed { continue }
+            let hasNestedBegin = nextBeginRange.map { nextBegin in
+                firstEndRange.map { nextBegin.lowerBound < $0.lowerBound } ?? true
+            } ?? false
+            let isCorrectEnd = firstEndLabel == String(content[labelRange])
+            let isWithinBound = firstEndRange.map { $0.upperBound <= searchLimit } ?? false
+
+            guard !hasNestedBegin, isCorrectEnd, isWithinBound,
+                  let endRange = firstEndRange else {
+                let malformedEnd = firstEndRange?.upperBound ?? searchLimit
+                let malformedRange = beginRange.lowerBound..<max(beginRange.upperBound, malformedEnd)
+                malformedSuppressionEnd = max(malformedSuppressionEnd ?? beginRange.upperBound, malformedEnd)
+                matches.removeAll { $0.range.overlaps(malformedRange) }
+                matchedRanges.removeAll { $0.overlaps(malformedRange) }
+                matches.append(DetectedMatch(
+                    type: .sshPrivateKey,
+                    value: String(content[beginRange]),
+                    range: malformedRange,
+                    line: lineNumber(of: beginRange.lowerBound, in: content),
+                    advisory: .malformedPrivateKey
+                ))
+                matchedRanges.append(malformedRange)
+                continue
+            }
+
+            let blockRange = beginRange.lowerBound..<endRange.upperBound
+            guard !matchedRanges.contains(where: { $0.overlaps(blockRange) }) else { continue }
+
+            let value = String(content[blockRange])
+            matches.append(DetectedMatch(
+                type: .sshPrivateKey,
+                value: value,
+                range: blockRange,
+                line: lineNumber(of: blockRange.lowerBound, in: content)
+            ))
+            matchedRanges.append(blockRange)
+        }
+    }
+
+    // WO-479: JSON structure proves context; only private_key and private_key_id
+    // values become mutation-authorized matches. The service-account marker remains.
+    private static func scanGCPServiceAccountSecrets(
+        _ content: String,
+        config: PastewatchConfig,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        guard config.isTypeEnabled(.gcpServiceAccount),
+              (try? JSONSerialization.jsonObject(with: Data(content.utf8))) != nil else { return }
+        var parser = JSONSourceRangeParser(content: content)
+        guard let root = parser.parseDocument() else { return }
+        var authorizedRanges: [Range<String.Index>] = []
+        collectGCPServiceAccountRanges(root, into: &authorizedRanges)
+
+        for valueRange in authorizedRanges where !matchedRanges.contains(where: { $0.overlaps(valueRange) }) {
+            let encoded = String(content[valueRange])
+            matches.append(DetectedMatch(
+                type: .gcpServiceAccount,
+                value: encoded,
+                range: valueRange,
+                line: lineNumber(of: valueRange.lowerBound, in: content)
+            ))
+            matchedRanges.append(valueRange)
+        }
+    }
+
+    // WO-479: collect source ranges from the same object that carries the direct
+    // service-account marker; equal decoded values elsewhere grant no authority.
+    private static func collectGCPServiceAccountRanges(
+        _ value: JSONSourceValue,
+        into result: inout [Range<String.Index>]
+    ) {
+        switch value {
+        case .object(let members):
+            let directType = members.last { $0.key == "type" }?.value.stringValue
+            if directType?.decoded == "service_account" {
+                for member in members where member.key == "private_key" || member.key == "private_key_id" {
+                    if let secret = member.value.stringValue, !secret.decoded.isEmpty {
+                        result.append(secret.contentRange)
+                    }
+                }
+            }
+            for member in members {
+                collectGCPServiceAccountRanges(member.value, into: &result)
+            }
+        case .array(let values):
+            for child in values {
+                collectGCPServiceAccountRanges(child, into: &result)
+            }
+        case .string, .scalar:
+            break
+        }
+    }
+
+    private struct JSONSourceString {
+        let decoded: String
+        let contentRange: Range<String.Index>
+    }
+
+    private struct JSONSourceMember {
+        let key: String
+        let value: JSONSourceValue
+    }
+
+    private indirect enum JSONSourceValue {
+        case object([JSONSourceMember])
+        case array([JSONSourceValue])
+        case string(JSONSourceString)
+        case scalar
+
+        var stringValue: JSONSourceString? {
+            guard case .string(let value) = self else { return nil }
+            return value
+        }
+    }
+
+    // WO-479: JSONSerialization proves validity; this deterministic companion
+    // parser retains exact raw string ranges needed for context-bound mutation.
+    private struct JSONSourceRangeParser {
+        let content: String
+        var index: String.Index
+
+        init(content: String) {
+            self.content = content
+            self.index = content.startIndex
+        }
+
+        mutating func parseDocument() -> JSONSourceValue? {
+            skipWhitespace()
+            guard let value = parseValue() else { return nil }
+            skipWhitespace()
+            return index == content.endIndex ? value : nil
+        }
+
+        private mutating func parseValue() -> JSONSourceValue? {
+            skipWhitespace()
+            guard index < content.endIndex else { return nil }
+            switch content[index] {
+            case "{": return parseObject()
+            case "[": return parseArray()
+            case "\"": return parseString().map(JSONSourceValue.string)
+            default: return parseScalar()
+            }
+        }
+
+        private mutating func parseObject() -> JSONSourceValue? {
+            advance()
+            skipWhitespace()
+            var members: [JSONSourceMember] = []
+            if consume("}") { return .object(members) }
+
+            while true {
+                guard let key = parseString() else { return nil }
+                skipWhitespace()
+                guard consume(":") else { return nil }
+                guard let value = parseValue() else { return nil }
+                members.append(JSONSourceMember(key: key.decoded, value: value))
+                skipWhitespace()
+                if consume("}") { return .object(members) }
+                guard consume(",") else { return nil }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseArray() -> JSONSourceValue? {
+            advance()
+            skipWhitespace()
+            var values: [JSONSourceValue] = []
+            if consume("]") { return .array(values) }
+
+            while true {
+                guard let value = parseValue() else { return nil }
+                values.append(value)
+                skipWhitespace()
+                if consume("]") { return .array(values) }
+                guard consume(",") else { return nil }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseString() -> JSONSourceString? {
+            guard consume("\"") else { return nil }
+            let contentStart = index
+            while index < content.endIndex {
+                let character = content[index]
+                if character == "\"" {
+                    let range = contentStart..<index
+                    advance()
+                    guard let decoded = decodeJSONStringContent(String(content[range])) else { return nil }
+                    return JSONSourceString(decoded: decoded, contentRange: range)
+                }
+                if character == "\\" {
+                    advance()
+                    guard index < content.endIndex else { return nil }
+                }
+                advance()
+            }
+            return nil
+        }
+
+        private mutating func parseScalar() -> JSONSourceValue? {
+            let start = index
+            while index < content.endIndex,
+                  ![",", "]", "}", " ", "\t", "\r", "\n"].contains(content[index]) {
+                advance()
+            }
+            return start == index ? nil : .scalar
+        }
+
+        private mutating func skipWhitespace() {
+            while index < content.endIndex, [" ", "\t", "\r", "\n"].contains(content[index]) {
+                advance()
+            }
+        }
+
+        private mutating func consume(_ expected: Character) -> Bool {
+            guard index < content.endIndex, content[index] == expected else { return false }
+            advance()
+            return true
+        }
+
+        private mutating func advance() {
+            index = content.index(after: index)
+        }
+    }
+
+    private static func decodeJSONStringContent(_ encoded: String) -> String? {
+        let wrapped = "\"\(encoded)\""
+        return (try? JSONSerialization.jsonObject(
+            with: Data(wrapped.utf8),
+            options: [.fragmentsAllowed]
+        )) as? String
     }
 
     /// WO-124: scan file IO using built-ins plus shared/generated pattern artifacts.
@@ -656,12 +1034,14 @@ public struct DetectionRules {
         )
     }
 
+    // WO-478: malformed container evidence overrides overlapping mutation rules.
     /// Scan with allowlist filtering and custom rules.
     public static func scan(
         _ content: String,
         config: PastewatchConfig,
         allowlist: Allowlist = Allowlist(),
-        customRules: [CustomRule] = []
+        customRules: [CustomRule] = [],
+        knownSecretValues: Set<String> = []
     ) -> [DetectedMatch] {
         var matches: [DetectedMatch] = []
         var matchedRanges: [Range<String.Index>] = []
@@ -692,7 +1072,22 @@ public struct DetectionRules {
             }
         }
 
-        for match in scan(content, config: config) where !matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+        for match in scan(content, config: config) {
+            // WO-478: malformed private-key evidence overrides overlapping custom
+            // matches so malformed input cannot be reported as successful mutation.
+            if match.advisory != nil {
+                matches.removeAll { $0.range.overlaps(match.range) }
+                matchedRanges.removeAll { $0.overlaps(match.range) }
+            } else if let index = matches.firstIndex(where: { $0.range == match.range }) {
+                // WO-454: an exact built-in/custom overlap retains evidence from both
+                // detectors instead of allowing deduplication to weaken authorization.
+                matches[index] = matches[index].addingMutationAuthorizationSources(
+                    match.mutationAuthorizationSources
+                )
+                continue
+            } else if matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+                continue
+            }
             matches.append(match)
             matchedRanges.append(match.range)
         }
@@ -700,6 +1095,13 @@ public struct DetectionRules {
         // Apply allowlist filtering
         if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty {
             matches = allowlist.filter(matches)
+        }
+
+        if !knownSecretValues.isEmpty {
+            matches = matches.map { match in
+                guard knownSecretValues.contains(match.value), match.advisory == nil else { return match }
+                return match.addingMutationAuthorizationSources([.exactKnownSecret])
+            }
         }
 
         return matches

@@ -50,6 +50,9 @@ let proxyAdmissionQueueTimeoutMilliseconds = 250
 /// WO-335: rejected sockets are written on the accept loop; keep that send bounded.
 let proxyRejectedSocketSendTimeoutSeconds = 2
 
+/// WO-486: audit request targets are bounded independently from forwarded targets.
+let proxyAuditPathMaxCharacters = 512
+
 // MARK: - ProxyServer
 
 /// Minimal HTTP proxy that scans and redacts secrets from API request bodies.
@@ -64,6 +67,8 @@ public final class ProxyServer {
     private let upstream: URL
     private let forwardProxy: URL?
     private let config: PastewatchConfig
+    private let customRules: [CustomRule] // WO-473: one precompiled set for every proxy scan path.
+    private let customRuleStartupError: Error? // WO-473: direct server users fail before socket creation.
     private let severity: Severity
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
@@ -113,12 +118,25 @@ public final class ProxyServer {
     private let tlsTrustDelegate: TLSTrustDelegate?
     #endif
     private let urlSession: URLSession
+    /// WO-452: injectable serializer makes the fail-closed branch deterministic in tests.
+    var requestBodySerializer: ([String: Any]) throws -> Data = {
+        try JSONSerialization.data(withJSONObject: $0, options: [])
+    }
 
     public struct RedactionStats {
         public var requestsProcessed: Int = 0
+        public var refusedRequests: Int = 0 // WO-442: aggregate fail-closed 415 refusals.
+        public var modelIdentityAdvisories: Int = 0 // WO-430: nonstandard model names are observable, never refusal gates.
+        public var redactionFailures: Int = 0 // WO-452: detected mutations blocked by serialization failure.
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
         public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
+
+        // WO-430: surface model-identity drift relative to forwarded requests.
+        public var modelIdentityAdvisoryRate: Double {
+            guard requestsProcessed > 0 else { return 0 }
+            return Double(modelIdentityAdvisories) / Double(requestsProcessed)
+        }
     }
 
     struct StreamingAuditStats {
@@ -234,6 +252,7 @@ public final class ProxyServer {
         upstream: URL = URL(string: "https://api.anthropic.com")!,
         forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
+        compiledCustomRules: [CustomRule]? = nil,
         severity: Severity = .high,
         auditLogPath: String? = nil,
         injectAlert: Bool = true,
@@ -245,6 +264,18 @@ public final class ProxyServer {
         self.upstream = upstream
         self.forwardProxy = forwardProxy
         self.config = config
+        if let compiledCustomRules {
+            self.customRules = compiledCustomRules
+            self.customRuleStartupError = nil
+        } else {
+            do {
+                self.customRules = try CustomRule.compileForProxyStartup(config.customRules)
+                self.customRuleStartupError = nil
+            } catch {
+                self.customRules = []
+                self.customRuleStartupError = error
+            }
+        }
         self.severity = severity
         self.auditLogPath = auditLogPath
         self.injectAlert = injectAlert
@@ -389,6 +420,9 @@ public final class ProxyServer {
 
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
+        if let customRuleStartupError {
+            throw ProxyError.invalidCustomRules(customRuleStartupError.localizedDescription)
+        }
         #if canImport(Darwin)
         let listenSocket = socket(AF_INET, SOCK_STREAM, 0)
         #else
@@ -683,32 +717,64 @@ public final class ProxyServer {
             return
         }
 
-        // Only scan POST /v1/messages (the endpoint that carries tool results)
+        // WO-408/WO-432: fail closed on unsupported upstream body shapes. The scan path
+        // below only redacts supported Anthropic-shaped POSTs; any other POST body - notably
+        // OpenAI /v1/chat/completions - would otherwise be forwarded UNSCANNED, a silent
+        // no-op that makes users believe traffic was redacted when it was not. Refuse an
+        // unrecognized shape rather than forward it. Runs for ALL POSTs before scanning.
+        if case .refuse(let reason) = upstreamBodyShapeVerdict(
+            method: parsed.method, path: parsed.path, bodyData: parsed.bodyData
+        ) {
+            recordRefusedRequest()
+            logUnsupportedBodyShapeRefusal(path: parsed.path, reason: reason)
+            sendError(to: clientSocket, status: 415, message: "Unsupported upstream body shape")
+            return
+        }
+        let modelIdentityAdvisory = modelIdentityAdvisory(
+            method: parsed.method,
+            path: parsed.path,
+            bodyData: parsed.bodyData
+        )
+
+        // Only scan supported Anthropic-shaped POSTs (the endpoints that carry tool results).
         var processedBody = parsed.body
         var processedBodyData = parsed.bodyData
         var redactionCount = 0
         var redactedTypes: [String] = []
         var bodyAdvisoryCount = 0
         var bodyAdvisoryTypes: [String] = []
-        var shouldBlockNonUTF8Forwarding = false
-        if parsed.method == "POST" && parsed.path.contains("/v1/messages") {
+        if isCanonicalScannablePostMethod(parsed.method) && isSupportedAnthropicPostPath(parsed.path) {
+            // WO-429: malformed/non-UTF-8 supported-path bodies are already refused by
+            // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
             if let body = parsed.body {
                 let result = scanAndRedactBody(body)
+                // WO-478: malformed recognized private-key material cannot be
+                // contained reliably, so refuse before resolving the upstream URL.
+                if result.blockingAdvisory == .malformedPrivateKey {
+                    recordRefusedRequest()
+                    logUnsafeBodyRefusal(path: parsed.path, reason: "malformed private key block")
+                    sendError(to: clientSocket, status: 400, message: "Unsafe request body")
+                    return
+                }
+                redactionCount = result.redacted
+                redactedTypes = result.redactedTypes
+                bodyAdvisoryCount = result.advisoryCount
+                bodyAdvisoryTypes = result.advisoryTypes
+                // WO-452/WO-458: preserve all scan evidence, but never forward the
+                // original body when an authorized mutation cannot be serialized.
+                if result.serializationFailed {
+                    recordRedactionFailure()
+                    logRedactionFailure(path: parsed.path, count: redactionCount, types: redactedTypes)
+                    recordBodyAdvisoryStats(
+                        path: parsed.path,
+                        count: bodyAdvisoryCount,
+                        types: bodyAdvisoryTypes
+                    )
+                    sendError(to: clientSocket, status: 500, message: "Proxy redaction error")
+                    return
+                }
                 processedBody = result.body
                 processedBodyData = Data(result.body.utf8)
-                redactionCount = result.redacted
-                redactedTypes = result.redactedTypes
-                bodyAdvisoryCount = result.advisoryCount
-                bodyAdvisoryTypes = result.advisoryTypes
-            } else {
-                // WO-296: scan a lossy text view of non-UTF-8 bodies for audit
-                // coverage, then fail closed if a secret is detected.
-                let result = scanNonUTF8BodyForRedactions(processedBodyData)
-                redactionCount = result.redacted
-                redactedTypes = result.redactedTypes
-                bodyAdvisoryCount = result.advisoryCount
-                bodyAdvisoryTypes = result.advisoryTypes
-                shouldBlockNonUTF8Forwarding = result.shouldBlockForwarding
             }
         }
 
@@ -730,25 +796,19 @@ public final class ProxyServer {
 
         recordInitialRequestStats(
             redactionCount: redactionCount,
-            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding,
             countForwardedRedaction: !deferForwardedRedactionStats
         )
+        if let modelIdentityAdvisory {
+            recordModelIdentityAdvisory(path: parsed.path, dedupKey: modelIdentityAdvisory.dedupKey)
+        }
 
         if shouldLogBodyRedactionBeforeForwarding(
             redactionCount: redactionCount,
-            requestWantsStream: requestWantsStream,
-            shouldBlockNonUTF8Forwarding: shouldBlockNonUTF8Forwarding
+            requestWantsStream: requestWantsStream
         ) {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
         recordBodyAdvisoryStats(path: parsed.path, count: bodyAdvisoryCount, types: bodyAdvisoryTypes)
-        if shouldBlockNonUTF8Forwarding {
-            // WO-296: /v1/messages bodies are UTF-8 JSON by contract; if a lossy
-            // scan finds a secret in malformed bytes, fail closed instead of
-            // forwarding the original credential upstream.
-            sendError(to: clientSocket, status: 400, message: "Bad Request")
-            return
-        }
 
         // Platform dispatch: returns a BufferedResponse for the convergence tail,
         // or nil when the response was fully handled (streamed or error sent to client).
@@ -926,7 +986,8 @@ public final class ProxyServer {
                 insecure: insecureTLS, streaming: shouldStream,
                 clientSocket: ctx.clientSocket, sendFlags: sendFlags,
                 streamingRedactionMode: streamingMode,
-                proxyConfig: config, proxySeverity: severity, alertBeforeDone: alertBeforeDone
+                proxyConfig: config, proxyCustomRules: customRules,
+                proxySeverity: severity, alertBeforeDone: alertBeforeDone
             )
         } catch CurlHTTPClient.ExecuteError.timeout {
             // WO-386: curl exit 28 is an upstream timeout, not a bad gateway.
@@ -1007,52 +1068,364 @@ public final class ProxyServer {
         let redactedTypes: [String]
         let advisoryCount: Int
         let advisoryTypes: [String]
+        let serializationFailed: Bool // WO-452: caller must block forwarding on failure.
+        let blockingAdvisory: DetectionAdvisory? // WO-478: fail-closed request evidence.
     }
 
-    struct RedactionDetectionSummary {
-        let redacted: Int
-        let redactedTypes: [String]
-        let advisoryCount: Int
-        let advisoryTypes: [String]
-        let shouldBlockForwarding: Bool
-    }
-
+    // WO-478: malformed recognized key containers fail closed before mutation.
     func scanAndRedactBody(_ body: String) -> ScanResult {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ScanResult(body: body, redacted: 0, redactedTypes: [], advisoryCount: 0, advisoryTypes: [])
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: 0, advisoryTypes: [], serializationFailed: false,
+                blockingAdvisory: nil
+            )
+        }
+
+        // WO-478: preflight the raw JSON text so malformed PEM markers remain
+        // visible even when they occur in a structured field not rewritten below.
+        if scanProxyText(body).contains(where: { $0.advisory == .malformedPrivateKey }) {
+            return ScanResult(
+                body: body, redacted: 0, redactedTypes: [],
+                advisoryCount: 1, advisoryTypes: ["Malformed private key"],
+                serializationFailed: false, blockingAdvisory: .malformedPrivateKey
+            )
         }
 
         var redacted = 0
         var types: [String] = []
         var advisoryCount = 0
         var advisoryTypes: [String] = []
-        let processed = redactContentArray(
-            json,
-            redacted: &redacted,
-            types: &types,
-            advisoryCount: &advisoryCount,
-            advisoryTypes: &advisoryTypes
-        )
+        let processed: [String: Any]
+        if json["requests"] != nil {
+            processed = redactBatchRequestMessages(
+                json,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        } else {
+            processed = redactRequestPayload(
+                json,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
+            )
+        }
 
         guard redacted > 0 else {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
-                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+                serializationFailed: false, blockingAdvisory: nil
             )
         }
-        guard let resultData = try? JSONSerialization.data(withJSONObject: processed, options: []),
+        guard let resultData = try? requestBodySerializer(processed),
               let resultString = String(data: resultData, encoding: .utf8) else {
             return ScanResult(
-                body: body, redacted: 0, redactedTypes: [],
-                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+                body: body, redacted: redacted, redactedTypes: types,
+                advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+                serializationFailed: true, blockingAdvisory: nil
             )
         }
 
         return ScanResult(
             body: resultString, redacted: redacted, redactedTypes: types,
-            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+            serializationFailed: false, blockingAdvisory: nil
         )
+    }
+
+    // WO-408: outcome of the fail-closed upstream body-shape check.
+    enum BodyShapeVerdict: Equatable {
+        case allow
+        case refuse(String)
+    }
+
+    // WO-408/WO-411/WO-412: decide whether a request body is a shape pastewatch can
+    // redact. JSON POSTs to unsupported upstream paths are refused rather than silently
+    // forwarded unscanned. Pure and socket-free so it is unit-testable directly.
+    func upstreamBodyShapeVerdict(method: String, path: String, bodyData: Data) -> BodyShapeVerdict {
+        // WO-422: only canonical POST has a request-body scanner. Refuse every
+        // other non-empty method body instead of admitting bytes the scan branch skips.
+        guard isCanonicalScannablePostMethod(method) else {
+            return bodyData.isEmpty ? .allow : .refuse("unsupported request method with body")
+        }
+        let supportedAnthropicPath = isSupportedAnthropicPostPath(path)
+        // WO-433: an empty POST body carries no unscanned JSON shape or credential-bearing
+        // request body, so it should reach upstream instead of being refused as malformed.
+        guard !bodyData.isEmpty else { return .allow }
+        // WO-425: malformed supported-path bodies are not safe passthrough. The downstream
+        // scanner only understands valid Anthropic JSON, so fail closed instead of forwarding
+        // an unscanned /v1/messages body.
+        guard let jsonValue = try? JSONSerialization.jsonObject(with: bodyData, options: [.fragmentsAllowed]) else {
+            let reason = supportedAnthropicPath
+                ? "malformed Anthropic JSON body"
+                : "unsupported non-JSON POST body"
+            return .refuse(reason)
+        }
+        // WO-422: parseable JSON arrays/scalars are JSON bodies, not opaque transport bytes.
+        // Refuse malformed Anthropic JSON on supported paths and any JSON body on unsupported
+        // paths instead of silently forwarding it unscanned.
+        guard let json = jsonValue as? [String: Any] else {
+            let reason = supportedAnthropicPath
+                ? "malformed Anthropic JSON body"
+                : "unsupported JSON POST body"
+            return .refuse(reason)
+        }
+        guard supportedAnthropicPath else {
+            return .refuse("unsupported JSON POST body")
+        }
+        if isSupportedAnthropicBatchesPath(path) {
+            // WO-432: batch requests carry Messages params under requests[].params.
+            return isAnthropicBatchShape(json)
+                ? .allow
+                : .refuse("malformed Anthropic batch body")
+        }
+        let hasMessages = json["messages"] is [Any]
+        // WO-425/WO-437: Messages and Count Tokens both require a messages array.
+        // The prior count_tokens exception admitted arbitrary unscanned JSON objects.
+        guard hasMessages else {
+            let endpoint = isSupportedAnthropicCountTokensPath(path) ? "count_tokens" : "messages"
+            return .refuse("malformed Anthropic \(endpoint) body")
+        }
+        return isAnthropicMessagesShape(json)
+            ? .allow
+            : .refuse("non-Anthropic messages schema")
+    }
+
+    // WO-422: admission and scanning must use one exact method predicate.
+    private func isCanonicalScannablePostMethod(_ method: String) -> Bool {
+        method == "POST"
+    }
+
+    // WO-411/WO-412: path allowlist for JSON POST bodies the proxy understands.
+    // WO-419: match the /v1/messages endpoint as a path SUFFIX, not an exact string, so a
+    // gateway-fronted upstream (WO-142) whose request target embeds a base path — e.g.
+    // /v1/llm-gateway/v1/messages or /anthropic/v1/messages — is still recognized as the
+    // Anthropic Messages endpoint and allowed, while /v1/chat/completions, /v1/responses,
+    // and other non-Anthropic JSON POSTs remain refused.
+    func isSupportedAnthropicPostPath(_ path: String) -> Bool {
+        let pathOnly = requestPathWithoutQuery(path)
+        return pathOnly == "/v1/messages"
+            || pathOnly == "/v1/messages/count_tokens"
+            || pathOnly == "/v1/messages/batches"
+            || pathOnly.hasSuffix("/v1/messages")
+            || pathOnly.hasSuffix("/v1/messages/count_tokens")
+            || pathOnly.hasSuffix("/v1/messages/batches")
+    }
+
+    // WO-425: count-token endpoints share the supported Anthropic path family but can have
+    // request shapes that are not scanned as Messages tool-result bodies.
+    private func isSupportedAnthropicCountTokensPath(_ path: String) -> Bool {
+        let pathOnly = requestPathWithoutQuery(path)
+        return pathOnly == "/v1/messages/count_tokens"
+            || pathOnly.hasSuffix("/v1/messages/count_tokens")
+    }
+
+    // WO-432: the Message Batches create endpoint is a supported Anthropic request shape,
+    // while batch-result retrieval is not a JSON POST body the request scanner understands.
+    private func isSupportedAnthropicBatchesPath(_ path: String) -> Bool {
+        let pathOnly = requestPathWithoutQuery(path)
+        return pathOnly == "/v1/messages/batches"
+            || pathOnly.hasSuffix("/v1/messages/batches")
+    }
+
+    // WO-425: classify gateway paths without letting query strings affect endpoint shape.
+    private func requestPathWithoutQuery(_ path: String) -> String {
+        var pathOnly = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map(String.init) ?? path
+        // WO-436: gateway/client-normalized trailing slashes still identify the
+        // same Anthropic endpoints and should not trip fail-closed shape refusal.
+        while pathOnly.count > 1 && pathOnly.hasSuffix("/") {
+            pathOnly.removeLast()
+        }
+        return pathOnly
+    }
+
+    // WO-408/WO-430: identify the Messages wire shape, not the model vendor. Model names
+    // are sender-mutable and may name Anthropic-compatible providers, so only structural
+    // OpenAI siblings participate in refusal.
+    func isAnthropicMessagesShape(_ json: [String: Any]) -> Bool {
+        guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        guard hasValidAnthropicTools(json["tools"]),
+              hasValidStopSequences(json["stop_sequences"]) else { return false }
+        for message in messages {
+            guard message["role"] is String else { return false }
+            // OpenAI /v1/chat/completions carries tool_calls / function_call on messages;
+            // their presence is a high-signal marker that this is not an Anthropic body.
+            if hasNonNullJSONField("tool_calls", in: message)
+                || hasNonNullJSONField("function_call", in: message) {
+                return false
+            }
+            if let content = message["content"] {
+                if content is NSNull { continue } // WO-427: JSON null is equivalent to absent content.
+                if content is String { continue }
+                guard let blocks = content as? [[String: Any]] else { return false }
+                for block in blocks where !(block["type"] is String) { return false }
+            }
+        }
+        return true
+    }
+
+    // WO-456: malformed tool containers cannot bypass the request scanner.
+    private func hasValidAnthropicTools(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard !(value is NSNull), let tools = value as? [[String: Any]] else { return false }
+        return tools.allSatisfy { tool in
+            guard let name = tool["name"] as? String, !name.isEmpty,
+                  tool["input_schema"] is [String: Any] else { return false }
+            if let description = tool["description"], !(description is String) { return false }
+            if let examples = tool["input_examples"], !(examples is [Any]) { return false }
+            return true
+        }
+    }
+
+    // WO-457: stop sequences are scannable strings, never an opaque mixed array.
+    private func hasValidStopSequences(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard !(value is NSNull), let sequences = value as? [Any] else { return false }
+        return sequences.allSatisfy { $0 is String }
+    }
+
+    // WO-432: Anthropic Message Batches wrap normal Messages params in requests[].params.
+    func isAnthropicBatchShape(_ json: [String: Any]) -> Bool {
+        guard let requests = json["requests"] as? [[String: Any]] else { return false }
+        return requests.allSatisfy { request in
+            guard let params = request["params"] as? [String: Any] else { return false }
+            return isAnthropicMessagesShape(params)
+        }
+    }
+
+    // WO-431: JSON null means the OpenAI-only key is explicitly empty, not present.
+    private func hasNonNullJSONField(_ key: String, in json: [String: Any]) -> Bool {
+        guard let value = json[key] else { return false }
+        return !(value is NSNull)
+    }
+
+    // WO-430: retain known foreign families only for advisory classification, never
+    // refusal. Keep o-family matches dash-scoped so telemetry remains deterministic.
+    private static let knownForeignMessagesModelPrefixes = [
+        "gpt-", "chatgpt-", "o1-", "o2-", "o3-", "o4-", "o5-", "o6-",
+        "gemini-", "mistral-", "llama-", "grok-",
+    ]
+
+    private func isKnownForeignMessagesModel(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        return Self.knownForeignMessagesModelPrefixes.contains { lower.hasPrefix($0) }
+    }
+
+    // WO-445: retain model identity only in the in-memory dedup key; audit output stays opaque.
+    private struct ModelIdentityAdvisory {
+        let dedupKey: String
+    }
+
+    // WO-430/WO-446: model identity is advisory telemetry. A request that speaks the
+    // supported wire shape remains allowed, and each batch payload is classified independently.
+    func modelIdentityAdvisoryNeeded(method: String, path: String, bodyData: Data) -> Bool {
+        modelIdentityAdvisory(method: method, path: path, bodyData: bodyData) != nil
+    }
+
+    private func modelIdentityAdvisory(method: String, path: String, bodyData: Data) -> ModelIdentityAdvisory? {
+        guard isCanonicalScannablePostMethod(method), isSupportedAnthropicPostPath(path),
+              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            return nil
+        }
+        let payloads: [[String: Any]]
+        if isSupportedAnthropicBatchesPath(path) {
+            let requests = json["requests"] as? [[String: Any]] ?? []
+            payloads = requests.compactMap { $0["params"] as? [String: Any] }
+        } else {
+            payloads = [json]
+        }
+        guard !payloads.isEmpty else { return nil }
+        let identities = payloads.compactMap { payload -> String? in
+            guard !containsToolResult(payload) else { return nil }
+            guard let model = payload["model"] as? String else { return "missing" }
+            guard isKnownForeignMessagesModel(model) || !isRecognizedAnthropicModelName(model) else {
+                return nil
+            }
+            return "model:\(model.utf8.count):\(model)"
+        }
+        guard !identities.isEmpty else { return nil }
+        let dedupKey = Array(Set(identities)).sorted().joined(separator: "|")
+        return ModelIdentityAdvisory(dedupKey: dedupKey)
+    }
+
+    // WO-430: telemetry applies only when no request payload was scanned as tool_result.
+    private func containsToolResult(_ json: [String: Any]) -> Bool {
+        guard let messages = json["messages"] as? [[String: Any]] else { return false }
+        return messages.contains { message in
+            guard let content = message["content"] as? [[String: Any]] else { return false }
+            return content.contains { ($0["type"] as? String) == "tool_result" }
+        }
+    }
+
+    // WO-430: recognized names suppress advisory noise but never decide admission.
+    private func isRecognizedAnthropicModelName(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        return lower.hasPrefix("claude-") || lower.hasPrefix("anthropic.")
+    }
+
+    // WO-408/WO-413/WO-440: audit fail-closed refusals without repeating identical noise.
+    private func logUnsupportedBodyShapeRefusal(path: String, reason: String) {
+        logBodyRefusal(path: path, reason: reason, description: "unsupported upstream body shape")
+    }
+
+    // WO-478: malformed secret-container refusals are audited without recording
+    // any marker payload or request-body bytes.
+    private func logUnsafeBodyRefusal(path: String, reason: String) {
+        logBodyRefusal(path: path, reason: reason, description: "unsafe request body")
+    }
+
+    // WO-494: refusal categories share one dedup and cross-chain reset state machine.
+    private func logBodyRefusal(path: String, reason: String, description: String) {
+        let safePath = auditSafePath(path)
+        let signature = "refused:\(safePath):\(reason)"
+        statsLock.lock()
+        let isRepeat = signature == lastRefusalLogSignature
+        lastRefusalLogSignature = signature
+        // WO-443/WO-448: an emitted refusal breaks every other audit dedup chain.
+        if !isRepeat {
+            lastRedactionLogSignatures.removeAll()
+            lastAdvisoryLogSignatures.removeAll()
+            lastModelIdentityAdvisorySignature = nil
+        }
+        statsLock.unlock()
+        guard !isRepeat else { return }
+
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REFUSED \(description) in \(safePath) (\(reason))\n"
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
+    // WO-486: request targets are forwarded verbatim but audit output never includes
+    // query values or terminal/log control bytes.
+    func auditSafePath(_ rawPath: String) -> String {
+        let pathOnly = rawPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? rawPath
+        let sanitized = pathOnly.unicodeScalars.map { scalar -> String in
+            let value = scalar.value
+            let isControl = value <= 0x1f || (0x7f...0x9f).contains(value)
+            return isControl ? "_" : String(scalar)
+        }.joined()
+        guard sanitized.count > proxyAuditPathMaxCharacters else { return sanitized }
+        return String(sanitized.prefix(proxyAuditPathMaxCharacters)) + "..."
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {
@@ -1060,33 +1433,154 @@ public final class ProxyServer {
         DetectionRules.scan(
             text,
             config: config,
-            customRules: CustomRule.compileValid(config.customRules)
+            customRules: customRules
         )
     }
 
-    func scanNonUTF8BodyForRedactions(_ bodyData: Data) -> RedactionDetectionSummary {
-        guard !bodyData.isEmpty else {
-            return RedactionDetectionSummary(
-                redacted: 0, redactedTypes: [],
-                advisoryCount: 0, advisoryTypes: [],
-                shouldBlockForwarding: false
+    // WO-444/WO-447: count_tokens and batch params can carry system text as either a
+    // string or typed text blocks; preserve all non-text block metadata.
+    private func redactTopLevelStringFields(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        for field in ["system"] {
+            if let value = json[field] as? String {
+                result[field] = redactScannableText(
+                    value,
+                    site: .proxySystem,
+                    redacted: &redacted,
+                    types: &types,
+                    advisoryCount: &advisoryCount,
+                    advisoryTypes: &advisoryTypes
+                )
+                continue
+            }
+            guard var blocks = json[field] as? [[String: Any]] else { continue }
+            for index in blocks.indices {
+                guard blocks[index]["type"] as? String == "text",
+                      let text = blocks[index]["text"] as? String else { continue }
+                blocks[index]["text"] = redactScannableText(
+                    text,
+                    site: .proxySystem,
+                    redacted: &redacted,
+                    types: &types,
+                    advisoryCount: &advisoryCount,
+                    advisoryTypes: &advisoryTypes
+                )
+            }
+            result[field] = blocks
+        }
+        return result
+    }
+
+    // WO-444/WO-447: keep certainty-gated mutation and advisory accounting identical
+    // across string and block-array system representations.
+    // swiftlint:disable:next function_parameter_count
+    private func redactScannableText(
+        _ value: String,
+        site: MutationSite,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> String {
+        let matches = scanProxyText(value)
+        let outcome = applyAuthorizedMutations(
+            to: value,
+            matches: matches,
+            site: site,
+            minAdvisorySeverity: severity
+        )
+        advisoryCount += outcome.advisory.count
+        advisoryTypes.append(contentsOf: outcome.advisory.map { $0.displayName })
+        redacted += outcome.mutated.count
+        types.append(contentsOf: outcome.mutated.map { $0.displayName })
+        return outcome.text
+    }
+
+    // WO-454/WO-461: recursively scan structured values without changing keys or
+    // non-string leaves; the caller supplies the evidence-reporting site.
+    // swiftlint:disable:next function_parameter_count
+    private func redactJSONStrings(
+        _ value: Any,
+        site: MutationSite,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> Any {
+        if let text = value as? String {
+            return redactScannableText(
+                text,
+                site: site,
+                redacted: &redacted,
+                types: &types,
+                advisoryCount: &advisoryCount,
+                advisoryTypes: &advisoryTypes
             )
         }
-        // swiftlint:disable:next optional_data_string_conversion
-        let lossyBody = String(decoding: bodyData, as: UTF8.self)
-        let matches = scanProxyText(lossyBody)
-        let filtered = mutationSafeProxyMatches(matches)
-        let advisories = streamAdvisoryMatches(matches, severity: severity)
-        return RedactionDetectionSummary(
-            redacted: filtered.count,
-            redactedTypes: filtered.map { $0.displayName },
-            advisoryCount: advisories.count,
-            advisoryTypes: advisories.map { $0.displayName },
-            shouldBlockForwarding: !filtered.isEmpty
-        )
+        if let array = value as? [Any] {
+            return array.map {
+                redactJSONStrings(
+                    $0, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        if let object = value as? [String: Any] {
+            return object.mapValues {
+                redactJSONStrings(
+                    $0, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        return value
     }
 
-    /// Walk the messages array looking for tool_result content to scan.
+    // WO-454/WO-461: tool contracts and examples are visible to the scanner and
+    // use explicit sites; evidence, not field context, controls replacement.
+    private func redactTools(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        guard var tools = json["tools"] as? [[String: Any]] else { return result }
+        for index in tools.indices {
+            if let description = tools[index]["description"] as? String {
+                tools[index]["description"] = redactScannableText(
+                    description, site: .proxyToolDescription,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+            if let schema = tools[index]["input_schema"] {
+                tools[index]["input_schema"] = redactJSONStrings(
+                    schema, site: .proxyInputSchema,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+            if let examples = tools[index]["input_examples"] {
+                tools[index]["input_examples"] = redactJSONStrings(
+                    examples, site: .proxyToolInputExample,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        result["tools"] = tools
+        return result
+    }
+
+    /// WO-454: scan authored text and execution payloads with explicit sites.
     private func redactContentArray(
         _ json: [String: Any],
         redacted: inout Int,
@@ -1100,68 +1594,99 @@ public final class ProxyServer {
             return result
         }
 
-        for i in 0..<messages.count {
-            let msg = messages[i]
-            guard let role = msg["role"] as? String, role == "user" else { continue }
-
-            if let content = msg["content"] as? [[String: Any]] {
-                var newContent: [[String: Any]] = []
-                for block in content {
-                    if let type = block["type"] as? String, type == "tool_result",
-                       let blockContent = block["content"] as? String {
-                        let matches = scanProxyText(blockContent)
-                        let filtered = mutationSafeProxyMatches(matches)
-                        let advisories = streamAdvisoryMatches(matches, severity: severity)
-                        advisoryCount += advisories.count
-                        advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-                        if !filtered.isEmpty {
-                            let obfuscated = Obfuscator.obfuscate(blockContent, matches: filtered)
-                            var newBlock = block
-                            newBlock["content"] = obfuscated
-                            newContent.append(newBlock)
-                            redacted += filtered.count
-                            types.append(contentsOf: filtered.map { $0.displayName })
-                        } else {
-                            newContent.append(block)
-                        }
-                    } else if let type = block["type"] as? String, type == "tool_result",
-                              let nestedContent = block["content"] as? [[String: Any]] {
-                        // Content can be array of {type: "text", text: "..."} blocks
-                        var newNested: [[String: Any]] = []
-                        for nested in nestedContent {
-                            if let nType = nested["type"] as? String, nType == "text",
-                               let text = nested["text"] as? String {
-                                let matches = scanProxyText(text)
-                                let filtered = mutationSafeProxyMatches(matches)
-                                let advisories = streamAdvisoryMatches(matches, severity: severity)
-                                advisoryCount += advisories.count
-                                advisoryTypes.append(contentsOf: advisories.map { $0.displayName })
-                                if !filtered.isEmpty {
-                                    let obfuscated = Obfuscator.obfuscate(text, matches: filtered)
-                                    var newNest = nested
-                                    newNest["text"] = obfuscated
-                                    newNested.append(newNest)
-                                    redacted += filtered.count
-                                    types.append(contentsOf: filtered.map { $0.displayName })
-                                } else {
-                                    newNested.append(nested)
-                                }
-                            } else {
-                                newNested.append(nested)
-                            }
-                        }
-                        var newBlock = block
-                        newBlock["content"] = newNested
-                        newContent.append(newBlock)
-                    } else {
-                        newContent.append(block)
-                    }
-                }
-                messages[i]["content"] = newContent
+        for index in messages.indices {
+            let role = messages[index]["role"] as? String
+            let textSite: MutationSite = role == "user" ? .proxyUserText : .proxyAssistantText
+            if let text = messages[index]["content"] as? String {
+                messages[index]["content"] = redactScannableText(
+                    text, site: textSite, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+                continue
             }
+            guard var blocks = messages[index]["content"] as? [[String: Any]] else { continue }
+            for blockIndex in blocks.indices {
+                let blockType = blocks[blockIndex]["type"] as? String
+                if blockType == "tool_result", let content = blocks[blockIndex]["content"] {
+                    blocks[blockIndex]["content"] = redactJSONStrings(
+                        content, site: .proxyToolResult,
+                        redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                } else if blockType == "tool_use", let input = blocks[blockIndex]["input"] {
+                    blocks[blockIndex]["input"] = redactJSONStrings(
+                        input, site: .proxyToolUseInput,
+                        redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                } else if let text = blocks[blockIndex]["text"] as? String {
+                    blocks[blockIndex]["text"] = redactScannableText(
+                        text, site: textSite, redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    )
+                }
+            }
+            messages[index]["content"] = blocks
         }
 
         result["messages"] = messages
+        return result
+    }
+
+    // WO-454/WO-457: one request-body walk covers ordinary and batch params.
+    private func redactRequestPayload(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = redactTopLevelStringFields(
+            json, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
+        result = redactTools(
+            result, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
+        if let sequences = result["stop_sequences"] as? [String] {
+            result["stop_sequences"] = sequences.map {
+                redactScannableText(
+                    $0, site: .proxyStopSequence,
+                    redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        return redactContentArray(
+            result, redacted: &redacted, types: &types,
+            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+        )
+    }
+
+    // WO-432: scan nested Message Batch params with the same certainty gate used for
+    // ordinary /v1/messages bodies.
+    private func redactBatchRequestMessages(
+        _ json: [String: Any],
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any] {
+        var result = json
+        guard var requests = json["requests"] as? [[String: Any]] else {
+            return result
+        }
+
+        for index in requests.indices {
+            guard let params = requests[index]["params"] as? [String: Any] else { continue }
+            requests[index]["params"] = redactRequestPayload(
+                params, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+            )
+        }
+
+        result["requests"] = requests
         return result
     }
 
@@ -1191,17 +1716,9 @@ public final class ProxyServer {
 
     func shouldLogBodyRedactionBeforeForwarding(
         redactionCount: Int,
-        requestWantsStream: Bool,
-        shouldBlockNonUTF8Forwarding: Bool
+        requestWantsStream: Bool
     ) -> Bool {
         guard redactionCount > 0 else { return false }
-        // WO-304/WO-307: if malformed bytes caused a fail-closed request, no
-        // streaming relay will run later, so the request-body redaction must be
-        // audited before returning 400.
-        if shouldBlockNonUTF8Forwarding {
-            return true
-        }
-
         // WO-304: non-streaming and buffer-mode body redactions must be logged
         // before forwarding so upstream failures cannot hide them. Streaming
         // mode defers the body count so body + SSE redactions are logged once.
@@ -1220,18 +1737,45 @@ public final class ProxyServer {
 
     func recordInitialRequestStats(
         redactionCount: Int,
-        shouldBlockNonUTF8Forwarding: Bool,
         countForwardedRedaction: Bool = true
     ) {
-        // WO-317: a fail-closed malformed body is audited but was never forwarded
-        // with redacted bytes, so it must not inflate requestsRedacted/secretsRedacted.
         statsLock.lock()
         stats.requestsProcessed += 1
-        if redactionCount > 0 && !shouldBlockNonUTF8Forwarding && countForwardedRedaction {
+        if redactionCount > 0 && countForwardedRedaction {
             stats.requestsRedacted += 1
             stats.secretsRedacted += redactionCount
         }
         statsLock.unlock()
+    }
+
+    // WO-442: refusals are not processed requests, but operators still need an aggregate count.
+    private func recordRefusedRequest() {
+        statsLock.lock()
+        stats.refusedRequests += 1
+        statsLock.unlock()
+    }
+
+    // WO-452: failure accounting is distinct from successfully forwarded redactions.
+    private func recordRedactionFailure() {
+        statsLock.lock()
+        stats.redactionFailures += 1
+        statsLock.unlock()
+    }
+
+    // WO-430/WO-445: preserve compatible traffic while making model drift measurable
+    // and deduplicating only identical path-and-model advisories.
+    private func recordModelIdentityAdvisory(path: String, dedupKey: String) {
+        statsLock.lock()
+        stats.modelIdentityAdvisories += 1
+        let advisoryCount = stats.modelIdentityAdvisories
+        let requestCount = stats.requestsProcessed
+        statsLock.unlock()
+        logModelIdentityAdvisory(
+            path: path,
+            dedupKey: dedupKey,
+            advisoryCount: advisoryCount,
+            requestCount: requestCount
+        )
     }
 
     func recordForwardedBodyRedactionStats(redactionCount: Int) {
@@ -1369,6 +1913,7 @@ public final class ProxyServer {
             sendFlags: sendFlags,
             redactionMode: mode,
             config: config,
+            customRules: customRules,
             severity: severity,
             idleTimeoutSeconds: proxyStreamIdleTimeoutSeconds,
             tlsChallengeHandler: tlsTrustDelegate.map { delegate in
@@ -1677,9 +2222,14 @@ public final class ProxyServer {
         let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)
         responseData.append(bodyBytes)
-        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        // WO-212/218: use sendAll(); unexpected delivery failures remain observable.
         if !sendAll(responseData, to: socket, flags: sendFlags) {
-            FileHandle.standardError.write(Data("[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8))
+            let errorCode = errno
+            if Self.shouldLogSocketDeliveryFailure(errorCode: errorCode, quiet: quietLog) {
+                FileHandle.standardError.write(Data(
+                    "[pastewatch-proxy] sendError: client socket \(socket) closed before error response delivered\n".utf8
+                ))
+            }
         }
     }
 
@@ -1698,10 +2248,22 @@ public final class ProxyServer {
 
         var responseData = Data(response.utf8)
         responseData.append(body)
-        // WO-212/218: use sendAll(); log to stderr on delivery failure so the failure is observable.
+        // WO-212/218: use sendAll(); unexpected delivery failures remain observable.
         if !sendAll(responseData, to: socket, flags: sendFlags) {
-            FileHandle.standardError.write(Data("[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8))
+            let errorCode = errno
+            if Self.shouldLogSocketDeliveryFailure(errorCode: errorCode, quiet: quietLog) {
+                FileHandle.standardError.write(Data(
+                    "[pastewatch-proxy] sendResponse: client socket \(socket) closed before response delivered\n".utf8
+                ))
+            }
         }
+    }
+
+    // WO-275: EPIPE/ECONNRESET mean the local client is already gone.
+    // Interrupting a stream is normal and must not look like a proxy failure.
+    static func shouldLogSocketDeliveryFailure(errorCode: Int32, quiet: Bool) -> Bool {
+        guard !quiet else { return false }
+        return errorCode != EPIPE && errorCode != ECONNRESET
     }
 
     // MARK: - Alert injection
@@ -1797,6 +2359,8 @@ public final class ProxyServer {
 
     private var lastRedactionLogSignatures: [RedactionLogSource: String] = [:] // WO-378: source-scoped dedup.
     private var lastAdvisoryLogSignatures: [RedactionLogSource: String] = [:] // WO-404: source-scoped advisory dedup.
+    private var lastRefusalLogSignature: String? // WO-440: throttle repeated unsupported-shape audit lines.
+    private var lastModelIdentityAdvisorySignature: String? // WO-430: throttle repeated model-identity audit lines.
 
     private enum RedactionLogSource: String {
         case request
@@ -1806,6 +2370,34 @@ public final class ProxyServer {
             switch self {
             case .request: return ""
             case .response: return "response "
+            }
+        }
+    }
+
+    // WO-452: serialization failures are never represented as successful redactions
+    // and are intentionally not deduplicated away.
+    private func logRedactionFailure(path: String, count: Int, types: [String]) {
+        var typeCounts: [String: Int] = [:]
+        for type in types { typeCounts[type, default: 0] += 1 }
+        let breakdown = typeCounts.sorted { $0.key < $1.key }
+            .map { "\($0.key) x\($0.value)" }
+            .joined(separator: ", ")
+        let safePath = auditSafePath(path)
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY REDACTION FAILED \(count) secret(s) in "
+            + "\(safePath) (\(breakdown))\n"
+
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
             }
         }
     }
@@ -1828,16 +2420,18 @@ public final class ProxyServer {
         // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
         // concurrent connections do not race on the dedup check.
         // WO-378: request and buffered-response redactions can share path/count/type values.
-        let signature = "\(source.rawValue):\(path):\(count):\(breakdown)"
+        let safePath = auditSafePath(path)
+        let signature = "\(source.rawValue):\(safePath):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastRedactionLogSignatures[source]
         lastRedactionLogSignatures[source] = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
         let suggestions = typeCounts.keys.sorted().compactMap { fixSuggestion(for: $0) }
         let fixHint = suggestions.isEmpty ? "" : " → " + suggestions.first!
-        let location = "\(source.auditLocationPrefix)\(path)"
+        let location = "\(source.auditLocationPrefix)\(safePath)"
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(location) (\(breakdown))\n"
         let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
@@ -1882,14 +2476,16 @@ public final class ProxyServer {
             .map { "\($0.key) x\($0.value)" }
             .joined(separator: ", ")
 
-        let signature = "advisory:\(source.rawValue):\(path):\(count):\(breakdown)"
+        let safePath = auditSafePath(path)
+        let signature = "advisory:\(source.rawValue):\(safePath):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastAdvisoryLogSignatures[source]
         lastAdvisoryLogSignatures[source] = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
         statsLock.unlock()
 
         let timestamp = formatAuditTimestamp(Date())
-        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(path) (\(breakdown))\n"
+        let line = "[\(timestamp)] PROXY ADVISORY \(count) possible secret match(es) in \(safePath) (\(breakdown))\n"
         if !quietLog && !isRepeat {
             FileHandle.standardError.write(Data(line.utf8))
         }
@@ -1909,10 +2505,45 @@ public final class ProxyServer {
         }
     }
 
+    // WO-430: model names are advisory metadata; log drift without exposing the value.
+    private func logModelIdentityAdvisory(
+        path: String,
+        dedupKey: String,
+        advisoryCount: Int,
+        requestCount: Int
+    ) {
+        let safePath = auditSafePath(path)
+        let signature = "model-identity:\(safePath):\(dedupKey)"
+        statsLock.lock()
+        let isRepeat = signature == lastModelIdentityAdvisorySignature
+        lastModelIdentityAdvisorySignature = signature
+        if !isRepeat { lastRefusalLogSignature = nil }
+        statsLock.unlock()
+        guard !isRepeat else { return }
+
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY MODEL ADVISORY nonstandard model identity in \(safePath) "
+            + "(wire shape allowed; rate=\(advisoryCount)/\(requestCount))\n"
+        if !quietLog {
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        if let logPath = auditLogPath {
+            logQueue.async {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    handle.closeFile()
+                } else {
+                    FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+                }
+            }
+        }
+    }
+
     func logAlertInjectionSkipped(path: String, contentType: String) {
         let timestamp = formatAuditTimestamp(Date())
         let normalizedType = contentType.isEmpty ? "missing" : contentType
-        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(path) (non-json response: \(normalizedType))\n"
+        let line = "[\(timestamp)] PROXY ALERT SKIPPED in \(auditSafePath(path)) "
+            + "(non-json response: \(normalizedType))\n"
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
@@ -1928,7 +2559,7 @@ public final class ProxyServer {
 
     func logAlertInjectedAsSSEComment(path: String) {
         let timestamp = formatAuditTimestamp(Date())
-        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(path) (sse-comment)\n"
+        let line = "[\(timestamp)] PROXY ALERT INJECTED in \(auditSafePath(path)) (sse-comment)\n"
         if let logPath = auditLogPath {
             logQueue.async {
                 if let handle = FileHandle(forWritingAtPath: logPath) {
@@ -1950,18 +2581,22 @@ public final class ProxyServer {
 
 // MARK: - Errors
 
-public enum ProxyError: Error, CustomStringConvertible {
+public enum ProxyError: Error, CustomStringConvertible, LocalizedError {
+    case invalidCustomRules(String) // WO-473: invalid protection config cannot bind a listener.
     case socketCreationFailed
     case bindFailed(port: UInt16)
     case listenFailed
 
     public var description: String {
         switch self {
+        case .invalidCustomRules(let message): return message
         case .socketCreationFailed: return "Failed to create socket"
         case .bindFailed(let port): return "Failed to bind to port \(port) (already in use?)"
         case .listenFailed: return "Failed to listen on socket"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 #if canImport(Darwin)

@@ -4,10 +4,13 @@ These invariants define the proxy streaming and shutdown behavior that must stay
 guarded by tests. New edge ideas outside this list should be logged as follow-up
 work unless they violate one of these invariants.
 
-1. Mutate proxy bytes only for deterministic secret classes and operator-approved
-   custom rules; uncertain built-ins are advisory-only regardless of `--severity`.
+1. Mutate proxy bytes only when explicit evidence authorizes the exact match:
+   an intrinsically distinctive secret format, an exact locally known value, or an
+   operator-approved custom rule. Format-only DSN/JDBC and ambiguous built-ins are
+   advisory-only regardless of request field or `--severity`.
    The `--severity` flag gates advisory reporting volume, not mutation.
-   Guard: `ProxyStreamRedactionTests.testCriticalMatchMutatesStreamBytes`,
+   Guard: `MutationAuthorizationTests.testPartitionConservesEveryMatchAndSeverityDoesNotAuthorize`,
+   `ProxyStreamRedactionTests.testCriticalMatchMutatesStreamBytes`,
    `ProxyStreamRedactionTests.testHighBuiltInMatchIsAdvisoryOnlyAndByteIdentical`, and
    `ProxyStreamRedactionTests.testHighCustomRuleMatchMutatesStreamBytes`.
 

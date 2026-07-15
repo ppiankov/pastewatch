@@ -29,7 +29,7 @@ Pastewatch refuses that transition.
 
 Every AI agent sends your file contents, command outputs, and tool results to a cloud API. If those contain secrets, the secrets leave your machine — silently, irreversibly, and into infrastructure you don't control.
 
-Pastewatch makes secret leakage **structurally impossible** without breaking any agent functionality:
+Pastewatch prevents supported secret-leakage paths structurally without breaking agent workflows:
 
 ```
   What the agent does                What actually happens
@@ -40,16 +40,18 @@ Pastewatch makes secret leakage **structurally impossible** without breaking any
   Write code with placeholders →    MCP resolves originals locally on write-back
 ```
 
-The agent works normally. It reads files, runs commands, writes code. It just never sees the real values — and neither does the cloud.
+The agent works normally. It reads files, runs commands, and writes code. Through MCP,
+the agent sees reversible placeholders; through the proxy, intrinsically identifiable or
+operator-authorized secrets are replaced before supported traffic reaches the cloud.
 
-**No behavioral rules. No trust assumptions. No ML. The architecture prevents the leak.**
+**No ML and no probabilistic mutation. Authorization comes from secret evidence, not severity.**
 
 ## Why Pastewatch
 
-- **Before-paste boundary** — secrets never leave your machine. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
-- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. The agent works with placeholders, your secrets stay local
+- **Before-paste boundary** — authorized secret matches are rewritten before supported traffic leaves. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
+- **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. Authorized matches become reversible placeholders while the secret map stays local
 - **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
-- **API proxy** — catches everything, including subagents and tools that bypass hooks. Last line of defense before the network boundary
+- **API proxy** — catches Anthropic-shaped traffic that bypasses hooks, including from subagents. Last line of defense before the network boundary (refuses unrecognized upstream shapes rather than forward them unscanned)
 - **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
 - **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
 - **One command** — `pastewatch-cli launch claude` and every layer is active. No manual setup, no env vars, no second terminal
@@ -67,7 +69,7 @@ Pastewatch started as a clipboard monitor — scan before paste, replace secrets
 | **Startup sweep** | Warns about pre-existing shell config credentials | `pastewatch-cli launch` scans common startup files once per changed finding summary |
 | **MCP server** | Redacted read/write for AI agents | Agent sees placeholders, originals stay in RAM |
 | **Shell guard** | Blocks secrets in commands and file access | Pre-execution hook for Claude Code, Cline, Cursor, Windsurf, Continue, Amazon Q |
-| **API proxy** | Redacts secrets from outbound API traffic | Sits between agent and cloud, scans every request |
+| **API proxy** | Redacts secrets from supported outbound API traffic | Scans Anthropic-shaped requests and refuses unsupported body shapes |
 | **VS Code extension** | Real-time detection in the editor | Highlights secrets as you type |
 
 All layers share the same detection engine — 30+ pattern types, deterministic regex, no ML. Every layer operates locally. Nothing phones home.
@@ -76,8 +78,8 @@ All layers share the same detection engine — 30+ pattern types, deterministic 
 
 Pastewatch rewrites your data only when it is **certain** the value is a secret. This is a hard rule, not a tuning knob:
 
-- **Mutated (obfuscated/restored):** deterministic secret classes only — API keys, tokens, DSNs, JWTs, SSH keys, credit cards (Luhn-validated), and any pattern **you** approve via a custom rule.
-- **Advisory only (never mutated):** inherently ambiguous detections — emails, phone numbers, IPs, hostnames, file paths, UUIDs. A legitimate email or hostname in a real response is not a leak, and pastewatch will never corrupt a valid response by rewriting one. Instead it **nags you off-band** so you can decide whether to promote the pattern by adding a custom rule.
+- **Mutated:** intrinsically identifiable secrets such as provider tokens, complete private keys, validated JWTs and cards; exact values supplied by a trusted local source; and patterns **you** approve with a custom rule.
+- **Advisory only:** format-only DSN/JDBC URLs, broad generic API-key prefixes (`sk-`, `pk-`, `api_`), generic credential assignments, XML credential-shaped text, and ambiguous detections such as emails, phone numbers, IPs, hostnames, file paths, and UUIDs. Pastewatch reports these off-band without rewriting them unless exact-value or custom-rule evidence authorizes mutation. Exact sourced-provider grammars, including GitHub classic tokens and Stripe keys, remain intrinsically authorized.
 - **`--severity` controls how much it nags, never what it rewrites.** Lowering severity surfaces more advisories; it never widens the set of values that get mutated.
 
 The result: false negatives are preferred over false positives, and mutation false positives are driven to ~zero by construction. Pastewatch never breaks a working agent response to redact something it only *might* be.
@@ -106,8 +108,9 @@ Pastewatch does not:
 Pastewatch scans text for sensitive patterns and replaces them with non-sensitive placeholders. The same engine powers all six layers:
 
 1. **Detection** — regex-based pattern matching across 30+ secret types (API keys, DSNs, tokens, credentials, PII)
-2. **Obfuscation** — matched values are replaced with typed placeholders (`<AWS_KEY_1>`, `<DB_CONNECTION_1>`)
-3. **Resolution** — MCP server stores originals in local RAM, restores them on write-back. Secrets never leave the machine
+2. **Authorization** — evidence partitions matches into mutation or advisory-only outcomes
+3. **Obfuscation** — authorized values are replaced with typed placeholders (`<AWS_KEY_1>`)
+4. **Resolution** — only the MCP server stores originals in local RAM and restores them on write-back
 
 The clipboard monitor scans before paste. The CLI scans files on demand. The MCP server scans on read and resolves on write. The guard scans commands before execution. The proxy scans API requests before they leave the network. Each layer catches what the others miss.
 
@@ -128,7 +131,7 @@ pastewatch-cli setup claude-code
 pastewatch-cli launch claude
 ```
 
-The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs your agent. When the agent exits, the proxy stops. Every outbound API request is scanned and secrets are redacted before they leave your machine.
+The `launch` command starts the proxy, waits for it to be ready, sets `ANTHROPIC_BASE_URL`, and runs Claude Code. When the agent exits, the proxy stops. The proxy scans Anthropic-shaped API requests and redacts supported secrets before they leave your machine. Protect other agents with configured hooks, MCP tools, and agent instructions where available.
 
 **Important:** The setup step injects credential handling rules into your agent's `CLAUDE.md`. Without these rules, agents may echo passwords in shell output or store plaintext credentials in memory files — formats that bypass regex detection. The rules ensure agents use detectable keywords (`password=`, `secret=`) and never store raw values. See [docs/CLAUDE-SNIPPET.md](docs/CLAUDE-SNIPPET.md) for the full snippet.
 
@@ -251,9 +254,9 @@ If detection is ambiguous, Pastewatch does nothing.
 Detected values are replaced with typed, numbered placeholders:
 
 ```
-john.doe@example.com  →  <EMAIL_1>
 AKIAIOSFODNN7EXAMPLE  →  <AWS_KEY_1>
-192.168.1.100         →  <IP_1>
+AIza...               →  <GOOGLE_API_KEY_1>
+github_pat_...        →  <GITHUB_TOKEN_1>
 ```
 
 How placeholders work depends on the layer:
@@ -261,17 +264,20 @@ How placeholders work depends on the layer:
 | Layer | Placeholder lifetime | Recovery |
 |-------|---------------------|----------|
 | **Clipboard** | Discarded after paste | None — one-way |
-| **CLI scan** | Output only | None — report only |
+| **CLI scan** | Output only | None — source files are never modified |
 | **MCP server** | Stored in RAM for the session | Write-back resolves originals locally |
 | **API proxy** | Replaced in-flight | None — redacted before it leaves |
 
-The MCP server is the only layer that maintains a mapping — it must, because the agent needs to write code with real values restored. The mapping lives in process memory and is lost when the session ends. No persistence, no disk, no cloud.
+The MCP server is the only layer that maintains a mapping, because it must restore
+placeholders locally when the agent writes a file. Clipboard and proxy replacement is
+one-way; responses are scanned independently rather than deobfuscated. The MCP mapping
+lives in process memory and is lost when the session ends.
 
 ---
 
 ## User Experience
 
-- **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: Email (1), API Key (1)`
+- **Clipboard/GUI** — silent by default. When obfuscation occurs, a minimal macOS notification: `Pastewatch: Obfuscated: AWS Key (1), Google API Key (1)`
 - **CLI** — findings printed to stdout, exit code 6 if secrets found
 - **Startup sweep** — one stderr warning per changed shell config finding summary during `launch`; disable with `--no-startup-sweep` ([details](docs/startup-sweep.md))
 - **MCP** — transparent to the agent. It reads placeholders and writes them back. No user interaction needed
@@ -337,7 +343,9 @@ pastewatch-cli config check
 
 ### API Proxy — Last Line of Defense
 
-Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from **all** outbound requests before they leave your machine. Nothing gets through.
+Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
+
+> **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends) and Message Batch create requests (`/v1/messages/batches`). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Model names are advisory telemetry only because gateways and Anthropic-compatible providers may rewrite them; path and structural body checks form the admission boundary. Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
@@ -358,7 +366,7 @@ Every tool call an AI agent makes — including internal subprocesses you don't 
   └───────────┼──────────────────────────┘
               │
               ▼  Cloud API
-         api.anthropic.com (secrets never arrive)
+         api.anthropic.com (authorized matches removed)
 ```
 
 ```bash
@@ -367,10 +375,9 @@ pastewatch-cli launch claude
 
 # With options
 pastewatch-cli launch --audit-log /tmp/pw.log -- claude --model opus
-
-# Any agent
-pastewatch-cli launch -- codex --full-auto
 ```
+
+Only `claude` is routed through the proxy today (the proxy redacts Anthropic-shaped traffic). Launching another agent through `launch` does **not** start or wire the proxy. `--audit-log` is rejected for non-routed agents because no proxy audit stream exists for those launches. Protect non-routed agents with configured pastewatch hooks and MCP tools where available.
 
 Or start the proxy manually for more control:
 
@@ -382,7 +389,7 @@ pastewatch-cli proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8443 claude
 ```
 
-**Corporate proxy chaining.** Many organizations require all outbound traffic to go through a corporate proxy. Pastewatch chains transparently — it scans and redacts first, then forwards through the corporate proxy:
+**Corporate proxy chaining.** Many organizations require API traffic to go through a corporate proxy. For routed Claude Code traffic, pastewatch chains transparently — it scans and redacts first, then forwards through the corporate proxy:
 
 ```bash
 # Corporate proxy at proxy.corp:8080
@@ -476,7 +483,7 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 
 ### MCP Server - Redacted Read/Write
 
-AI coding agents send file contents to cloud APIs. If those files contain secrets, the secrets leave your machine. Pastewatch MCP solves this: **the agent works with placeholders, your secrets stay local.**
+AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
 
 ```
   Your machine (local only)
@@ -486,7 +493,7 @@ AI coding agents send file contents to cloud APIs. If those files contain secret
   │  read: scan + redact ──┼──────────────────────► Agent sees placeholders
   │  write: resolve local ◄┼────────────────────── Agent returns placeholders
   │                        │
-  │  secrets stay in RAM   │   Secrets never leave.
+  │  mapping stays local   │   Authorized matches leave only as placeholders.
   └────────────────────────┘
 ```
 
@@ -531,7 +538,7 @@ The server holds mappings in memory for the session. Same file re-read returns t
 
 Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret values.
 
-**What this protects:** API keys, DB credentials, SSH keys, tokens, emails, IPs - secrets never leave your machine. **What this doesn't protect:** prompt content, code structure, business logic - these still reach the API. Pastewatch protects your keys; for protecting your ideas, use a local model.
+**What this protects:** Intrinsically identifiable secrets, exact known values, and custom-rule matches are rewritten before supported API requests leave. Format-only credentials and DSNs are advisory-only by default and can still reach upstream unless exact-value or custom-rule evidence authorizes mutation. **What this doesn't protect:** prompt content, code structure, and business logic still reach the API; use a local model when those must remain local.
 
 See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
 
@@ -821,7 +828,7 @@ Define additional patterns in a JSON file:
 
 ### Agent Safety Matrix
 
-The API proxy (Layer 0) protects agents that expose an API endpoint override; rows marked proxy not applicable are limited to their listed local layers. Hooks and MCP add defense in depth.
+The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/messages` and `/v1/messages/batches`) and refuses unrecognized upstream body shapes (HTTP 415). `pastewatch-cli launch` wires only Claude Code to this proxy. Other clients need hooks or MCP unless the operator separately configures an Anthropic-compatible client to use `pastewatch-cli proxy`; OpenAI/Gemini-shaped bodies are not redacted.
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|
@@ -835,17 +842,16 @@ The API proxy (Layer 0) protects agents that expose an API endpoint override; ro
 | Copilot | **Structural** | preToolUse (`.github/hooks/`) | Yes | `pastewatch-cli setup copilot` |
 | Codex CLI | **Structural** | PreToolUse (exit 2) | Manual | `pastewatch-cli setup codex` |
 | Qwen Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup qwen-code` |
-| Goose | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup goose` |
-| Kilo Code | Proxy + MCP | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
-| Gemini | Proxy + MCP | No hooks | Yes | `pastewatch-cli setup gemini` |
+| Goose | MCP only | No hooks | Yes | `pastewatch-cli setup goose` |
+| Kilo Code | MCP only | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
+| Gemini | MCP only | No hooks | Yes | `pastewatch-cli setup gemini` |
 | Antigravity (agy) | Proxy not applicable + MCP only (voluntary tools; no Structural read blocking) | [No](docs/research/agy-hooks-follow-up.md) - handler registration fails | [Yes](docs/research/agy-hooks-discovery.md) | Not yet supported by `pastewatch-cli setup`; edit `~/.gemini/config/mcp_config.json` manually |
-| OpenCode | Proxy + MCP | No hooks | Yes | Manual |
-| Aider | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | `pastewatch-cli launch -- aider` |
+| OpenCode | MCP only | No hooks | Yes | Manual |
+| Aider | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | N/A |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
 **Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
-**Proxy + MCP** = network-level redaction catches everything, MCP tools provide redacted access, but the agent isn't forced to use them.
-**Proxy only** = all protection comes from the network proxy. Still catches 100% of outbound secrets.
+**MCP only** = redaction applies only when the agent uses the configured Pastewatch MCP tools. Native file or network access is not intercepted.
 
 ### Install
 

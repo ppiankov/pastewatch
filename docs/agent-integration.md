@@ -11,14 +11,11 @@ brew install ppiankov/tap/pastewatch
 
 ## 1. API Proxy — Layer 0
 
-The proxy is the default and recommended way to run any agent. It sits between the agent and the cloud API, scanning and redacting secrets from **all** outbound requests — including subagents, tool calls, and anything else that bypasses hooks or MCP.
+For Claude Code, the proxy is the default and recommended network boundary. It sits between Claude Code and the Anthropic API, scanning and redacting supported secrets from Anthropic-shaped requests — including subagent and tool traffic that bypasses hooks or MCP.
 
 ```bash
 # One command — starts proxy, launches agent, cleans up on exit
 pastewatch-cli launch claude
-
-# Any agent
-pastewatch-cli launch -- codex --full-auto
 
 # With corporate proxy chaining
 pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude
@@ -30,7 +27,7 @@ Shell alias for zero-friction protected sessions:
 alias claude='pastewatch-cli launch claude'
 ```
 
-The proxy catches what hooks and MCP cannot — it is the network boundary. MCP tools and hooks below add defense in depth.
+The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use the MCP tools and hooks below as defense in depth, and for agents not routed through `ANTHROPIC_BASE_URL` where those integrations are available.
 
 ---
 
@@ -49,7 +46,7 @@ The proxy catches what hooks and MCP cannot — it is the network boundary. MCP 
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
 | Goose | Advisory | Advisory | MCP only | No hook support |
 | Kilo Code | Advisory | Advisory | MCP only | No hook support |
-| Aider | Advisory | Advisory | Proxy only | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
+| Aider | Not covered | Not covered | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
 | Gemini | Advisory | Advisory | MCP only | No hook support |
 | Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
 | Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
@@ -382,7 +379,7 @@ For the full command reference, see [SKILL.md](SKILL.md).
 
 ## Verification
 
-After configuring MCP and hooks for any agent:
+After configuring MCP and hooks for an agent:
 
 1. Start the agent - pastewatch should appear in the MCP/tools panel with 6 tools
 2. Create a test file with a fake secret (e.g., `password=hunter2`)
@@ -413,4 +410,4 @@ Once configured, the agent has access to:
 | `pastewatch_scan_diff` | Scan git diff for secrets in changed lines |
 | `pastewatch_inventory` | Generate secret posture report for a directory |
 
-Secrets never leave your machine. Only placeholders reach the AI provider's API.
+Intrinsically identifiable, exact-known, and custom-rule matches leave only as placeholders. Advisory-only matches remain visible so the operator can decide whether to authorize mutation.
