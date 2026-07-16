@@ -1661,13 +1661,8 @@ public final class ProxyServer {
                         redacted: &redacted, types: &types,
                         advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
                     )
-                } else if let text = blocks[blockIndex]["text"] as? String {
-                    blocks[blockIndex]["text"] = redactScannableText(
-                        text, site: textSite, redacted: &redacted, types: &types,
-                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
-                    )
                 } else {
-                    // WO-503: future/plaintext block payloads cannot bypass scanning.
+                    // WO-503: scan every non-tool payload, including blocks that also carry text.
                     blocks[blockIndex] = redactContentPayloadStrings(
                         blocks[blockIndex], site: textSite,
                         redacted: &redacted, types: &types,

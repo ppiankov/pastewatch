@@ -622,6 +622,19 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertFalse(result.body.contains(key))
     }
 
+    func testUnknownContentBlockWithTextStillScansNestedPayload() {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        let body = """
+        {"messages":[{"role":"user","content":[{"type":"custom_x","text":"safe","payload":{"nested":"\(key)"}}]}]}
+        """
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(key))
+        XCTAssertTrue(result.body.contains("safe"))
+    }
+
     func testBase64PayloadAndStructuralDiscriminatorsArePreserved() throws {
         var config = PastewatchConfig.defaultConfig
         config.customRules = [
