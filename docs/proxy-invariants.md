@@ -45,3 +45,22 @@ work unless they violate one of these invariants.
    Guard: `ProxyHTTPRequestReadTests.testCurlResponseHeaderReaderRejectsEOFWithPartialHeaders`.
    Linux curl subprocess output must also be drained while the child is running;
    Guard: `ProxyHTTPRequestReadTests.testCurlNonStreamingCollectionDrainsLargeProcessOutputBeforeWait`.
+
+## Watched Duplication
+
+WO-505: the Darwin `URLSession` and Linux curl relays intentionally implement the
+same protocol behavior in separate platform paths. A change to either side of these
+pairs requires reviewing and testing the other side in the same pull request:
+
+- SSE `[DONE]` frame-start selection: `rawSSEDoneFrameStart` in
+  `SocketHelpers.swift` and `rawStreamFrameStart` in `CurlHTTPClient.swift`.
+- CRLF/LF header and frame terminator handling: `requestHeaderTerminatorRange` in
+  `ProxyServer.swift`, `headerTerminatorRange` in `CurlHTTPClient.swift`,
+  `rawSSEDoneFrameStart` in `SocketHelpers.swift`, and extraction in
+  `SSEFrameParser.swift`.
+- `[DONE]` detection and alert-before-DONE assembly: `relayRawRedactedFrames` /
+  `buildAlertBeforeDoneFrameIfNeeded` in `SSEStreamRelay.swift` and
+  `relayBodyChunks` / `relayRawStreamBufferedData` in `CurlHTTPClient.swift`.
+- Stream relay control flow, including EPIPE, EOF, and overflow: the
+  `SSEStreamRelay` delegate relay methods and `CurlHTTPClient.relayBodyChunks` plus
+  its `relayRawStream*` helpers.
