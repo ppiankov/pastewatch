@@ -497,7 +497,7 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
   └────────────────────────┘
 ```
 
-**Setup** (Claude Code, Cline, Cursor - any MCP-compatible agent):
+**Setup** (the config shape and file location vary by agent):
 
 ```json
 {
@@ -540,11 +540,14 @@ Logs timestamps, tool calls, file paths, and redaction counts. Never logs secret
 
 **What this protects:** Intrinsically identifiable secrets, exact known values, and custom-rule matches are rewritten before supported API requests leave. Format-only credentials and DSNs are advisory-only by default and can still reach upstream unless exact-value or custom-rule evidence authorizes mutation. **What this doesn't protect:** prompt content, code structure, and business logic still reach the API; use a local model when those must remain local.
 
-See [docs/agent-safety.md](docs/agent-safety.md) for the full agent safety guide with setup for Claude Code, Cline, and Cursor.
+See [docs/agent-setup.md](docs/agent-setup.md) for the verified per-agent config
+paths and automatic/manual setup status.
 
 ### Agent Auto-Setup
 
-One-command agent integration - configures MCP server, hooks, and severity alignment:
+Agent integration configures every supported component that can be updated without
+damaging an existing config. Goose and Codex print manual YAML/TOML blocks; Aider
+reports MCP unavailable.
 
 ```bash
 pastewatch-cli setup claude-code              # global config
@@ -560,12 +563,12 @@ Idempotent - safe to re-run. Updates existing config without duplication.
 
 | Agent | Hook | MCP | Proxy |
 |-------|------|-----|-------|
-| Claude Code | Yes - PreToolUse | Yes | Available |
-| Cline | Yes - PreToolUse JSON cancel | Yes | Available |
-| Cursor | Yes - preToolUse | Yes | Available |
-| Windsurf | Yes - pre_read/write/run | Yes | Available |
-| Continue | Yes - PreToolUse | Yes | Available |
-| Amazon Q | Yes - preToolUse | Yes | Available |
+| Claude Code | Yes - PreToolUse | Automatic | Routed by `launch` |
+| Cline | Yes - PreToolUse JSON cancel | Automatic | Not routed by `launch` |
+| Cursor | Yes - preToolUse | Automatic | Not routed by `launch` |
+| Windsurf | Yes - pre_read/write/run | Automatic | Not routed by `launch` |
+| Continue | Yes - PreToolUse | Automatic | Not routed by `launch` |
+| Amazon Q | Yes - preToolUse | Automatic | Not routed by `launch` |
 | Antigravity (agy) | **NO HOOK INTEGRATION** - no structural read blocking; schema/plugin hook probes failed ([discovery](docs/research/agy-hooks-discovery.md), [follow-up](docs/research/agy-hooks-follow-up.md)) | Yes - manual `~/.gemini/config/mcp_config.json` ([discovery](docs/research/agy-hooks-discovery.md)) | Not applicable (`agy` does not expose an API endpoint override) |
 
 Antigravity/agy can use pastewatch only through voluntary MCP tools today; hook probes in [discovery](docs/research/agy-hooks-discovery.md) and [follow-up](docs/research/agy-hooks-follow-up.md) found no working hook registration, so pastewatch does NOT block agy reads structurally.
@@ -832,22 +835,22 @@ The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/mes
 
 | Agent | Protection | Hooks | MCP | Setup |
 |-------|-----------|-------|-----|-------|
-| Claude Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup claude-code` |
-| Cline | **Structural** | PreToolUse (JSON cancel) | Yes | `pastewatch-cli setup cline` |
-| Roo Code | **Structural** | PreToolUse (JSON cancel) | Yes | `pastewatch-cli setup roo-code` |
-| Cursor | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup cursor` |
-| Windsurf | **Structural** | pre_read/write/run (exit 2) | Yes | `pastewatch-cli setup windsurf` |
-| Continue | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup continue` |
-| Amazon Q | **Structural** | preToolUse (exit 2) | Yes | `pastewatch-cli setup amazon-q` |
-| Copilot | **Structural** | preToolUse (`.github/hooks/`) | Yes | `pastewatch-cli setup copilot` |
-| Codex CLI | **Structural** | PreToolUse (exit 2) | Manual | `pastewatch-cli setup codex` |
-| Qwen Code | **Structural** | PreToolUse (exit 2) | Yes | `pastewatch-cli setup qwen-code` |
-| Goose | MCP only | No hooks | Yes | `pastewatch-cli setup goose` |
-| Kilo Code | MCP only | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Yes | `pastewatch-cli setup kilo-code` |
-| Gemini | MCP only | No hooks | Yes | `pastewatch-cli setup gemini` |
+| Claude Code | **Structural** | PreToolUse (exit 2) | Automatic | `pastewatch-cli setup claude-code` |
+| Cline | **Structural** | PreToolUse (JSON cancel) | Automatic | `pastewatch-cli setup cline` |
+| Roo Code | **Structural** | PreToolUse (JSON cancel) | Automatic | `pastewatch-cli setup roo-code` |
+| Cursor | **Structural** | preToolUse (exit 2) | Automatic | `pastewatch-cli setup cursor` |
+| Windsurf | **Structural** | pre_read/write/run (exit 2) | Automatic | `pastewatch-cli setup windsurf` |
+| Continue | **Structural** | PreToolUse (exit 2) | Automatic | `pastewatch-cli setup continue` |
+| Amazon Q | **Structural** | preToolUse (exit 2) | Automatic | `pastewatch-cli setup amazon-q` |
+| Copilot | **Structural** | preToolUse (`.github/hooks/`) | Automatic | `pastewatch-cli setup copilot` |
+| Codex CLI | **Structural** | PreToolUse (exit 2) | Manual TOML | `pastewatch-cli setup codex` |
+| Qwen Code | **Structural** | PreToolUse (exit 2) | Automatic | `pastewatch-cli setup qwen-code` |
+| Goose | MCP only | No hooks | Manual YAML | `pastewatch-cli setup goose` |
+| Kilo Code | MCP only | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Automatic | `pastewatch-cli setup kilo-code` |
+| Gemini | MCP only | No hooks | Automatic | `pastewatch-cli setup gemini` |
 | Antigravity (agy) | Proxy not applicable + MCP only (voluntary tools; no Structural read blocking) | [No](docs/research/agy-hooks-follow-up.md) - handler registration fails | [Yes](docs/research/agy-hooks-discovery.md) | Not yet supported by `pastewatch-cli setup`; edit `~/.gemini/config/mcp_config.json` manually |
 | OpenCode | MCP only | No hooks | Yes | Manual |
-| Aider | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | No | N/A |
+| Aider | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | Unavailable | `pastewatch-cli setup aider` explains the limitation |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
 **Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.

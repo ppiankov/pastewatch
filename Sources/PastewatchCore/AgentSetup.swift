@@ -1,7 +1,57 @@
 import Foundation
 
+// WO-500: Setup behavior is explicit so unsupported formats cannot look configured.
+public enum MCPSetupMode: String, Equatable {
+    case automatic
+    case manual
+    case unavailable
+}
+
+// WO-500: One production matrix drives setup coverage and user-facing documentation.
+public struct MCPSetupDescriptor: Equatable {
+    public let agent: String
+    public let mode: MCPSetupMode
+    public let configPath: String
+
+    public init(agent: String, mode: MCPSetupMode, configPath: String) {
+        self.agent = agent
+        self.mode = mode
+        self.configPath = configPath
+    }
+}
+
+// WO-500: Existing config parse failures abort setup instead of erasing user state.
+public enum AgentSetupError: LocalizedError {
+    case invalidJSONObject(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .invalidJSONObject(path):
+            return "Agent config is not a JSON object: \(path)"
+        }
+    }
+}
+
 /// Reusable logic for agent auto-setup: JSON config merging, hook script generation.
 public enum AgentSetup {
+
+    // WO-500: Keep this in the same order as the setup command's accepted agents.
+    public static let mcpSetupMatrix = [
+        MCPSetupDescriptor(agent: "claude-code", mode: .automatic, configPath: "~/.claude.json or .mcp.json"),
+        MCPSetupDescriptor(agent: "cline", mode: .automatic, configPath: "~/.cline/data/settings/cline_mcp_settings.json"),
+        MCPSetupDescriptor(agent: "roo-code", mode: .automatic, configPath: "VS Code globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"),
+        MCPSetupDescriptor(agent: "cursor", mode: .automatic, configPath: "~/.cursor/mcp.json"),
+        MCPSetupDescriptor(agent: "windsurf", mode: .automatic, configPath: "~/.codeium/windsurf/mcp_config.json"),
+        MCPSetupDescriptor(agent: "goose", mode: .manual, configPath: "~/.config/goose/config.yaml"),
+        MCPSetupDescriptor(agent: "kilo-code", mode: .automatic, configPath: "~/.config/kilo/kilo.json"),
+        MCPSetupDescriptor(agent: "continue", mode: .automatic, configPath: "~/.continue/mcpServers/pastewatch.yaml"),
+        MCPSetupDescriptor(agent: "amazon-q", mode: .automatic, configPath: "~/.aws/amazonq/mcp.json"),
+        MCPSetupDescriptor(agent: "aider", mode: .unavailable, configPath: "N/A"),
+        MCPSetupDescriptor(agent: "copilot", mode: .automatic, configPath: "~/.copilot/mcp-config.json"),
+        MCPSetupDescriptor(agent: "gemini", mode: .automatic, configPath: "~/.gemini/settings.json"),
+        MCPSetupDescriptor(agent: "codex", mode: .manual, configPath: "~/.codex/config.toml"),
+        MCPSetupDescriptor(agent: "qwen-code", mode: .automatic, configPath: "~/.qwen/settings.json"),
+    ]
 
     // MARK: - JSON Helpers
 
@@ -10,6 +60,16 @@ public enum AgentSetup {
         guard let data = FileManager.default.contents(atPath: path),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
+        }
+        return json
+    }
+
+    // WO-500: Setup writes require a strict read so malformed files are never replaced.
+    public static func readJSONForMerge(at path: String) throws -> [String: Any] {
+        guard FileManager.default.fileExists(atPath: path) else { return [:] }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AgentSetupError.invalidJSONObject(path)
         }
         return json
     }
@@ -50,6 +110,48 @@ public enum AgentSetup {
         }
         mcpServers["pastewatch"] = entry
         json["mcpServers"] = mcpServers
+    }
+
+    // WO-500: Kilo's current OpenCode-derived config uses an argv array under mcp.
+    public static func mergeKiloMCPServer(
+        into json: inout [String: Any],
+        severity: String
+    ) {
+        var servers = json["mcp"] as? [String: Any] ?? [:]
+        var command = ["pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
+        if severity != "high" {
+            command.append(contentsOf: ["--min-severity", severity])
+        }
+        servers["pastewatch"] = [
+            "type": "local",
+            "command": command,
+            "enabled": true,
+        ] as [String: Any]
+        json["mcp"] = servers
+    }
+
+    // WO-500: Continue loads one self-contained YAML block per MCP server.
+    public static func continueMCPConfig(severity: String) -> String {
+        var config = """
+        name: pastewatch
+        version: 0.0.1
+        schema: v1
+        mcpServers:
+          - name: pastewatch
+            command: pastewatch-cli
+            args:
+              - mcp
+              - --audit-log
+              - /tmp/pastewatch-audit.log
+        """
+        if severity != "high" {
+            config += """
+
+                  - --min-severity
+                  - \(severity)
+            """
+        }
+        return config
     }
 
     /// Merge pastewatch PreToolUse hook entry into Claude Code settings JSON.

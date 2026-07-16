@@ -3,6 +3,30 @@ import XCTest
 
 final class SetupCommandTests: XCTestCase {
 
+    // WO-500: Keep setup coverage exhaustive as agent config formats evolve.
+    func testMCPSetupMatrixCoversEverySetupAgent() {
+        let expectedAgents = [
+            "claude-code", "cline", "roo-code", "cursor", "windsurf",
+            "goose", "kilo-code", "continue", "amazon-q", "aider",
+            "copilot", "gemini", "codex", "qwen-code",
+        ]
+
+        XCTAssertEqual(AgentSetup.mcpSetupMatrix.map(\.agent), expectedAgents)
+        XCTAssertEqual(
+            AgentSetup.mcpSetupMatrix.filter { $0.mode == .automatic }.count,
+            11
+        )
+        XCTAssertEqual(
+            AgentSetup.mcpSetupMatrix.filter { $0.mode == .manual }.map(\.agent),
+            ["goose", "codex"]
+        )
+        XCTAssertEqual(
+            AgentSetup.mcpSetupMatrix.filter { $0.mode == .unavailable }.map(\.agent),
+            ["aider"]
+        )
+        XCTAssertTrue(AgentSetup.mcpSetupMatrix.allSatisfy { !$0.configPath.isEmpty })
+    }
+
     // MARK: - MCP Merge Tests
 
     func testMergeMCPIntoEmpty() {
@@ -92,6 +116,39 @@ final class SetupCommandTests: XCTestCase {
 
         let pw = (json["mcpServers"] as? [String: Any])?["pastewatch"] as? [String: Any]
         XCTAssertEqual(pw?["disabled"] as? Bool, false)
+    }
+
+    // WO-500: Kilo uses an OpenCode-derived schema, not the common mcpServers shape.
+    func testMergeKiloMCPPreservesExistingConfig() {
+        var json: [String: Any] = [
+            "theme": "dark",
+            "mcp": ["other": ["type": "remote", "url": "https://example.invalid"]],
+        ]
+
+        AgentSetup.mergeKiloMCPServer(into: &json, severity: "medium")
+
+        XCTAssertEqual(json["theme"] as? String, "dark")
+        let servers = json["mcp"] as? [String: Any]
+        XCTAssertNotNil(servers?["other"])
+        let pastewatch = servers?["pastewatch"] as? [String: Any]
+        XCTAssertEqual(pastewatch?["type"] as? String, "local")
+        XCTAssertEqual(pastewatch?["enabled"] as? Bool, true)
+        XCTAssertEqual(
+            pastewatch?["command"] as? [String],
+            [
+                "pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log",
+                "--min-severity", "medium",
+            ]
+        )
+    }
+
+    // WO-500: Continue's standalone block must remain valid and severity-aligned.
+    func testContinueMCPConfigIncludesServerAndSeverity() {
+        let config = AgentSetup.continueMCPConfig(severity: "low")
+
+        XCTAssertTrue(config.contains("mcpServers:"))
+        XCTAssertTrue(config.contains("command: pastewatch-cli"))
+        XCTAssertTrue(config.contains("      - --min-severity\n      - low"))
     }
 
     // MARK: - Hooks Merge Tests
@@ -251,6 +308,15 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
+    // WO-500: Auto-setup must not replace an unreadable existing agent config.
+    func testReadJSONForMergeRejectsMalformedExistingFile() throws {
+        let tmpPath = NSTemporaryDirectory() + "pw-invalid-config-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+        try "{ invalid".write(toFile: tmpPath, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try AgentSetup.readJSONForMerge(at: tmpPath))
+    }
+
     // MARK: - Integration Tests
 
     func testClaudeCodeSetupCreatesFiles() throws {
@@ -258,6 +324,7 @@ final class SetupCommandTests: XCTestCase {
         let claudeDir = tmpHome + "/.claude"
         let hooksDir = claudeDir + "/hooks"
         let hookPath = hooksDir + "/pastewatch-guard.sh"
+        let mcpPath = tmpHome + "/.claude.json"
         let settingsPath = claudeDir + "/settings.json"
         defer { try? FileManager.default.removeItem(atPath: tmpHome) }
 
@@ -276,11 +343,14 @@ final class SetupCommandTests: XCTestCase {
             [.posixPermissions: 0o755], ofItemAtPath: hookPath
         )
 
-        // Merge settings
-        var json = AgentSetup.readJSON(at: settingsPath)
-        AgentSetup.mergeMCPServer(into: &json, severity: "high")
-        AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
-        try AgentSetup.writeJSON(json, to: settingsPath)
+        // WO-500: Claude MCP and hooks live in distinct config files.
+        var mcpJSON = try AgentSetup.readJSONForMerge(at: mcpPath)
+        AgentSetup.mergeMCPServer(into: &mcpJSON, severity: "high")
+        try AgentSetup.writeJSON(mcpJSON, to: mcpPath)
+
+        var settingsJSON = try AgentSetup.readJSONForMerge(at: settingsPath)
+        AgentSetup.mergeClaudeCodeHooks(into: &settingsJSON, hookPath: hookPath)
+        try AgentSetup.writeJSON(settingsJSON, to: settingsPath)
 
         // Verify hook script exists and is executable
         XCTAssertTrue(FileManager.default.fileExists(atPath: hookPath))
@@ -293,12 +363,14 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertTrue(hookContent.hasPrefix("#!/bin/bash"))
         XCTAssertTrue(hookContent.contains("PW_SEVERITY"))
 
-        // Verify settings.json
-        let settings = AgentSetup.readJSON(at: settingsPath)
-
-        let mcpServers = settings["mcpServers"] as? [String: Any]
+        // Verify MCP and hooks remain separated.
+        let mcpConfig = AgentSetup.readJSON(at: mcpPath)
+        let mcpServers = mcpConfig["mcpServers"] as? [String: Any]
         let pw = mcpServers?["pastewatch"] as? [String: Any]
         XCTAssertEqual(pw?["command"] as? String, "pastewatch-cli")
+
+        let settings = AgentSetup.readJSON(at: settingsPath)
+        XCTAssertNil(settings["mcpServers"])
 
         let hooks = settings["hooks"] as? [String: Any]
         let preToolUse = hooks?["PreToolUse"] as? [[String: Any]]
@@ -311,6 +383,7 @@ final class SetupCommandTests: XCTestCase {
         let claudeDir = tmpHome + "/.claude"
         let hooksDir = claudeDir + "/hooks"
         let hookPath = hooksDir + "/pastewatch-guard.sh"
+        let mcpPath = tmpHome + "/.claude.json"
         let settingsPath = claudeDir + "/settings.json"
         defer { try? FileManager.default.removeItem(atPath: tmpHome) }
 
@@ -322,10 +395,13 @@ final class SetupCommandTests: XCTestCase {
             let script = AgentSetup.claudeCodeGuardScript(severity: "high")
             try script.write(toFile: hookPath, atomically: true, encoding: .utf8)
 
-            var json = AgentSetup.readJSON(at: settingsPath)
-            AgentSetup.mergeMCPServer(into: &json, severity: "high")
-            AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
-            try AgentSetup.writeJSON(json, to: settingsPath)
+            var mcpJSON = try AgentSetup.readJSONForMerge(at: mcpPath)
+            AgentSetup.mergeMCPServer(into: &mcpJSON, severity: "high")
+            try AgentSetup.writeJSON(mcpJSON, to: mcpPath)
+
+            var settingsJSON = try AgentSetup.readJSONForMerge(at: settingsPath)
+            AgentSetup.mergeClaudeCodeHooks(into: &settingsJSON, hookPath: hookPath)
+            try AgentSetup.writeJSON(settingsJSON, to: settingsPath)
         }
 
         // Verify no duplicates
@@ -334,7 +410,9 @@ final class SetupCommandTests: XCTestCase {
         let preToolUse = hooks?["PreToolUse"] as? [[String: Any]]
         XCTAssertEqual(preToolUse?.count, 1, "Should have exactly 1 PreToolUse entry, not duplicates")
 
-        let mcpServers = settings["mcpServers"] as? [String: Any]
+        XCTAssertNil(settings["mcpServers"])
+        let mcpConfig = AgentSetup.readJSON(at: mcpPath)
+        let mcpServers = mcpConfig["mcpServers"] as? [String: Any]
         XCTAssertEqual(mcpServers?.count, 1, "Should have exactly 1 MCP server entry")
     }
 

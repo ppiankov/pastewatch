@@ -44,12 +44,12 @@ The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use
 | Amazon Q | Structural | Structural | preToolUse hooks | exit 2 (Claude Code-compatible) |
 | Copilot | Structural | Structural | preToolUse hooks | `.github/hooks/` JSON config |
 | OpenCode | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/anomalyco/opencode/issues/12472) |
-| Goose | Advisory | Advisory | MCP only | No hook support |
-| Kilo Code | Advisory | Advisory | MCP only | No hook support |
+| Goose | Advisory | Advisory | MCP only (manual YAML) | No hook support |
+| Kilo Code | Advisory | Advisory | MCP only (automatic config) | No hook support |
 | Aider | Not covered | Not covered | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
-| Gemini | Advisory | Advisory | MCP only | No hook support |
-| Codex CLI | Advisory | Advisory | Instructions only | [Hook support pending](https://github.com/openai/codex/issues/14754) |
-| Qwen Code | Advisory | Advisory | Instructions only | No hook support yet |
+| Gemini | Advisory | Advisory | MCP only (automatic config) | No hook support |
+| Codex CLI | Structural | Structural | PreToolUse hooks + manual MCP TOML | exit 2 blocks action |
+| Qwen Code | Structural | Structural | PreToolUse hooks + automatic MCP | exit 2 blocks action |
 
 **Structural** means the agent cannot bypass the check - hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.
 
@@ -57,110 +57,36 @@ The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use
 
 ## 3. MCP Setup Per Agent
 
-All agents use the same MCP server command. Only the config file location and format differ.
+`pastewatch-cli setup <agent>` uses one of three explicit modes. Automatic setup
+merges or creates the listed file. Manual setup prints the exact block to merge and
+does not claim the file was changed. Unavailable means the agent has no native MCP
+client.
 
-### Claude Code
+| Setup agent | MCP mode | Config path |
+|-------------|----------|-------------|
+| Claude Code | Automatic | User: `~/.claude.json`; project: `.mcp.json` |
+| Cline | Automatic | `~/.cline/data/settings/cline_mcp_settings.json` |
+| Roo Code | Automatic | VS Code globalStorage `rooveterinaryinc.roo-cline/settings/mcp_settings.json` |
+| Cursor | Automatic | `~/.cursor/mcp.json` |
+| Windsurf | Automatic | `~/.codeium/windsurf/mcp_config.json` |
+| Goose | Manual YAML | `~/.config/goose/config.yaml` |
+| Kilo Code | Automatic | `~/.config/kilo/kilo.json` |
+| Continue | Automatic | `~/.continue/mcpServers/pastewatch.yaml` |
+| Amazon Q | Automatic, legacy-compatible | `~/.aws/amazonq/mcp.json` |
+| Aider | Unavailable | N/A |
+| GitHub Copilot CLI | Automatic | `~/.copilot/mcp-config.json` |
+| Gemini CLI | Automatic | `~/.gemini/settings.json` |
+| Codex CLI | Manual TOML | `~/.codex/config.toml` |
+| Qwen Code | Automatic | `~/.qwen/settings.json` |
 
-Register via CLI:
-```bash
-claude mcp add pastewatch -- pastewatch-cli mcp --audit-log /tmp/pastewatch-audit.log
-```
+The common JSON shape uses `mcpServers.pastewatch`. Kilo uses its current `mcp`
+schema with an argv array. Continue uses a standalone YAML block. Run the setup
+command to include `--audit-log` and the selected `--min-severity` consistently.
 
-Or add to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-Config: `~/Library/Application Support/Claude/claude_desktop_config.json`
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-    }
-  }
-}
-```
-
-### Cline (VS Code)
-
-Config: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
-      "disabled": false
-    }
-  }
-}
-```
-
-Requires pastewatch >= 0.7.1 (fixes JSON-RPC notification response).
-
-### Cursor
-
-Config: `~/.cursor/mcp.json`
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-    }
-  }
-}
-```
-
-### OpenCode
-
-Config: `~/.config/opencode/opencode.json`
-```json
-{
-  "mcp": {
-    "pastewatch": {
-      "type": "local",
-      "command": ["pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
-      "enabled": true
-    }
-  }
-}
-```
-
-### Codex CLI
-
-Config: `~/.codex/config.toml`
-```toml
-[mcp_servers.pastewatch]
-command = "pastewatch-cli"
-args = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-enabled = true
-```
-
-### Qwen Code
-
-Config: `~/.qwen/settings.json`
-```json
-{
-  "mcpServers": {
-    "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-    }
-  }
-}
-```
+Goose and Codex remain manual because updating arbitrary YAML or TOML without a
+format-aware parser can damage existing configuration. Their setup commands print a
+copy-pasteable block instead. Aider cannot be configured because it does not expose
+an MCP client.
 
 ---
 
