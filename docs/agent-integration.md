@@ -48,7 +48,7 @@ The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use
 | Kilo Code | Advisory | Advisory | MCP only (automatic config) | No hook support |
 | Aider | Not covered | Not covered | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) |
 | Gemini | Advisory | Advisory | MCP only (automatic config) | No hook support |
-| Codex CLI | Structural | Structural | PreToolUse hooks + manual MCP TOML | exit 2 blocks action |
+| Codex CLI | Structural after hook trust | Structural after hook trust | PreToolUse hooks + manual MCP TOML | Review with `/hooks`; exit 2 blocks action |
 | Qwen Code | Structural | Structural | PreToolUse hooks + automatic MCP | exit 2 blocks action |
 
 **Structural** means the agent cannot bypass the check - hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.

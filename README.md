@@ -843,7 +843,7 @@ The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/mes
 | Continue | **Structural** | PreToolUse (exit 2) | Automatic | `pastewatch-cli setup continue` |
 | Amazon Q | **Structural** | preToolUse (exit 2) | Automatic | `pastewatch-cli setup amazon-q` |
 | Copilot | **Structural** | preToolUse (`.github/hooks/`) | Automatic | `pastewatch-cli setup copilot` |
-| Codex CLI | **Structural** | PreToolUse (exit 2) | Manual TOML | `pastewatch-cli setup codex` |
+| Codex CLI | **Structural after hook trust** | PreToolUse (exit 2) | Manual TOML | `pastewatch-cli setup codex`, then review with `/hooks` |
 | Qwen Code | **Structural** | PreToolUse (exit 2) | Automatic | `pastewatch-cli setup qwen-code` |
 | Goose | MCP only | No hooks | Manual YAML | `pastewatch-cli setup goose` |
 | Kilo Code | MCP only | [No hooks](https://github.com/Kilo-Org/kilocode/issues/7859) (declined) | Automatic | `pastewatch-cli setup kilo-code` |

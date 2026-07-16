@@ -400,16 +400,21 @@ Guided setup writes hooks and prints a TOML block for manual MCP merging:
 pastewatch-cli setup codex
 ```
 
+Restart Codex, run `/hooks`, and review and trust the generated Pastewatch hook.
+Codex skips non-managed hooks until their exact definition is trusted.
+
 Hook config written to `~/.codex/hooks.json`:
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Read|Write|Edit|apply_patch|Bash",
-      "hooks": [{"type": "command", "command": "~/.codex/hooks/pastewatch-guard.sh"}]
-    }
-  ]
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|apply_patch|Bash",
+        "hooks": [{"type": "command", "command": "~/.codex/hooks/pastewatch-guard.sh"}]
+      }
+    ]
+  }
 }
 ```
 
@@ -422,7 +427,8 @@ args = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
 enabled = true
 ```
 
-Toggle hooks: set `enabled = false` in config.toml; set `PW_GUARD=0` in shell to bypass for a session.
+Toggle hooks: set `[features] hooks = false` in `config.toml`; set `PW_GUARD=0`
+in the shell to bypass for a session.
 
 ---
 

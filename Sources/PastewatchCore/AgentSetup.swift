@@ -592,9 +592,11 @@ public enum AgentSetup {
     }
 
     /// Merge pastewatch PreToolUse hook entry into Codex CLI hooks.json.
-    /// Codex hooks.json uses event names as top-level keys (no wrapping "hooks" key).
+    /// Codex hooks.json nests lifecycle events under a top-level "hooks" key.
     public static func mergeCodexHooks(into json: inout [String: Any], hookPath: String) {
-        var preToolUse = json["PreToolUse"] as? [[String: Any]] ?? []
+        // WO-114: Codex ignores root-level events; preserve the surrounding config while nesting them.
+        var hooks = json["hooks"] as? [String: Any] ?? [:]
+        var preToolUse = hooks["PreToolUse"] as? [[String: Any]] ?? []
 
         let newEntry: [String: Any] = [
             "matcher": "Read|Write|Edit|apply_patch|Bash",
@@ -614,7 +616,8 @@ public enum AgentSetup {
             preToolUse.append(newEntry)
         }
 
-        json["PreToolUse"] = preToolUse
+        hooks["PreToolUse"] = preToolUse
+        json["hooks"] = hooks
     }
 
     /// Merge pastewatch PreToolUse hook entry into Qwen Code settings.json.

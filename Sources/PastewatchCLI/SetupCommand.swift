@@ -615,7 +615,8 @@ struct Setup: ParsableCommand {
         print("    command = \"pastewatch-cli\"")
         print("    args = [\(mcpArgs)]")
         print("    enabled = true")
-        print("\ndone. restart Codex to activate.")
+        // WO-114: Codex skips non-managed hooks until their exact definition is trusted.
+        print("\n  next: restart Codex, run /hooks, then review and trust the Pastewatch hook.")
 
         runDoctor()
     }

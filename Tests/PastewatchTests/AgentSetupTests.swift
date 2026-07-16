@@ -8,7 +8,8 @@ final class AgentSetupTests: XCTestCase {
     func testMergeCodexHooksCreatesPreToolUseEntry() {
         var json: [String: Any] = [:]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
-        let entries = json["PreToolUse"] as? [[String: Any]]
+        let hooks = json["hooks"] as? [String: Any]
+        let entries = hooks?["PreToolUse"] as? [[String: Any]]
         XCTAssertNotNil(entries)
         XCTAssertEqual(entries?.count, 1)
     }
@@ -16,7 +17,8 @@ final class AgentSetupTests: XCTestCase {
     func testMergeCodexHooksMatcherCoversApplyPatch() {
         var json: [String: Any] = [:]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
-        let entries = json["PreToolUse"] as? [[String: Any]]
+        let hooks = json["hooks"] as? [String: Any]
+        let entries = hooks?["PreToolUse"] as? [[String: Any]]
         let matcher = entries?.first?["matcher"] as? String
         XCTAssertTrue(matcher?.contains("apply_patch") == true,
                       "Codex hook matcher must cover apply_patch")
@@ -25,7 +27,8 @@ final class AgentSetupTests: XCTestCase {
     func testMergeCodexHooksMatcherCoversBash() {
         var json: [String: Any] = [:]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
-        let entries = json["PreToolUse"] as? [[String: Any]]
+        let hooks = json["hooks"] as? [String: Any]
+        let entries = hooks?["PreToolUse"] as? [[String: Any]]
         let matcher = entries?.first?["matcher"] as? String
         XCTAssertTrue(matcher?.contains("Bash") == true,
                       "Codex hook matcher must cover Bash")
@@ -35,7 +38,8 @@ final class AgentSetupTests: XCTestCase {
         var json: [String: Any] = [:]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
-        let entries = json["PreToolUse"] as? [[String: Any]]
+        let hooks = json["hooks"] as? [String: Any]
+        let entries = hooks?["PreToolUse"] as? [[String: Any]]
         XCTAssertEqual(entries?.count, 1, "Idempotent merge must not duplicate entries")
     }
 
@@ -43,7 +47,8 @@ final class AgentSetupTests: XCTestCase {
         var json: [String: Any] = [:]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/old/pastewatch-guard.sh")
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/new/pastewatch-guard.sh")
-        let entries = json["PreToolUse"] as? [[String: Any]]
+        let hooks = json["hooks"] as? [String: Any]
+        let entries = hooks?["PreToolUse"] as? [[String: Any]]
         XCTAssertEqual(entries?.count, 1)
         let innerHooks = entries?.first?["hooks"] as? [[String: Any]]
         let command = innerHooks?.first?["command"] as? String
@@ -51,9 +56,22 @@ final class AgentSetupTests: XCTestCase {
     }
 
     func testMergeCodexHooksPreservesOtherTopLevelKeys() {
-        var json: [String: Any] = ["PostToolUse": [["matcher": "*"]]]
+        var json: [String: Any] = ["version": 1]
         AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
-        XCTAssertNotNil(json["PostToolUse"])
+        XCTAssertEqual(json["version"] as? Int, 1)
+    }
+
+    // WO-114: Adding Pastewatch must not replace other lifecycle events in the wrapper.
+    func testMergeCodexHooksPreservesOtherHookEvents() {
+        var json: [String: Any] = [
+            "hooks": ["PostToolUse": [["matcher": "Bash"]]],
+        ]
+
+        AgentSetup.mergeCodexHooks(into: &json, hookPath: "/path/to/pastewatch-guard.sh")
+
+        let hooks = json["hooks"] as? [String: Any]
+        XCTAssertNotNil(hooks?["PostToolUse"])
+        XCTAssertNotNil(hooks?["PreToolUse"])
     }
 
     // MARK: - mergeQwenCodeHooks
