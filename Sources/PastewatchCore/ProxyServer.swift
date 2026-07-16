@@ -1542,6 +1542,48 @@ public final class ProxyServer {
         return value
     }
 
+    // WO-503: unknown content blocks may carry plaintext, but protocol discriminators
+    // and base64 payload bytes must remain structurally intact.
+    // swiftlint:disable:next function_parameter_count
+    private func redactContentPayloadStrings(
+        _ value: Any,
+        site: MutationSite,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> Any {
+        if let text = value as? String {
+            return redactScannableText(
+                text, site: site, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+            )
+        }
+        if let array = value as? [Any] {
+            return array.map {
+                redactContentPayloadStrings(
+                    $0, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+        }
+        if let object = value as? [String: Any] {
+            let containsBase64Data = (object["type"] as? String) == "base64"
+            var result = object
+            for (key, nestedValue) in object {
+                if key == "type" || key == "media_type" || (containsBase64Data && key == "data") {
+                    continue
+                }
+                result[key] = redactContentPayloadStrings(
+                    nestedValue, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+            }
+            return result
+        }
+        return value
+    }
+
     // WO-454/WO-461: tool contracts and examples are visible to the scanner and
     // use explicit sites; evidence, not field context, controls replacement.
     private func redactTools(
@@ -1624,6 +1666,13 @@ public final class ProxyServer {
                         text, site: textSite, redacted: &redacted, types: &types,
                         advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
                     )
+                } else {
+                    // WO-503: future/plaintext block payloads cannot bypass scanning.
+                    blocks[blockIndex] = redactContentPayloadStrings(
+                        blocks[blockIndex], site: textSite,
+                        redacted: &redacted, types: &types,
+                        advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                    ) as? [String: Any] ?? blocks[blockIndex]
                 }
             }
             messages[index]["content"] = blocks

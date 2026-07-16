@@ -596,4 +596,60 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(first.hasSuffix("Z"))
         XCTAssertNotEqual(first, second)
     }
+
+    // WO-503: scan plaintext/future block payloads without corrupting encoded media.
+    func testUnhandledDocumentTextPayloadIsRedacted() {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        let body = """
+        {"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"\(key)"}}]}]}
+        """
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(key))
+    }
+
+    func testUnknownContentBlockPayloadIsRedacted() {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        let body = """
+        {"messages":[{"role":"user","content":[{"type":"custom_x","payload":{"nested":"\(key)"}}]}]}
+        """
+
+        let result = server.scanAndRedactBody(body)
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(key))
+    }
+
+    func testBase64PayloadAndStructuralDiscriminatorsArePreserved() throws {
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(
+                name: "Structural words",
+                pattern: #"^(image|base64|image/png)$"#,
+                severity: "critical"
+            )
+        ]
+        let structuralServer = ProxyServer(port: 0, config: config, severity: .low)
+        let encodedData = "AKIA" + "QWERTYUIOPASDFGH"
+        let body = """
+        {"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\(encodedData)"}}]}]}
+        """
+
+        let result = structuralServer.scanAndRedactBody(body)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+        let source = try XCTUnwrap(content[0]["source"] as? [String: Any])
+
+        XCTAssertEqual(result.redacted, 0)
+        XCTAssertEqual(result.advisoryCount, 0)
+        XCTAssertEqual(content[0]["type"] as? String, "image")
+        XCTAssertEqual(source["type"] as? String, "base64")
+        XCTAssertEqual(source["media_type"] as? String, "image/png")
+        XCTAssertEqual(source["data"] as? String, encodedData)
+    }
 }
