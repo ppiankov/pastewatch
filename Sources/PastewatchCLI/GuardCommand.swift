@@ -37,6 +37,7 @@ struct Guard: ParsableCommand {
             matches: commandMatches,
             content: command,
             config: config,
+            contentTrust: .agentControlled,
             minimumSeverity: failOnSeverity
         )
         // WO-139: JSON redaction covers reportable inline findings even below block threshold.
@@ -69,6 +70,7 @@ struct Guard: ParsableCommand {
                 matches: matches,
                 content: content,
                 config: config,
+                contentTrust: .trustedFile,
                 minimumSeverity: failOnSeverity
             ).actionableMatches
 

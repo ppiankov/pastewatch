@@ -231,6 +231,18 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue((payload["inlineFindings"] as? [[String: Any]])?.isEmpty == true)
     }
 
+    func testGuardCommandCannotSelfAuthorizeWithInlineAllowComment() throws {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+
+        let result = try runGuardCLI(arguments: [
+            "guard", "--quiet", "echo \(key) # pastewatch:allow",
+        ])
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stdout.isEmpty)
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String

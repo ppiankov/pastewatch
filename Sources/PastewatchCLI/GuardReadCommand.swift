@@ -54,6 +54,7 @@ struct GuardRead: ParsableCommand {
             matches: matches,
             content: content,
             config: config,
+            contentTrust: .trustedFile,
             minimumSeverity: failOnSeverity
         ).actionableMatches
         guard !filtered.isEmpty else { return }

@@ -10,6 +10,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: matches,
             content: content,
             config: .defaultConfig,
+            contentTrust: .trustedFile,
             minimumSeverity: .low
         )
 
@@ -29,6 +30,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config),
             content: content,
             config: config,
+            contentTrust: .trustedFile,
             minimumSeverity: .critical
         )
 
@@ -43,6 +45,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: .defaultConfig),
             content: content,
             config: .defaultConfig,
+            contentTrust: .trustedFile,
             minimumSeverity: .critical
         )
 
@@ -57,10 +60,26 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: .defaultConfig),
             content: content,
             config: .defaultConfig,
+            contentTrust: .trustedFile,
             minimumSeverity: nil
         )
 
         XCTAssertFalse(decision.reportableMatches.isEmpty)
         XCTAssertEqual(decision.actionableMatches, decision.reportableMatches)
+    }
+
+    func testAgentControlledContentCannotSelfAuthorizeInlineAllowComment() {
+        let content = "AKIA" + "QWERTYUIOPASDFGH # pastewatch:allow"
+
+        let decision = GuardDecision.evaluate(
+            matches: DetectionRules.scan(content, config: .defaultConfig),
+            content: content,
+            config: .defaultConfig,
+            contentTrust: .agentControlled,
+            minimumSeverity: .high
+        )
+
+        XCTAssertFalse(decision.reportableMatches.isEmpty)
+        XCTAssertFalse(decision.actionableMatches.isEmpty)
     }
 }

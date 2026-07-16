@@ -125,6 +125,7 @@ public final class FileWatcher {
             matches: matchesBeforeSeverity,
             content: content,
             config: config,
+            contentTrust: .trustedFile,
             minimumSeverity: severity
         ).actionableMatches
 

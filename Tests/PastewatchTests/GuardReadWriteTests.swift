@@ -45,6 +45,7 @@ final class GuardReadWriteTests: XCTestCase {
             matches: matches,
             content: content,
             config: config,
+            contentTrust: .trustedFile,
             minimumSeverity: failOnSeverity
         ).actionableMatches
     }
