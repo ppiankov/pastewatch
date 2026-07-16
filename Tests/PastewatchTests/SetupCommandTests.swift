@@ -317,6 +317,38 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertThrowsError(try AgentSetup.readJSONForMerge(at: tmpPath))
     }
 
+    // WO-500: Valid JSON with an incompatible MCP section must not be overwritten.
+    func testReadJSONForMergeRejectsInvalidObjectSectionType() throws {
+        let tmpPath = NSTemporaryDirectory() + "pw-invalid-mcp-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+        try AgentSetup.writeJSON(["mcpServers": []], to: tmpPath)
+
+        XCTAssertThrowsError(
+            try AgentSetup.readJSONForMerge(
+                at: tmpPath,
+                requiringObjectPaths: [["mcpServers"]]
+            )
+        )
+    }
+
+    // WO-500: Nested hook event types are part of the same fail-closed merge boundary.
+    func testReadJSONForMergeRejectsInvalidNestedArrayType() throws {
+        let tmpPath = NSTemporaryDirectory() + "pw-invalid-hooks-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+        try AgentSetup.writeJSON(
+            ["hooks": ["PreToolUse": "invalid"]],
+            to: tmpPath
+        )
+
+        XCTAssertThrowsError(
+            try AgentSetup.readJSONForMerge(
+                at: tmpPath,
+                requiringObjectPaths: [["hooks"]],
+                requiringArrayPaths: [["hooks", "PreToolUse"]]
+            )
+        )
+    }
+
     // MARK: - Integration Tests
 
     func testClaudeCodeSetupCreatesFiles() throws {

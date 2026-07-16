@@ -101,12 +101,19 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 2. Merge MCP and hook configs at their distinct supported paths.
-        var mcpJSON = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var mcpJSON = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let mcpExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &mcpJSON, severity: severity)
         try AgentSetup.writeJSON(mcpJSON, to: mcpPath)
 
-        var settingsJSON = try AgentSetup.readJSONForMerge(at: settingsPath)
+        var settingsJSON = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let configExisted = fm.fileExists(atPath: settingsPath)
         AgentSetup.mergeClaudeCodeHooks(into: &settingsJSON, hookPath: hookPath)
         try AgentSetup.writeJSON(settingsJSON, to: settingsPath)
@@ -150,7 +157,10 @@ struct Setup: ParsableCommand {
         let mcpPath = home
             + "/.cline/data/settings/cline_mcp_settings.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -194,7 +204,10 @@ struct Setup: ParsableCommand {
             + "/Library/Application Support/Code/User/globalStorage"
             + "/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -236,7 +249,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.cursor/mcp.json"
 
-        var mcpJson = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var mcpJson = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &mcpJson, severity: severity)
         try AgentSetup.writeJSON(mcpJson, to: mcpPath)
@@ -259,7 +275,11 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks.json
         let hooksJsonPath = home + "/.cursor/hooks.json"
-        var hooksJson = try AgentSetup.readJSONForMerge(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringArrayPaths: [["hooks", "preToolUse"]]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCursorHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -283,7 +303,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.codeium/windsurf/mcp_config.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -306,7 +329,15 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks.json
         let hooksJsonPath = home + "/.codeium/windsurf/hooks.json"
-        var hooksJson = try AgentSetup.readJSONForMerge(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringArrayPaths: [
+                ["hooks", "pre_read_code"],
+                ["hooks", "pre_write_code"],
+                ["hooks", "pre_run_command"],
+            ]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeWindsurfHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -366,7 +397,10 @@ struct Setup: ParsableCommand {
         // WO-500: Kilo 7.x uses its OpenCode-derived global config and schema.
         let mcpPath = home + "/.config/kilo/kilo.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcp"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeKiloMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -417,7 +451,11 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks into settings.json
         let settingsPath = home + "/.continue/settings.json"
-        var json = try AgentSetup.readJSONForMerge(at: settingsPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let configExisted = fm.fileExists(atPath: settingsPath)
         AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
         try AgentSetup.writeJSON(json, to: settingsPath)
@@ -441,7 +479,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.aws/amazonq/mcp.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -503,7 +544,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config for CLI
         let mcpPath = home + "/.copilot/mcp-config.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
 
         // Copilot CLI uses "mcpServers" key like most agents
@@ -555,7 +599,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config — Gemini uses ~/.gemini/settings.json
         let mcpPath = home + "/.gemini/settings.json"
 
-        var json = try AgentSetup.readJSONForMerge(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         // Gemini warns: do NOT use underscores in server names
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
@@ -594,9 +641,13 @@ struct Setup: ParsableCommand {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
         print("  hook     \(hookPath) (created)")
 
-        // 2. Merge hooks.json (Codex hooks config — top-level event keys)
+        // 2. Merge hooks.json (Codex lifecycle events are nested under "hooks")
         let hooksJsonPath = home + "/.codex/hooks.json"
-        var hooksJson = try AgentSetup.readJSONForMerge(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCodexHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -644,7 +695,11 @@ struct Setup: ParsableCommand {
 
         // 2. Merge settings.json (MCP server + PreToolUse hooks)
         let settingsPath = home + "/.qwen/settings.json"
-        var json = try AgentSetup.readJSONForMerge(at: settingsPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["mcpServers"], ["hooks"]],
+            requiringArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let configExisted = fm.fileExists(atPath: settingsPath)
 
         AgentSetup.mergeMCPServer(into: &json, severity: severity)

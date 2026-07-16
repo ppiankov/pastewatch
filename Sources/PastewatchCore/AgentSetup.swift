@@ -23,11 +23,14 @@ public struct MCPSetupDescriptor: Equatable {
 // WO-500: Existing config parse failures abort setup instead of erasing user state.
 public enum AgentSetupError: LocalizedError {
     case invalidJSONObject(String)
+    case invalidJSONSection(path: String, section: String, expected: String)
 
     public var errorDescription: String? {
         switch self {
         case let .invalidJSONObject(path):
             return "Agent config is not a JSON object: \(path)"
+        case let .invalidJSONSection(path, section, expected):
+            return "Agent config section '\(section)' must be \(expected): \(path)"
         }
     }
 }
@@ -65,13 +68,50 @@ public enum AgentSetup {
     }
 
     // WO-500: Setup writes require a strict read so malformed files are never replaced.
-    public static func readJSONForMerge(at path: String) throws -> [String: Any] {
+    public static func readJSONForMerge(
+        at path: String,
+        requiringObjectPaths objectPaths: [[String]] = [],
+        requiringArrayPaths arrayPaths: [[String]] = []
+    ) throws -> [String: Any] {
         guard FileManager.default.fileExists(atPath: path) else { return [:] }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AgentSetupError.invalidJSONObject(path)
         }
+
+        // WO-500: A valid JSON root must not hide a merge section that would be replaced.
+        for objectPath in objectPaths {
+            guard let value = jsonValue(at: objectPath, in: json) else { continue }
+            guard value is [String: Any] else {
+                throw AgentSetupError.invalidJSONSection(
+                    path: path,
+                    section: objectPath.joined(separator: "."),
+                    expected: "an object"
+                )
+            }
+        }
+        for arrayPath in arrayPaths {
+            guard let value = jsonValue(at: arrayPath, in: json) else { continue }
+            guard value is [Any] else {
+                throw AgentSetupError.invalidJSONSection(
+                    path: path,
+                    section: arrayPath.joined(separator: "."),
+                    expected: "an array"
+                )
+            }
+        }
         return json
+    }
+
+    private static func jsonValue(at path: [String], in json: [String: Any]) -> Any? {
+        var value: Any = json
+        for component in path {
+            guard let object = value as? [String: Any], let next = object[component] else {
+                return nil
+            }
+            value = next
+        }
+        return value
     }
 
     /// Write JSON to file path, creating parent directories as needed.
