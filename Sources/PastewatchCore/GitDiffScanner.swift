@@ -63,7 +63,7 @@ public struct GitDiffScanner {
             let url = URL(fileURLWithPath: df.path)
             let fileName = url.lastPathComponent
             let ext = url.pathExtension.lowercased()
-            let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+            let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
 
             guard isEnvFile || DirectoryScanner.allowedExtensions.contains(ext) else {
                 continue

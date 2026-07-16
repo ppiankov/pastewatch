@@ -213,6 +213,24 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    func testGuardHonorsConfigAllowlistForInlineAndReferencedFile() throws {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        let testFile = testDir + "/config.env"
+        try "AWS_KEY=\(key)".write(toFile: testFile, atomically: true, encoding: .utf8)
+        var allowedConfig = config
+        allowedConfig.allowedValues = [key]
+        let configData = try JSONEncoder().encode(allowedConfig)
+        try configData.write(to: URL(fileURLWithPath: testDir + "/.pastewatch.json"))
+
+        let result = try runGuardCLI(arguments: ["guard", "--json", "cat \(testFile) && echo \(key)"])
+        let payload = try guardJSON(from: result.stdout)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(payload["blocked"] as? Bool, false)
+        XCTAssertTrue((payload["files"] as? [[String: Any]])?.isEmpty == true)
+        XCTAssertTrue((payload["inlineFindings"] as? [[String: Any]])?.isEmpty == true)
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String

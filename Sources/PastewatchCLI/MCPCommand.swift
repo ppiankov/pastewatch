@@ -278,7 +278,7 @@ final class MCPServer {
         }
 
         let ext: String
-        if path.hasSuffix(".env") || URL(fileURLWithPath: path).lastPathComponent == ".env" {
+        if DotenvClassifier.isDotenvFile(URL(fileURLWithPath: path).lastPathComponent) {
             ext = "env"
         } else {
             ext = URL(fileURLWithPath: path).pathExtension.lowercased()

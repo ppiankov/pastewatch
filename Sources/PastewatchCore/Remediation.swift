@@ -43,7 +43,7 @@ public enum Remediation {
 
         for fr in results {
             let fileName = URL(fileURLWithPath: fr.filePath).lastPathComponent
-            let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+            let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
             let ext = isEnvFile ? "env" : URL(fileURLWithPath: fr.filePath).pathExtension.lowercased()
             for match in fr.matches {
                 guard match.effectiveSeverity >= minSeverity else { continue }
