@@ -112,7 +112,7 @@ struct Setup: ParsableCommand {
         var settingsJSON = try AgentSetup.readJSONForMerge(
             at: settingsPath,
             requiringObjectPaths: [["hooks"]],
-            requiringArrayPaths: [["hooks", "PreToolUse"]]
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
         )
         let configExisted = fm.fileExists(atPath: settingsPath)
         AgentSetup.mergeClaudeCodeHooks(into: &settingsJSON, hookPath: hookPath)
@@ -278,7 +278,7 @@ struct Setup: ParsableCommand {
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
-            requiringArrayPaths: [["hooks", "preToolUse"]]
+            requiringObjectArrayPaths: [["hooks", "preToolUse"]]
         )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCursorHooks(into: &hooksJson, hookPath: hookPath)
@@ -332,7 +332,7 @@ struct Setup: ParsableCommand {
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
-            requiringArrayPaths: [
+            requiringObjectArrayPaths: [
                 ["hooks", "pre_read_code"],
                 ["hooks", "pre_write_code"],
                 ["hooks", "pre_run_command"],
@@ -454,7 +454,7 @@ struct Setup: ParsableCommand {
         var json = try AgentSetup.readJSONForMerge(
             at: settingsPath,
             requiringObjectPaths: [["hooks"]],
-            requiringArrayPaths: [["hooks", "PreToolUse"]]
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
         )
         let configExisted = fm.fileExists(atPath: settingsPath)
         AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
@@ -646,7 +646,7 @@ struct Setup: ParsableCommand {
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
-            requiringArrayPaths: [["hooks", "PreToolUse"]]
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
         )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCodexHooks(into: &hooksJson, hookPath: hookPath)
@@ -698,7 +698,7 @@ struct Setup: ParsableCommand {
         var json = try AgentSetup.readJSONForMerge(
             at: settingsPath,
             requiringObjectPaths: [["mcpServers"], ["hooks"]],
-            requiringArrayPaths: [["hooks", "PreToolUse"]]
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
         )
         let configExisted = fm.fileExists(atPath: settingsPath)
 

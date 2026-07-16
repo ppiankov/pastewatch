@@ -331,12 +331,16 @@ final class SetupCommandTests: XCTestCase {
         )
     }
 
-    // WO-500: Nested hook event types are part of the same fail-closed merge boundary.
-    func testReadJSONForMergeRejectsInvalidNestedArrayType() throws {
+    // WO-500: Mixed hook arrays must not be discarded when the typed cast fails.
+    func testReadJSONForMergeRejectsInvalidNestedHookEntries() throws {
         let tmpPath = NSTemporaryDirectory() + "pw-invalid-hooks-\(UUID().uuidString).json"
         defer { try? FileManager.default.removeItem(atPath: tmpPath) }
         try AgentSetup.writeJSON(
-            ["hooks": ["PreToolUse": "invalid"]],
+            [
+                "hooks": [
+                    "PreToolUse": [NSNull(), ["matcher": "Bash"]],
+                ],
+            ],
             to: tmpPath
         )
 
@@ -344,7 +348,7 @@ final class SetupCommandTests: XCTestCase {
             try AgentSetup.readJSONForMerge(
                 at: tmpPath,
                 requiringObjectPaths: [["hooks"]],
-                requiringArrayPaths: [["hooks", "PreToolUse"]]
+                requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
             )
         )
     }

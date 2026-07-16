@@ -71,7 +71,7 @@ public enum AgentSetup {
     public static func readJSONForMerge(
         at path: String,
         requiringObjectPaths objectPaths: [[String]] = [],
-        requiringArrayPaths arrayPaths: [[String]] = []
+        requiringObjectArrayPaths objectArrayPaths: [[String]] = []
     ) throws -> [String: Any] {
         guard FileManager.default.fileExists(atPath: path) else { return [:] }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -90,13 +90,13 @@ public enum AgentSetup {
                 )
             }
         }
-        for arrayPath in arrayPaths {
+        for arrayPath in objectArrayPaths {
             guard let value = jsonValue(at: arrayPath, in: json) else { continue }
-            guard value is [Any] else {
+            guard value is [[String: Any]] else {
                 throw AgentSetupError.invalidJSONSection(
                     path: path,
                     section: arrayPath.joined(separator: "."),
-                    expected: "an array"
+                    expected: "an array of objects"
                 )
             }
         }
