@@ -741,20 +741,19 @@ final class ProxyStreamRedactionTests: XCTestCase {
             finished.fulfill()
         }
 
-        pipe.fileHandleForWriting.write(Data("data: contact 10.1.2.3\n\ndata: [DONE]\n\n".utf8))
-        let firstOutput = readAvailableString(from: sockets[0])
         let credential = "AIza" + String(repeating: "Z", count: 35)
         let splitIndex = credential.index(credential.startIndex, offsetBy: 12)
         let prefix = String(credential[..<splitIndex])
         let suffix = String(credential[splitIndex...])
-        let framePrefix = "data: "
+        let firstChunkPrefix = "data: contact 10.1.2.3\n\ndata: [DONE]\n\ndata: "
         let filler = String(
             repeating: "x",
-            count: 65_536 - framePrefix.utf8.count - 1 - prefix.utf8.count
+            count: 65_536 - firstChunkPrefix.utf8.count - 1 - prefix.utf8.count
         )
-        let firstPostDoneChunk = Data((framePrefix + filler + " " + prefix).utf8)
-        XCTAssertEqual(firstPostDoneChunk.count, 65_536)
-        pipe.fileHandleForWriting.write(firstPostDoneChunk)
+        let firstChunk = Data((firstChunkPrefix + filler + " " + prefix).utf8)
+        XCTAssertEqual(firstChunk.count, 65_536)
+        pipe.fileHandleForWriting.write(firstChunk)
+        let firstOutput = readAvailableString(from: sockets[0])
         pipe.fileHandleForWriting.write(Data((suffix + "\n\n").utf8))
         var trailingOutput = readAvailableString(from: sockets[0])
         trailingOutput += readAllAvailableString(from: sockets[0])

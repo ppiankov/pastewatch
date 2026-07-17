@@ -984,12 +984,35 @@ struct CurlHTTPClient {
             let data = alertState.pending
             alertState.pending.removeAll(keepingCapacity: true)
             alertState.sawDone = true
-            return relayRawStreamBufferedData(
-                data,
+            guard let frameEnd = rawStreamDoneFrameEnd(in: data, after: doneRange.upperBound) else {
+                return relayRawStreamBufferedData(
+                    data,
+                    doneLineStart: doneRange.lowerBound,
+                    alert: alert,
+                    totals: &totals,
+                    alertState: &alertState
+                )
+            }
+            let terminal = relayRawStreamBufferedData(
+                Data(data[..<frameEnd]),
                 doneLineStart: doneRange.lowerBound,
                 alert: alert,
                 totals: &totals,
                 alertState: &alertState
+            )
+            let trailing = Data(data[frameEnd...])
+            guard !trailing.isEmpty,
+                  let postDone = relayPostDoneRawStreamChunk(
+                    trailing, parser: &parser, ctx: alert.stream, totals: &totals
+                  ) else {
+                return terminal
+            }
+            var output = terminal.data
+            output.append(postDone.data)
+            return StreamChunkRelayResult(
+                data: output,
+                advisoryCount: terminal.advisoryCount + postDone.advisoryCount,
+                advisoryTypes: terminal.advisoryTypes + postDone.advisoryTypes
             )
         }
 
@@ -1201,6 +1224,24 @@ struct CurlHTTPClient {
         // WO-384: preserve an unterminated prefix and splice directly at DONE.
         guard crlfStart != nil || lfStart != nil else { return doneLineStart }
         return max(crlfStart ?? 0, lfStart ?? 0)
+    }
+
+    // WO-508: bytes after a complete DONE frame belong to the post-DONE parser.
+    private static func rawStreamDoneFrameEnd(
+        in data: Data,
+        after doneLineEnd: Data.Index
+    ) -> Data.Index? {
+        let trailing = data[doneLineEnd...]
+        let crlf = Data([0x0D, 0x0A, 0x0D, 0x0A])
+        let lf = Data([0x0A, 0x0A])
+        let crlfEnd = trailing.range(of: crlf)?.upperBound
+        let lfEnd = trailing.range(of: lf)?.upperBound
+        switch (crlfEnd, lfEnd) {
+        case let (left?, right?): return min(left, right)
+        case let (left?, nil): return left
+        case let (nil, right?): return right
+        case (nil, nil): return nil
+        }
     }
 
     private static func relayRawStreamOverflow(
