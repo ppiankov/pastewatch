@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-07-17
+
+### Fixed
+
+- Proxy audit dedup no longer collapses distinct request targets into one entry. The
+  dedup signature keyed on the sanitized display path, so two genuinely different
+  requests whose paths reduced to the same safe form were treated as duplicates and one
+  audit entry was dropped. Dedup now keys on an ephemeral non-reversible digest of the
+  full request target across all four audit chains (refusal, redaction, advisory, model
+  identity), while the written audit line still omits query values.
+
 ## [0.31.0] - 2026-07-17
 
 ### Added

@@ -894,7 +894,8 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(proxy.stats.refusedRequests, 4)
     }
 
-    // WO-440/WO-442: repeated unsupported-shape refusals are counted but audit-deduped.
+    // WO-499: repeated unsupported-shape refusals are counted but only identical
+    // request targets are audit-deduped (extends WO-440 and WO-442 coverage).
     func testRepeatedUnsupportedBodyShapeRefusalsAreDedupedAndCounted() throws {
         let upstream = try StubHTTPServer { _ in
             StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
@@ -922,7 +923,13 @@ final class ProxyRealServerTests: XCTestCase {
             }
         }
 
-        for path in ["/v1/responses", "/v1/responses", "/v1/chat/completions"] {
+        // WO-499: distinct query targets are counted twice; identical ones dedupe.
+        let paths = [
+            "/v1/responses?trace=first-request",
+            "/v1/responses?trace=first-request",
+            "/v1/responses?trace=second-request",
+        ]
+        for path in paths {
             _ = try TCPTestSocket.roundTrip(
                 port: proxyPort,
                 request: TCPTestSocket.postRequest(path: path, body: #"{"input":"hello"}"#),
@@ -939,7 +946,97 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(upstream.requestCount, 0)
         XCTAssertEqual(audit.components(separatedBy: "PROXY REFUSED").count - 1, 2, audit)
         XCTAssertTrue(audit.contains("/v1/responses"), audit)
-        XCTAssertTrue(audit.contains("/v1/chat/completions"), audit)
+        XCTAssertFalse(audit.contains("first-request"), audit)
+        XCTAssertFalse(audit.contains("second-request"), audit)
+    }
+
+    // WO-492: sanitized display paths must not collapse distinct request targets
+    // into one audit identity.
+    func testNonceQualifiedRequestsBothLogRedactionsWithoutQueryValues() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-redaction-target-dedup-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let token = "AIza" + String(repeating: "Q", count: 35)
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":"\#(token)"}]}"#
+        for path in ["/v1/messages?trace=first-request", "/v1/messages?trace=second-request"] {
+            _ = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: path, body: body),
+                timeoutSeconds: 10
+            )
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REDACTED").count - 1, 2, audit)
+        XCTAssertEqual(upstream.requestCount, 2)
+        XCTAssertFalse(audit.contains("first-request"), audit)
+        XCTAssertFalse(audit.contains("second-request"), audit)
+    }
+
+    // WO-492: an adjacent conversation-history rescan on the identical target
+    // remains quiet.
+    func testIdenticalRequestTargetsStillDeduplicateRedactionAudit() throws {
+        let upstream = try StubHTTPServer { _ in
+            StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"ok":true}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-redaction-rescan-dedup-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let token = "AIza" + String(repeating: "R", count: 35)
+        let body = #"{"model":"claude-3","messages":[{"role":"user","content":"\#(token)"}]}"#
+        for _ in 0..<2 {
+            _ = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+                timeoutSeconds: 10
+            )
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY REDACTED").count - 1, 1, audit)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 2)
+        XCTAssertEqual(upstream.requestCount, 2)
     }
 
     // WO-440: a real redaction event between refusals breaks only the refusal dedup chain.
@@ -1082,6 +1179,31 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(proxy.stats.refusedRequests, 1)
     }
 
+    // WO-499: advisory dedup uses opaque request-target identity while audit
+    // output remains query-free.
+    func testAdvisoryDedupDistinguishesQueryQualifiedTargets() throws {
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-advisory-target-dedup-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        let proxy = ProxyServer(port: 0, auditLogPath: auditPath.path, quietLog: true)
+
+        let paths = [
+            "/v1/messages?trace=first-request",
+            "/v1/messages?trace=first-request",
+            "/v1/messages?trace=second-request",
+        ]
+        for path in paths {
+            proxy.recordBodyAdvisoryStats(path: path, count: 1, types: ["Email"])
+        }
+        proxy.drainAuditLogForTesting()
+
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        XCTAssertEqual(audit.components(separatedBy: "PROXY ADVISORY").count - 1, 2, audit)
+        XCTAssertEqual(proxy.stats.advisoryMatches, 3)
+        XCTAssertFalse(audit.contains("first-request"), audit)
+        XCTAssertFalse(audit.contains("second-request"), audit)
+    }
+
     // WO-486: a refused request must not copy query material into an audit record.
     func testRefusalAuditOmitsQueryMaterial() throws {
         let upstream = try StubHTTPServer { _ in
@@ -1173,8 +1295,9 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertFalse(audit.contains("qwen-max"), audit)
     }
 
-    // WO-445: adjacent duplicates are quiet, while a distinct model identity emits a
-    // new opaque advisory without changing aggregate request telemetry.
+    // WO-499: adjacent target/model duplicates are quiet, while a distinct target or
+    // model emits a new opaque advisory without changing request telemetry (extends
+    // WO-445 coverage).
     func testModelIdentityAdvisoryDeduplicatesByPathAndModel() throws {
         let upstream = try StubHTTPServer { _ in
             StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
@@ -1197,10 +1320,12 @@ final class ProxyRealServerTests: XCTestCase {
         try runningProxy.start()
         defer { runningProxy.stop() }
 
+        // WO-499: distinct query targets each emit an advisory; identical ones dedupe.
         let requests = [
-            (model: "qwen-max", path: "/v1/messages"),
-            (model: "qwen-max", path: "/v1/messages"),
-            (model: "deepseek-chat", path: "/v1/messages"),
+            (model: "qwen-max", path: "/v1/messages?trace=first-request"),
+            (model: "qwen-max", path: "/v1/messages?trace=first-request"),
+            (model: "qwen-max", path: "/v1/messages?trace=second-request"),
+            (model: "deepseek-chat", path: "/v1/messages?trace=second-request"),
             (model: "qwen-max", path: "/gateway/v1/messages"),
         ]
         for request in requests {
@@ -1216,12 +1341,16 @@ final class ProxyRealServerTests: XCTestCase {
         proxy.drainAuditLogForTesting()
 
         let audit = try String(contentsOf: auditPath, encoding: .utf8)
-        XCTAssertEqual(upstream.requestCount, 4)
-        XCTAssertEqual(proxy.stats.requestsProcessed, 4)
-        XCTAssertEqual(proxy.stats.modelIdentityAdvisories, 4)
-        XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 3, audit)
+        // WO-499: distinct targets raise the advisory count; query values stay unlogged.
+        XCTAssertEqual(upstream.requestCount, 5)
+        XCTAssertEqual(proxy.stats.requestsProcessed, 5)
+        XCTAssertEqual(proxy.stats.modelIdentityAdvisories, 5)
+        XCTAssertEqual(audit.components(separatedBy: "nonstandard model identity").count - 1, 4, audit)
         XCTAssertFalse(audit.contains("qwen-max"), audit)
         XCTAssertFalse(audit.contains("deepseek-chat"), audit)
+        // WO-499: query trace values must never appear in the audit output.
+        XCTAssertFalse(audit.contains("first-request"), audit)
+        XCTAssertFalse(audit.contains("second-request"), audit)
     }
 
     // WO-443: refusal and model-advisory lines break each other's dedup chain, while
