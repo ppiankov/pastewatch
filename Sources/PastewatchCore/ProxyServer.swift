@@ -1,3 +1,8 @@
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -1382,9 +1387,12 @@ public final class ProxyServer {
     }
 
     // WO-494: refusal categories share one dedup and cross-chain reset state machine.
+    // WO-492: dedup on the full-target digest, not the sanitized display path, so
+    // distinct request targets are not collapsed into one refusal audit entry.
     private func logBodyRefusal(path: String, reason: String, description: String) {
         let safePath = auditSafePath(path)
-        let signature = "refused:\(safePath):\(reason)"
+        // WO-492: dedup on the full-target digest, not the sanitized display path.
+        let signature = "refused:\(auditDedupPathIdentity(path)):\(reason)"
         statsLock.lock()
         let isRepeat = signature == lastRefusalLogSignature
         lastRefusalLogSignature = signature
@@ -1426,6 +1434,13 @@ public final class ProxyServer {
         }.joined()
         guard sanitized.count > proxyAuditPathMaxCharacters else { return sanitized }
         return String(sanitized.prefix(proxyAuditPathMaxCharacters)) + "..."
+    }
+
+    // WO-492: display paths omit query values, while this ephemeral digest preserves
+    // exact request-target identity without retaining those values in dedup state.
+    private func auditDedupPathIdentity(_ rawPath: String) -> String {
+        let digest = SHA256.hash(data: Data(rawPath.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func scanProxyText(_ text: String) -> [DetectedMatch] {
@@ -2464,8 +2479,9 @@ public final class ProxyServer {
         // handleConnection handlers dispatched on the .concurrent queue. Acquire statsLock so
         // concurrent connections do not race on the dedup check.
         // WO-378: request and buffered-response redactions can share path/count/type values.
+        // WO-492: dedup on the full-target digest so distinct request targets each log.
         let safePath = auditSafePath(path)
-        let signature = "\(source.rawValue):\(safePath):\(count):\(breakdown)"
+        let signature = "\(source.rawValue):\(auditDedupPathIdentity(path)):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastRedactionLogSignatures[source]
         lastRedactionLogSignatures[source] = signature
@@ -2520,8 +2536,9 @@ public final class ProxyServer {
             .map { "\($0.key) x\($0.value)" }
             .joined(separator: ", ")
 
+        // WO-492: dedup on the full-target digest so distinct request targets each log.
         let safePath = auditSafePath(path)
-        let signature = "advisory:\(source.rawValue):\(safePath):\(count):\(breakdown)"
+        let signature = "advisory:\(source.rawValue):\(auditDedupPathIdentity(path)):\(count):\(breakdown)"
         statsLock.lock()
         let isRepeat = signature == lastAdvisoryLogSignatures[source]
         lastAdvisoryLogSignatures[source] = signature
@@ -2550,6 +2567,8 @@ public final class ProxyServer {
     }
 
     // WO-430: model names are advisory metadata; log drift without exposing the value.
+    // WO-492: dedup on the full-target digest so distinct request targets each log a
+    // model-identity advisory instead of collapsing under the sanitized display path.
     private func logModelIdentityAdvisory(
         path: String,
         dedupKey: String,
@@ -2557,7 +2576,8 @@ public final class ProxyServer {
         requestCount: Int
     ) {
         let safePath = auditSafePath(path)
-        let signature = "model-identity:\(safePath):\(dedupKey)"
+        // WO-492: dedup on the full-target digest, not the sanitized display path.
+        let signature = "model-identity:\(auditDedupPathIdentity(path)):\(dedupKey)"
         statsLock.lock()
         let isRepeat = signature == lastModelIdentityAdvisorySignature
         lastModelIdentityAdvisorySignature = signature
