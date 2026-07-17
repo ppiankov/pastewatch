@@ -609,10 +609,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-233: clientEpipe written under socketWriteLock so the connection-thread call path
     /// (504 timeout: execute() → sendErrorDirect() → writeToSocket()) is synchronized with
     /// the delegate-queue readers in didReceive (WO-232 snapshot) and didCompleteWithError.
-    /// WO-381 and WO-383: return delivery status to advisory-accounting callers.
+    /// WO-381: return delivery status to advisory-accounting callers.
     @discardableResult
     private func writeToSocket(_ data: Data) -> Bool {
-        // WO-381 and WO-383: report whether advisory-bearing bytes reached the client.
+        // WO-381: report whether advisory-bearing bytes reached the client.
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
             markClientEpipeAndCancelTask()
             return false
