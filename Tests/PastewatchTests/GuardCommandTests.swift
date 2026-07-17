@@ -34,6 +34,33 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertFalse(filtered.isEmpty, "Should find high+ severity secrets")
     }
 
+    // WO-502: an agent can write `# pastewatch:allow` into a file it controls and then
+    // `cat` it. Files referenced by an agent-controlled command must be scanned as
+    // .agentControlled so the inline allow comment cannot self-authorize the secret.
+    func testAgentReferencedFileCannotSelfAuthorizeWithInlineAllow() throws {
+        let testFile = testDir + "/agent-written.env"
+        // A real (non-"EXAMPLE") credential so it is not suppressed as a test value.
+        let secret = "password=" + "hunter2LongEnoughToDetect"
+        try "\(secret) # pastewatch:allow".write(toFile: testFile, atomically: true, encoding: .utf8)
+
+        let paths = CommandParser.extractFilePaths(from: "cat \(testFile)")
+        XCTAssertEqual(paths.count, 1)
+
+        let content = try String(contentsOfFile: paths[0], encoding: .utf8)
+        let decision = GuardDecision.evaluate(
+            matches: DetectionRules.scan(content, config: config),
+            content: content,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: .high
+        )
+
+        XCTAssertFalse(
+            decision.actionableMatches.isEmpty,
+            "Agent-referenced file must not be allow-comment-bypassable"
+        )
+    }
+
     func testAllowsCleanFile() throws {
         let testFile = testDir + "/readme.txt"
         try "Hello world, nothing sensitive here".write(toFile: testFile, atomically: true, encoding: .utf8)
