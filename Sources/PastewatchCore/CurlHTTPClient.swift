@@ -908,7 +908,7 @@ struct CurlHTTPClient {
             rem, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
         )
         totals.recordCritical(redaction)
-        // WO-191/WO-200/WO-205: retry until all bytes sent; skip on EPIPE.
+        // WO-191, WO-200, and WO-205: retry until all bytes sent; skip on EPIPE.
         let alert = alertBeforeDone?(
             totals.redactionCount,
             totals.redactionTypes,
@@ -957,7 +957,7 @@ struct CurlHTTPClient {
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
         if alertState.sawDone {
-            // WO-380/WO-508: keep one-shot alert state while preserving chunk-spanning scans.
+            // WO-380 and WO-508: keep one-shot alert state while preserving chunk-spanning scans.
             return relayPostDoneRawStreamChunk(
                 chunk, parser: &parser, ctx: alert.stream, totals: &totals
             )

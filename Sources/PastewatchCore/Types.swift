@@ -101,7 +101,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         }
     }
 
-    /// WO-454/WO-487: only formats whose matched bytes prove a secret authorize mutation.
+    /// WO-454 and WO-487: only formats whose matched bytes prove a secret authorize mutation.
     public var intrinsicMutationAuthorized: Bool {
         switch self {
         case .awsKey, .sshPrivateKey,

@@ -673,6 +673,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(relay.streamAdvisoryCount, 0)
     }
 
+    // WO-381: EPIPE excludes undelivered no-alert advisories from stream stats.
     func testSSEStreamRelayRawStreamNoAlertSkipsUndeliveredAdvisoryStats() {
         // WO-381: critical detections are attempt-scoped; advisories require delivery.
         let previousHandler = signal(SIGPIPE, SIG_IGN)
@@ -706,6 +707,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(relay.streamAdvisoryCount, 0)
     }
 
+    // WO-382: EPIPE excludes an undelivered alert batch from advisory stats.
     func testSSEStreamRelayRawStreamWithAlertSkipsUndeliveredAdvisoryStats() {
         // WO-382: a failed batch send cannot commit its staged advisory counts.
         let previousHandler = signal(SIGPIPE, SIG_IGN)
@@ -742,6 +744,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(relay.streamAdvisoryCount, 0)
     }
 
+    // WO-383: EPIPE excludes an undelivered remainder advisory from stream stats.
     func testSSEStreamRelayRemainderEPIPESkipsUndeliveredAdvisoryStats() {
         // WO-383: partial-frame remainder stats follow the same delivery policy.
         let previousHandler = signal(SIGPIPE, SIG_IGN)
@@ -775,6 +778,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(relay.streamAdvisoryCount, 0)
     }
 
+    // WO-394: per-event relay injects one alert across duplicate DONE frames.
     func testSSEStreamRelayPerEventInjectsAlertOnceForDuplicateDone() {
         // WO-394: malformed duplicate terminators are forwarded without duplicate alerts.
         let credential = "AIza" + String(repeating: "U", count: 35)
@@ -812,8 +816,8 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
     }
 
+    // WO-380 and WO-394: raw relay injects one alert across duplicate DONE frames.
     func testSSEStreamRelayRawStreamInjectsAlertOnceForDuplicateDone() {
-        // WO-380/WO-394: both relay modes share the one-shot terminal alert invariant.
         NoDoneStreamURLProtocol.reset(
             payload: Data("data: contact 10.1.2.3\n\ndata: [DONE]\n\ndata: [DONE]\n\n".utf8)
         )
@@ -847,6 +851,7 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
     }
 
+    // WO-507: overflow latches DONE before a later duplicate frame.
     func testSSEStreamRelayRawOverflowLatchesDoneBeforeDuplicate() {
         // WO-507: an oversized first chunk bypasses frame parsing but still owns DONE state.
         var parser = SSEFrameParser()
@@ -1328,6 +1333,7 @@ private class FirstDataGateStreamURLProtocol: URLProtocol {
     }
 }
 
+// WO-381, WO-382, and WO-383: deterministic two-chunk EPIPE fixture.
 private class AdvisoryAfterCloseStreamURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var firstChunkSemaphore = DispatchSemaphore(value: 0)

@@ -1557,7 +1557,7 @@ public final class ProxyServer {
         return value
     }
 
-    // WO-460/WO-506: replay-sensitive blocks expose only explicitly documented plaintext.
+    // WO-460 and WO-506: replay-sensitive blocks expose only explicitly documented plaintext.
     // swiftlint:disable:next function_parameter_count
     private func redactReplayContentBlock(
         _ object: [String: Any],
@@ -1602,6 +1602,7 @@ public final class ProxyServer {
         advisoryCount: inout Int,
         advisoryTypes: inout [String]
     ) -> Any {
+        // WO-460: traverse documented plaintext fields while preserving protocol metadata.
         if let text = value as? String {
             return redactScannableText(
                 text, site: site, redacted: &redacted, types: &types,

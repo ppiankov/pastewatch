@@ -289,6 +289,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-381: advisory stats are committed only after raw bytes reach the client.
     private func relayRawRedactedData(_ data: Data) {
         guard buildAlertBeforeDone == nil else {
             relayRawRedactedFrames(data)
@@ -303,6 +304,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-382: stage frame-batch advisories until the combined socket write succeeds.
     private func relayRawRedactedFrames(_ data: Data) {
         let result = parser.feed(data)
         if result.overflowFlushed {
@@ -436,10 +438,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         streamStatsLock.unlock()
     }
 
+    // WO-381: centralize delivery-scoped advisory accounting.
     private func recordAdvisoryStreamScan(_ redaction: SSEFrameRedactionResult) {
         recordAdvisoryStreamScan(count: redaction.advisoryCount, types: redaction.advisoryTypes)
     }
 
+    // WO-382: commit one delivered frame batch without changing critical attempt counts.
     private func recordAdvisoryStreamScan(count: Int, types: [String]) {
         streamStatsLock.lock()
         streamAdvisoryCountStorage += count
@@ -571,6 +575,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     // MARK: - Private
 
     /// WO-222: returns false on EPIPE so callers can cancel the task and skip body relay.
+    /// WO-381 and WO-383: expose socket delivery success to advisory-stat callers.
     @discardableResult
     private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) -> Bool {
         let response = CurlHTTPClient.buildStreamingResponseHeaders(
@@ -658,6 +663,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(), into: data)
     }
 
+    // WO-382: build raw-stream alerts from staged delivery stats.
     private func insertingAlertBeforeDoneIfNeeded(
         _ data: Data,
         stats: StreamStatsSnapshot
@@ -680,6 +686,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         return output
     }
 
+    // WO-383: include a delivered EOF remainder in the terminal alert snapshot.
     private func insertingAlertBeforeDoneOrEOFIfNeeded(
         _ data: Data,
         stats: StreamStatsSnapshot
@@ -691,10 +698,12 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         return appended
     }
 
+    // WO-383: build EOF guidance from committed stream stats.
     private func rawStreamEOFAlertIfNeeded() -> Data? {
         rawStreamEOFAlertIfNeeded(snapshotStreamStats())
     }
 
+    // WO-383: accept a staged snapshot for a remainder delivered in the same write.
     private func rawStreamEOFAlertIfNeeded(_ stats: StreamStatsSnapshot) -> Data? {
         guard !rawStreamSawDone,
               stats.redactionCount > 0 || stats.advisoryCount > 0 else {
@@ -717,6 +726,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         )
     }
 
+    // WO-382: preview advisory totals without committing them before delivery.
     private func snapshotStreamStats(adding redaction: SSEFrameRedactionResult) -> StreamStatsSnapshot {
         snapshotStreamStats(
             addingAdvisoryCount: redaction.advisoryCount,
@@ -724,6 +734,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         )
     }
 
+    // WO-382: compose staged advisory counts with the lock-protected snapshot.
     private func snapshotStreamStats(
         addingAdvisoryCount count: Int,
         advisoryTypes: [String]

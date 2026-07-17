@@ -566,6 +566,7 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-145: reject short or unsegmented lookalikes.
     func testDashScopeWorkspaceKeyRequiresCompleteSegmentedPayload() {
         let short = Self.skWS + "abc." + String(repeating: "Q", count: 19)
         let unsegmented = Self.skWS + String(repeating: "Q", count: 30)

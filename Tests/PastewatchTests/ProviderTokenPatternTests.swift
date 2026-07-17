@@ -62,6 +62,7 @@ final class ProviderTokenPatternTests: XCTestCase {
         ]
     }
 
+    // WO-145: keep DashScope in the explicit provider inventory and evidence manifest.
     func testManifestCoversExplicitProviderDetectorSet() {
         let expected: Set<SensitiveDataType> = [
             .awsKey, .genericApiKey, .slackWebhook, .discordWebhook, .openaiKey,
