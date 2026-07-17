@@ -36,14 +36,27 @@ The proxy is Layer 0 for Claude Code — it catches Anthropic-shaped requests th
 
 Register the MCP server for redacted read/write and scanning tools. Once configured, the agent has 6 tools. Secrets stay on your machine — only placeholders reach the AI provider.
 
+| Setup mode | Agents |
+|------------|--------|
+| Automatic config write | Claude Code, Cline, Roo Code, Cursor, Windsurf, Kilo Code, Continue, Amazon Q, GitHub Copilot, Gemini, Qwen Code |
+| Manual block printed | Goose (YAML), Codex (TOML) |
+| MCP unavailable | Aider |
+
+Automatic setup preserves unrelated JSON keys and refuses to overwrite malformed
+config. Manual setup prints the destination path and exact block but does not claim
+to have changed the file.
+
 ### Claude Code
 
 Register via CLI:
 ```bash
-claude mcp add pastewatch -- pastewatch-cli mcp --audit-log /tmp/pastewatch-audit.log
+claude mcp add --scope user pastewatch -- pastewatch-cli mcp --audit-log /tmp/pastewatch-audit.log
 ```
 
-Or add to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
+Or run `pastewatch-cli setup claude-code`. It writes user-scoped MCP to
+`~/.claude.json`. With `--project`, it writes `.mcp.json` in the project root.
+Claude Code settings files are for hooks and do not store MCP servers.
+
 ```json
 {
   "mcpServers": {
@@ -80,7 +93,7 @@ Toggle: remove the `pastewatch` key and restart.
 
 ## Cline (VS Code)
 
-Config: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+Config: `~/.cline/data/settings/cline_mcp_settings.json`
 
 ```json
 {
@@ -104,7 +117,7 @@ Toggle: set `"disabled": true` or use Cline UI MCP panel.
 
 Roo Code is a Cline fork — same MCP config format and hook protocol.
 
-Config: `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`
+Config: `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`
 
 ```json
 {
@@ -198,21 +211,23 @@ Or guided setup:
 pastewatch-cli setup goose
 ```
 
-Note: Goose has no hook support — enforcement is advisory. Use `pastewatch-cli launch -- goose` for proxy-level protection.
+Note: Goose has no hook support, and setup prints this YAML for manual merging so
+existing comments and extensions are preserved. `launch` does not route Goose
+through the proxy.
 
 ---
 
 ## Kilo Code (VS Code)
 
-Config: `~/Library/Application Support/Code/User/globalStorage/kilocode.Kilo-Code/settings/mcp_settings.json`
+Config: `~/.config/kilo/kilo.json`
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "pastewatch": {
-      "command": "pastewatch-cli",
-      "args": ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
-      "disabled": false
+      "type": "local",
+      "command": ["pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log"],
+      "enabled": true
     }
   }
 }
@@ -224,7 +239,8 @@ Or auto-setup:
 pastewatch-cli setup kilo-code
 ```
 
-Note: Kilo Code has no hook support — enforcement is advisory. Use `pastewatch-cli launch` for proxy-level protection.
+Note: Kilo Code has no hook support, so MCP use is advisory. `launch` does not
+route Kilo Code through the proxy.
 
 ---
 
@@ -342,7 +358,9 @@ Or auto-setup:
 pastewatch-cli setup gemini
 ```
 
-Note: Gemini has no hook support — enforcement is advisory. Enable Agent mode for MCP tools. Gemini-shaped API traffic is not supported by the proxy.
+Note: Gemini has no hook support — enforcement is advisory. Enable Agent mode for
+MCP tools. Gemini-shaped API traffic is not supported by the proxy, and `launch`
+does not route Gemini through it.
 
 ---
 
@@ -376,22 +394,27 @@ Toggle: set `"enabled": false`
 
 ## Codex CLI
 
-Auto-setup (hooks only — writes `~/.codex/hooks.json` and guard script):
+Guided setup writes hooks and prints a TOML block for manual MCP merging:
 
 ```bash
 pastewatch-cli setup codex
 ```
 
+Restart Codex, run `/hooks`, and review and trust the generated Pastewatch hook.
+Codex skips non-managed hooks until their exact definition is trusted.
+
 Hook config written to `~/.codex/hooks.json`:
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Read|Write|Edit|apply_patch|Bash",
-      "hooks": [{"type": "command", "command": "~/.codex/hooks/pastewatch-guard.sh"}]
-    }
-  ]
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|apply_patch|Bash",
+        "hooks": [{"type": "command", "command": "~/.codex/hooks/pastewatch-guard.sh"}]
+      }
+    ]
+  }
 }
 ```
 
@@ -404,7 +427,8 @@ args = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
 enabled = true
 ```
 
-Toggle hooks: set `enabled = false` in config.toml; set `PW_GUARD=0` in shell to bypass for a session.
+Toggle hooks: set `[features] hooks = false` in `config.toml`; set `PW_GUARD=0`
+in the shell to bypass for a session.
 
 ---
 

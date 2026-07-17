@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-17
+
+### Added
+
+- `setup <agent>` now reports the real MCP integration status per agent — automatic,
+  manual (with the exact config block to paste), or unavailable — and states whether
+  `launch` routes that agent through the API proxy. Previously the tables claimed a
+  blanket "Yes" for MCP on every agent.
+- Codex CLI setup prints the required next step: restart Codex, run `/hooks`, and trust
+  the generated Pastewatch hook (Codex skips non-managed hooks until trusted).
+
+### Changed
+
+- Unified `.env` filename classification behind a single `DotenvClassifier` shared by
+  every scanner, replacing seven independently drifting `.hasSuffix(".env")` checks.
+- Agent-safety and setup documentation now reflect verified per-agent config paths and
+  automatic/manual status instead of a uniform claim.
+
+### Fixed
+
+- Guard no longer honors an inline `# pastewatch:allow` comment in a file referenced by
+  an agent-controlled command. An agent could write the allow comment into a file it
+  controls and then `cat` it to slip a secret past the guard; referenced-file content is
+  now scanned as agent-controlled. Operator-named files (guard-read/guard-write, watch)
+  still honor inline allow.
+- Proxy now redacts plaintext in unknown and mixed content blocks while preserving
+  protocol discriminators and base64 payload bytes intact.
+
 ## [0.30.0] - 2026-07-15
 
 ### Added

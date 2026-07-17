@@ -33,10 +33,10 @@ struct GuardRead: ParsableCommand {
         }
 
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
-        let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+        let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
         let ext = isEnvFile ? "env" : URL(fileURLWithPath: filePath).pathExtension.lowercased()
 
-        var matches: [DetectedMatch]
+        let matches: [DetectedMatch]
         do {
             matches = try DirectoryScanner.scanFileContentOrThrow(
                 content: content, ext: ext,
@@ -49,12 +49,14 @@ struct GuardRead: ParsableCommand {
             print("Fix shared pattern configuration before using Read.")
             throw ExitCode(rawValue: 2)
         }
-        matches = Allowlist.filterInlineAllow(matches: matches, content: content)
-
-        let configAllowlist = Allowlist.fromConfig(config)
-        matches = configAllowlist.filter(matches)
-
-        let filtered = matches.filter { $0.effectiveSeverity >= failOnSeverity }
+        // WO-502: read/write/command/watch use one post-scan decision pipeline.
+        let filtered = GuardDecision.evaluate(
+            matches: matches,
+            content: content,
+            config: config,
+            contentTrust: .trustedFile,
+            minimumSeverity: failOnSeverity
+        ).actionableMatches
         guard !filtered.isEmpty else { return }
 
         let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })

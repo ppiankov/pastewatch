@@ -34,6 +34,33 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertFalse(filtered.isEmpty, "Should find high+ severity secrets")
     }
 
+    // WO-502: an agent can write `# pastewatch:allow` into a file it controls and then
+    // `cat` it. Files referenced by an agent-controlled command must be scanned as
+    // .agentControlled so the inline allow comment cannot self-authorize the secret.
+    func testAgentReferencedFileCannotSelfAuthorizeWithInlineAllow() throws {
+        let testFile = testDir + "/agent-written.env"
+        // A real (non-"EXAMPLE") credential so it is not suppressed as a test value.
+        let secret = "password=" + "hunter2LongEnoughToDetect"
+        try "\(secret) # pastewatch:allow".write(toFile: testFile, atomically: true, encoding: .utf8)
+
+        let paths = CommandParser.extractFilePaths(from: "cat \(testFile)")
+        XCTAssertEqual(paths.count, 1)
+
+        let content = try String(contentsOfFile: paths[0], encoding: .utf8)
+        let decision = GuardDecision.evaluate(
+            matches: DetectionRules.scan(content, config: config),
+            content: content,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: .high
+        )
+
+        XCTAssertFalse(
+            decision.actionableMatches.isEmpty,
+            "Agent-referenced file must not be allow-comment-bypassable"
+        )
+    }
+
     func testAllowsCleanFile() throws {
         let testFile = testDir + "/readme.txt"
         try "Hello world, nothing sensitive here".write(toFile: testFile, atomically: true, encoding: .utf8)
@@ -210,6 +237,36 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertEqual(payload["blocked"] as? Bool, false)
         XCTAssertTrue(commandText.contains(testKey), "known test credential should remain visible")
         XCTAssertFalse(commandText.contains("<AWS"), "known test credential should not be redacted")
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    func testGuardHonorsConfigAllowlistForInlineAndReferencedFile() throws {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        let testFile = testDir + "/config.env"
+        try "AWS_KEY=\(key)".write(toFile: testFile, atomically: true, encoding: .utf8)
+        var allowedConfig = config
+        allowedConfig.allowedValues = [key]
+        let configData = try JSONEncoder().encode(allowedConfig)
+        try configData.write(to: URL(fileURLWithPath: testDir + "/.pastewatch.json"))
+
+        let result = try runGuardCLI(arguments: ["guard", "--json", "cat \(testFile) && echo \(key)"])
+        let payload = try guardJSON(from: result.stdout)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(payload["blocked"] as? Bool, false)
+        XCTAssertTrue((payload["files"] as? [[String: Any]])?.isEmpty == true)
+        XCTAssertTrue((payload["inlineFindings"] as? [[String: Any]])?.isEmpty == true)
+    }
+
+    func testGuardCommandCannotSelfAuthorizeWithInlineAllowComment() throws {
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+
+        let result = try runGuardCLI(arguments: [
+            "guard", "--quiet", "echo \(key) # pastewatch:allow",
+        ])
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stdout.isEmpty)
         XCTAssertTrue(result.stderr.isEmpty)
     }
 

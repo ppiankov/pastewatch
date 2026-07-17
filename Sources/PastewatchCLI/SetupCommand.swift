@@ -17,11 +17,8 @@ struct Setup: ParsableCommand {
     var project = false
 
     func validate() throws {
-        let validAgents = [
-            "claude-code", "cline", "cursor", "roo-code", "windsurf",
-            "goose", "kilo-code", "continue", "amazon-q", "aider",
-            "copilot", "gemini", "codex", "qwen-code",
-        ]
+        // WO-500: Validation consumes the same exhaustive matrix used by setup tests.
+        let validAgents = AgentSetup.mcpSetupMatrix.map(\.agent)
         guard validAgents.contains(agent) else {
             throw ValidationError(
                 "Unknown agent '\(agent)'. Valid: \(validAgents.joined(separator: ", "))"
@@ -88,6 +85,8 @@ struct Setup: ParsableCommand {
         let hooksDir = configDir + "/hooks"
         let hookPath = hooksDir + "/pastewatch-guard.sh"
         let settingsPath = configDir + "/settings.json"
+        // WO-500: Claude Code stores MCP separately from its settings file.
+        let mcpPath = project ? fm.currentDirectoryPath + "/.mcp.json" : home + "/.claude.json"
 
         print("setup: claude-code\n")
 
@@ -101,13 +100,23 @@ struct Setup: ParsableCommand {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
         print("  hook     \(hookPath) (created)")
 
-        // 2. Merge settings.json
-        var json = AgentSetup.readJSON(at: settingsPath)
-        let configExisted = fm.fileExists(atPath: settingsPath)
+        // 2. Merge MCP and hook configs at their distinct supported paths.
+        var mcpJSON = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
+        let mcpExisted = fm.fileExists(atPath: mcpPath)
+        AgentSetup.mergeMCPServer(into: &mcpJSON, severity: severity)
+        try AgentSetup.writeJSON(mcpJSON, to: mcpPath)
 
-        AgentSetup.mergeMCPServer(into: &json, severity: severity)
-        AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
-        try AgentSetup.writeJSON(json, to: settingsPath)
+        var settingsJSON = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
+        )
+        let configExisted = fm.fileExists(atPath: settingsPath)
+        AgentSetup.mergeClaudeCodeHooks(into: &settingsJSON, hookPath: hookPath)
+        try AgentSetup.writeJSON(settingsJSON, to: settingsPath)
 
         // 3. Inject CLAUDE.md snippet
         let claudeMdPath: String
@@ -124,7 +133,9 @@ struct Setup: ParsableCommand {
         if severity != "high" {
             mcpArgs += " --min-severity \(severity)"
         }
-        print("  mcp      \(mcpArgs)")
+        let mcpStatus = mcpExisted ? "updated" : "created"
+        print("  mcp      \(mcpPath) (\(mcpStatus))")
+        print("           \(mcpArgs)")
 
         let configStatus = configExisted ? "updated" : "created"
         print("  config   \(settingsPath) (\(configStatus))")
@@ -144,10 +155,12 @@ struct Setup: ParsableCommand {
 
         // 1. Merge MCP config
         let mcpPath = home
-            + "/Library/Application Support/Code/User/globalStorage"
-            + "/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+            + "/.cline/data/settings/cline_mcp_settings.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -189,9 +202,12 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home
             + "/Library/Application Support/Code/User/globalStorage"
-            + "/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json"
+            + "/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -233,7 +249,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.cursor/mcp.json"
 
-        var mcpJson = AgentSetup.readJSON(at: mcpPath)
+        var mcpJson = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &mcpJson, severity: severity)
         try AgentSetup.writeJSON(mcpJson, to: mcpPath)
@@ -256,7 +275,11 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks.json
         let hooksJsonPath = home + "/.cursor/hooks.json"
-        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringObjectArrayPaths: [["hooks", "preToolUse"]]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCursorHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -280,7 +303,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.codeium/windsurf/mcp_config.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -303,7 +329,15 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks.json
         let hooksJsonPath = home + "/.codeium/windsurf/hooks.json"
-        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringObjectArrayPaths: [
+                ["hooks", "pre_read_code"],
+                ["hooks", "pre_write_code"],
+                ["hooks", "pre_run_command"],
+            ]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeWindsurfHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -324,7 +358,7 @@ struct Setup: ParsableCommand {
 
         print("setup: goose\n")
 
-        // Goose uses YAML config — we can only set up MCP, no hooks available
+        // WO-500: Preserve YAML comments and extensions by printing a manual merge block.
         let configPath = home + "/.config/goose/config.yaml"
 
         print("  config   \(configPath)")
@@ -346,9 +380,7 @@ struct Setup: ParsableCommand {
         print("      enabled: true")
         print("")
         print("  note: Goose has no hook support — enforcement is advisory.")
-        print("  use 'pastewatch-cli launch -- goose' for proxy-level protection.")
-        print("")
-        print("  upstream: https://github.com/block/goose/issues")
+        print("  pastewatch launch does not route Goose through the API proxy.")
 
         runDoctor()
     }
@@ -362,13 +394,15 @@ struct Setup: ParsableCommand {
         print("setup: kilo-code\n")
 
         // 1. Merge MCP config
-        let mcpPath = home
-            + "/Library/Application Support/Code/User/globalStorage"
-            + "/kilocode.Kilo-Code/settings/mcp_settings.json"
+        // WO-500: Kilo 7.x uses its OpenCode-derived global config and schema.
+        let mcpPath = home + "/.config/kilo/kilo.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcp"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
-        AgentSetup.mergeMCPServer(into: &json, severity: severity, disabled: false)
+        AgentSetup.mergeKiloMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
 
         let configStatus = configExisted ? "updated" : "created"
@@ -376,9 +410,7 @@ struct Setup: ParsableCommand {
         print("  severity \(severity)")
         print("")
         print("  note: Kilo Code has no hook support — enforcement is advisory.")
-        print("  use 'pastewatch-cli launch' for proxy-level protection.")
-        print("")
-        print("  upstream: https://github.com/Kilo-Org/kilocode/issues")
+        print("  pastewatch launch does not route Kilo Code through the API proxy.")
         print("\ndone. restart VS Code to activate MCP server.")
 
         runDoctor()
@@ -400,27 +432,8 @@ struct Setup: ParsableCommand {
             try fm.createDirectory(atPath: mcpDir, withIntermediateDirectories: true)
         }
 
-        var mcpArgs = """
-        name: pastewatch
-        version: 0.0.1
-        schema: v1
-        mcpServers:
-          - name: pastewatch
-            command: pastewatch-cli
-            args:
-              - mcp
-              - --audit-log
-              - /tmp/pastewatch-audit.log
-        """
-        if severity != "high" {
-            mcpArgs += """
-
-                  - --min-severity
-                  - \(severity)
-            """
-        }
-
-        try mcpArgs.write(toFile: mcpPath, atomically: true, encoding: .utf8)
+        let mcpConfig = AgentSetup.continueMCPConfig(severity: severity)
+        try mcpConfig.write(toFile: mcpPath, atomically: true, encoding: .utf8)
         print("  mcp      \(mcpPath) (created)")
 
         // 2. Write hook script (reuse Claude Code protocol — Continue is compatible)
@@ -438,7 +451,11 @@ struct Setup: ParsableCommand {
 
         // 3. Merge hooks into settings.json
         let settingsPath = home + "/.continue/settings.json"
-        var json = AgentSetup.readJSON(at: settingsPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let configExisted = fm.fileExists(atPath: settingsPath)
         AgentSetup.mergeClaudeCodeHooks(into: &json, hookPath: hookPath)
         try AgentSetup.writeJSON(json, to: settingsPath)
@@ -462,7 +479,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config
         let mcpPath = home + "/.aws/amazonq/mcp.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
         try AgentSetup.writeJSON(json, to: mcpPath)
@@ -502,10 +522,11 @@ struct Setup: ParsableCommand {
     private func setupAider() throws {
         print("setup: aider\n")
 
+        // WO-500: Aider has no MCP client, so setup must not imply proxy coverage.
         print("  note: Aider CLI has no native MCP or hook support.")
         print("")
-        print("  use 'pastewatch-cli launch -- aider' for proxy-level protection.")
-        print("  the proxy catches all outbound secrets at the network boundary.")
+        print("  mcp      unavailable")
+        print("  pastewatch launch does not route Aider through the API proxy.")
         print("")
         print("  upstream: https://github.com/aider-ai/aider/issues/4506 (MCP support)")
 
@@ -523,7 +544,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config for CLI
         let mcpPath = home + "/.copilot/mcp-config.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
 
         // Copilot CLI uses "mcpServers" key like most agents
@@ -575,7 +599,10 @@ struct Setup: ParsableCommand {
         // 1. Merge MCP config — Gemini uses ~/.gemini/settings.json
         let mcpPath = home + "/.gemini/settings.json"
 
-        var json = AgentSetup.readJSON(at: mcpPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: mcpPath,
+            requiringObjectPaths: [["mcpServers"]]
+        )
         let configExisted = fm.fileExists(atPath: mcpPath)
         // Gemini warns: do NOT use underscores in server names
         AgentSetup.mergeMCPServer(into: &json, severity: severity)
@@ -586,7 +613,7 @@ struct Setup: ParsableCommand {
         print("  severity \(severity)")
         print("")
         print("  note: Gemini Code Assist has no hook support — enforcement is advisory.")
-        print("  use 'pastewatch-cli launch' for proxy-level protection.")
+        print("  pastewatch launch does not route Gemini through the API proxy.")
         print("  enable Agent mode in Gemini for MCP tools to be available.")
         print("\ndone. restart VS Code to activate MCP server.")
 
@@ -614,9 +641,13 @@ struct Setup: ParsableCommand {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hookPath)
         print("  hook     \(hookPath) (created)")
 
-        // 2. Merge hooks.json (Codex hooks config — top-level event keys)
+        // 2. Merge hooks.json (Codex lifecycle events are nested under "hooks")
         let hooksJsonPath = home + "/.codex/hooks.json"
-        var hooksJson = AgentSetup.readJSON(at: hooksJsonPath)
+        var hooksJson = try AgentSetup.readJSONForMerge(
+            at: hooksJsonPath,
+            requiringObjectPaths: [["hooks"]],
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let hooksExisted = fm.fileExists(atPath: hooksJsonPath)
         AgentSetup.mergeCodexHooks(into: &hooksJson, hookPath: hookPath)
         try AgentSetup.writeJSON(hooksJson, to: hooksJsonPath)
@@ -625,12 +656,18 @@ struct Setup: ParsableCommand {
         print("  hooks    \(hooksJsonPath) (\(hooksStatus))")
         print("  severity \(severity) (hook blocking threshold)")
         print("")
-        print("  note: for MCP, add to ~/.codex/config.toml:")
+        // WO-500: Preserve arbitrary TOML by printing an exact manual block.
+        var mcpArgs = "\"mcp\", \"--audit-log\", \"/tmp/pastewatch-audit.log\""
+        if severity != "high" {
+            mcpArgs += ", \"--min-severity\", \"\(severity)\""
+        }
+        print("  mcp      manual: add to ~/.codex/config.toml:")
         print("    [mcp_servers.pastewatch]")
         print("    command = \"pastewatch-cli\"")
-        print("    args = [\"mcp\", \"--audit-log\", \"/tmp/pastewatch-audit.log\"]")
+        print("    args = [\(mcpArgs)]")
         print("    enabled = true")
-        print("\ndone. restart Codex to activate.")
+        // WO-114: Codex skips non-managed hooks until their exact definition is trusted.
+        print("\n  next: restart Codex, run /hooks, then review and trust the Pastewatch hook.")
 
         runDoctor()
     }
@@ -658,7 +695,11 @@ struct Setup: ParsableCommand {
 
         // 2. Merge settings.json (MCP server + PreToolUse hooks)
         let settingsPath = home + "/.qwen/settings.json"
-        var json = AgentSetup.readJSON(at: settingsPath)
+        var json = try AgentSetup.readJSONForMerge(
+            at: settingsPath,
+            requiringObjectPaths: [["mcpServers"], ["hooks"]],
+            requiringObjectArrayPaths: [["hooks", "PreToolUse"]]
+        )
         let configExisted = fm.fileExists(atPath: settingsPath)
 
         AgentSetup.mergeMCPServer(into: &json, severity: severity)

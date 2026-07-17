@@ -2,8 +2,7 @@ import XCTest
 @testable import PastewatchCore
 
 /// Tests for guard-read / guard-write scan logic.
-/// Both commands share the same scan path: format-aware scanning via
-    /// DirectoryScanner.scanFileContentOrThrow() + Allowlist.filterInlineAllow().
+/// Both commands share the same format-aware scan and guard-decision path.
 final class GuardReadWriteTests: XCTestCase {
 
     private var testDir: String!
@@ -35,19 +34,20 @@ final class GuardReadWriteTests: XCTestCase {
         }
 
         let fileName = URL(fileURLWithPath: path).lastPathComponent
-        let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+        let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
         let ext = isEnvFile ? "env" : URL(fileURLWithPath: path).pathExtension.lowercased()
 
-        var matches = try DirectoryScanner.scanFileContentOrThrow(
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
             content: content, ext: ext,
             relativePath: path, config: config
         )
-        matches = Allowlist.filterInlineAllow(matches: matches, content: content)
-
-        let configAllowlist = Allowlist.fromConfig(config)
-        matches = configAllowlist.filter(matches)
-
-        return matches.filter { $0.effectiveSeverity >= failOnSeverity }
+        return GuardDecision.evaluate(
+            matches: matches,
+            content: content,
+            config: config,
+            contentTrust: .trustedFile,
+            minimumSeverity: failOnSeverity
+        ).actionableMatches
     }
 
     // MARK: - Tests
@@ -79,7 +79,7 @@ final class GuardReadWriteTests: XCTestCase {
 
     func testEnvFileFormatAwareScanning() throws {
         let path = testDir + "/.env"
-        let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
         try "AWS_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
         let findings = try scanFile(at: path)
         XCTAssertFalse(findings.isEmpty, ".env file should detect secrets in values")
@@ -112,6 +112,28 @@ final class GuardReadWriteTests: XCTestCase {
             toFile: path, atomically: true, encoding: .utf8)
         let findings = try scanFile(at: path)
         XCTAssertTrue(findings.isEmpty, "Inline allow should suppress the finding")
+    }
+
+    func testConfigAllowlistSuppressesFinding() throws {
+        let path = testDir + "/config.env"
+        let key = "AKIA" + "QWERTYUIOPASDFGH"
+        try "AWS_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
+        var allowedConfig = config
+        allowedConfig.allowedValues = [key]
+
+        let findings = try scanFile(at: path, config: allowedConfig)
+
+        XCTAssertTrue(findings.isEmpty, "config allowlist should suppress the finding")
+    }
+
+    func testKnownTestCredentialIsConsistentlySuppressed() throws {
+        let path = testDir + "/config.env"
+        let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+        try "AWS_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
+
+        let findings = try scanFile(at: path)
+
+        XCTAssertTrue(findings.isEmpty, "known examples should not block file access")
     }
 
     func testLowSeverityThresholdCatchesMore() throws {

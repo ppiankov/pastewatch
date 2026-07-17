@@ -65,7 +65,7 @@ public final class FileWatcher {
                   let modDate = values.contentModificationDate else { continue }
 
             let ext = url.pathExtension.lowercased()
-            let isEnvFile = name == ".env" || name.hasSuffix(".env")
+            let isEnvFile = DotenvClassifier.isDotenvFile(name)
             guard isEnvFile || DirectoryScanner.allowedExtensions.contains(ext) else { continue }
 
             let path = url.standardizedFileURL.path
@@ -103,7 +103,7 @@ public final class FileWatcher {
 
         let ext = (relativePath as NSString).pathExtension.lowercased()
         let name = (relativePath as NSString).lastPathComponent
-        let parsedExt = (name == ".env" || name.hasSuffix(".env")) ? "env" : ext
+        let parsedExt = DotenvClassifier.isDotenvFile(name) ? "env" : ext
 
         let matchesBeforeSeverity: [DetectedMatch]
         do {
@@ -120,13 +120,14 @@ public final class FileWatcher {
             return
         }
 
-        var matches = matchesBeforeSeverity
-        matches = Allowlist.filterInlineAllow(matches: matches, content: content)
-
-        // Apply severity filter
-        if let threshold = severity {
-            matches = matches.filter { $0.effectiveSeverity >= threshold }
-        }
+        // WO-502: watch reporting honors the same examples and allowlists as guards.
+        let matches = GuardDecision.evaluate(
+            matches: matchesBeforeSeverity,
+            content: content,
+            config: config,
+            contentTrust: .trustedFile,
+            minimumSeverity: severity
+        ).actionableMatches
 
         guard !matches.isEmpty else { return }
 

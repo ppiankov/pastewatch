@@ -32,13 +32,17 @@ struct Guard: ParsableCommand {
 
         // Scan the full command string for inline secrets (DSNs, API keys, tokens)
         let commandMatches = DetectionRules.scan(command, config: config)
-        // WO-139: JSON redaction covers all non-test inline findings, even below block threshold.
-        let commandDisplayMatches = commandMatches.filter {
-            !DetectionRules.isTestCredential($0.value)
-        }
-        let commandFiltered = commandDisplayMatches.filter {
-            $0.effectiveSeverity >= failOnSeverity
-        }
+        // WO-502: one decision pipeline handles examples, allowlists, and severity.
+        let commandDecision = GuardDecision.evaluate(
+            matches: commandMatches,
+            content: command,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: failOnSeverity
+        )
+        // WO-139: JSON redaction covers reportable inline findings even below block threshold.
+        let commandDisplayMatches = commandDecision.reportableMatches
+        let commandFiltered = commandDecision.actionableMatches
         // WO-138: JSON output must preserve command context without echoing inline credential values.
         let redactedCommand = Obfuscator.redactForDisplay(command, matches: commandDisplayMatches)
 
@@ -62,7 +66,18 @@ struct Guard: ParsableCommand {
             }
 
             let matches = DetectionRules.scan(content, config: config)
-            let filtered = matches.filter { $0.effectiveSeverity >= failOnSeverity }
+            // WO-502: files REFERENCED by an agent-controlled command are themselves
+            // agent-controllable — the agent can write `# pastewatch:allow` into a file it
+            // then `cat`s. Treat the referenced content as .agentControlled so inline allow
+            // comments cannot self-authorize a secret one layer over. Operator-named files
+            // (guard-read/guard-write, FileWatcher) remain .trustedFile.
+            let filtered = GuardDecision.evaluate(
+                matches: matches,
+                content: content,
+                config: config,
+                contentTrust: .agentControlled,
+                minimumSeverity: failOnSeverity
+            ).actionableMatches
 
             if !filtered.isEmpty {
                 shouldBlock = true

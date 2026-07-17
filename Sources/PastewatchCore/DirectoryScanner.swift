@@ -81,7 +81,7 @@ public struct DirectoryScanner {
 
             // Check extension (handle .env as special case -- no extension but starts with dot)
             let ext = fileURL.pathExtension.lowercased()
-            let isEnvFile = fileName == ".env" || fileName.hasSuffix(".env")
+            let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
 
             guard isEnvFile || allowedExtensions.contains(ext) else {
                 continue

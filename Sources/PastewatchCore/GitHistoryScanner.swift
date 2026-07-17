@@ -212,7 +212,7 @@ public struct GitHistoryScanner {
     private static func shouldScanFile(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         let fileName = url.lastPathComponent
-        if fileName == ".env" || fileName.hasSuffix(".env") { return true }
+        if DotenvClassifier.isDotenvFile(fileName) { return true }
         return DirectoryScanner.allowedExtensions.contains(
             url.pathExtension.lowercased()
         )
@@ -222,7 +222,7 @@ public struct GitHistoryScanner {
     private static func scanExtension(for path: String) -> String {
         let url = URL(fileURLWithPath: path)
         let fileName = url.lastPathComponent
-        if fileName == ".env" || fileName.hasSuffix(".env") { return "env" }
+        if DotenvClassifier.isDotenvFile(fileName) { return "env" }
         return url.pathExtension.lowercased()
     }
 

@@ -254,7 +254,7 @@ struct Scan: ParsableCommand {
         }
 
         let ext: String
-        if filePath.hasSuffix(".env") || URL(fileURLWithPath: filePath).lastPathComponent == ".env" {
+        if DotenvClassifier.isDotenvFile(URL(fileURLWithPath: filePath).lastPathComponent) {
             ext = "env"
         } else {
             ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
