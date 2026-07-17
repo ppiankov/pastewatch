@@ -68,6 +68,7 @@ public enum SharedSecretPatternSource {
         // WO-127: NR secret categories that should use API-key placeholders.
         "access_token": .genericApiKey,
         "api_key": .genericApiKey,
+        "dashscope_key": .dashscopeKey, // WO-145: NR manifest category for sk-ws keys.
         "github_oauth_token": .genericApiKey,
         "github_token": .genericApiKey,
         "oauth_token": .genericApiKey,

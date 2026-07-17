@@ -471,6 +471,187 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream batch request missing redaction placeholder")
     }
 
+    // WO-460: known content blocks expose authored text without rewriting protocol metadata.
+    func testMessagesContentWalkerRedactsPayloadAndPreservesMetadata() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let documentSecret = "AIza" + String(repeating: "M", count: 35)
+        let searchSecret = "AIza" + String(repeating: "N", count: 35)
+        let metadataToken = "AIza" + String(repeating: "P", count: 35)
+        let bodyObject: [String: Any] = [
+            "model": "claude-3",
+            "messages": [[
+                "role": "user",
+                "content": [
+                    ["type": "document", "source": ["type": "text", "data": documentSecret]],
+                    ["type": "document", "source": [
+                        "type": "url", "url": "https://example.invalid/\(metadataToken)"
+                    ]],
+                    [
+                        "type": "search_result", "source": metadataToken,
+                        "title": metadataToken,
+                        "content": [["type": "text", "text": searchSecret]]
+                    ],
+                    ["type": "redacted_thinking", "data": metadataToken]
+                ]
+            ]]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertFalse(forwarded.contains(documentSecret), forwarded)
+        XCTAssertFalse(forwarded.contains(searchSecret), forwarded)
+        XCTAssertEqual(forwarded.components(separatedBy: metadataToken).count - 1, 4, forwarded)
+    }
+
+    // WO-506: the network path must preserve opaque execution replay fields exactly.
+    func testEncryptedCodeExecutionPreservesOpaqueFieldsAndRedactsStderr() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let encryptedOutput = "AIza" + String(repeating: "E", count: 35)
+        let fileID = "AIza" + String(repeating: "F", count: 35)
+        let toolUseID = "AIza" + String(repeating: "T", count: 35)
+        let stderrSecret = "AIza" + String(repeating: "S", count: 35)
+        let bodyObject: [String: Any] = [
+            "model": "claude-3",
+            "messages": [[
+                "role": "assistant",
+                "content": [[
+                    "type": "code_execution_tool_result",
+                    "tool_use_id": toolUseID,
+                    "content": [
+                        "type": "encrypted_code_execution_result",
+                        "encrypted_stdout": encryptedOutput,
+                        "content": [["type": "code_execution_output", "file_id": fileID]],
+                        "return_code": 1,
+                        "stderr": stderrSecret,
+                    ],
+                ]],
+            ]],
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertTrue(forwarded.contains(encryptedOutput), forwarded)
+        XCTAssertTrue(forwarded.contains(fileID), forwarded)
+        XCTAssertTrue(forwarded.contains(toolUseID), forwarded)
+        XCTAssertFalse(forwarded.contains(stderrSecret), forwarded)
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_"), forwarded)
+    }
+
+    // WO-460: batch params use the same typed content walker as ordinary Messages requests.
+    func testBatchContentWalkerRedactsPayloadAndPreservesMetadata() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 202, headers: [:], body: Data(#"{"id":"batch_1"}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let payloadSecret = "AIza" + String(repeating: "Q", count: 35)
+        let metadataToken = "AIza" + String(repeating: "R", count: 35)
+        let bodyObject: [String: Any] = [
+            "requests": [[
+                "custom_id": "typed-content",
+                "params": [
+                    "model": "claude-3",
+                    "messages": [[
+                        "role": "user",
+                        "content": [[
+                            "type": "tool_result", "tool_use_id": "toolu_1",
+                            "content": [[
+                                "type": "search_result", "source": metadataToken,
+                                "title": metadataToken,
+                                "content": [["type": "text", "text": payloadSecret]]
+                            ]]
+                        ]]
+                    ]]
+                ]
+            ]]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages/batches", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 202 Accepted"), TCPTestSocket.describeResponse(response))
+        XCTAssertFalse(forwarded.contains(payloadSecret), forwarded)
+        XCTAssertEqual(forwarded.components(separatedBy: metadataToken).count - 1, 2, forwarded)
+    }
+
     // WO-444/WO-447: every batch params.system representation uses the same scanner as
     // a single Messages request, while the existing tool_result walk remains active.
     func testAnthropicMessageBatchRedactsSystemFormsAndToolResults() throws {

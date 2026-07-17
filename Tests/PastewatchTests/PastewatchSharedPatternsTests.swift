@@ -127,6 +127,26 @@ final class PastewatchSharedPatternsTests: XCTestCase {
         XCTAssertEqual(entries.first?.type, "unknown_shared_type")
     }
 
+    // WO-145: built-in type normalization is dynamic; no parallel type table entry is needed.
+    func testSharedPatternMapsDashScopeTypeFromAllCases() throws {
+        let key = "sk-" + "ws-abc." + String(repeating: "Q", count: 20)
+        let artifactURL = try writeSharedPatternManifest(patterns: [
+            SharedSecretPatternConfig(
+                name: "dashscope_workspace_key",
+                type: "dashscope_key",
+                regex: #"\bsk-ws-[A-Za-z0-9_-]{3,}\.[A-Za-z0-9._-]{20,}\b"#,
+                policy: "block"
+            )
+        ])
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [artifactURL.path]
+        let matches = DetectionRules.scanFileIO(key, config: config)
+
+        XCTAssertTrue(matches.contains { $0.type == .dashscopeKey && $0.value == key })
+    }
+
     func testSharedPatternPolicyMappings() throws {
         let cases: [(policy: String, expectedSeverity: Severity)] = [
             ("block", .critical),

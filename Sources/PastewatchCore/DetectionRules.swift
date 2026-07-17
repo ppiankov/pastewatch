@@ -29,6 +29,16 @@ public struct DetectionRules {
         .init(type: .discordWebhook, provider: "Discord", tokenFamily: "webhook", primarySource: "https://discord.com/developers/docs/resources/webhook", reviewedOn: "2026-07-15", fixtureID: "discord-webhook"),
         .init(type: .openaiKey, provider: "OpenAI", tokenFamily: "API key", primarySource: "https://platform.openai.com/docs/api-reference/authentication", reviewedOn: "2026-07-15", fixtureID: "openai-key"),
         .init(type: .anthropicKey, provider: "Anthropic", tokenFamily: "API key", primarySource: "https://docs.anthropic.com/en/api/getting-started", reviewedOn: "2026-07-15", fixtureID: "anthropic-key"),
+        .init(
+            type: .dashscopeKey,
+            provider: "Alibaba Model Studio",
+            tokenFamily: "workspace API key",
+            primarySource: "https://github.com/aliyun/alibabacloud-typescript-sdk/blob/" +
+                "c58a23fbbf7f0eac23cad75c01b6402104cef796/modelstudio-20260210/" +
+                "src/models/CreateApiKeyResponseBody.ts",
+            reviewedOn: "2026-07-17",
+            fixtureID: "dashscope-workspace-key"
+        ),
         .init(type: .huggingfaceToken, provider: "Hugging Face", tokenFamily: "user access token", primarySource: "https://huggingface.co/docs/hub/security-tokens", reviewedOn: "2026-07-15", fixtureID: "huggingface-token"),
         .init(type: .groqKey, provider: "Groq", tokenFamily: "API key", primarySource: "https://console.groq.com/docs/quickstart", reviewedOn: "2026-07-15", fixtureID: "groq-key"),
         .init(type: .npmToken, provider: "npm", tokenFamily: "access token", primarySource: "https://docs.npmjs.com/about-access-tokens", reviewedOn: "2026-07-15", fixtureID: "npm-token"),
@@ -175,6 +185,14 @@ public struct DetectionRules {
             options: []
         ) {
             result.append((.anthropicKey, regex))
+        }
+
+        // WO-145: the provider-published workspace key has a dot-separated payload.
+        if let regex = try? NSRegularExpression(
+            pattern: #"\bsk-ws-[A-Za-z0-9_-]{3,}\.[A-Za-z0-9._-]{20,}\b"#,
+            options: []
+        ) {
+            result.append((.dashscopeKey, regex))
         }
 
         // Groq API Key - high confidence

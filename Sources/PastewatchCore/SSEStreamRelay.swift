@@ -11,6 +11,8 @@ let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
+    private static let rawStreamDoneLine = Data("data: [DONE]".utf8) // WO-507: shared overflow latch.
+
     /// WO-400: consistent connection-thread snapshot of delegate-queue stream stats.
     struct StreamStatsSnapshot {
         let redactionCount: Int
@@ -48,6 +50,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private var parser = SSEFrameParser()
     /// WO-398: raw_stream EOF without `[DONE]` still needs a final advisory.
     private var rawStreamSawDone = false
+    /// WO-394: advisory injection is one-shot even if an upstream repeats `[DONE]`.
+    private var sseEventSawDone = false
     /// WO-179: guards didWriteHeaders across execute() error paths and the delegate queue.
     /// WO-194: renamed from headersLock; also protects timerDidFire (checked together with
     /// didWriteHeaders in didCompleteWithError — their coupling is intentional).
@@ -285,39 +289,54 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-381: advisory stats are committed only after raw bytes reach the client.
     private func relayRawRedactedData(_ data: Data) {
+        // WO-381: keep critical attempts separate from delivery-scoped advisories.
         guard buildAlertBeforeDone == nil else {
             relayRawRedactedFrames(data)
             return
         }
         let redaction = redactRawBytes(data)
-        recordStreamScan(redaction)
+        recordCriticalStreamScan(redaction)
         let output = insertingAlertBeforeDoneIfNeeded(redaction.data)
-        if !sendAll(output, to: clientSocket, flags: sendFlags) {
-            markClientEpipeAndCancelTask()
+        if relayFrameData(output) {
+            // WO-381: advisory stats describe bytes delivered to the client.
+            recordAdvisoryStreamScan(redaction)
         }
     }
 
+    // WO-382: stage frame-batch advisories until the combined socket write succeeds.
     private func relayRawRedactedFrames(_ data: Data) {
+        // WO-382: commit batch advisories only after one successful send.
         let result = parser.feed(data)
         if result.overflowFlushed {
             let redaction = redactRawBytes(result.overflowBytes)
-            recordStreamScan(redaction)
-            let output = insertingAlertBeforeDoneIfNeeded(redaction.data)
-            if !sendAll(output, to: clientSocket, flags: sendFlags) {
-                markClientEpipeAndCancelTask()
+            recordCriticalStreamScan(redaction)
+            let stats = snapshotStreamStats(adding: redaction)
+            let output = insertingRawStreamOverflowAlertIfNeeded(redaction.data, stats: stats)
+            if relayFrameData(output) {
+                // WO-382: commit advisory stats only after the overflow batch is delivered.
+                recordAdvisoryStreamScan(redaction)
             }
             return
         }
 
         var output = Data()
+        var pendingAdvisoryCount = 0
+        var pendingAdvisoryTypes: [String] = []
         for frame in result.frames {
             // WO-337: raw_stream preserves raw frame bytes, but still needs a frame-aware
             // [DONE] hook so alert/advisory events survive arbitrary URLSession chunking.
-            if frame.data == "[DONE]", let alert = buildAlertBeforeDoneFrameIfNeeded() {
-                output.append(alert)
-            }
             guard frame.data != "[DONE]" else {
+                if !rawStreamSawDone {
+                    let stats = snapshotStreamStats(
+                        addingAdvisoryCount: pendingAdvisoryCount,
+                        advisoryTypes: pendingAdvisoryTypes
+                    )
+                    if let alert = buildAlertBeforeDoneFrameIfNeeded(stats) {
+                        output.append(alert)
+                    }
+                }
                 rawStreamSawDone = true
                 // WO-389: [DONE] is a protocol sentinel, not payload; exclude it
                 // from scan counts used by the advisory alert built immediately above.
@@ -325,12 +344,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 continue
             }
             let redaction = redactRawBytes(frame.raw)
-            recordStreamScan(redaction)
+            recordCriticalStreamScan(redaction)
+            pendingAdvisoryCount += redaction.advisoryCount
+            pendingAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
             output.append(redaction.data)
         }
         guard !output.isEmpty else { return }
-        if !sendAll(output, to: clientSocket, flags: sendFlags) {
-            markClientEpipeAndCancelTask()
+        if relayFrameData(output) {
+            // WO-382: raw alert batches expose advisories only after successful delivery.
+            recordAdvisoryStreamScan(
+                count: pendingAdvisoryCount,
+                types: pendingAdvisoryTypes
+            )
         }
     }
 
@@ -339,8 +364,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         if result.overflowFlushed {
             // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
             let redaction = redactRawBytes(result.overflowBytes)
-            recordStreamScan(redaction)
-            writeToSocket(redaction.data)
+            recordCriticalStreamScan(redaction)
+            if writeToSocket(redaction.data) {
+                // WO-381: an EPIPE must not report an undelivered advisory.
+                recordAdvisoryStreamScan(redaction)
+            }
             // WO-244: writeToSocket() may have set clientEpipe and cancelled activeTask,
             // but the idle timer is still armed. Cancel it explicitly so execute() does not
             // wait up to 60s for a timer that will fire against a dead connection.
@@ -374,7 +402,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         guard frame.data != "[DONE]" else {
             var toSend = Data()
             let stats = snapshotStreamStats()
-            if let builder = buildAlertBeforeDone,
+            if !sseEventSawDone,
+               let builder = buildAlertBeforeDone,
                let alertData = builder(
                 stats.redactionCount,
                 stats.redactionTypes,
@@ -383,6 +412,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                ) {
                 toSend.append(alertData)
             }
+            sseEventSawDone = true
             toSend.append(frame.raw)
             return relayFrameData(toSend)
         }
@@ -403,11 +433,6 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         return delivered
     }
 
-    private func recordStreamScan(_ redaction: SSEFrameRedactionResult) {
-        recordCriticalStreamScan(redaction)
-        recordAdvisoryStreamScan(redaction)
-    }
-
     private func recordCriticalStreamScan(_ redaction: SSEFrameRedactionResult) {
         streamStatsLock.lock()
         streamRedactionCountStorage += redaction.count
@@ -415,10 +440,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         streamStatsLock.unlock()
     }
 
+    // WO-381: centralize delivery-scoped advisory accounting.
     private func recordAdvisoryStreamScan(_ redaction: SSEFrameRedactionResult) {
+        // WO-381: preserve the delivery gate established by the caller.
+        recordAdvisoryStreamScan(count: redaction.advisoryCount, types: redaction.advisoryTypes)
+    }
+
+    // WO-382: commit one delivered frame batch without changing critical attempt counts.
+    private func recordAdvisoryStreamScan(count: Int, types: [String]) {
+        // WO-382: update only advisory storage for the delivered batch.
         streamStatsLock.lock()
-        streamAdvisoryCountStorage += redaction.advisoryCount
-        streamAdvisoryTypesStorage.append(contentsOf: redaction.advisoryTypes)
+        streamAdvisoryCountStorage += count
+        streamAdvisoryTypesStorage.append(contentsOf: types)
         streamStatsLock.unlock()
     }
 
@@ -480,8 +513,11 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
-                    recordStreamScan(redaction)
-                    writeToSocket(redaction.data)
+                    recordCriticalStreamScan(redaction)
+                    if writeToSocket(redaction.data) {
+                        // WO-383: remainder advisories are delivery-scoped on clean close.
+                        recordAdvisoryStreamScan(redaction)
+                    }
                     // WO-249: re-snapshot clientEpipe under socketWriteLock. writeToSocket()
                     // above may have set it — gate the drop-notice on the fresh value so we do
                     // not fire one wasted sendAll() call against a now-dead socket.
@@ -495,8 +531,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
-                    recordStreamScan(redaction)
-                    writeToSocket(insertingAlertBeforeDoneOrEOFIfNeeded(redaction.data))
+                    recordCriticalStreamScan(redaction)
+                    let stats = snapshotStreamStats(adding: redaction)
+                    let output = insertingAlertBeforeDoneOrEOFIfNeeded(redaction.data, stats: stats)
+                    if writeToSocket(output) {
+                        // WO-383: do not persist advisory stats for an undelivered tail.
+                        recordAdvisoryStreamScan(redaction)
+                    }
                     socketWriteLock.lock()
                     epipeAfterFlush = clientEpipe
                     socketWriteLock.unlock()
@@ -538,6 +579,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     // MARK: - Private
 
     /// WO-222: returns false on EPIPE so callers can cancel the task and skip body relay.
+    /// WO-381 and WO-383: expose socket delivery success to advisory-stat callers.
     @discardableResult
     private func writeStreamingHeaders(status: Int, upstreamHeaders: [AnyHashable: Any]) -> Bool {
         let response = CurlHTTPClient.buildStreamingResponseHeaders(
@@ -567,10 +609,16 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-233: clientEpipe written under socketWriteLock so the connection-thread call path
     /// (504 timeout: execute() → sendErrorDirect() → writeToSocket()) is synchronized with
     /// the delegate-queue readers in didReceive (WO-232 snapshot) and didCompleteWithError.
-    private func writeToSocket(_ data: Data) {
+    /// WO-381: return delivery status to advisory-accounting callers.
+    @discardableResult
+    // WO-381: return delivery status to advisory-accounting callers.
+    private func writeToSocket(_ data: Data) -> Bool {
+        // WO-381: report whether advisory-bearing bytes reached the client.
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
             markClientEpipeAndCancelTask()
+            return false
         }
+        return true
     }
 
     private func markClientEpipeAndCancelTask() {
@@ -622,16 +670,50 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(), into: data)
     }
 
-    private func insertingAlertBeforeDoneOrEOFIfNeeded(_ data: Data) -> Data {
-        let output = insertingAlertBeforeDoneIfNeeded(data)
-        guard output == data, let alert = rawStreamEOFAlertIfNeeded() else { return output }
+    // WO-382: build raw-stream alerts from staged delivery stats.
+    private func insertingAlertBeforeDoneIfNeeded(
+        _ data: Data,
+        stats: StreamStatsSnapshot
+    ) -> Data {
+        insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(stats), into: data)
+    }
+
+    // WO-507: overflow bypasses frame parsing, so it owns the raw terminal-state latch.
+    func insertingRawStreamOverflowAlertIfNeeded(
+        _ data: Data,
+        stats: StreamStatsSnapshot
+    ) -> Data {
+        let sawDone = data.range(of: Self.rawStreamDoneLine) != nil
+        let output = rawStreamSawDone
+            ? data
+            : insertingAlertBeforeDoneIfNeeded(data, stats: stats)
+        if sawDone {
+            rawStreamSawDone = true
+        }
+        return output
+    }
+
+    // WO-383: include a delivered EOF remainder in the terminal alert snapshot.
+    private func insertingAlertBeforeDoneOrEOFIfNeeded(
+        _ data: Data,
+        stats: StreamStatsSnapshot
+    ) -> Data {
+        let output = insertingAlertBeforeDoneIfNeeded(data, stats: stats)
+        guard output == data, let alert = rawStreamEOFAlertIfNeeded(stats) else { return output }
         var appended = output
         appended.append(alert)
         return appended
     }
 
+    // WO-383: build EOF guidance from committed stream stats.
     private func rawStreamEOFAlertIfNeeded() -> Data? {
-        let stats = snapshotStreamStats()
+        // WO-383: snapshot committed stats before deciding whether EOF needs guidance.
+        rawStreamEOFAlertIfNeeded(snapshotStreamStats())
+    }
+
+    // WO-383: accept a staged snapshot for a remainder delivered in the same write.
+    private func rawStreamEOFAlertIfNeeded(_ stats: StreamStatsSnapshot) -> Data? {
+        // WO-383: suppress guidance after DONE or when no scan evidence exists.
         guard !rawStreamSawDone,
               stats.redactionCount > 0 || stats.advisoryCount > 0 else {
             return nil
@@ -650,6 +732,28 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             stats.redactionTypes,
             stats.advisoryCount,
             stats.advisoryTypes
+        )
+    }
+
+    // WO-382: preview advisory totals without committing them before delivery.
+    private func snapshotStreamStats(adding redaction: SSEFrameRedactionResult) -> StreamStatsSnapshot {
+        snapshotStreamStats(
+            addingAdvisoryCount: redaction.advisoryCount,
+            advisoryTypes: redaction.advisoryTypes
+        )
+    }
+
+    // WO-382: compose staged advisory counts with the lock-protected snapshot.
+    private func snapshotStreamStats(
+        addingAdvisoryCount count: Int,
+        advisoryTypes: [String]
+    ) -> StreamStatsSnapshot {
+        let current = snapshotStreamStats()
+        return StreamStatsSnapshot(
+            redactionCount: current.redactionCount,
+            redactionTypes: current.redactionTypes,
+            advisoryCount: current.advisoryCount + count,
+            advisoryTypes: current.advisoryTypes + advisoryTypes
         )
     }
 

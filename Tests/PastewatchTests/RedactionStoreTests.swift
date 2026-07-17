@@ -29,6 +29,23 @@ final class RedactionStoreTests: XCTestCase {
         XCTAssertEqual(result.unresolved, 0)
     }
 
+    // WO-145: provider-specific placeholders must retain the normal MCP round trip.
+    func testDashScopeKeyRoundTripRestoresOriginalValue() {
+        let key = "sk-" + "ws-abc." + String(repeating: "Q", count: 20)
+        let text = "DASHSCOPE_API_KEY=\(key)"
+        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        let store = RedactionStore()
+
+        let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/qwen.json")
+        XCTAssertFalse(redacted.contains(key))
+        XCTAssertTrue(redacted.contains("__PW_DASHSCOPE_API_KEY_1__"))
+        XCTAssertEqual(entries.first?.type, SensitiveDataType.dashscopeKey.rawValue)
+
+        let resolved = store.resolve(content: redacted, filePath: "/tmp/qwen.json")
+        XCTAssertEqual(resolved.content, text)
+        XCTAssertEqual(resolved.resolved, 1)
+    }
+
     // WO-132: round-trip must be byte-faithful even when astral-plane characters
     // (emoji / surrogate pairs) precede a redacted value. The resolve path used
     // Character offsets against a UTF-16 NSRange, so positions after a 2-unit

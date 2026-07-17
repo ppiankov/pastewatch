@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-17
+
+### Added
+
+- Detect workspace-scoped Alibaba Model Studio (DashScope) API keys with the `sk-ws-`
+  prefix, including dot-separated payloads, as intrinsic secrets that are safe to
+  obfuscate.
+
+### Changed
+
+- The Anthropic request scanner now also covers `document` and `search-result` content
+  blocks, so intrinsic secrets in those payloads are redacted while the block structure
+  and opaque execution payloads are preserved.
+
+### Fixed
+
+- Streamed-response redaction no longer drops, duplicates, or mis-orders audit entries
+  across malformed, oversized, and post-`[DONE]` streams. Terminal-state (`[DONE]`)
+  latching, per-frame scan-before-send ordering, and cross-chunk secret assembly now
+  hold on both the macOS and Linux relay paths, so a credential split across raw-stream
+  chunk boundaries — including after `[DONE]` — is still redacted.
+- Encrypted and opaque code-execution result payloads are preserved intact; only the
+  documented plaintext fields beside them are scanned, so replay payloads are never
+  corrupted.
+
 ## [0.31.1] - 2026-07-17
 
 ### Fixed

@@ -370,6 +370,19 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(insertingSSEDataBeforeDone(nil, into: stream), stream)
     }
 
+    // WO-384: malformed partial bytes stay before the injected alert, not after it.
+    func testRawDoneInsertionWithoutPriorTerminatorFallsBackToDoneStart() {
+        let alert = Data("event: pastewatch_advisory\ndata: {}\n\n".utf8)
+        let partial = "data: partial"
+        let stream = Data("\(partial)data: [DONE]\n\n".utf8)
+
+        let output = insertingSSEDataBeforeDone(alert, into: stream)
+        let text = String(data: output, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.hasPrefix(partial + "event: pastewatch_advisory"), text)
+        XCTAssertTrue(text.hasSuffix("data: {}\n\ndata: [DONE]\n\n"), text)
+    }
+
     func testLuhnValidCardMutatesStreamBytes() {
         let card = "4111111111111111"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"card \#(card)"}}"#
@@ -670,6 +683,104 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
         XCTAssertEqual(relay.result.advisoryCount, 0)
         XCTAssertTrue(relay.output.isEmpty)
+    }
+
+    // WO-380: post-termination bytes remain redacted but cannot trigger a second alert.
+    func testLinuxRawStreamInjectsAlertOnlyOnceAcrossDuplicateDoneChunks() {
+        let pipe = Pipe()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, testSocketStreamType, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+        let ctx = CurlHTTPClient.StreamContext(
+            clientSocket: sockets[1], sendFlags: testSendFlags, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .medium
+        )
+        var result: CurlHTTPClient.StreamRelayResult?
+        let finished = expectation(description: "duplicate done relay finishes")
+        DispatchQueue.global().async {
+            result = CurlHTTPClient.relayBodyChunks(
+                from: pipe, ctx: ctx, alertBeforeDone: self.advisoryAlertBeforeDone
+            )
+            finished.fulfill()
+        }
+
+        pipe.fileHandleForWriting.write(Data("data: contact 10.1.2.3\n\ndata: [DONE]\n\n".utf8))
+        let first = readAvailableString(from: sockets[0])
+        pipe.fileHandleForWriting.write(Data("data: [DONE]\n\n".utf8))
+        pipe.fileHandleForWriting.closeFile()
+        wait(for: [finished], timeout: 2)
+        let output = first + readAllAvailableString(from: sockets[0])
+
+        XCTAssertEqual(output.components(separatedBy: "event: pastewatch_advisory").count - 1, 1)
+        XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
+        XCTAssertEqual(result?.advisoryCount, 1)
+    }
+
+    // WO-508: post-DONE frame assembly must retain secrets split by curl reads.
+    func testLinuxRawStreamRedactsCredentialSplitAcrossPostDoneChunks() {
+        let pipe = Pipe()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, testSocketStreamType, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+        let ctx = CurlHTTPClient.StreamContext(
+            clientSocket: sockets[1], sendFlags: testSendFlags, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .medium
+        )
+        var result: CurlHTTPClient.StreamRelayResult?
+        let finished = expectation(description: "post-done split credential relay finishes")
+        DispatchQueue.global().async {
+            result = CurlHTTPClient.relayBodyChunks(
+                from: pipe, ctx: ctx, alertBeforeDone: self.advisoryAlertBeforeDone
+            )
+            finished.fulfill()
+        }
+
+        let credential = "AIza" + String(repeating: "Z", count: 35)
+        let splitIndex = credential.index(credential.startIndex, offsetBy: 12)
+        let prefix = String(credential[..<splitIndex])
+        let suffix = String(credential[splitIndex...])
+        let firstChunkPrefix = "data: contact 10.1.2.3\n\ndata: [DONE]\n\ndata: "
+        let filler = String(
+            repeating: "x",
+            count: 65_536 - firstChunkPrefix.utf8.count - 1 - prefix.utf8.count
+        )
+        let firstChunk = Data((firstChunkPrefix + filler + " " + prefix).utf8)
+        XCTAssertEqual(firstChunk.count, 65_536)
+        pipe.fileHandleForWriting.write(firstChunk)
+        let firstOutput = readAvailableString(from: sockets[0])
+        pipe.fileHandleForWriting.write(Data((suffix + "\n\n").utf8))
+        var trailingOutput = readAvailableString(from: sockets[0])
+        trailingOutput += readAllAvailableString(from: sockets[0])
+        pipe.fileHandleForWriting.closeFile()
+        wait(for: [finished], timeout: 2)
+        let output = firstOutput + trailingOutput + readAllAvailableString(from: sockets[0])
+
+        XCTAssertFalse(output.contains(credential))
+        XCTAssertTrue(output.contains("<GOOGLE_API_KEY_1>"), output)
+        XCTAssertEqual(output.components(separatedBy: "event: pastewatch_advisory").count - 1, 1)
+        XCTAssertEqual(result?.redactionCount, 1)
+        XCTAssertEqual(result?.advisoryCount, 1)
+    }
+
+    // WO-384: Linux raw-stream insertion uses the same no-terminator fallback.
+    func testLinuxRawStreamAlertInsertionWithoutPriorTerminatorKeepsPartialPrefix() {
+        let stream = Data("data: contact 10.1.2.3\npartialdata: [DONE]\n\n".utf8)
+        let relay = relayStream(
+            stream, mode: .rawStream, closePeerBeforeRelay: false,
+            alertBeforeDone: advisoryAlertBeforeDone, severity: .medium
+        )
+
+        XCTAssertTrue(
+            relay.output.hasPrefix("data: contact 10.1.2.3\npartialevent: pastewatch_advisory"),
+            relay.output
+        )
+        XCTAssertTrue(relay.output.hasSuffix("data: [DONE]\n\n"), relay.output)
     }
 
     func testLinuxRelayStopsAfterClientEPIPEMidStream() {
