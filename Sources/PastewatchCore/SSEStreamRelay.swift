@@ -11,6 +11,8 @@ let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
+    private static let rawStreamDoneLine = Data("data: [DONE]".utf8) // WO-507: shared overflow latch.
+
     /// WO-400: consistent connection-thread snapshot of delegate-queue stream stats.
     struct StreamStatsSnapshot {
         let redactionCount: Int
@@ -307,7 +309,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             let redaction = redactRawBytes(result.overflowBytes)
             recordCriticalStreamScan(redaction)
             let stats = snapshotStreamStats(adding: redaction)
-            let output = insertingAlertBeforeDoneIfNeeded(redaction.data, stats: stats)
+            let output = insertingRawStreamOverflowAlertIfNeeded(redaction.data, stats: stats)
             if relayFrameData(output) {
                 // WO-382: commit advisory stats only after the overflow batch is delivered.
                 recordAdvisoryStreamScan(redaction)
@@ -661,6 +663,21 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         stats: StreamStatsSnapshot
     ) -> Data {
         insertingSSEDataBeforeDone(buildAlertBeforeDoneFrameIfNeeded(stats), into: data)
+    }
+
+    // WO-507: overflow bypasses frame parsing, so it owns the raw terminal-state latch.
+    func insertingRawStreamOverflowAlertIfNeeded(
+        _ data: Data,
+        stats: StreamStatsSnapshot
+    ) -> Data {
+        let sawDone = data.range(of: Self.rawStreamDoneLine) != nil
+        let output = rawStreamSawDone
+            ? data
+            : insertingAlertBeforeDoneIfNeeded(data, stats: stats)
+        if sawDone {
+            rawStreamSawDone = true
+        }
+        return output
     }
 
     private func insertingAlertBeforeDoneOrEOFIfNeeded(

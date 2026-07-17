@@ -847,6 +847,44 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
     }
 
+    func testSSEStreamRelayRawOverflowLatchesDoneBeforeDuplicate() {
+        // WO-507: an oversized first chunk bypasses frame parsing but still owns DONE state.
+        var parser = SSEFrameParser()
+        let firstResult = parser.feed(Data((
+            "data: contact 10.1.2.3\n" +
+                String(repeating: "x", count: SSEFrameParser.maxFrameBytes) +
+                "\ndata: [DONE]\n\n"
+        ).utf8))
+        XCTAssertTrue(firstResult.overflowFlushed)
+
+        let relay = SSEStreamRelay(
+            clientSocket: -1, sendFlags: 0, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .medium,
+            idleTimeoutSeconds: 5
+        )
+        relay.buildAlertBeforeDone = { _, _, advisoryCount, _ in
+            advisoryCount > 0 ? Data("event: pastewatch_advisory\ndata: alert\n\n".utf8) : nil
+        }
+        let stats = SSEStreamRelay.StreamStatsSnapshot(
+            redactionCount: 0,
+            redactionTypes: [],
+            advisoryCount: 1,
+            advisoryTypes: ["IP Address"]
+        )
+        let firstOutput = relay.insertingRawStreamOverflowAlertIfNeeded(
+            firstResult.overflowBytes,
+            stats: stats
+        )
+        let secondOutput = relay.insertingRawStreamOverflowAlertIfNeeded(
+            Data("data: [DONE]\n\n".utf8),
+            stats: stats
+        )
+        let output = String(data: firstOutput + secondOutput, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(output.components(separatedBy: "event: pastewatch_advisory").count - 1, 1)
+        XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
+    }
+
     func testSSEStreamRelayClientDisconnectDuringDoneAlertReturnsBounded() {
         // WO-372: client EPIPE during alert+[DONE] should cancel the task without stat inflation.
         let previousHandler = signal(SIGPIPE, SIG_IGN)
