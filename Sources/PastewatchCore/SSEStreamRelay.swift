@@ -611,6 +611,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// the delegate-queue readers in didReceive (WO-232 snapshot) and didCompleteWithError.
     /// WO-381: return delivery status to advisory-accounting callers.
     @discardableResult
+    // WO-381: return delivery status to advisory-accounting callers.
     private func writeToSocket(_ data: Data) -> Bool {
         // WO-381: report whether advisory-bearing bytes reached the client.
         if !sendAll(data, to: clientSocket, flags: sendFlags) {
