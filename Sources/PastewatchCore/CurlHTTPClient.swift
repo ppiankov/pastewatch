@@ -953,6 +953,21 @@ struct CurlHTTPClient {
         totals: inout StreamScanTotals,
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
+        if alertState.sawDone {
+            // WO-380: post-DONE bytes remain protected, but alert injection is one-shot.
+            let redaction = redactRawBytes(
+                chunk,
+                config: alert.stream.config,
+                severity: alert.stream.severity,
+                customRules: alert.stream.customRules
+            )
+            totals.recordCritical(redaction)
+            return StreamChunkRelayResult(
+                data: redaction.data,
+                advisoryCount: redaction.advisoryCount,
+                advisoryTypes: redaction.advisoryTypes
+            )
+        }
         guard alert.alertBeforeDone != nil else {
             // WO-324/WO-404: raw_stream skips SSE parsing but still honors the certainty gate.
             let redaction = redactRawBytes(
@@ -1145,6 +1160,8 @@ struct CurlHTTPClient {
         // WO-368: offsets are measured in delivered bytes before `[DONE]`. The
         // larger upperBound is the closest complete frame delimiter, so advisory
         // insertion lands before the `[DONE]` frame even when CRLF and LF frames mix.
+        // WO-384: preserve an unterminated prefix and splice directly at DONE.
+        guard crlfStart != nil || lfStart != nil else { return doneLineStart }
         return max(crlfStart ?? 0, lfStart ?? 0)
     }
 

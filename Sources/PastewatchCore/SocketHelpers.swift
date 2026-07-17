@@ -153,6 +153,10 @@ private func rawSSEDoneFrameStart(in data: Data) -> Data.Index? {
     let lfTerminator = Data([0x0A, 0x0A])
     let crlfStart = beforeDone.range(of: crlfTerminator, options: .backwards)?.upperBound
     let lfStart = beforeDone.range(of: lfTerminator, options: .backwards)?.upperBound
+    guard crlfStart != nil || lfStart != nil else {
+        // WO-384: never splice an alert ahead of unterminated partial-frame bytes.
+        return doneRange.lowerBound
+    }
     let startOffset = max(crlfStart ?? 0, lfStart ?? 0)
     return data.index(data.startIndex, offsetBy: startOffset)
 }

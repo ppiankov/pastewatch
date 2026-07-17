@@ -673,6 +673,180 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(relay.streamAdvisoryCount, 0)
     }
 
+    func testSSEStreamRelayRawStreamNoAlertSkipsUndeliveredAdvisoryStats() {
+        // WO-381: critical detections are attempt-scoped; advisories require delivery.
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        AdvisoryAfterCloseStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .high,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AdvisoryAfterCloseStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: OperationQueue())
+        defer { session.invalidateAndCancel() }
+        let finished = expectation(description: "raw no-alert relay returns after EPIPE")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+
+        XCTAssertTrue(AdvisoryAfterCloseStreamURLProtocol.waitForFirstChunk(timeout: 2))
+        _ = readSocketString(from: sockets[0])
+        close(sockets[0])
+        AdvisoryAfterCloseStreamURLProtocol.allowSecondChunk()
+        wait(for: [finished], timeout: 2)
+
+        XCTAssertEqual(relay.streamRedactionCount, 1)
+        XCTAssertEqual(relay.streamAdvisoryCount, 0)
+    }
+
+    func testSSEStreamRelayRawStreamWithAlertSkipsUndeliveredAdvisoryStats() {
+        // WO-382: a failed batch send cannot commit its staged advisory counts.
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        AdvisoryAfterCloseStreamURLProtocol.reset()
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .high,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        relay.buildAlertBeforeDone = { _, _, advisoryCount, _ in
+            advisoryCount > 0 ? Data("event: pastewatch_advisory\ndata: alert\n\n".utf8) : nil
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AdvisoryAfterCloseStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: OperationQueue())
+        defer { session.invalidateAndCancel() }
+        let finished = expectation(description: "raw alert relay returns after EPIPE")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+
+        XCTAssertTrue(AdvisoryAfterCloseStreamURLProtocol.waitForFirstChunk(timeout: 2))
+        _ = readSocketString(from: sockets[0])
+        close(sockets[0])
+        AdvisoryAfterCloseStreamURLProtocol.allowSecondChunk()
+        wait(for: [finished], timeout: 2)
+
+        XCTAssertEqual(relay.streamRedactionCount, 1)
+        XCTAssertEqual(relay.streamAdvisoryCount, 0)
+    }
+
+    func testSSEStreamRelayRemainderEPIPESkipsUndeliveredAdvisoryStats() {
+        // WO-383: partial-frame remainder stats follow the same delivery policy.
+        let previousHandler = signal(SIGPIPE, SIG_IGN)
+        defer { _ = signal(SIGPIPE, previousHandler) }
+        AdvisoryAfterCloseStreamURLProtocol.reset(secondPayload: Data("data: contact 10.1.2.3".utf8))
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer { close(sockets[1]) }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig, severity: .high,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AdvisoryAfterCloseStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: OperationQueue())
+        defer { session.invalidateAndCancel() }
+        let finished = expectation(description: "remainder relay returns after EPIPE")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+
+        XCTAssertTrue(AdvisoryAfterCloseStreamURLProtocol.waitForFirstChunk(timeout: 2))
+        _ = readSocketString(from: sockets[0])
+        close(sockets[0])
+        AdvisoryAfterCloseStreamURLProtocol.allowSecondChunk()
+        wait(for: [finished], timeout: 2)
+
+        XCTAssertEqual(relay.streamRedactionCount, 1)
+        XCTAssertEqual(relay.streamAdvisoryCount, 0)
+    }
+
+    func testSSEStreamRelayPerEventInjectsAlertOnceForDuplicateDone() {
+        // WO-394: malformed duplicate terminators are forwarded without duplicate alerts.
+        let credential = "AIza" + String(repeating: "U", count: 35)
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\#(credential)"}}"#
+        NoDoneStreamURLProtocol.reset(
+            payload: Data("data: \(payload)\n\ndata: [DONE]\n\ndata: [DONE]\n\n".utf8)
+        )
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig, severity: .high,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        relay.buildAlertBeforeDone = { count, _, _, _ in
+            count > 0 ? Data("event: pastewatch_alert\ndata: alert\n\n".utf8) : nil
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NoDoneStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: OperationQueue())
+        defer { session.invalidateAndCancel() }
+        let finished = expectation(description: "duplicate done relay returns")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        let output = readSocketDrainString(from: sockets[0])
+        XCTAssertEqual(output.components(separatedBy: "event: pastewatch_alert").count - 1, 1)
+        XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
+    }
+
+    func testSSEStreamRelayRawStreamInjectsAlertOnceForDuplicateDone() {
+        // WO-380/WO-394: both relay modes share the one-shot terminal alert invariant.
+        NoDoneStreamURLProtocol.reset(
+            payload: Data("data: contact 10.1.2.3\n\ndata: [DONE]\n\ndata: [DONE]\n\n".utf8)
+        )
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer {
+            close(sockets[0])
+            close(sockets[1])
+        }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .rawStream,
+            config: PastewatchConfig.defaultConfig, severity: .medium,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        relay.buildAlertBeforeDone = { _, _, advisoryCount, _ in
+            advisoryCount > 0 ? Data("event: pastewatch_advisory\ndata: alert\n\n".utf8) : nil
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NoDoneStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: OperationQueue())
+        defer { session.invalidateAndCancel() }
+        let finished = expectation(description: "raw duplicate done relay returns")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 2)
+        let output = readSocketDrainString(from: sockets[0])
+        XCTAssertEqual(output.components(separatedBy: "event: pastewatch_advisory").count - 1, 1)
+        XCTAssertEqual(output.components(separatedBy: "data: [DONE]").count - 1, 2)
+    }
+
     func testSSEStreamRelayClientDisconnectDuringDoneAlertReturnsBounded() {
         // WO-372: client EPIPE during alert+[DONE] should cancel the task without stat inflation.
         let previousHandler = signal(SIGPIPE, SIG_IGN)
@@ -1121,13 +1295,20 @@ private class AdvisoryAfterCloseStreamURLProtocol: URLProtocol {
     private static var firstChunkSemaphore = DispatchSemaphore(value: 0)
     private static var allowSecondSemaphore = DispatchSemaphore(value: 0)
     private static var stopSemaphore = DispatchSemaphore(value: 0)
+    private static var secondPayload = Data()
 
-    static func reset() {
+    static func reset(secondPayload: Data? = nil) {
         lock.lock()
         firstChunkSemaphore = DispatchSemaphore(value: 0)
         allowSecondSemaphore = DispatchSemaphore(value: 0)
         stopSemaphore = DispatchSemaphore(value: 0)
+        self.secondPayload = secondPayload ?? defaultSecondPayload()
         lock.unlock()
+    }
+
+    private static func defaultSecondPayload() -> Data {
+        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"10.1.2.3"}}"#
+        return Data("data: \(second)\n\n".utf8)
     }
 
     static func waitForFirstChunk(timeout: TimeInterval) -> Bool {
@@ -1166,8 +1347,10 @@ private class AdvisoryAfterCloseStreamURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: Data("data: \(first)\n\n".utf8))
         Self.firstChunkSemaphore.signal()
         _ = Self.allowSecondSemaphore.wait(timeout: .now() + 1)
-        let second = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"10.1.2.3"}}"#
-        client?.urlProtocol(self, didLoad: Data("data: \(second)\n\n".utf8))
+        Self.lock.lock()
+        let secondPayload = Self.secondPayload
+        Self.lock.unlock()
+        client?.urlProtocol(self, didLoad: secondPayload)
         client?.urlProtocolDidFinishLoading(self)
     }
 

@@ -1583,6 +1583,51 @@ public final class ProxyServer {
             }
         }
         if let object = value as? [String: Any] {
+            let blockType = object["type"] as? String
+            if blockType == "text" {
+                guard let text = object["text"] as? String else { return object }
+                var result = object
+                result["text"] = redactScannableText(
+                    text, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+                return result
+            }
+            // WO-460: signed/encrypted and media blocks are replayed protocol material.
+            if blockType == "image" || blockType == "thinking" || blockType == "redacted_thinking" {
+                return object
+            }
+            if blockType == "document", var source = object["source"] as? [String: Any] {
+                switch source["type"] as? String {
+                case "text":
+                    if let text = source["data"] as? String {
+                        source["data"] = redactScannableText(
+                            text, site: site, redacted: &redacted, types: &types,
+                            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                        )
+                    }
+                case "content":
+                    if let content = source["content"] {
+                        source["content"] = redactContentPayloadStrings(
+                            content, site: site, redacted: &redacted, types: &types,
+                            advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                        )
+                    }
+                default:
+                    break
+                }
+                var result = object
+                result["source"] = source
+                return result
+            }
+            if blockType == "search_result", let content = object["content"] {
+                var result = object
+                result["content"] = redactContentPayloadStrings(
+                    content, site: site, redacted: &redacted, types: &types,
+                    advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+                )
+                return result
+            }
             let containsBase64Data = (object["type"] as? String) == "base64"
             var result = object
             for (key, nestedValue) in object {
@@ -1665,7 +1710,8 @@ public final class ProxyServer {
             for blockIndex in blocks.indices {
                 let blockType = blocks[blockIndex]["type"] as? String
                 if blockType == "tool_result", let content = blocks[blockIndex]["content"] {
-                    blocks[blockIndex]["content"] = redactJSONStrings(
+                    // WO-460: tool results can nest document and search-result blocks.
+                    blocks[blockIndex]["content"] = redactContentPayloadStrings(
                         content, site: .proxyToolResult,
                         redacted: &redacted, types: &types,
                         advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes

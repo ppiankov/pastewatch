@@ -665,4 +665,73 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(source["media_type"] as? String, "image/png")
         XCTAssertEqual(source["data"] as? String, encodedData)
     }
+
+    // WO-460: known Anthropic blocks expose only their documented text-bearing fields.
+    func testDocumentAndSearchResultTraversalPreservesProtocolMetadata() throws {
+        let documentKey = "AKIA" + "ZXCVBNMASDFGHJKL"
+        let nestedDocumentKey = "AIza" + String(repeating: "D", count: 35)
+        let searchKey = "AIza" + String(repeating: "S", count: 35)
+        let toolResultKey = "AIza" + String(repeating: "T", count: 35)
+        let metadataKey = "AIza" + String(repeating: "M", count: 35)
+        let request: [String: Any] = [
+            "messages": [[
+                "role": "user",
+                "content": [
+                    [
+                        "type": "document",
+                        "source": ["type": "text", "media_type": "text/plain", "data": documentKey],
+                    ],
+                    [
+                        "type": "document",
+                        "source": [
+                            "type": "content",
+                            "content": [["type": "text", "text": nestedDocumentKey]],
+                        ],
+                    ],
+                    [
+                        "type": "document",
+                        "source": ["type": "url", "url": "https://example.test/\(metadataKey)"],
+                    ],
+                    [
+                        "type": "search_result",
+                        "source": "https://search.test/\(metadataKey)",
+                        "title": metadataKey,
+                        "content": [[
+                            "type": "text",
+                            "text": searchKey,
+                            "citations": [["type": "web_search_result_location", "url": metadataKey]],
+                        ]],
+                    ],
+                    ["type": "redacted_thinking", "data": metadataKey],
+                    [
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": [[
+                            "type": "document",
+                            "source": ["type": "text", "media_type": "text/plain", "data": toolResultKey],
+                        ]],
+                    ],
+                ],
+            ]],
+        ]
+        let body = String(data: try JSONSerialization.data(withJSONObject: request), encoding: .utf8)!
+
+        let result = server.scanAndRedactBody(body)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(output["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+
+        XCTAssertEqual(result.redacted, 4)
+        XCTAssertFalse(result.body.contains(documentKey))
+        XCTAssertFalse(result.body.contains(nestedDocumentKey))
+        XCTAssertFalse(result.body.contains(searchKey))
+        XCTAssertFalse(result.body.contains(toolResultKey))
+        XCTAssertEqual((blocks[2]["source"] as? [String: Any])?["url"] as? String,
+                       "https://example.test/\(metadataKey)")
+        XCTAssertEqual(blocks[3]["source"] as? String, "https://search.test/\(metadataKey)")
+        XCTAssertEqual(blocks[3]["title"] as? String, metadataKey)
+        XCTAssertEqual(blocks[4]["data"] as? String, metadataKey)
+    }
 }
