@@ -33,6 +33,12 @@ final class ProviderTokenPatternTests: XCTestCase {
             .init(type: .discordWebhook, positive: "https://discord.com/api/webhooks/123456/Token_123", negative: "https://discord.com/api/webhooks/id/Token_123"),
             .init(type: .openaiKey, positive: "sk-proj-" + String(repeating: "C", count: 20), negative: "sk-proj-" + String(repeating: "C", count: 19)),
             .init(type: .anthropicKey, positive: "sk-ant-api03-" + String(repeating: "D", count: 20), negative: "sk-ant-api03-" + String(repeating: "D", count: 19)),
+            // WO-145: Alibaba's generated Model Studio SDK documents a dot-separated sk-ws key.
+            .init(
+                type: .dashscopeKey,
+                positive: "sk-ws-abc." + String(repeating: "D", count: 20),
+                negative: "sk-ws-abc." + String(repeating: "D", count: 19)
+            ),
             .init(type: .huggingfaceToken, positive: "hf_" + String(repeating: "E", count: 20), negative: "hf_" + String(repeating: "E", count: 19)),
             .init(type: .groqKey, positive: "gsk_" + String(repeating: "F", count: 20), negative: "gsk_" + String(repeating: "F", count: 19)),
             .init(type: .npmToken, positive: "npm_" + String(repeating: "G", count: 20), negative: "npm_" + String(repeating: "G", count: 19)),
@@ -59,7 +65,7 @@ final class ProviderTokenPatternTests: XCTestCase {
     func testManifestCoversExplicitProviderDetectorSet() {
         let expected: Set<SensitiveDataType> = [
             .awsKey, .genericApiKey, .slackWebhook, .discordWebhook, .openaiKey,
-            .anthropicKey, .huggingfaceToken, .groqKey, .npmToken, .pypiToken,
+            .anthropicKey, .dashscopeKey, .huggingfaceToken, .groqKey, .npmToken, .pypiToken,
             .rubygemsToken, .gitlabToken, .telegramBotToken, .sendgridKey,
             .shopifyToken, .digitaloceanToken, .perplexityKey, .workledgerKey,
             .oraculKey, .obstalabsKey, .resendKey, .vaultToken, .slackToken,
@@ -82,7 +88,8 @@ final class ProviderTokenPatternTests: XCTestCase {
         )
         XCTAssertFalse(manifest.contains { $0.provider == "Prefixed tokens" })
         XCTAssertTrue(manifest.allSatisfy { $0.primarySource.hasPrefix("https://") })
-        XCTAssertTrue(manifest.allSatisfy { $0.reviewedOn == "2026-07-15" })
+        XCTAssertEqual(manifest.first { $0.type == .dashscopeKey }?.reviewedOn, "2026-07-17")
+        XCTAssertTrue(manifest.filter { $0.type != .dashscopeKey }.allSatisfy { $0.reviewedOn == "2026-07-15" })
     }
 
     func testProviderFixturesHavePositiveAndBoundaryNegativeCoverage() {

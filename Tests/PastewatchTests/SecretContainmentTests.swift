@@ -16,6 +16,7 @@ final class SecretContainmentTests: XCTestCase {
             .gcpServiceAccount: #"{"type":"service_account","private_key_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","private_key":"synthetic-private-material"}"#,
             .openaiKey: "sk-proj-" + String(repeating: "C", count: 20),
             .anthropicKey: "sk-ant-api03-" + String(repeating: "D", count: 20),
+            .dashscopeKey: "sk-ws-abc." + String(repeating: "D", count: 20), // WO-145
             .huggingfaceToken: "hf_" + String(repeating: "E", count: 20),
             .groqKey: "gsk_" + String(repeating: "F", count: 20),
             .npmToken: "npm_" + String(repeating: "G", count: 20),

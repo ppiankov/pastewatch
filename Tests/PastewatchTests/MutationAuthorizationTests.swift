@@ -9,7 +9,7 @@ final class MutationAuthorizationTests: XCTestCase {
         let expected: Set<SensitiveDataType> = [
             .awsKey, .sshPrivateKey, .jwtToken, .creditCard,
             .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
-            .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey, .npmToken,
+            .openaiKey, .anthropicKey, .dashscopeKey, .huggingfaceToken, .groqKey, .npmToken,
             .pypiToken, .rubygemsToken, .gitlabToken, .telegramBotToken, .sendgridKey,
             .shopifyToken, .digitaloceanToken, .perplexityKey, .workledgerKey,
             .oraculKey, .obstalabsKey, .resendKey, .vaultToken, .slackToken,

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detect workspace-scoped Alibaba Model Studio API keys with the `sk-ws-` prefix,
+  including dot-separated payloads, as intrinsic secrets that are safe to obfuscate.
+
 ## [0.31.1] - 2026-07-17
 
 ### Fixed

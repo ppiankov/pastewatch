@@ -507,6 +507,7 @@ final class DetectionRulesTests: XCTestCase {
     private static let skSvcacct = "sk-" + "svcacct-"
     private static let skAntApi = "sk-" + "ant-api03-"
     private static let skAntAdmin = "sk-" + "ant-admin01-"
+    private static let skWS = "sk-" + "ws-"
     private static let testSuffix = "abc123def456ghi789jkl012mno345"
 
     func testDetectsOpenAIProjectKey() {
@@ -548,6 +549,32 @@ final class DetectionRulesTests: XCTestCase {
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .anthropicKey })
         XCTAssertFalse(matches.contains { $0.type == .genericApiKey })
+    }
+
+    // WO-145: workspace-scoped DashScope keys are intrinsic provider tokens.
+    func testDetectsDashScopeWorkspaceKeysWithoutGenericFallback() {
+        let values = [
+            Self.skWS + "abc." + String(repeating: "Q", count: 20),
+            Self.skWS + "xyz." + String(repeating: "R", count: 32),
+            Self.skWS + "abc." + String(repeating: "S", count: 10) + "-" + String(repeating: "T", count: 10),
+        ]
+
+        for value in values {
+            let matches = DetectionRules.scan("DASHSCOPE_API_KEY=" + value, config: config)
+            XCTAssertTrue(matches.contains { $0.type == .dashscopeKey && $0.value == value })
+            XCTAssertFalse(matches.contains { $0.type == .genericApiKey && $0.value == value })
+        }
+    }
+
+    func testDashScopeWorkspaceKeyRequiresCompleteSegmentedPayload() {
+        let short = Self.skWS + "abc." + String(repeating: "Q", count: 19)
+        let unsegmented = Self.skWS + String(repeating: "Q", count: 30)
+
+        XCTAssertFalse(DetectionRules.scan(short, config: config).contains { $0.type == .dashscopeKey })
+        XCTAssertFalse(DetectionRules.scan(unsegmented, config: config).contains { $0.type == .dashscopeKey })
+        XCTAssertTrue(DetectionRules.scan(Self.skAntApi + Self.testSuffix, config: config).contains {
+            $0.type == .anthropicKey
+        })
     }
 
     // MARK: - Hugging Face Token Detection

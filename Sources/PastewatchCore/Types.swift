@@ -52,6 +52,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     case gcpServiceAccount = "GCP Service Account"
     case openaiKey = "OpenAI Key"
     case anthropicKey = "Anthropic Key"
+    case dashscopeKey = "DashScope API Key" // WO-145: Alibaba Model Studio workspace key.
     case huggingfaceToken = "Hugging Face Token"
     case groqKey = "Groq Key"
     case npmToken = "npm Token"
@@ -84,7 +85,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .awsKey, .genericApiKey, .sshPrivateKey, .dbConnectionString,
              .jwtToken, .creditCard, .credential,
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
-             .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
+             .openaiKey, .anthropicKey, .dashscopeKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
@@ -106,7 +107,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .awsKey, .sshPrivateKey,
              .jwtToken, .creditCard,
              .slackWebhook, .discordWebhook, .azureConnectionString, .gcpServiceAccount,
-             .openaiKey, .anthropicKey, .huggingfaceToken, .groqKey,
+             .openaiKey, .anthropicKey, .dashscopeKey, .huggingfaceToken, .groqKey,
              .npmToken, .pypiToken, .rubygemsToken,
              .gitlabToken, .telegramBotToken, .sendgridKey, .shopifyToken, .digitaloceanToken,
              .perplexityKey, .workledgerKey, .oraculKey, .obstalabsKey, .resendKey,
@@ -145,6 +146,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .gcpServiceAccount: return "GCP service account JSON key files"
         case .openaiKey: return "OpenAI API keys (sk-proj-, sk-svcacct- prefixes)"
         case .anthropicKey: return "Anthropic API keys (sk-ant-api03-, sk-ant-admin01-, sk-ant-oat01- prefixes)"
+        case .dashscopeKey: return "Alibaba Model Studio API keys with the workspace-scoped sk-ws prefix"
         case .huggingfaceToken: return "Hugging Face access tokens (hf_ prefix)"
         case .groqKey: return "Groq API keys (gsk_ prefix)"
         case .npmToken: return "npm access tokens (npm_ prefix)"
@@ -195,6 +197,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
         case .gcpServiceAccount: return ["{\"type\": \"service_account\", \"project_id\": \"<id>\"}"]
         case .openaiKey: return ["sk-proj-<project key>", "sk-svcacct-<service account key>"]
         case .anthropicKey: return ["sk-ant-api03-<API key>", "sk-ant-admin01-<admin key>"]
+        case .dashscopeKey: return ["sk-ws-<workspace key>"]
         case .huggingfaceToken: return ["hf_<access token>"]
         case .groqKey: return ["gsk_<API key>"]
         case .npmToken: return ["npm_<access token>"]
