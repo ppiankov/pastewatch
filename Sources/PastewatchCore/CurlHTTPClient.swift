@@ -887,6 +887,7 @@ struct CurlHTTPClient {
             )
         } else if ctx.redactionMode == .rawStream && alertBeforeDone != nil {
             flushRawStreamRemainder(
+                parser: &parser,
                 state: &rawStreamAlertState,
                 ctx: ctx,
                 alertBeforeDone: alertBeforeDone,
@@ -927,12 +928,14 @@ struct CurlHTTPClient {
     }
 
     private static func flushRawStreamRemainder(
+        parser: inout SSEFrameParser,
         state: inout RawStreamAlertState,
         ctx: StreamContext,
         alertBeforeDone: StreamAlertBuilder?,
         totals: inout StreamScanTotals
     ) {
         guard let rawOutput = relayRawStreamEOF(
+            parser: &parser,
             state: &state,
             ctx: ctx,
             alertBeforeDone: alertBeforeDone,
@@ -954,18 +957,9 @@ struct CurlHTTPClient {
         alertState: inout RawStreamAlertState
     ) -> StreamChunkRelayResult? {
         if alertState.sawDone {
-            // WO-380: post-DONE bytes remain protected, but alert injection is one-shot.
-            let redaction = redactRawBytes(
-                chunk,
-                config: alert.stream.config,
-                severity: alert.stream.severity,
-                customRules: alert.stream.customRules
-            )
-            totals.recordCritical(redaction)
-            return StreamChunkRelayResult(
-                data: redaction.data,
-                advisoryCount: redaction.advisoryCount,
-                advisoryTypes: redaction.advisoryTypes
+            // WO-380/WO-508: keep one-shot alert state while preserving chunk-spanning scans.
+            return relayPostDoneRawStreamChunk(
+                chunk, parser: &parser, ctx: alert.stream, totals: &totals
             )
         }
         guard alert.alertBeforeDone != nil else {
@@ -1057,13 +1051,57 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-508: malformed trailing SSE still receives bounded, cross-chunk redaction.
+    private static func relayPostDoneRawStreamChunk(
+        _ chunk: Data,
+        parser: inout SSEFrameParser,
+        ctx: StreamContext,
+        totals: inout StreamScanTotals
+    ) -> StreamChunkRelayResult? {
+        let result = parser.feed(chunk)
+        let data: Data
+        if result.overflowFlushed {
+            data = result.overflowBytes
+        } else {
+            var frames = Data()
+            for frame in result.frames {
+                frames.append(frame.raw)
+            }
+            guard !frames.isEmpty else { return nil }
+            data = frames
+        }
+        let redaction = redactRawBytes(
+            data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
+        )
+        totals.recordCritical(redaction)
+        return StreamChunkRelayResult(
+            data: redaction.data,
+            advisoryCount: redaction.advisoryCount,
+            advisoryTypes: redaction.advisoryTypes
+        )
+    }
+
     private static func relayRawStreamEOF(
+        parser: inout SSEFrameParser,
         state: inout RawStreamAlertState,
         ctx: StreamContext,
         alertBeforeDone: StreamAlertBuilder?,
         totals: inout StreamScanTotals
     ) -> StreamChunkRelayResult? {
-        guard !state.sawDone else { return nil }
+        if state.sawDone {
+            // WO-508: flush a final partial post-DONE frame without rebuilding the alert.
+            let data = parser.remainingBytes
+            guard !data.isEmpty else { return nil }
+            let redaction = redactRawBytes(
+                data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
+            )
+            totals.recordCritical(redaction)
+            return StreamChunkRelayResult(
+                data: redaction.data,
+                advisoryCount: redaction.advisoryCount,
+                advisoryTypes: redaction.advisoryTypes
+            )
+        }
         if state.pending.isEmpty {
             guard let alert = alertBeforeDone?(
                 totals.redactionCount,
