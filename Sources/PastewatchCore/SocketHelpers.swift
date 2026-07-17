@@ -147,6 +147,7 @@ func insertingSSEDataBeforeDone(_ inserted: Data?, into data: Data) -> Data {
 
 // WO-384: preserve unterminated partial-frame bytes before a DONE alert.
 private func rawSSEDoneFrameStart(in data: Data) -> Data.Index? {
+    // WO-384: locate insertion without moving partial bytes behind the synthetic frame.
     let doneLine = Data("data: [DONE]".utf8)
     guard let doneRange = data.range(of: doneLine) else { return nil }
     let beforeDone = Data(data[..<doneRange.lowerBound])
