@@ -531,6 +531,68 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(forwarded.components(separatedBy: metadataToken).count - 1, 4, forwarded)
     }
 
+    // WO-506: the network path must preserve opaque execution replay fields exactly.
+    func testEncryptedCodeExecutionPreservesOpaqueFieldsAndRedactsStderr() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let encryptedOutput = "AIza" + String(repeating: "E", count: 35)
+        let fileID = "AIza" + String(repeating: "F", count: 35)
+        let toolUseID = "AIza" + String(repeating: "T", count: 35)
+        let stderrSecret = "AIza" + String(repeating: "S", count: 35)
+        let bodyObject: [String: Any] = [
+            "model": "claude-3",
+            "messages": [[
+                "role": "assistant",
+                "content": [[
+                    "type": "code_execution_tool_result",
+                    "tool_use_id": toolUseID,
+                    "content": [
+                        "type": "encrypted_code_execution_result",
+                        "encrypted_stdout": encryptedOutput,
+                        "content": [["type": "code_execution_output", "file_id": fileID]],
+                        "return_code": 1,
+                        "stderr": stderrSecret,
+                    ],
+                ]],
+            ]],
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyObject, options: [.sortedKeys])
+        let body = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertTrue(forwarded.contains(encryptedOutput), forwarded)
+        XCTAssertTrue(forwarded.contains(fileID), forwarded)
+        XCTAssertTrue(forwarded.contains(toolUseID), forwarded)
+        XCTAssertFalse(forwarded.contains(stderrSecret), forwarded)
+        XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_"), forwarded)
+    }
+
     // WO-460: batch params use the same typed content walker as ordinary Messages requests.
     func testBatchContentWalkerRedactsPayloadAndPreservesMetadata() throws {
         let requestLock = NSLock()

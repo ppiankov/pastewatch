@@ -1557,6 +1557,40 @@ public final class ProxyServer {
         return value
     }
 
+    // WO-460/WO-506: replay-sensitive blocks expose only explicitly documented plaintext.
+    // swiftlint:disable:next function_parameter_count
+    private func redactReplayContentBlock(
+        _ object: [String: Any],
+        site: MutationSite,
+        redacted: inout Int,
+        types: inout [String],
+        advisoryCount: inout Int,
+        advisoryTypes: inout [String]
+    ) -> [String: Any]? {
+        switch object["type"] as? String {
+        case "image", "thinking", "redacted_thinking":
+            return object
+        case "encrypted_code_execution_result":
+            guard let stderr = object["stderr"] as? String else { return object }
+            var result = object
+            result["stderr"] = redactScannableText(
+                stderr, site: site, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+            )
+            return result
+        case "code_execution_tool_result":
+            guard let content = object["content"] else { return object }
+            var result = object
+            result["content"] = redactContentPayloadStrings(
+                content, site: site, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+            )
+            return result
+        default:
+            return nil
+        }
+    }
+
     // WO-503: unknown content blocks may carry plaintext, but protocol discriminators
     // and base64 payload bytes must remain structurally intact.
     // swiftlint:disable:next function_parameter_count
@@ -1593,9 +1627,11 @@ public final class ProxyServer {
                 )
                 return result
             }
-            // WO-460: signed/encrypted and media blocks are replayed protocol material.
-            if blockType == "image" || blockType == "thinking" || blockType == "redacted_thinking" {
-                return object
+            if let replayBlock = redactReplayContentBlock(
+                object, site: site, redacted: &redacted, types: &types,
+                advisoryCount: &advisoryCount, advisoryTypes: &advisoryTypes
+            ) {
+                return replayBlock
             }
             if blockType == "document", var source = object["source"] as? [String: Any] {
                 switch source["type"] as? String {

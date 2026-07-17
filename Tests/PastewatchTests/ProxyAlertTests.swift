@@ -734,4 +734,46 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(blocks[3]["title"] as? String, metadataKey)
         XCTAssertEqual(blocks[4]["data"] as? String, metadataKey)
     }
+
+    // WO-506: opaque execution payloads remain replayable while plaintext stderr is scanned.
+    func testEncryptedCodeExecutionTraversalPreservesOpaqueFields() throws {
+        let encryptedOutput = "AIza" + String(repeating: "E", count: 35)
+        let fileID = "AIza" + String(repeating: "F", count: 35)
+        let toolUseID = "AIza" + String(repeating: "T", count: 35)
+        let stderrSecret = "AIza" + String(repeating: "S", count: 35)
+        let request: [String: Any] = [
+            "messages": [[
+                "role": "assistant",
+                "content": [[
+                    "type": "code_execution_tool_result",
+                    "tool_use_id": toolUseID,
+                    "content": [
+                        "type": "encrypted_code_execution_result",
+                        "encrypted_stdout": encryptedOutput,
+                        "content": [["type": "code_execution_output", "file_id": fileID]],
+                        "return_code": 1,
+                        "stderr": stderrSecret,
+                    ],
+                ]],
+            ]],
+        ]
+        let body = String(data: try JSONSerialization.data(withJSONObject: request), encoding: .utf8)!
+
+        let result = server.scanAndRedactBody(body)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(output["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+        let encrypted = try XCTUnwrap(blocks[0]["content"] as? [String: Any])
+        let files = try XCTUnwrap(encrypted["content"] as? [[String: Any]])
+
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertEqual(blocks[0]["tool_use_id"] as? String, toolUseID)
+        XCTAssertEqual(encrypted["encrypted_stdout"] as? String, encryptedOutput)
+        XCTAssertEqual(files[0]["file_id"] as? String, fileID)
+        XCTAssertEqual(encrypted["return_code"] as? Int, 1)
+        XCTAssertNotEqual(encrypted["stderr"] as? String, stderrSecret)
+        XCTAssertTrue((encrypted["stderr"] as? String)?.hasPrefix("<GOOGLE_API_KEY_") == true)
+    }
 }
