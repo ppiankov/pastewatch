@@ -821,6 +821,31 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(result?.advisoryTypes, ["IP"])
     }
 
+    // MARK: - Tool-call stream fixtures
+
+    // WO-515: realistic Anthropic fragments pin the client-side reassembly contract.
+    func testAnthropicToolCallFixtureReassemblesValidJSON() throws {
+        let fixture = anthropicToolCallFixture(fragments: [#"{"query":"hel"#, #"lo\/world","limit":2}"#])
+
+        XCTAssertEqual(try reassembleAnthropicToolJSON(from: fixture), ["query": "hello/world", "limit": 2])
+    }
+
+    // WO-515: LiteLLM/OpenAI frames use a different envelope but the same fragment contract.
+    func testOpenAIToolCallFixtureReassemblesValidJSON() throws {
+        let fixture = openAIToolCallFixture(fragments: [#"{"query":"hel"#, #"lo","limit":2}"#])
+
+        XCTAssertEqual(try reassembleOpenAIToolJSON(from: fixture), ["query": "hello", "limit": 2])
+    }
+
+    // WO-515: raw fixture bytes retain escaped slash and unicode spelling for fidelity tests.
+    func testToolCallFixtureRetainsRawEscaping() {
+        let fragment = #"{"path":"https:\/\/example.com\/\u0061"}"#
+        let fixture = anthropicToolCallFixture(fragments: [fragment])
+        let raw = String(decoding: fixture, as: UTF8.self)
+
+        XCTAssertTrue(raw.contains(#"https:\\\/\\\/example.com\\\/\\u0061"#), raw)
+    }
+
     // MARK: - Helpers
 
     private func sseFrame(eventType: String?, data: String) -> Data {
@@ -830,6 +855,83 @@ final class ProxyStreamRedactionTests: XCTestCase {
         lines.append("")
         lines.append("")
         return Data(lines.joined(separator: "\n").utf8)
+    }
+
+    // WO-515: fixtures model the exact events clients concatenate into tool JSON.
+    private func anthropicToolCallFixture(fragments: [String], index: Int = 0) -> Data {
+        var stream = sseFrame(
+            eventType: "content_block_start",
+            data: #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"tool_use","id":"tool_1","name":"search","input":{}}}"#
+        )
+        for fragment in fragments {
+            let encoded = jsonStringLiteral(fragment)
+            stream.append(sseFrame(
+                eventType: "content_block_delta",
+                data: #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"input_json_delta","partial_json":\#(encoded)}}"#
+            ))
+        }
+        stream.append(sseFrame(
+            eventType: "content_block_stop",
+            data: #"{"type":"content_block_stop","index":\#(index)}"#
+        ))
+        return stream
+    }
+
+    // WO-515: OpenAI-compatible gateways stream function arguments as JSON string fragments.
+    private func openAIToolCallFixture(fragments: [String], index: Int = 0) -> Data {
+        var stream = Data()
+        for fragment in fragments {
+            let encoded = jsonStringLiteral(fragment)
+            stream.append(sseFrame(
+                eventType: nil,
+                data: #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":\#(index),"function":{"arguments":\#(encoded)}}]}}]}"#
+            ))
+        }
+        stream.append(sseFrame(eventType: nil, data: #"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#))
+        return stream
+    }
+
+    // WO-515: reassembly validates what an Anthropic client sees, not individual frame syntax.
+    private func reassembleAnthropicToolJSON(from stream: Data) throws -> NSDictionary {
+        var parser = SSEFrameParser()
+        let fragments = parser.feed(stream).frames.compactMap { frame -> String? in
+            guard let payload = frame.data,
+                  let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let delta = json["delta"] as? [String: Any],
+                  delta["type"] as? String == "input_json_delta" else { return nil }
+            return delta["partial_json"] as? String
+        }
+        return try decodedJSONObject(fragments.joined())
+    }
+
+    // WO-515: OpenAI-compatible clients concatenate function.arguments by tool index.
+    private func reassembleOpenAIToolJSON(from stream: Data) throws -> NSDictionary {
+        var parser = SSEFrameParser()
+        let fragments = parser.feed(stream).frames.compactMap { frame -> String? in
+            guard let payload = frame.data,
+                  let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let delta = choices.first?["delta"] as? [String: Any],
+                  let calls = delta["tool_calls"] as? [[String: Any]],
+                  let function = calls.first?["function"] as? [String: Any] else { return nil }
+            return function["arguments"] as? String
+        }
+        return try decodedJSONObject(fragments.joined())
+    }
+
+    // WO-515: fixture assertions decode only complete reassembled tool arguments.
+    private func decodedJSONObject(_ json: String) throws -> NSDictionary {
+        let value = try JSONSerialization.jsonObject(with: Data(json.utf8))
+        return try XCTUnwrap(value as? NSDictionary)
+    }
+
+    // WO-515: fixture generation delegates string escaping to Foundation.
+    private func jsonStringLiteral(_ value: String) -> String {
+        let encoded = try? JSONSerialization.data(withJSONObject: [value])
+        let array = encoded.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return String(array.dropFirst().dropLast())
     }
 
     private func redactFirstFrame(payload: String) -> SSEFrameRedactionResult {
