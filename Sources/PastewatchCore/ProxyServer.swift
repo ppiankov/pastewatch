@@ -78,6 +78,7 @@ public final class ProxyServer {
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
     private let quietLog: Bool
+    private let streamDebugSink: StreamDebugSink? // WO-514: explicit local-only streaming evidence sink.
     /// WO-143: PEM CA bundle trusted (in addition to system roots) for the
     /// proxy's upstream TLS handshake. Governs only the proxy-to-upstream leg.
     let caCertPath: String?
@@ -98,11 +99,15 @@ public final class ProxyServer {
     /// statsLock so concurrent handlers do not serialize behind file operations.
     private let logQueue = DispatchQueue(label: "com.pastewatch.proxy.auditlog")
     /// WO-302/WO-311: reuse one formatter and include fractional seconds for audit ordering.
+    /// WO-395: Apple guarantees modern date-formatter reads, but swift-corelibs lazily
+    /// initializes its cached CF formatter. Serialize all access so first use cannot race;
+    /// formatter configuration remains frozen after initialization.
     private let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    private let iso8601FormatterLock = NSLock() // WO-395: guards Linux lazy cache initialization.
     /// WO-234: barrier group lets stop() wait for in-flight handlers before draining logQueue.
     /// Each dispatched handler enters the group; stop() barrier-waits so logQueue.sync sees
     /// all handler-enqueued audit writes, not just the ones enqueued before stop() was called.
@@ -136,6 +141,7 @@ public final class ProxyServer {
         public var requestsRedacted: Int = 0
         public var secretsRedacted: Int = 0
         public var advisoryMatches: Int = 0 // WO-353/354/404: advisories are audited separately.
+        public var toolCallPayloadMutations: Int = 0 // WO-512: tool arguments remain separately observable.
 
         // WO-430: surface model-identity drift relative to forwarded requests.
         public var modelIdentityAdvisoryRate: Double {
@@ -152,6 +158,27 @@ public final class ProxyServer {
         let streamTypes: [String]
         let advisoryCount: Int // WO-353/354: advisory-only stream matches delivered to the client.
         let advisoryTypes: [String]
+        let toolCallCount: Int // WO-512: subset of streamCount originating in tool arguments.
+
+        init(
+            path: String,
+            bodyCount: Int,
+            bodyTypes: [String],
+            streamCount: Int,
+            streamTypes: [String],
+            advisoryCount: Int,
+            advisoryTypes: [String],
+            toolCallCount: Int = 0
+        ) {
+            self.path = path
+            self.bodyCount = bodyCount
+            self.bodyTypes = bodyTypes
+            self.streamCount = streamCount
+            self.streamTypes = streamTypes
+            self.advisoryCount = advisoryCount
+            self.advisoryTypes = advisoryTypes
+            self.toolCallCount = toolCallCount
+        }
     }
 
     public struct ConnectionAdmissionStats: Equatable {
@@ -263,7 +290,8 @@ public final class ProxyServer {
         injectAlert: Bool = true,
         quietLog: Bool = false,
         caCertPath: String? = nil,
-        insecureTLS: Bool = false
+        insecureTLS: Bool = false,
+        streamDebugSink: StreamDebugSink? = nil
     ) {
         self.port = port
         self.upstream = upstream
@@ -285,6 +313,7 @@ public final class ProxyServer {
         self.auditLogPath = auditLogPath
         self.injectAlert = injectAlert
         self.quietLog = quietLog
+        self.streamDebugSink = streamDebugSink
         self.caCertPath = caCertPath
         self.insecureTLS = insecureTLS
         #if canImport(Darwin)
@@ -423,10 +452,15 @@ public final class ProxyServer {
         return components.url ?? (URL(string: requestTarget, relativeTo: upstream) ?? upstream)
     }
 
+    /// WO-514: debug capture mode is validated before the listening socket is created.
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
         if let customRuleStartupError {
             throw ProxyError.invalidCustomRules(customRuleStartupError.localizedDescription)
+        }
+        if streamDebugSink != nil, config.responseStreamingRedactionMode != .perSSEEvent {
+            // WO-514: never produce an apparently valid dump without per-frame decisions.
+            throw ProxyError.streamDebugDumpRequiresPerSSEEvent
         }
         #if canImport(Darwin)
         let listenSocket = socket(AF_INET, SOCK_STREAM, 0)
@@ -992,7 +1026,8 @@ public final class ProxyServer {
                 clientSocket: ctx.clientSocket, sendFlags: sendFlags,
                 streamingRedactionMode: streamingMode,
                 proxyConfig: config, proxyCustomRules: customRules,
-                proxySeverity: severity, alertBeforeDone: alertBeforeDone
+                proxySeverity: severity, streamDebugSink: streamDebugSink,
+                alertBeforeDone: alertBeforeDone
             )
         } catch CurlHTTPClient.ExecuteError.timeout {
             // WO-386: curl exit 28 is an upstream timeout, not a bad gateway.
@@ -1019,7 +1054,8 @@ public final class ProxyServer {
                 streamCount: curlResponse.streamRedactionCount,
                 streamTypes: curlResponse.streamRedactionTypes,
                 advisoryCount: curlResponse.streamAdvisoryCount,
-                advisoryTypes: curlResponse.streamAdvisoryTypes
+                advisoryTypes: curlResponse.streamAdvisoryTypes,
+                toolCallCount: curlResponse.streamToolCallRedactionCount
             ))
             return nil
         }
@@ -1959,27 +1995,33 @@ public final class ProxyServer {
         logAdvisory(path: path, count: count, types: types, source: source)
     }
 
+    // WO-512: aggregate and expose tool payload mutations separately from ordinary stream text.
     func recordStreamingAuditStats(_ summary: StreamingAuditStats) {
         let totalCount = summary.bodyCount + summary.streamCount
         let totalTypes = summary.bodyTypes + summary.streamTypes
         if summary.streamCount > 0 || summary.advisoryCount > 0 {
             statsLock.lock()
             if summary.streamCount > 0 {
-                // WO-353/354: mirror existing body+stream request coalescing.
+                // WO-353: mirror existing body+stream request coalescing (also revises WO-354).
                 if summary.bodyCount == 0 { stats.requestsRedacted += 1 }
                 stats.secretsRedacted += summary.streamCount
             }
             if summary.advisoryCount > 0 {
                 stats.advisoryMatches += summary.advisoryCount
             }
+            stats.toolCallPayloadMutations += summary.toolCallCount
             statsLock.unlock()
         }
-        // WO-184/WO-353/WO-354: log body+stream redactions and stream advisories independently.
+        // WO-184: log body+stream redactions and stream advisories independently
+        // (also revises WO-353 and WO-354).
         if totalCount > 0 {
             logRedaction(path: summary.path, count: totalCount, types: totalTypes)
         }
         if summary.advisoryCount > 0 {
             logAdvisory(path: summary.path, count: summary.advisoryCount, types: summary.advisoryTypes, source: .response)
+        }
+        if summary.toolCallCount > 0 {
+            logToolCallMutation(path: summary.path, count: summary.toolCallCount)
         }
     }
 
@@ -2021,8 +2063,11 @@ public final class ProxyServer {
         return forwardHeaders
     }
 
+    // WO-395: serialize swift-corelibs lazy cache initialization and subsequent formatting.
     func formatAuditTimestamp(_ date: Date) -> String {
-        iso8601Formatter.string(from: date)
+        iso8601FormatterLock.lock()
+        defer { iso8601FormatterLock.unlock() }
+        return iso8601Formatter.string(from: date)
     }
 
     #if canImport(Darwin)
@@ -2062,7 +2107,8 @@ public final class ProxyServer {
                 { _, challenge, completionHandler in
                     delegate.handle(challenge: challenge, completionHandler: completionHandler)
                 }
-            }
+            },
+            streamDebugSink: streamDebugSink
         )
 
         // WO-182: inject the alert frame immediately before [DONE] so SSE consumers
@@ -2097,7 +2143,8 @@ public final class ProxyServer {
             streamCount: streamStats.redactionCount,
             streamTypes: streamStats.redactionTypes,
             advisoryCount: streamStats.advisoryCount,
-            advisoryTypes: streamStats.advisoryTypes
+            advisoryTypes: streamStats.advisoryTypes,
+            toolCallCount: streamStats.toolCallRedactionCount
         ))
     }
 
@@ -2605,6 +2652,23 @@ public final class ProxyServer {
         }
     }
 
+    // WO-512: tool payload mutation is a distinct security event, not inferred from prose types.
+    private func logToolCallMutation(path: String, count: Int) {
+        let line = "[\(formatAuditTimestamp(Date()))] PROXY TOOL ARGUMENT REDACTED \(count) secret(s) in "
+            + "\(auditSafePath(path))\n"
+        if !quietLog { FileHandle.standardError.write(Data(line.utf8)) }
+        guard let logPath = auditLogPath else { return }
+        logQueue.async {
+            if let handle = FileHandle(forWritingAtPath: logPath) {
+                handle.seekToEndOfFile()
+                handle.write(Data(line.utf8))
+                handle.closeFile()
+            } else {
+                FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
+            }
+        }
+    }
+
     private func logAdvisory(
         path: String,
         count: Int,
@@ -2730,6 +2794,7 @@ public final class ProxyServer {
 
 public enum ProxyError: Error, CustomStringConvertible, LocalizedError {
     case invalidCustomRules(String) // WO-473: invalid protection config cannot bind a listener.
+    case streamDebugDumpRequiresPerSSEEvent // WO-514: raw/buffer cannot report exact frame decisions.
     case socketCreationFailed
     case bindFailed(port: UInt16)
     case listenFailed
@@ -2737,6 +2802,8 @@ public enum ProxyError: Error, CustomStringConvertible, LocalizedError {
     public var description: String {
         switch self {
         case .invalidCustomRules(let message): return message
+        case .streamDebugDumpRequiresPerSSEEvent:
+            return "--debug-stream-dump requires responseStreamingRedactionMode=per_sse_event"
         case .socketCreationFailed: return "Failed to create socket"
         case .bindFailed(let port): return "Failed to bind to port \(port) (already in use?)"
         case .listenFailed: return "Failed to listen on socket"

@@ -19,6 +19,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let redactionTypes: [String]
         let advisoryCount: Int
         let advisoryTypes: [String]
+        let toolCallRedactionCount: Int // WO-512: tool payload mutations remain separately observable.
     }
 
     typealias TLSChallengeHandler = (
@@ -37,6 +38,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private let maxSessionSeconds: Double // WO-292: hard ceiling before cancelling active stream task
     private let delegateQueueDrainTimeoutSeconds: Double // WO-355: avoid shutdown deadlock on invalidated sessions.
     private let tlsChallengeHandler: TLSChallengeHandler? // WO-305: preserve custom TLS trust policy.
+    private let streamDebugSink: StreamDebugSink? // WO-514: nil unless the operator opts into a local raw dump.
 
     /// Signals that the upstream response head has been received.
     private let headReceived = DispatchSemaphore(value: 0)
@@ -48,6 +50,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
 
     /// Parser for per-event redaction mode.
     private var parser = SSEFrameParser()
+    // WO-509: one stateful transformer handles complete tool-call frames on the Darwin path.
+    private lazy var toolCallRedactor = ToolCallStreamRedactor(
+        config: config,
+        customRules: customRules,
+        severity: severity,
+        debugSink: streamDebugSink
+    )
     /// WO-398: raw_stream EOF without `[DONE]` still needs a final advisory.
     private var rawStreamSawDone = false
     /// WO-394: advisory injection is one-shot even if an upstream repeats `[DONE]`.
@@ -77,6 +86,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-324: lower-certainty stream detections are advisory-only and do not mutate bytes.
     private var streamAdvisoryCountStorage = 0
     private var streamAdvisoryTypesStorage: [String] = []
+    private var streamToolCallRedactionCountStorage = 0 // WO-512: subset of streamRedactionCountStorage.
     var streamRedactionCount: Int { snapshotStreamStats().redactionCount }
     var streamRedactionTypes: [String] { snapshotStreamStats().redactionTypes }
     var streamAdvisoryCount: Int { snapshotStreamStats().advisoryCount }
@@ -101,6 +111,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-233: all writes go through socketWriteLock (same lock as didWriteHeaders/timerDidFire)
     /// so the connection-thread write in writeToSocket() is visible to delegate-queue readers.
     private var clientEpipe = false
+    private var streamPolicyTerminated = false // WO-511: deliberate fail-closed stop suppresses drop noise.
     private var idleTimer: DispatchSourceTimer?
     /// Queue owning the idle timer — create/cancel/reschedule must run here.
     private let timerQueue = DispatchQueue(label: "com.pastewatch.sse-idle-timer")
@@ -117,7 +128,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         idleTimeoutSeconds: Double,
         maxSessionSeconds: Double = sseStreamMaxSessionSeconds,
         delegateQueueDrainTimeoutSeconds: Double = sseDelegateQueueDrainTimeoutSeconds,
-        tlsChallengeHandler: TLSChallengeHandler? = nil
+        tlsChallengeHandler: TLSChallengeHandler? = nil,
+        streamDebugSink: StreamDebugSink? = nil
     ) {
         self.clientSocket = clientSocket
         self.sendFlags = sendFlags
@@ -129,6 +141,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         self.maxSessionSeconds = maxSessionSeconds
         self.delegateQueueDrainTimeoutSeconds = delegateQueueDrainTimeoutSeconds
         self.tlsChallengeHandler = tlsChallengeHandler
+        self.streamDebugSink = streamDebugSink
     }
 
     /// Execute the upstream request and relay the response to `clientSocket`.
@@ -138,6 +151,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         execute(task: task, session: session)
     }
 
+    // WO-512: include the tool-call subset in the same lock-protected snapshot.
     func snapshotStreamStats() -> StreamStatsSnapshot {
         streamStatsLock.lock()
         defer { streamStatsLock.unlock() }
@@ -145,7 +159,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             redactionCount: streamRedactionCountStorage,
             redactionTypes: streamRedactionTypesStorage,
             advisoryCount: streamAdvisoryCountStorage,
-            advisoryTypes: streamAdvisoryTypesStorage
+            advisoryTypes: streamAdvisoryTypesStorage,
+            toolCallRedactionCount: streamToolCallRedactionCountStorage
         )
     }
 
@@ -228,7 +243,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // timerDidFire is written under socketWriteLock; capture it there.
         socketWriteLock.lock()
         let terminalTimeout = timerDidFire || sessionCeilingDidFire
-        let shouldExit = clientEpipe || terminalTimeout
+        let shouldExit = clientEpipe || terminalTimeout || streamPolicyTerminated
         let needsHeaders = !didWriteHeaders
         // WO-241/WO-385: only a live relay claims the header slot here. Timeout
         // paths must keep it open so execute() can send the single HTTP 504.
@@ -359,9 +374,16 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-511: parser overflow and cross-frame buffering share one fail-closed boundary.
     private func relaySSEEventData(_ data: Data) {
         let result = parser.feed(data)
         if result.overflowFlushed {
+            if let blocked = toolCallRedactor.blockForParserOverflow(result.overflowBytes) {
+                for redaction in blocked.frames { _ = relayFrameData(redaction.data) }
+                markStreamPolicyTerminated()
+                activeTask?.cancel()
+                return
+            }
             // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
             let redaction = redactRawBytes(result.overflowBytes)
             recordCriticalStreamScan(redaction)
@@ -400,6 +422,18 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // [DONE], leaving SSE consumers (EventSource, openai-node) hung — they wait for
         // [DONE] to close the stream and never receive it.
         guard frame.data != "[DONE]" else {
+            // WO-511: release and account for buffered tool arguments before building the alert.
+            let tail = toolCallRedactor.finish()
+            for redaction in tail.frames {
+                let delivered = relayFrameData(redaction.data)
+                recordCriticalStreamScan(redaction)
+                if delivered { recordAdvisoryStreamScan(redaction) } else { return false }
+            }
+            if tail.terminateStream {
+                markStreamPolicyTerminated()
+                activeTask?.cancel()
+                return false
+            }
             var toSend = Data()
             let stats = snapshotStreamStats()
             if !sseEventSawDone,
@@ -416,27 +450,33 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             toSend.append(frame.raw)
             return relayFrameData(toSend)
         }
-        // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
-        let redaction = redactSSEFrame(
-            frame,
-            config: config,
-            severity: severity,
-            customRules: customRules
-        )
-        let delivered = relayFrameData(redaction.data)
-        // WO-372/WO-404: mutation-safe redactions stay attempted-detection scoped, but
-        // advisory-only matches are in-band guidance and must be delivery-scoped.
-        recordCriticalStreamScan(redaction)
-        if delivered {
-            recordAdvisoryStreamScan(redaction)
+        // WO-509: tool-call fragments may require later frames before an authorized mutation is known.
+        let transformed = toolCallRedactor.process(frame)
+        for redaction in transformed.frames {
+            let delivered = relayFrameData(redaction.data)
+            // WO-372: mutation-safe redactions stay attempted-detection scoped, but
+            // WO-404 keeps advisory-only matches delivery-scoped.
+            recordCriticalStreamScan(redaction)
+            if delivered {
+                recordAdvisoryStreamScan(redaction)
+            } else {
+                return false
+            }
         }
-        return delivered
+        if transformed.terminateStream {
+            markStreamPolicyTerminated()
+            activeTask?.cancel()
+            return false
+        }
+        return true
     }
 
+    // WO-512: retain the tool-call subset while preserving aggregate redaction statistics.
     private func recordCriticalStreamScan(_ redaction: SSEFrameRedactionResult) {
         streamStatsLock.lock()
         streamRedactionCountStorage += redaction.count
         streamRedactionTypesStorage.append(contentsOf: redaction.types)
+        streamToolCallRedactionCountStorage += redaction.toolCallRedactionCount
         streamStatsLock.unlock()
     }
 
@@ -462,6 +502,25 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
         markClientEpipeAndCancelTask()
         return false
+    }
+
+    // WO-511: keep EOF tool-buffer delivery outside the already complex completion callback.
+    private func flushBufferedToolCallsAtEOF() -> Bool {
+        let tail = toolCallRedactor.finish()
+        for redaction in tail.frames {
+            recordCriticalStreamScan(redaction)
+            guard writeToSocket(redaction.data) else { return false }
+            recordAdvisoryStreamScan(redaction)
+        }
+        if tail.terminateStream { markStreamPolicyTerminated() }
+        return true
+    }
+
+    // WO-511: cancellation can still enqueue delegate callbacks; latch the local terminal policy.
+    private func markStreamPolicyTerminated() {
+        socketWriteLock.lock()
+        streamPolicyTerminated = true
+        socketWriteLock.unlock()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -504,14 +563,15 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-177: guard remainder flush and drop notice behind timerFired — after the idle timer
         // fires the socket is dead; writing to it would corrupt the next connection on that fd.
         // WO-227: also guard behind clientEpipe — client is gone; flush burns CPU and inflates stats.
-        if !terminalTimeout && !epipe {
+        if !terminalTimeout && !epipe && !streamPolicyTerminated {
             // Flush any partial SSE remainder on clean close.
             // WO-172: redact the remainder bytes — a partial frame may contain a mid-stream
             // credential that was split across chunk boundaries and never saw the per-frame path.
             var epipeAfterFlush = false
             if redactionMode == .perSSEEvent {
+                epipeAfterFlush = !flushBufferedToolCallsAtEOF()
                 let rem = parser.remainingBytes
-                if !rem.isEmpty {
+                if !epipeAfterFlush && !streamPolicyTerminated && !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
                     recordCriticalStreamScan(redaction)
                     if writeToSocket(redaction.data) {
@@ -551,7 +611,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 }
             }
 
-            if let err = error, !epipeAfterFlush, responseStatus != 0 {
+            if let err = error, !epipeAfterFlush, !streamPolicyTerminated, responseStatus != 0 {
                 // WO-332: a connection failure with no upstream response head must let
                 // execute() send the HTTP 502 status line before any diagnostic body bytes.
                 // WO-237: streamError property removed (was write-only dead state). Surface via socket.
@@ -753,7 +813,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             redactionCount: current.redactionCount,
             redactionTypes: current.redactionTypes,
             advisoryCount: current.advisoryCount + count,
-            advisoryTypes: current.advisoryTypes + advisoryTypes
+            advisoryTypes: current.advisoryTypes + advisoryTypes,
+            toolCallRedactionCount: current.toolCallRedactionCount
         )
     }
 

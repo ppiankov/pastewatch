@@ -38,6 +38,12 @@ func proxyShutdownExitCode(didStart: Bool) -> Int32 {
     didStart ? 0 : proxyInterruptedExitCode
 }
 
+// WO-514: raw stream capture must remain conspicuous even when normal logs are quiet.
+func streamDebugDumpWarning(path: String?) -> String? {
+    guard let path else { return nil }
+    return "WARNING: --debug-stream-dump writes raw streaming data with secrets to local file: \(path)\n"
+}
+
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start API proxy that scans and redacts secrets from outbound requests"
@@ -57,6 +63,10 @@ struct Proxy: ParsableCommand {
 
     @Option(name: .long, help: "Audit log file path")
     var auditLog: String?
+
+    // WO-514: raw capture requires an explicit CLI path and has no config default.
+    @Option(name: .long, help: "Write raw streaming frames and redaction decisions to a local file")
+    var debugStreamDump: String?
 
     @Flag(name: .long, inversion: .prefixedNo, help: "Inject alert into response when secrets are redacted")
     var alert: Bool = true
@@ -92,6 +102,7 @@ struct Proxy: ParsableCommand {
 
         let config = PastewatchConfig.resolve()
         let compiledCustomRules = try requireValidProxyCustomRules(config)
+        let streamDebugSink = try debugStreamDump.map { try StreamDebugSink(path: $0) }
         let server = ProxyServer(
             port: port,
             upstream: upstreamURL,
@@ -103,7 +114,8 @@ struct Proxy: ParsableCommand {
             injectAlert: alert,
             quietLog: quiet,
             caCertPath: caCert,
-            insecureTLS: insecure
+            insecureTLS: insecure,
+            streamDebugSink: streamDebugSink
         )
 
         FileHandle.standardError.write(Data("pastewatch proxy listening on http://127.0.0.1:\(port)\n".utf8))
@@ -113,6 +125,9 @@ struct Proxy: ParsableCommand {
         }
         FileHandle.standardError.write(Data("severity: \(severity.rawValue)\n".utf8))
         FileHandle.standardError.write(Data("alert-injection: \(alert ? "on" : "off")\n".utf8))
+        if let warning = streamDebugDumpWarning(path: debugStreamDump) {
+            FileHandle.standardError.write(Data(warning.utf8))
+        }
         if let warning = ProxyServer.bufferModeWarning(config: config, quiet: quiet) {
             FileHandle.standardError.write(Data(warning.utf8))
         }

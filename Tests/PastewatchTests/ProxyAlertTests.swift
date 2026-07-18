@@ -562,6 +562,30 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(log.contains("PROXY REDACTED 1 secret(s) in response /v1/messages"))
     }
 
+    // WO-512: audit and stats distinguish tool argument mutation from ordinary stream text.
+    func testToolCallStreamingMutationHasDistinctAuditSignal() throws {
+        let path = NSTemporaryDirectory() + "pastewatch-tool-call-audit-\(UUID().uuidString).log"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let auditServer = ProxyServer(port: 0, auditLogPath: path)
+
+        auditServer.recordStreamingAuditStats(.init(
+            path: "/v1/messages",
+            bodyCount: 0,
+            bodyTypes: [],
+            streamCount: 1,
+            streamTypes: ["Tool argument: Google API Key"],
+            advisoryCount: 0,
+            advisoryTypes: [],
+            toolCallCount: 1
+        ))
+        auditServer.drainAuditLogForTesting()
+
+        let log = try String(contentsOfFile: path)
+        XCTAssertEqual(auditServer.stats.toolCallPayloadMutations, 1)
+        XCTAssertTrue(log.contains("PROXY TOOL ARGUMENT REDACTED 1 secret(s) in /v1/messages"), log)
+        XCTAssertTrue(log.contains("Tool argument: Google API Key"), log)
+    }
+
     func testStreamingStatsDeferralPolicyHonorsPlatformAndMode() {
         var bufferConfig = PastewatchConfig.defaultConfig
         bufferConfig.responseStreamingRedactionMode = .buffer
@@ -595,6 +619,23 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(first.contains(".123"))
         XCTAssertTrue(first.hasSuffix("Z"))
         XCTAssertNotEqual(first, second)
+    }
+
+    // WO-395: shared formatter access remains well-formed under concurrent first use.
+    func testAuditTimestampFormattingIsSerializedAcrossHandlers() {
+        let server = ProxyServer(port: 0)
+        let lock = NSLock()
+        var timestamps: [String] = []
+
+        DispatchQueue.concurrentPerform(iterations: 200) { offset in
+            let timestamp = server.formatAuditTimestamp(Date(timeIntervalSince1970: Double(offset)))
+            lock.lock()
+            timestamps.append(timestamp)
+            lock.unlock()
+        }
+
+        XCTAssertEqual(timestamps.count, 200)
+        XCTAssertTrue(timestamps.allSatisfy { $0.contains("T") && $0.contains(".") && $0.hasSuffix("Z") })
     }
 
     // WO-503: scan plaintext/future block payloads without corrupting encoded media.

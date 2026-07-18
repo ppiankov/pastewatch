@@ -46,6 +46,24 @@ work unless they violate one of these invariants.
    Linux curl subprocess output must also be drained while the child is running;
    Guard: `ProxyHTTPRequestReadTests.testCurlNonStreamingCollectionDrainsLargeProcessOutputBeforeWait`.
 
+7. Tool-call argument fragments are scanned as one bounded logical payload on both
+   platform relays. Anthropic `input_json_delta.partial_json` and OpenAI-compatible
+   `choices[].delta.tool_calls[].function.arguments` preserve original SSE and JSON
+   bytes except for authorized replacements. Buffer overflow terminates the local
+   stream instead of forwarding unscanned arguments.
+   Guards: `ProxyStreamRedactionTests.testAnthropicToolCallRedactsSecretSplitAcrossFrames`,
+   `ProxyStreamRedactionTests.testOpenAIToolCallRedactsSecretSplitAcrossFrames`,
+   `ProxyStreamRedactionTests.testLinuxRelayRedactsAnthropicToolSecretSplitAcrossFrames`,
+   and `ProxyTimeoutTests.testSSEStreamRelayRedactsToolSecretSplitAcrossFrames`.
+
+8. Response streaming currently has no production exact-known-secret inventory.
+   `DetectionRules.scan(knownSecretValues:)` is an available scanner capability, but
+   the proxy has no authoritative runtime catalog or lifecycle for those values.
+   Response mutation therefore uses intrinsic-format and custom-rule evidence only;
+   adding a catalog requires a separately reviewed source, lifetime, and memory-erasure
+   design rather than ad hoc environment enumeration. This is the explicit WO-513
+   non-goal.
+
 ## Watched Duplication
 
 WO-505: the Darwin `URLSession` and Linux curl relays intentionally implement the
