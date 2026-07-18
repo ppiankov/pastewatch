@@ -892,6 +892,17 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformed.toolCallRedactionCount, 1)
     }
 
+    // WO-510: a deterministic match in a JSON scalar must remain valid client-side JSON.
+    func testAnthropicToolCallQuotesNumericSecretPlaceholder() throws {
+        let fixture = anthropicToolCallFixture(fragments: [#"{"card":4242424242424242}"#])
+
+        let transformed = transformToolCallFixture(fixture)
+        let object = try reassembleAnthropicToolJSON(from: transformed.data)
+
+        XCTAssertEqual(object["card"] as? String, "<CARD_1>")
+        XCTAssertEqual(transformed.toolCallRedactionCount, 1)
+    }
+
     // WO-518: decoded and raw spellings share first-occurrence placeholder ordering.
     func testToolCallPlaceholderOrderIncludesEscapedMatches() throws {
         let firstTail = "Iza" + String(repeating: "L", count: 35)
@@ -905,6 +916,21 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
         XCTAssertEqual(object["first"] as? String, "<GOOGLE_API_KEY_1>")
         XCTAssertEqual(object["second"] as? String, "<GOOGLE_API_KEY_2>")
+    }
+
+    // WO-518: placeholder identity persists across independently flushed tool blocks.
+    func testSequentialAnthropicToolBlocksKeepDistinctPlaceholders() {
+        let first = "AIza" + String(repeating: "N", count: 35)
+        let second = "AIza" + String(repeating: "P", count: 35)
+        var fixture = anthropicToolCallFixture(fragments: [#"{"key":"\#(first)"}"#], index: 0)
+        fixture.append(anthropicToolCallFixture(fragments: [#"{"key":"\#(second)"}"#], index: 1))
+
+        let transformed = transformToolCallFixture(fixture)
+        let output = String(bytes: transformed.data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(output.contains("<GOOGLE_API_KEY_1>"), output)
+        XCTAssertTrue(output.contains("<GOOGLE_API_KEY_2>"), output)
+        XCTAssertEqual(transformed.toolCallRedactionCount, 2)
     }
 
     // WO-509: OpenAI/LiteLLM argument fragments use the same fail-closed scanner.
@@ -1084,6 +1110,29 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformToolCallFixture(fixture).data, fixture)
     }
 
+    // WO-509: a valid unknown envelope must not leave as corrupted JSON after mutation.
+    func testUnknownNumericSecretFrameFailsClosedInsteadOfCorruptingJSON() throws {
+        let fixture = sseFrame(
+            eventType: "gateway_extension",
+            data: #"{"extension":{"card":4242424242424242}}"#
+        )
+        var parser = SSEFrameParser()
+        let frame = try XCTUnwrap(parser.feed(fixture).frames.first)
+        var transformer = ToolCallStreamRedactor(
+            config: PastewatchConfig.defaultConfig,
+            customRules: [],
+            severity: .high
+        )
+
+        let result = transformer.process(frame)
+
+        XCTAssertTrue(result.terminateStream)
+        XCTAssertEqual(result.frames.first?.data, Data(
+            "event: pastewatch_error\ndata: {\"error\":\"stream redaction could not preserve valid JSON\"}\n\n"
+                .appending("data: [DONE]\n\n").utf8
+        ))
+    }
+
     // WO-512: the in-band alert identifies a mutation inside tool arguments.
     func testLinuxToolCallAlertCarriesDistinctMutationType() {
         let credential = "AIza" + String(repeating: "N", count: 35)
@@ -1176,6 +1225,41 @@ final class ProxyStreamRedactionTests: XCTestCase {
             String(bytes: result.frames[0].data, encoding: .utf8) ?? "",
             "event: pastewatch_error\ndata: {\"error\":\"stream buffer limit exceeded\"}\n\ndata: [DONE]\n\n"
         )
+    }
+
+    // WO-511: the next complete frame is rejected before retained storage crosses the cap.
+    func testToolCallAggregateBufferNeverRetainsOverflowFrame() throws {
+        func frame(fill: Character) throws -> SSEFrameParser.Frame {
+            let object: [String: Any] = [
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": [
+                    "type": "input_json_delta",
+                    "partial_json": String(repeating: fill, count: SSEFrameParser.maxFrameBytes / 2)
+                ]
+            ]
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            let payloadString = try XCTUnwrap(String(data: payload, encoding: .utf8))
+            return SSEFrameParser.Frame(
+                raw: Data("data: \(payloadString)\n\n".utf8),
+                eventType: nil,
+                data: payloadString
+            )
+        }
+        let first = try frame(fill: "a")
+        let second = try frame(fill: "b")
+        var transformer = ToolCallStreamRedactor(
+            config: PastewatchConfig.defaultConfig,
+            customRules: [],
+            severity: .high
+        )
+
+        XCTAssertFalse(transformer.process(first).terminateStream)
+        let result = transformer.process(second)
+
+        XCTAssertTrue(result.terminateStream)
+        XCTAssertEqual(transformer.peakPendingBytes, first.raw.count)
+        XCTAssertLessThanOrEqual(transformer.peakPendingBytes, SSEFrameParser.maxFrameBytes)
     }
 
     // WO-511: a first oversized tool frame cannot bypass the stateful transformer.

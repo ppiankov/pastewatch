@@ -44,12 +44,39 @@ struct ToolCallStreamRedactor {
     private struct LogicalMatch {
         let range: Range<Int>
         let match: DetectedMatch
+        let requiresJSONStringLiteral: Bool
     }
 
     private struct ToolGroupScan {
         let replacements: [LogicalReplacement]
         let mutated: [DetectedMatch]
         let advisory: [DetectedMatch]
+    }
+
+    // WO-509: typed failures keep client diagnostics aligned with the fail-closed cause.
+    private enum BlockingFailure {
+        case toolBufferOverflow
+        case parserOverflow
+        case toolByteMapping
+        case invalidJSONAfterMutation
+
+        var decision: String {
+            switch self {
+            case .toolBufferOverflow: "blocked_tool_buffer_overflow"
+            case .parserOverflow: "blocked_parser_overflow"
+            case .toolByteMapping: "blocked_tool_byte_mapping_failure"
+            case .invalidJSONAfterMutation: "blocked_invalid_json_after_mutation"
+            }
+        }
+
+        var errorFrame: Data {
+            switch self {
+            case .toolBufferOverflow, .parserOverflow:
+                ToolCallStreamRedactor.overflowErrorFrame
+            case .toolByteMapping, .invalidJSONAfterMutation:
+                ToolCallStreamRedactor.mutationSafetyErrorFrame
+            }
+        }
     }
 
     private struct FrameStats {
@@ -67,8 +94,10 @@ struct ToolCallStreamRedactor {
     private let debugSink: StreamDebugSink?
     private var pending: [PendingFrame] = []
     private var pendingBytes = 0
+    private(set) var peakPendingBytes = 0 // WO-511: deterministic proof that retained frames stay bounded.
     private var activeAnthropicBlocks: Set<Int> = []
     private var activeOpenAIChoices: Set<Int> = []
+    private var placeholderCounters: [SensitiveDataType: Int] = [:] // WO-518: stream-wide identity.
 
     init(
         config: PastewatchConfig,
@@ -109,8 +138,13 @@ struct ToolCallStreamRedactor {
         let terminalOpenAIChoices = openAITerminalChoiceIndexes(in: frame)
 
         if !fragments.isEmpty || !pending.isEmpty {
+            // WO-511: reject before retention so one full frame cannot double the aggregate cap.
+            guard frame.raw.count <= SSEFrameParser.maxFrameBytes - pendingBytes else {
+                return blockPending(.toolBufferOverflow, additionalInputs: [frame.raw])
+            }
             pending.append(PendingFrame(frame: frame, fragments: fragments))
             pendingBytes += frame.raw.count
+            peakPendingBytes = max(peakPendingBytes, pendingBytes)
             for fragment in fragments where fragment.group.hasPrefix("anthropic:") {
                 if let index = Int(fragment.group.dropFirst("anthropic:".count)) {
                     activeAnthropicBlocks.insert(index)
@@ -125,11 +159,6 @@ struct ToolCallStreamRedactor {
             if let stopIndex { activeAnthropicBlocks.remove(stopIndex) }
             activeOpenAIChoices.subtract(terminalOpenAIChoices)
 
-            // WO-511: never convert a memory bound into an unscanned passthrough.
-            guard pendingBytes <= SSEFrameParser.maxFrameBytes else {
-                return blockPending(decision: "blocked_tool_buffer_overflow")
-            }
-
             if (openAITerminal && activeOpenAIChoices.isEmpty)
                 || (stopIndex != nil && activeAnthropicBlocks.isEmpty) {
                 return flushPending()
@@ -143,6 +172,10 @@ struct ToolCallStreamRedactor {
             severity: severity,
             customRules: customRules
         )
+        // WO-509: valid upstream JSON must never become syntactically corrupted downstream.
+        guard Self.frameMutationPreservesJSON(redaction.data, original: frame) else {
+            return blockPending(.invalidJSONAfterMutation, additionalInputs: [frame.raw])
+        }
         return ProcessResult(frames: [record(redaction, frame: frame)], terminateStream: false)
     }
 
@@ -156,14 +189,11 @@ struct ToolCallStreamRedactor {
         let containsSSEData = overflow.starts(with: Data("data:".utf8))
             || overflow.range(of: Data("\ndata:".utf8)) != nil
         guard hasPendingFrames || containsSSEData else { return nil }
-        return blockPending(
-            decision: "blocked_parser_overflow",
-            additionalInputs: [overflow]
-        )
+        return blockPending(.parserOverflow, additionalInputs: [overflow])
     }
 
     private mutating func blockPending(
-        decision: String,
+        _ failure: BlockingFailure,
         additionalInputs: [Data] = []
     ) -> ProcessResult {
         let inputs = pending.map(\.frame.raw) + additionalInputs
@@ -171,11 +201,11 @@ struct ToolCallStreamRedactor {
         pendingBytes = 0
         activeAnthropicBlocks.removeAll()
         activeOpenAIChoices.removeAll()
-        let error = SSEFrameRedactionResult(data: Self.overflowErrorFrame, count: 0, types: [])
+        let error = SSEFrameRedactionResult(data: failure.errorFrame, count: 0, types: [])
         debugSink?.record(
             inputs: inputs,
             output: error.data,
-            decision: decision,
+            decision: failure.decision,
             shape: "stream-buffer-overflow",
             scannedFields: ["partial_json", "function.arguments"],
             matchTypes: []
@@ -199,20 +229,18 @@ struct ToolCallStreamRedactor {
             let right = rhs.map { ($0.frameIndex, $0.fragment.rawValueRange.lowerBound) }.min { $0 < $1 }
             return left ?? (Int.max, Int.max) < right ?? (Int.max, Int.max)
         }
-        var placeholderCounters: [SensitiveDataType: Int] = [:]
-
         for entries in orderedGroups {
             let originalFragments = entries.map { $0.fragment.value }
             let text = originalFragments.joined()
             guard let scan = scanToolGroup(text, counters: &placeholderCounters) else {
-                return blockPending(decision: "blocked_tool_byte_mapping_failure")
+                return blockPending(.toolByteMapping)
             }
             guard let replacements = Self.rewriteFragments(
                 entries,
                 in: text,
                 replacements: scan.replacements
             ) else {
-                return blockPending(decision: "blocked_tool_byte_mapping_failure")
+                return blockPending(.toolByteMapping)
             }
             for (frameIndex, frameReplacements) in replacements {
                 replacementsByFrame[frameIndex, default: []].append(contentsOf: frameReplacements)
@@ -236,12 +264,8 @@ struct ToolCallStreamRedactor {
         }
 
         let buffered = pending
-        pending.removeAll(keepingCapacity: true)
-        pendingBytes = 0
-        activeAnthropicBlocks.removeAll()
-        activeOpenAIChoices.removeAll()
-
-        let frames = buffered.enumerated().map { index, item in
+        var frames: [SSEFrameRedactionResult] = []
+        for (index, item) in buffered.enumerated() {
             var output = item.frame.raw
             let replacements = replacementsByFrame[index] ?? []
             let excludedRanges = item.fragments.map { fragment in
@@ -261,8 +285,15 @@ struct ToolCallStreamRedactor {
                 advisoryTypes: stats.advisoryTypes + frameWide.advisoryTypes,
                 toolCallRedactionCount: stats.count
             )
-            return record(result, frame: item.frame, debugMatchTypes: debugTypesByFrame[index])
+            guard Self.frameMutationPreservesJSON(result.data, original: item.frame) else {
+                return blockPending(.invalidJSONAfterMutation)
+            }
+            frames.append(record(result, frame: item.frame, debugMatchTypes: debugTypesByFrame[index]))
         }
+        pending.removeAll(keepingCapacity: true)
+        pendingBytes = 0
+        activeAnthropicBlocks.removeAll()
+        activeOpenAIChoices.removeAll()
         return ProcessResult(frames: frames, terminateStream: false)
     }
 
@@ -278,12 +309,16 @@ struct ToolCallStreamRedactor {
             site: .proxyResponse,
             minAdvisorySeverity: severity
         )
-        var logicalMutations = rawOutcome.mutated.map {
-            LogicalMatch(range: Self.utf8Range(of: $0, in: text), match: $0)
-        }
         var advisory = rawOutcome.advisory
         let rawMatchRanges = rawMatches.map { Self.utf8Range(of: $0, in: text) }
         guard (try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])) != nil else {
+            let logicalMutations = rawOutcome.mutated.map {
+                LogicalMatch(
+                    range: Self.utf8Range(of: $0, in: text),
+                    match: $0,
+                    requiresJSONStringLiteral: false
+                )
+            }
             return Self.finalizeToolGroupScan(
                 logicalMutations,
                 advisory: advisory,
@@ -291,8 +326,27 @@ struct ToolCallStreamRedactor {
             )
         }
 
+        let tokens = Self.jsonStringValues(in: Data(text.utf8))
+        let tokenRanges = tokens.map(\.rawValueRange)
+        var logicalMutations: [LogicalMatch] = []
+        for match in rawOutcome.mutated {
+            let range = Self.utf8Range(of: match, in: text)
+            let insideString = tokenRanges.contains { tokenRange in
+                tokenRange.lowerBound <= range.lowerBound && range.upperBound <= tokenRange.upperBound
+            }
+            let replacement = insideString
+                ? Self.jsonStringContent("PW_PLACEHOLDER")
+                : Self.jsonStringLiteral("PW_PLACEHOLDER")
+            guard Self.replacingJSONRange(range, with: replacement, in: text) != nil else { return nil }
+            logicalMutations.append(LogicalMatch(
+                range: range,
+                match: match,
+                requiresJSONStringLiteral: !insideString
+            ))
+        }
+
         // WO-516: decoded object keys and values are equally capable of carrying secrets.
-        for token in Self.jsonStringValues(in: Data(text.utf8)) {
+        for token in tokens {
             let tokenMatches = scanStreamText(token.value, config: config, customRules: customRules)
             let tokenOutcome = applyAuthorizedMutations(
                 to: token.value,
@@ -312,7 +366,11 @@ struct ToolCallStreamRedactor {
                 ))
                 guard !rawMatchRanges.contains(where: { Self.rangesOverlap($0, logicalRange) }) else { continue }
                 if tokenOutcome.mutated.contains(where: { $0.id == match.id }) {
-                    logicalMutations.append(LogicalMatch(range: logicalRange, match: match))
+                    logicalMutations.append(LogicalMatch(
+                        range: logicalRange,
+                        match: match,
+                        requiresJSONStringLiteral: false
+                    ))
                 } else if tokenOutcome.advisory.contains(where: { $0.id == match.id }) {
                     advisory.append(match)
                 }
@@ -340,7 +398,9 @@ struct ToolCallStreamRedactor {
             )
             return LogicalReplacement(
                 range: item.range,
-                value: jsonStringContent(placeholder)
+                value: item.requiresJSONStringLiteral
+                    ? jsonStringContent("\"\(placeholder)\"")
+                    : jsonStringContent(placeholder)
             )
         }
         return ToolGroupScan(
@@ -362,6 +422,41 @@ struct ToolCallStreamRedactor {
 
     private static func rangesOverlap(_ lhs: Range<Int>, _ rhs: Range<Int>) -> Bool {
         lhs.lowerBound < rhs.upperBound && rhs.lowerBound < lhs.upperBound
+    }
+
+    // WO-509: post-mutation validation turns raw fallback corruption into a local fail-closed event.
+    private static func frameMutationPreservesJSON(
+        _ output: Data,
+        original frame: SSEFrameParser.Frame
+    ) -> Bool {
+        guard let originalPayload = frame.data,
+              (try? JSONSerialization.jsonObject(
+                with: Data(originalPayload.utf8),
+                options: [.fragmentsAllowed]
+              )) != nil else { return true }
+        var parser = SSEFrameParser()
+        let parsed = parser.feed(output)
+        guard !parsed.overflowFlushed,
+              parsed.frames.count == 1,
+              let outputPayload = parsed.frames.first?.data else { return false }
+        return (try? JSONSerialization.jsonObject(
+            with: Data(outputPayload.utf8),
+            options: [.fragmentsAllowed]
+        )) != nil
+    }
+
+    // WO-510: structural-spanning custom matches fail closed instead of corrupting tool JSON.
+    private static func replacingJSONRange(
+        _ range: Range<Int>,
+        with replacement: Data,
+        in text: String
+    ) -> Data? {
+        var candidate = Data(text.utf8)
+        candidate.replaceSubrange(range, with: replacement)
+        guard (try? JSONSerialization.jsonObject(with: candidate, options: [.fragmentsAllowed])) != nil else {
+            return nil
+        }
+        return candidate
     }
 
     private static func adjustedRange(
@@ -750,6 +845,13 @@ struct ToolCallStreamRedactor {
         return Data(encoded.dropFirst(2).dropLast(2))
     }
 
+    private static func jsonStringLiteral(_ value: String) -> Data {
+        guard let encoded = try? JSONSerialization.data(withJSONObject: [value]), encoded.count >= 2 else {
+            return Data("\"\(value)\"".utf8)
+        }
+        return Data(encoded.dropFirst().dropLast())
+    }
+
     // WO-510: map the parser's joined data payload back to one raw `data:` line.
     private static func rawFrameRange(for logicalRange: Range<Int>, in raw: Data) -> Range<Int>? {
         var lineStart = 0
@@ -780,6 +882,11 @@ struct ToolCallStreamRedactor {
 
     private static let overflowErrorFrame = Data(
         "event: pastewatch_error\ndata: {\"error\":\"stream buffer limit exceeded\"}\n\ndata: [DONE]\n\n".utf8
+    )
+
+    private static let mutationSafetyErrorFrame = Data(
+        "event: pastewatch_error\ndata: {\"error\":\"stream redaction could not preserve valid JSON\"}\n\n"
+            .appending("data: [DONE]\n\n").utf8
     )
 }
 
