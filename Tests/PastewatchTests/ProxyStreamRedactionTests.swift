@@ -892,6 +892,55 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformed.toolCallRedactionCount, 1)
     }
 
+    // WO-519@v2: complete escaped tokens are scanned when aggregate tool JSON is truncated.
+    func testAnthropicToolCallRedactsUnicodeEscapedSecretInTruncatedJSON() {
+        let credentialTail = "Iza" + String(repeating: "Q", count: 35)
+        let truncated = "{\"token\":\"\\u0041\(credentialTail)\""
+        let fixture = anthropicToolCallFixture(fragments: [truncated])
+
+        let transformed = transformToolCallFixture(fixture)
+        let output = String(bytes: transformed.data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(output.contains("<GOOGLE_API_KEY_1>"), output)
+        XCTAssertFalse(output.contains(credentialTail), output)
+        XCTAssertEqual(transformed.redactionCount, 1)
+        XCTAssertEqual(transformed.toolCallRedactionCount, 1)
+        XCTAssertEqual(transformed.types, ["Tool argument: Google API Key"])
+    }
+
+    // WO-519@v2: an escape in an unterminated token cannot bypass decoded scanning.
+    func testAnthropicToolCallBlocksUnmappedEscapeInTruncatedJSON() throws {
+        let credentialTail = "Iza" + String(repeating: "R", count: 35)
+        let truncated = "{\"token\":\"\\u0041\(credentialTail)"
+        let fixture = anthropicToolCallFixture(fragments: [truncated])
+        var parser = SSEFrameParser()
+        var transformer = ToolCallStreamRedactor(
+            config: PastewatchConfig.defaultConfig,
+            customRules: [],
+            severity: .high
+        )
+        var blocked: ToolCallStreamRedactor.ProcessResult?
+
+        for frame in parser.feed(fixture).frames {
+            let result = transformer.process(frame)
+            if result.terminateStream {
+                blocked = result
+                break
+            }
+        }
+
+        let result = try XCTUnwrap(blocked)
+        let output = try XCTUnwrap(result.frames.first?.data)
+        XCTAssertEqual(
+            output,
+            Data(
+                "event: pastewatch_error\ndata: {\"error\":\"stream redaction could not preserve valid JSON\"}\n\n"
+                    .appending("data: [DONE]\n\n").utf8
+            )
+        )
+        XCTAssertFalse(String(bytes: output, encoding: .utf8)?.contains(credentialTail) ?? true)
+    }
+
     // WO-510: a deterministic match in a JSON scalar must remain valid client-side JSON.
     func testAnthropicToolCallQuotesNumericSecretPlaceholder() throws {
         let fixture = anthropicToolCallFixture(fragments: [#"{"card":4242424242424242}"#])

@@ -311,26 +311,25 @@ struct ToolCallStreamRedactor {
         )
         var advisory = rawOutcome.advisory
         let rawMatchRanges = rawMatches.map { Self.utf8Range(of: $0, in: text) }
-        guard (try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])) != nil else {
-            let logicalMutations = rawOutcome.mutated.map {
-                LogicalMatch(
-                    range: Self.utf8Range(of: $0, in: text),
-                    match: $0,
-                    requiresJSONStringLiteral: false
-                )
-            }
-            return Self.finalizeToolGroupScan(
-                logicalMutations,
-                advisory: advisory,
-                counters: &counters
-            )
-        }
-
-        let tokens = Self.jsonStringValues(in: Data(text.utf8))
+        let argumentData = Data(text.utf8)
+        let validJSON = (try? JSONSerialization.jsonObject(
+            with: argumentData,
+            options: [.fragmentsAllowed]
+        )) != nil
+        // WO-519@v2: complete escaped tokens remain scannable when aggregate JSON is truncated.
+        let tokens = Self.jsonStringValues(in: argumentData)
         let tokenRanges = tokens.map(\.rawValueRange)
         var logicalMutations: [LogicalMatch] = []
         for match in rawOutcome.mutated {
             let range = Self.utf8Range(of: match, in: text)
+            guard validJSON else {
+                logicalMutations.append(LogicalMatch(
+                    range: range,
+                    match: match,
+                    requiresJSONStringLiteral: false
+                ))
+                continue
+            }
             let insideString = tokenRanges.contains { tokenRange in
                 tokenRange.lowerBound <= range.lowerBound && range.upperBound <= tokenRange.upperBound
             }
@@ -375,6 +374,10 @@ struct ToolCallStreamRedactor {
                     advisory.append(match)
                 }
             }
+        }
+        // WO-519@v2: an escape outside a complete token is not safe to relay raw.
+        guard validJSON || !Self.hasUnmappedJSONEscape(in: argumentData, tokens: tokens) else {
+            return nil
         }
         return Self.finalizeToolGroupScan(
             logicalMutations,
@@ -422,6 +425,14 @@ struct ToolCallStreamRedactor {
 
     private static func rangesOverlap(_ lhs: Range<Int>, _ rhs: Range<Int>) -> Bool {
         lhs.lowerBound < rhs.upperBound && rhs.lowerBound < lhs.upperBound
+    }
+
+    // WO-519@v2: malformed JSON is relayed only when every escape was decoded and scanned.
+    private static func hasUnmappedJSONEscape(in data: Data, tokens: [JSONStringValue]) -> Bool {
+        let mappedRanges = tokens.map(\.rawValueRange)
+        return data.indices.contains { index in
+            data[index] == 0x5C && !mappedRanges.contains(where: { $0.contains(index) })
+        }
     }
 
     // WO-509: post-mutation validation turns raw fallback corruption into a local fail-closed event.
