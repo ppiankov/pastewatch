@@ -47,19 +47,22 @@ struct SSEFrameRedactionResult {
     let redactionTypes: [String]
     let advisoryCount: Int
     let advisoryTypes: [String]
+    let toolCallRedactionCount: Int // WO-512: distinguish tool payload mutation from ordinary text.
 
     init(
         data: Data,
         count: Int,
         types: [String],
         advisoryCount: Int = 0,
-        advisoryTypes: [String] = []
+        advisoryTypes: [String] = [],
+        toolCallRedactionCount: Int = 0
     ) {
         self.data = data
         self.redactionCount = count
         self.redactionTypes = types
         self.advisoryCount = advisoryCount
         self.advisoryTypes = advisoryTypes
+        self.toolCallRedactionCount = toolCallRedactionCount
     }
 
     var count: Int { redactionCount }

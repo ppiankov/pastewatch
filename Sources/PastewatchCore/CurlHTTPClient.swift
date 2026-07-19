@@ -49,6 +49,7 @@ struct CurlHTTPClient {
         let streamAdvisoryCount: Int
         /// WO-336: advisory-only type names detected during streaming (Linux path).
         let streamAdvisoryTypes: [String]
+        let streamToolCallRedactionCount: Int // WO-512: subset of streaming mutations from tool arguments.
         /// WO-359: non-UTF-8 buffered response redactions detected on the Linux curl path.
         let responseRedactionCount: Int
         let responseRedactionTypes: [String]
@@ -59,6 +60,7 @@ struct CurlHTTPClient {
         init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
              streamRedactionCount: Int = 0, streamRedactionTypes: [String] = [],
              streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = [],
+             streamToolCallRedactionCount: Int = 0,
              responseRedactionCount: Int = 0, responseRedactionTypes: [String] = [],
              responseAdvisoryCount: Int = 0, responseAdvisoryTypes: [String] = []) {
             self.statusCode = statusCode
@@ -69,6 +71,7 @@ struct CurlHTTPClient {
             self.streamRedactionTypes = streamRedactionTypes
             self.streamAdvisoryCount = streamAdvisoryCount
             self.streamAdvisoryTypes = streamAdvisoryTypes
+            self.streamToolCallRedactionCount = streamToolCallRedactionCount
             self.responseRedactionCount = responseRedactionCount
             self.responseRedactionTypes = responseRedactionTypes
             self.responseAdvisoryCount = responseAdvisoryCount
@@ -121,6 +124,7 @@ struct CurlHTTPClient {
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
         proxyCustomRules: [CustomRule]? = nil,
         proxySeverity: Severity = .high,
+        streamDebugSink: StreamDebugSink? = nil,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
         alertBeforeDone: StreamAlertBuilder? = nil
@@ -179,7 +183,8 @@ struct CurlHTTPClient {
                 redactionMode: streamingRedactionMode,
                 config: proxyConfig,
                 customRules: customRules,
-                severity: proxySeverity
+                severity: proxySeverity,
+                debugSink: streamDebugSink
             )
             // WO-196: alertBeforeDone passed directly, not through StreamContext.
             guard let response = relayStreamingResponse(
@@ -368,6 +373,7 @@ struct CurlHTTPClient {
         let config: PastewatchConfig
         let customRules: [CustomRule] // WO-473: startup-validated rules shared by Linux relay paths.
         let severity: Severity
+        let debugSink: StreamDebugSink? // WO-514: explicit local dump sink, nil by default.
 
         init(
             clientSocket: Int32,
@@ -375,7 +381,8 @@ struct CurlHTTPClient {
             redactionMode: StreamingRedactionMode,
             config: PastewatchConfig,
             customRules: [CustomRule]? = nil,
-            severity: Severity
+            severity: Severity,
+            debugSink: StreamDebugSink? = nil
         ) {
             self.clientSocket = clientSocket
             self.sendFlags = sendFlags
@@ -383,6 +390,7 @@ struct CurlHTTPClient {
             self.config = config
             self.customRules = customRules ?? CustomRule.compileValid(config.customRules)
             self.severity = severity
+            self.debugSink = debugSink
         }
     }
 
@@ -392,6 +400,7 @@ struct CurlHTTPClient {
         let redactionTypes: [String]
         let advisoryCount: Int
         let advisoryTypes: [String]
+        let toolCallRedactionCount: Int // WO-512: separate signal for tool payload mutations.
     }
 
     /// WO-336/WO-404: keep raw-stream mutation-safe/advisory counters together across helpers.
@@ -400,6 +409,7 @@ struct CurlHTTPClient {
         var redactionTypes: [String] = []
         var advisoryCount = 0
         var advisoryTypes: [String] = []
+        var toolCallRedactionCount = 0 // WO-512: included in redactionCount, also reported separately.
 
         mutating func record(_ redaction: SSEFrameRedactionResult) {
             recordCritical(redaction)
@@ -409,6 +419,7 @@ struct CurlHTTPClient {
         mutating func recordCritical(_ redaction: SSEFrameRedactionResult) {
             redactionCount += redaction.count
             redactionTypes.append(contentsOf: redaction.types)
+            toolCallRedactionCount += redaction.toolCallRedactionCount
         }
 
         mutating func recordAdvisory(count: Int, types: [String]) {
@@ -433,6 +444,18 @@ struct CurlHTTPClient {
     private struct RawStreamAlertContext {
         let stream: StreamContext
         let alertBeforeDone: StreamAlertBuilder?
+    }
+
+    // WO-509: bundle immutable per-event relay inputs so extraction does not grow parameter lists.
+    private struct PerSSEEventRelayContext {
+        let stream: StreamContext
+        let alertBeforeDone: StreamAlertBuilder?
+    }
+
+    private enum PerSSEEventRelayOutcome {
+        case continueRelay
+        case clientEpipe
+        case policyTerminated
     }
 
     /// WO-351: raw_stream alert detection keeps only a small [DONE] lookbehind
@@ -646,7 +669,8 @@ struct CurlHTTPClient {
         // receives the HTTP status line and headers before any body bytes.
         var relayResult = StreamRelayResult(
             redactionCount: 0, redactionTypes: [],
-            advisoryCount: 0, advisoryTypes: []
+            advisoryCount: 0, advisoryTypes: [],
+            toolCallRedactionCount: 0
         )
         let bodyGroup = DispatchGroup()
         bodyGroup.enter()
@@ -671,7 +695,8 @@ struct CurlHTTPClient {
             streamRedactionCount: relayResult.redactionCount,
             streamRedactionTypes: relayResult.redactionTypes,
             streamAdvisoryCount: relayResult.advisoryCount,
-            streamAdvisoryTypes: relayResult.advisoryTypes
+            streamAdvisoryTypes: relayResult.advisoryTypes,
+            streamToolCallRedactionCount: relayResult.toolCallRedactionCount
         )
     }
 
@@ -722,8 +747,16 @@ struct CurlHTTPClient {
         let chunkSize = 65536
         var buf = [UInt8](repeating: 0, count: chunkSize)
         var totals = StreamScanTotals()
+        // WO-509: Linux shares the protocol-aware state machine used by URLSession.
+        var toolCallRedactor = ToolCallStreamRedactor(
+            config: ctx.config,
+            customRules: ctx.customRules,
+            severity: ctx.severity,
+            debugSink: ctx.debugSink
+        )
         // WO-216: track how the read loop exited so we know whether to flush the remainder.
         var clientEpipe = false
+        var policyTerminated = false // WO-511: bounded tool buffers stop upstream relay without an EPIPE.
         var rawStreamAlertState = RawStreamAlertState()
         let rawAlert = RawStreamAlertContext(stream: ctx, alertBeforeDone: alertBeforeDone)
 
@@ -736,92 +769,22 @@ struct CurlHTTPClient {
             var deliveryScopedAdvisoryTypes: [String] = []
             switch ctx.redactionMode {
             case .perSSEEvent:
-                let result = parser.feed(chunk)
-                if result.overflowFlushed {
-                    // WO-164: a 4MB+ frame bypassed the normal per-frame path; redact it
-                    // as raw text rather than forwarding secrets unscanned.
-                    let r = redactRawBytes(
-                        result.overflowBytes,
-                        config: ctx.config,
-                        severity: ctx.severity,
-                        customRules: ctx.customRules
-                    )
-                    outData = r.data
-                    // WO-256: record detections before sendAll() — if the client EPIPEs, the
-                    // credential was still present in the stream and was redacted from the bytes
-                    // we attempted to send. Consistent with the assembled-frames path (WO-250)
-                    // and macOS redactRawBytes(). Chosen policy: always-record on detect.
-                    totals.recordCritical(r)
-                    if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
-                        // WO-348: advisory-only overflow bytes are delivery-scoped.
-                        totals.recordAdvisory(count: r.advisoryCount, types: r.advisoryTypes)
-                        continue readLoop
-                    } else {
-                        clientEpipe = true
-                        break readLoop
-                    }
-                } else {
-                    // WO-243: build assembled data and a parallel pending-stats buffer. Apply
-                    // stats only after sendAll() succeeds so EPIPE frames are not counted.
-                    var assembled = Data()
-                    var pendingCount = 0
-                    var pendingTypes: [String] = []
-                    var pendingAdvisoryCount = 0
-                    var pendingAdvisoryTypes: [String] = []
-                    for frame in result.frames {
-                        // WO-182/WO-192: evaluate alert closure at [DONE] time with live stream
-                        // counts so stream-only secrets (body-clean request) also trigger alert.
-                        // WO-248: pass totalCount+pendingCount (not totalCount alone) — when the
-                        // only credential in the stream arrives in the same chunk as [DONE], it is
-                        // in pendingTypes but not yet merged into totalTypes. Passing pre-merge
-                        // totals causes builder(0, []) → guard total>0 fails → alert suppressed.
-                        if frame.data == "[DONE]",
-                           let builder = alertBeforeDone,
-                           let alert = builder(
-                            totals.redactionCount + pendingCount,
-                            totals.redactionTypes + pendingTypes,
-                            totals.advisoryCount + pendingAdvisoryCount,
-                            totals.advisoryTypes + pendingAdvisoryTypes
-                           ) {
-                            assembled.append(alert)
-                        }
-                        // WO-201: skip redactSSEFrame for [DONE] — its first guard already
-                        // returns frame.raw for it, but the call is an always-no-op; avoid confusion.
-                        // WO-220: use shared redactSSEFrame() from SocketHelpers.swift.
-                        guard frame.data != "[DONE]" else { assembled.append(frame.raw); continue }
-                        let r = redactSSEFrame(
-                            frame,
-                            config: ctx.config,
-                            severity: ctx.severity,
-                            customRules: ctx.customRules
-                        )
-                        assembled.append(r.data)
-                        pendingCount += r.count
-                        pendingTypes.append(contentsOf: r.types)
-                        pendingAdvisoryCount += r.advisoryCount
-                        pendingAdvisoryTypes.append(contentsOf: r.advisoryTypes)
-                    }
-                    outData = assembled
-                    if sendAll(outData, to: ctx.clientSocket, flags: ctx.sendFlags) {
-                        totals.redactionCount += pendingCount
-                        totals.redactionTypes.append(contentsOf: pendingTypes)
-                        // WO-345: advisory stats are delivery-scoped on Linux;
-                        // count them only after the assembled frame batch is sent.
-                        totals.advisoryCount += pendingAdvisoryCount
-                        totals.advisoryTypes.append(contentsOf: pendingAdvisoryTypes)
-                        continue readLoop
-                    } else {
-                        // WO-250: credential was detected and redacted (pendingCount > 0) even
-                        // though the send failed. Record the detection so the audit log is not
-                        // silent about secrets that were present in the stream, regardless of
-                        // whether the redacted bytes reached the client.
-                        totals.redactionCount += pendingCount
-                        totals.redactionTypes.append(contentsOf: pendingTypes)
-                        // WO-345: advisory-only matches leave bytes unchanged; if the
-                        // client EPIPEs, do not claim those advisory bytes were delivered.
-                        clientEpipe = true
-                        break readLoop
-                    }
+                let outcome = relayPerSSEEventChunk(
+                    chunk,
+                    parser: &parser,
+                    toolCallRedactor: &toolCallRedactor,
+                    totals: &totals,
+                    context: PerSSEEventRelayContext(stream: ctx, alertBeforeDone: alertBeforeDone)
+                )
+                switch outcome {
+                case .continueRelay:
+                    continue readLoop
+                case .clientEpipe:
+                    clientEpipe = true
+                    break readLoop
+                case .policyTerminated:
+                    policyTerminated = true
+                    break readLoop
                 }
             case .rawStream:
                 guard let rawOutput = relayRawStreamChunk(
@@ -849,11 +812,11 @@ struct CurlHTTPClient {
             }
         }
 
-        if !clientEpipe {
+        if !clientEpipe && !policyTerminated {
             flushRelayRemainder(
                 parser: &parser,
-                ctx: ctx,
-                alertBeforeDone: alertBeforeDone,
+                toolCallRedactor: &toolCallRedactor,
+                alert: rawAlert,
                 totals: &totals,
                 rawStreamAlertState: &rawStreamAlertState
             )
@@ -862,14 +825,109 @@ struct CurlHTTPClient {
             redactionCount: totals.redactionCount,
             redactionTypes: totals.redactionTypes,
             advisoryCount: totals.advisoryCount,
-            advisoryTypes: totals.advisoryTypes
+            advisoryTypes: totals.advisoryTypes,
+            toolCallRedactionCount: totals.toolCallRedactionCount
         )
+    }
+
+    // WO-509: isolate stateful per-event assembly from the generic curl read loop.
+    // WO-243, WO-248, WO-250, WO-256, and WO-345: retain pending-stat, alert,
+    // failed-send, overflow-attempt, and delivery-scoped advisory semantics.
+    private static func relayPerSSEEventChunk(
+        _ chunk: Data,
+        parser: inout SSEFrameParser,
+        toolCallRedactor: inout ToolCallStreamRedactor,
+        totals: inout StreamScanTotals,
+        context: PerSSEEventRelayContext
+    ) -> PerSSEEventRelayOutcome {
+        let parsed = parser.feed(chunk)
+        if parsed.overflowFlushed {
+            if let blocked = toolCallRedactor.blockForParserOverflow(parsed.overflowBytes) {
+                let output = blocked.frames.reduce(into: Data()) { $0.append($1.data) }
+                let delivered = sendAll(
+                    output,
+                    to: context.stream.clientSocket,
+                    flags: context.stream.sendFlags
+                )
+                return delivered ? .policyTerminated : .clientEpipe
+            }
+            let redaction = redactRawBytes(
+                parsed.overflowBytes,
+                config: context.stream.config,
+                severity: context.stream.severity,
+                customRules: context.stream.customRules
+            )
+            // WO-256: overflow detections are recorded even when the client write fails.
+            totals.recordCritical(redaction)
+            let delivered = sendAll(
+                redaction.data,
+                to: context.stream.clientSocket,
+                flags: context.stream.sendFlags
+            )
+            totals.recordAdvisoryIfDelivered(
+                delivered,
+                count: redaction.advisoryCount,
+                types: redaction.advisoryTypes
+            )
+            return delivered ? .continueRelay : .clientEpipe
+        }
+
+        // WO-243: hold frame bytes and statistics together until the batch write resolves.
+        var output = Data()
+        var pending = StreamScanTotals()
+        var policyTerminated = false
+        for frame in parsed.frames {
+            if frame.data == "[DONE]" {
+                let tail = toolCallRedactor.finish()
+                for redaction in tail.frames {
+                    output.append(redaction.data)
+                    pending.record(redaction)
+                }
+                if tail.terminateStream {
+                    policyTerminated = true
+                    break
+                }
+                // WO-248: include this batch's pending detections in the terminal alert.
+                if let alert = context.alertBeforeDone?(
+                    totals.redactionCount + pending.redactionCount,
+                    totals.redactionTypes + pending.redactionTypes,
+                    totals.advisoryCount + pending.advisoryCount,
+                    totals.advisoryTypes + pending.advisoryTypes
+                ) {
+                    output.append(alert)
+                }
+                output.append(frame.raw)
+                continue
+            }
+
+            let transformed = toolCallRedactor.process(frame)
+            for redaction in transformed.frames {
+                output.append(redaction.data)
+                pending.record(redaction)
+            }
+            if transformed.terminateStream {
+                policyTerminated = true
+                break
+            }
+        }
+
+        let delivered = sendAll(output, to: context.stream.clientSocket, flags: context.stream.sendFlags)
+        // WO-250: attempted mutations remain observable even when the client write fails.
+        totals.redactionCount += pending.redactionCount
+        totals.redactionTypes.append(contentsOf: pending.redactionTypes)
+        totals.toolCallRedactionCount += pending.toolCallRedactionCount
+        if delivered {
+            totals.advisoryCount += pending.advisoryCount
+            totals.advisoryTypes.append(contentsOf: pending.advisoryTypes)
+        }
+        guard delivered else { return .clientEpipe }
+        return policyTerminated ? .policyTerminated : .continueRelay
     }
 
     private static func flushRelayRemainder(
         parser: inout SSEFrameParser,
-        ctx: StreamContext,
-        alertBeforeDone: StreamAlertBuilder?,
+        toolCallRedactor: inout ToolCallStreamRedactor,
+        alert: RawStreamAlertContext,
         totals: inout StreamScanTotals,
         rawStreamAlertState: inout RawStreamAlertState
     ) {
@@ -878,19 +936,20 @@ struct CurlHTTPClient {
         // that was split across chunk boundaries and never reached the per-frame redaction path.
         // WO-216: on EPIPE the client is gone; scanning the remainder burns CPU and inflates
         // stats with secrets that were never actually delivered or redacted to anyone.
-        if ctx.redactionMode == .perSSEEvent {
+        if alert.stream.redactionMode == .perSSEEvent {
             flushPerSSEEventRemainder(
                 parser: &parser,
-                ctx: ctx,
-                alertBeforeDone: alertBeforeDone,
+                toolCallRedactor: &toolCallRedactor,
+                ctx: alert.stream,
+                alertBeforeDone: alert.alertBeforeDone,
                 totals: &totals
             )
-        } else if ctx.redactionMode == .rawStream && alertBeforeDone != nil {
+        } else if alert.stream.redactionMode == .rawStream && alert.alertBeforeDone != nil {
             flushRawStreamRemainder(
                 parser: &parser,
                 state: &rawStreamAlertState,
-                ctx: ctx,
-                alertBeforeDone: alertBeforeDone,
+                ctx: alert.stream,
+                alertBeforeDone: alert.alertBeforeDone,
                 totals: &totals
             )
         }
@@ -898,12 +957,37 @@ struct CurlHTTPClient {
 
     private static func flushPerSSEEventRemainder(
         parser: inout SSEFrameParser,
+        toolCallRedactor: inout ToolCallStreamRedactor,
         ctx: StreamContext,
         alertBeforeDone: StreamAlertBuilder?,
         totals: inout StreamScanTotals
     ) {
+        let tail = toolCallRedactor.finish()
+        var output = Data()
+        var tailAdvisoryCount = 0
+        var tailAdvisoryTypes: [String] = []
+        for redaction in tail.frames {
+            output.append(redaction.data)
+            totals.recordCritical(redaction)
+            tailAdvisoryCount += redaction.advisoryCount
+            tailAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
+        }
+        if tail.terminateStream {
+            _ = sendAll(output, to: ctx.clientSocket, flags: ctx.sendFlags)
+            return
+        }
         let rem = parser.remainingBytes
-        guard !rem.isEmpty else { return }
+        guard !rem.isEmpty else {
+            if !output.isEmpty {
+                let delivered = sendAll(output, to: ctx.clientSocket, flags: ctx.sendFlags)
+                totals.recordAdvisoryIfDelivered(
+                    delivered,
+                    count: tailAdvisoryCount,
+                    types: tailAdvisoryTypes
+                )
+            }
+            return
+        }
         let redaction = redactRawBytes(
             rem, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
         )
@@ -912,18 +996,19 @@ struct CurlHTTPClient {
         let alert = alertBeforeDone?(
             totals.redactionCount,
             totals.redactionTypes,
-            totals.advisoryCount + redaction.advisoryCount,
-            totals.advisoryTypes + redaction.advisoryTypes
+            totals.advisoryCount + tailAdvisoryCount + redaction.advisoryCount,
+            totals.advisoryTypes + tailAdvisoryTypes + redaction.advisoryTypes
         )
+        output.append(insertingSSEDataBeforeDone(alert, into: redaction.data))
         let delivered = sendAll(
-            insertingSSEDataBeforeDone(alert, into: redaction.data),
+            output,
             to: ctx.clientSocket,
             flags: ctx.sendFlags
         )
         totals.recordAdvisoryIfDelivered(
             delivered,
-            count: redaction.advisoryCount,
-            types: redaction.advisoryTypes
+            count: tailAdvisoryCount + redaction.advisoryCount,
+            types: tailAdvisoryTypes + redaction.advisoryTypes
         )
     }
 

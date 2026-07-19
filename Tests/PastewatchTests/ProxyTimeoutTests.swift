@@ -491,6 +491,57 @@ final class ProxyTimeoutTests: XCTestCase {
         XCTAssertEqual(capturedAdvisoryCount, 0)
     }
 
+    // WO-511: URLSession relay uses the same cross-frame tool argument scanner as curl.
+    func testSSEStreamRelayRedactsToolSecretSplitAcrossFrames() throws {
+        let credential = "AIza" + String(repeating: "Y", count: 35)
+        let split = credential.index(credential.startIndex, offsetBy: 14)
+        let fragments = [
+            #"{"token":"\#(credential[..<split])"#,
+            #"\#(credential[split...])"}"#
+        ]
+        var payload = Data()
+        for fragment in fragments {
+            let object: [String: Any] = [
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": ["type": "input_json_delta", "partial_json": fragment]
+            ]
+            let json = try JSONSerialization.data(withJSONObject: object)
+            payload.append(Data("event: content_block_delta\ndata: ".utf8))
+            payload.append(json)
+            payload.append(Data("\n\n".utf8))
+        }
+        payload.append(Data("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".utf8))
+        NoDoneStreamURLProtocol.reset(payload: payload)
+
+        var sockets = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        defer { close(sockets[0]); close(sockets[1]) }
+        let relay = SSEStreamRelay(
+            clientSocket: sockets[1], sendFlags: 0, redactionMode: .perSSEEvent,
+            config: PastewatchConfig.defaultConfig, severity: .high,
+            idleTimeoutSeconds: 5, maxSessionSeconds: 1
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NoDoneStreamURLProtocol.self]
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: relay, delegateQueue: queue)
+        defer { session.invalidateAndCancel() }
+
+        let finished = expectation(description: "tool stream relay finishes")
+        DispatchQueue.global().async {
+            relay.execute(request: URLRequest(url: URL(string: "https://example.test/stream")!), session: session)
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 2)
+        let response = readSocketDrainString(from: sockets[0])
+
+        XCTAssertFalse(response.contains(credential), response)
+        XCTAssertTrue(response.contains("<GOOGLE_API_KEY_1>"), response)
+        XCTAssertEqual(relay.snapshotStreamStats().toolCallRedactionCount, 1)
+    }
+
     func testSSEStreamRelayRawStreamEOFWithoutDoneAppendsAdvisory() {
         // WO-398: truncated raw_stream responses still surface the final advisory event.
         let credential = "AIza" + String(repeating: "M", count: 35)
@@ -874,7 +925,8 @@ final class ProxyTimeoutTests: XCTestCase {
             redactionCount: 0,
             redactionTypes: [],
             advisoryCount: 1,
-            advisoryTypes: ["IP Address"]
+            advisoryTypes: ["IP Address"],
+            toolCallRedactionCount: 0 // WO-512: this raw-stream fixture has no tool payload.
         )
         let firstOutput = relay.insertingRawStreamOverflowAlertIfNeeded(
             firstResult.overflowBytes,

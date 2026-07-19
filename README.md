@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.32.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.32.0)
+[![Version](https://img.shields.io/badge/version-0.33.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.33.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -479,7 +479,11 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 [2026-03-16T11:36:56Z] PROXY REDACTED 3 secret(s) in /v1/messages
 ```
 
-**Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode for full-response buffering. It does not scan buffered response bodies for secrets; use the default `per_sse_event` mode when response redaction is required.
+**Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode for full-response buffering. It does not scan buffered response bodies for secrets; use the default `per_sse_event` mode when response redaction is required. The event-aware relay reassembles Anthropic `input_json_delta.partial_json` and OpenAI-compatible/LiteLLM `tool_calls[].function.arguments` fragments before scanning, then preserves all frame bytes outside authorized replacements. This response support does not change request admission: OpenAI-shaped request bodies are still refused.
+
+Response streaming has no authoritative catalog of exact local secret values. It mutates intrinsically identifiable formats and operator-approved custom rules; adding exact-value response matching requires a separately designed local secret source and lifecycle.
+
+For local protocol diagnosis only, `pastewatch-cli proxy --debug-stream-dump <path>` writes raw input frames, transformed output, and mutation decisions as owner-only JSONL. It requires the default `per_sse_event` mode so each record reflects the actual frame decision; startup fails instead of producing an incomplete dump in `raw_stream` or `buffer` mode. The file contains unredacted secrets by design, is disabled unless the option is supplied, and prints a warning even with `--quiet`. Delete it securely after diagnosis and never attach it to an issue or commit.
 
 ### MCP Server - Redacted Read/Write
 
@@ -784,7 +788,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.32.0
+    rev: v0.33.0
     hooks:
       - id: pastewatch
 ```
@@ -997,7 +1001,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.32.0** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.33.0** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|

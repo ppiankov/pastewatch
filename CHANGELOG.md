@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-19
+
+### Added
+
+- The API proxy now redacts secrets inside **streamed tool-call arguments**. A shared
+  event-aware relay reassembles Anthropic `input_json_delta.partial_json` and
+  OpenAI-compatible/LiteLLM `tool_calls[].function.arguments` fragments across SSE frames
+  before scanning, so a secret split across frame boundaries — or carried in a JSON object
+  key, or spelled with `\u` escapes — is still caught. Redaction preserves the exact JSON
+  bytes outside authorized replacements; a fragment that cannot be redacted while keeping
+  valid JSON is blocked fail-closed rather than forwarded.
+- `pastewatch-cli proxy --debug-stream-dump <path>` captures raw upstream frames,
+  transformed output, and mutation decisions as owner-only (`0600`) JSONL for local
+  protocol diagnosis. Opt-in only, requires the default `per_sse_event` mode (startup
+  fails otherwise), contains unredacted secrets by design, and prints a warning even under
+  `--quiet`. The dump file is opened no-follow to prevent symlink path substitution.
+
+### Fixed
+
+- A `\u`-escaped secret carried in a **truncated or malformed** tool-call JSON payload is
+  no longer forwarded unredacted: complete escaped tokens are decoded and scanned even
+  when the aggregate JSON never parses, and any escape that cannot be mapped and scanned
+  blocks the frame fail-closed.
+- `ProxyServer` serializes the shared `ISO8601DateFormatter`'s lazy cache initialization on
+  Linux (swift-corelibs-foundation) so concurrent audit-log timestamping is thread-safe.
+
 ## [0.32.0] - 2026-07-17
 
 ### Added
