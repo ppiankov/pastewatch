@@ -175,11 +175,77 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertTrue(responseText.contains("Found 1 finding(s)."))
     }
 
+    // WO-521: MCP reads explain restorable markers and only nag when explicitly enabled.
+    func testReadFileExplainsRestorableMarkersAndOperatorNoticeIsOptIn() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-notice-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let secretValue = "PWNOTICE-" + syntheticSuffix()
+        let fileURL = tempDir.appendingPathComponent("notice.txt")
+        try secretValue.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Notice fixture", pattern: "PWNOTICE-[A-F0-9]{12}")
+        ]
+        let configURL = tempDir.appendingPathComponent(".pastewatch.json")
+        try JSONEncoder().encode(config).write(to: configURL)
+
+        let defaultResult = try callMCPToolWithDiagnostics(
+            name: "pastewatch_read_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+        let responseText = try joinedMCPContentText(defaultResult.response)
+        XCTAssertTrue(responseText.contains("__PW_TYPE_n__"), responseText)
+        XCTAssertTrue(responseText.contains("two-way"), responseText)
+        XCTAssertTrue(responseText.contains("pastewatch_write_file"), responseText)
+        XCTAssertTrue(responseText.contains("not corruption"), responseText)
+        XCTAssertTrue(responseText.contains("malformed"), responseText)
+        XCTAssertFalse(defaultResult.stderr.contains("MCP REDACTED"), defaultResult.stderr)
+
+        config.operatorRedactionNotices = true
+        config.placeholderPrefix = "SAFE_MARKER_"
+        try JSONEncoder().encode(config).write(to: configURL)
+        let enabledResult = try callMCPToolWithDiagnostics(
+            name: "pastewatch_read_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+        // WO-522@v3: the note must name the custom format that appears in this session.
+        let customPrefixText = try joinedMCPContentText(enabledResult.response)
+        XCTAssertTrue(customPrefixText.contains("SAFE_MARKER_001"), customPrefixText)
+        XCTAssertFalse(customPrefixText.contains("__PW_TYPE_n__"), customPrefixText)
+        XCTAssertTrue(enabledResult.stderr.contains("MCP REDACTED 1 secret(s)"), enabledResult.stderr)
+        XCTAssertFalse(enabledResult.stderr.contains(secretValue), enabledResult.stderr)
+    }
+
+    private struct MCPCallResult {
+        let response: JSONRPCResponse
+        let stderr: String
+    }
+
+    // WO-521: retain the response-only helper for existing protocol tests.
     private func callMCPTool(
         name: String,
         arguments: [String: JSONValue],
         currentDirectory: URL
     ) throws -> JSONRPCResponse {
+        try callMCPToolWithDiagnostics(
+            name: name,
+            arguments: arguments,
+            currentDirectory: currentDirectory
+        ).response
+    }
+
+    // WO-521: expose stderr so tests can prove operator notices are opt-in.
+    private func callMCPToolWithDiagnostics(
+        name: String,
+        arguments: [String: JSONValue],
+        currentDirectory: URL
+    ) throws -> MCPCallResult {
         let request = JSONRPCRequest(
             jsonrpc: "2.0",
             id: .int(1),
@@ -209,14 +275,20 @@ final class MCPProtocolTests: XCTestCase {
         stdin.fileHandleForWriting.closeFile()
         process.waitUntilExit()
 
+        // WO-521: capture stderr after exit without exposing it unless an assertion fails.
+        let errorOutput = String(
+            data: stderr.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
         XCTAssertEqual(process.terminationStatus, 0)
         let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         guard let line = output.split(separator: "\n").first else {
-            let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             XCTFail("Expected MCP response, stderr: \(errorOutput)")
             throw NSError(domain: "MCPProtocolTests", code: 1)
         }
-        return try JSONDecoder().decode(JSONRPCResponse.self, from: Data(line.utf8))
+        // WO-521: return response and diagnostics from the same subprocess invocation.
+        let response = try JSONDecoder().decode(JSONRPCResponse.self, from: Data(line.utf8))
+        return MCPCallResult(response: response, stderr: errorOutput)
     }
 
     private func joinedMCPContentText(_ response: JSONRPCResponse) throws -> String {

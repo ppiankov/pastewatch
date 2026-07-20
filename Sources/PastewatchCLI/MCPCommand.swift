@@ -30,11 +30,18 @@ final class MCPServer {
     private let store: RedactionStore
     private let auditLogger: MCPAuditLogger?
     private let defaultMinSeverity: String?
+    private let modelRedactionNotice: String // WO-522@v3: fixed to the session placeholder format.
 
     init(auditLogger: MCPAuditLogger? = nil, defaultMinSeverity: String? = nil, placeholderPrefix: String? = nil) {
         self.store = RedactionStore(placeholderPrefix: placeholderPrefix)
         self.auditLogger = auditLogger
         self.defaultMinSeverity = defaultMinSeverity
+        let placeholderExample = placeholderPrefix.map {
+            Obfuscator.makeCustomPlaceholder(prefix: $0, number: 1)
+        } ?? "__PW_TYPE_n__"
+        self.modelRedactionNotice = RedactionFlowMode.mcpRestorable.modelNotice(
+            placeholderExample: placeholderExample
+        )
     }
 
     func start() {
@@ -420,6 +427,16 @@ final class MCPServer {
 
         let typeNames = Set(entries.map { $0.type }).sorted()
         auditLogger?.log("READ  \(path)  redacted=\(entries.count) [\(typeNames.joined(separator: ", "))]")
+        // WO-521: the opt-in notice contains metadata only and remains visible without an audit file.
+        if config.operatorRedactionNotices {
+            let notice = "[PASTEWATCH] MCP REDACTED \(entries.count) secret(s) " +
+                "[\(typeNames.joined(separator: ", "))]"
+            if let auditLogger {
+                auditLogger.log(notice)
+            } else {
+                FileHandle.standardError.write(Data("\(notice)\n".utf8))
+            }
+        }
 
         var redactionsArray: [JSONValue] = []
         for entry in entries {
@@ -437,7 +454,9 @@ final class MCPServer {
                 "text": .string(encodeJSON(.object([
                     "content": .string(redacted),
                     "redactions": .array(redactionsArray),
-                    "clean": .bool(false)
+                    "clean": .bool(false),
+                    // WO-522@v3: explain the session-specific, locally restorable marker.
+                    "pastewatch_note": .string(modelRedactionNotice)
                 ])))
             ])
         ])

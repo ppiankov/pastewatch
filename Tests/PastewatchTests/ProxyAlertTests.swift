@@ -20,6 +20,11 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertTrue(text.contains("2 secret(s) redacted"))
         XCTAssertTrue(text.contains("AWS Key"))
         XCTAssertTrue(text.contains("Credential"))
+        // WO-521: the model must distinguish expected one-way markers from real corruption.
+        XCTAssertTrue(text.contains("<TYPE_n>"))
+        XCTAssertTrue(text.contains("one-way"))
+        XCTAssertTrue(text.contains("not corruption"))
+        XCTAssertTrue(text.contains("malformed"))
     }
 
     func testAlertBlockDeduplicatesTypes() {

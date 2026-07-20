@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Proxy alerts and MCP redacted reads now explain that well-formed placeholders represent redacted secrets, identify whether the flow is one-way or locally restorable, and reserve corruption warnings for malformed markers or mangled surrounding bytes.
+- `operatorRedactionNotices` provides default-off, metadata-only stderr visibility for every proxy or MCP mutation, including repeated proxy events under `--quiet`.
+
 ## [0.33.0] - 2026-07-19
 
 ### Added

@@ -21,10 +21,13 @@ final class ConfigResolutionTests: XCTestCase {
         let config = PastewatchConfig.defaultConfig
         XCTAssertTrue(config.customRules.isEmpty)
         XCTAssertTrue(config.sharedPatternFiles.isEmpty)
+        // WO-521: per-redaction operator notices are deliberately opt-in.
+        XCTAssertFalse(config.operatorRedactionNotices)
     }
 
     func testConfigRoundTrip() throws {
-        let config = PastewatchConfig(
+        // WO-521: use a mutable fixture to enable the opt-in field explicitly.
+        var config = PastewatchConfig(
             enabled: true,
             enabledTypes: ["Email", "Phone"],
             showNotifications: false,
@@ -32,6 +35,8 @@ final class ConfigResolutionTests: XCTestCase {
             allowedValues: ["test@example.com"],
             customRules: [CustomRuleConfig(name: "Test", pattern: "TEST-[0-9]+")]
         )
+        // WO-521: the opt-in setting survives config encoding.
+        config.operatorRedactionNotices = true
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(config)
@@ -46,6 +51,8 @@ final class ConfigResolutionTests: XCTestCase {
                        "New types should be auto-enabled on decode")
         XCTAssertEqual(decoded.allowedValues, config.allowedValues)
         XCTAssertEqual(decoded.customRules.count, config.customRules.count)
+        // WO-521: decoding preserves an explicitly enabled operator notice.
+        XCTAssertTrue(decoded.operatorRedactionNotices)
     }
 
     func testBackwardCompatibleDecoding() throws {
@@ -64,6 +71,8 @@ final class ConfigResolutionTests: XCTestCase {
         XCTAssertTrue(config.allowedValues.isEmpty)
         XCTAssertTrue(config.customRules.isEmpty)
         XCTAssertTrue(config.sharedPatternFiles.isEmpty)
+        // WO-521: old configs remain silent by default.
+        XCTAssertFalse(config.operatorRedactionNotices)
     }
 
     func testResolveReturnsDefaultWhenNoConfigFiles() {
