@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.33.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.33.0)
+[![Version](https://img.shields.io/badge/version-0.33.1-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.33.1)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -469,7 +469,7 @@ alias claude='pastewatch-cli launch claude'
 alias claude='pastewatch-cli launch --forward-proxy http://proxy.corp:8080 -- claude'
 ```
 
-**Audit logging.** The proxy logs every redaction to stderr. Use `--audit-log` to write to a file for dashboard aggregation:
+**Audit logging.** The proxy logs redactions to stderr and deduplicates repeated history scans. Use `--audit-log` to write to a file for dashboard aggregation. Set `operatorRedactionNotices` to `true` to force a notice for every proxy mutation, including repeated events under `--quiet`; the default is `false`.
 
 ```bash
 pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
@@ -478,6 +478,8 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 ```
 [2026-03-16T11:36:56Z] PROXY REDACTED 3 secret(s) in /v1/messages
 ```
+
+When an alert is injected, it tells the model that `<TYPE_n>` markers are expected one-way redactions, while malformed markers or mangled surrounding bytes may indicate real corruption. Proxy placeholders are not restored.
 
 **Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode for full-response buffering. It does not scan buffered response bodies for secrets; use the default `per_sse_event` mode when response redaction is required. The event-aware relay reassembles Anthropic `input_json_delta.partial_json` and OpenAI-compatible/LiteLLM `tool_calls[].function.arguments` fragments before scanning, then preserves all frame bytes outside authorized replacements. This response support does not change request admission: OpenAI-shaped request bodies are still refused.
 
@@ -525,7 +527,7 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 | `pastewatch_scan_file` | Scan a file for sensitive data |
 | `pastewatch_scan_dir` | Scan a directory recursively |
 
-The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops.
+The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops. A redacted read includes a short model-facing note: well-formed `__PW_TYPE_n__` markers, or markers using the configured `placeholderPrefix`, are two-way placeholders restored locally by `pastewatch_write_file`; malformed markers or mangled nearby bytes may indicate real corruption. Set `operatorRedactionNotices` to `true` for a metadata-only notice on every MCP substitution. Notices go to the configured audit log, or to stderr when no audit log is configured.
 
 **Audit logging** - verify what the MCP server did during a session:
 
@@ -788,7 +790,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.33.0
+    rev: v0.33.1
     hooks:
       - id: pastewatch
 ```
@@ -915,6 +917,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
   "sensitiveIPPrefixes": ["172.16.", "10."],
   "mcpMinSeverity": "high",
+  "operatorRedactionNotices": false,
   "placeholderPrefix": "REDACTED_PLACEHOLDER_"
 }
 ```
@@ -932,6 +935,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `sensitiveHosts` | string[] | Hostnames always detected (overrides safe hosts, catches 2-segment hosts like `.local`) |
 | `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
 | `mcpMinSeverity` | string | Default severity threshold for MCP redacted reads (default: `high`) |
+| `operatorRedactionNotices` | bool | Emit a metadata-only operator notice for every proxy/MCP mutation, including under `--quiet` (default: `false`) |
 | `placeholderPrefix` | string? | Custom prefix for MCP placeholders (e.g., `REDACTED_` produces `REDACTED_001`). Default: `null` (uses `__PW_TYPE_N__` format) |
 
 GUI settings can also be changed via the menubar dropdown.
@@ -1001,7 +1005,7 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.33.0** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.33.1** · Accepting compatibility and bug fixes only
 
 | Milestone | Status |
 |-----------|--------|

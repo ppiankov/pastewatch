@@ -2463,9 +2463,10 @@ public final class ProxyServer {
         let suggestions = uniqueTypes.compactMap { fixSuggestion(for: $0) }
         let suggestionsText = suggestions.isEmpty ? "" :
             " Fix: " + suggestions.joined(separator: "; ") + "."
+        // WO-521: explain one-way markers without suppressing genuine corruption reports.
         let text = "[PASTEWATCH] \(redactionCount) secret(s) redacted from your last tool call. " +
             "Types: \(typeList). " +
-            "The original values were replaced with placeholders before reaching the API. " +
+            RedactionFlowMode.proxyOneWay.modelNotice(placeholderExample: "<TYPE_n>") + " " +
             "Review your tool outputs for leaked credentials and recommend rotation." +
             suggestionsText
         return ["type": "text", "text": text]
@@ -2625,7 +2626,8 @@ public final class ProxyServer {
         let line = "[\(timestamp)] PROXY REDACTED \(count) secret(s) in \(location) (\(breakdown))\n"
         let hintLine = isRepeat ? "" : (fixHint.isEmpty ? "" : "  \(fixHint)\n")
 
-        if !quietLog && !isRepeat {
+        // WO-521: explicit operator notices remain visible under --quiet and are not deduplicated.
+        if (!quietLog && !isRepeat) || config.operatorRedactionNotices {
             FileHandle.standardError.write(Data(line.utf8))
             if !hintLine.isEmpty {
                 FileHandle.standardError.write(Data(hintLine.utf8))

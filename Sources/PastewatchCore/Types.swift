@@ -398,6 +398,7 @@ public struct PastewatchConfig: Codable {
     public var allowedPatterns: [String]
     public var sensitiveIPPrefixes: [String]
     public var mcpMinSeverity: String
+    public var operatorRedactionNotices: Bool // WO-521: explicit opt-in for per-mutation operator visibility.
     public var xmlSensitiveTags: [String]
     public var placeholderPrefix: String?
     public var protectedPaths: [String]
@@ -420,6 +421,8 @@ public struct PastewatchConfig: Codable {
         allowedPatterns: [String] = [],
         sensitiveIPPrefixes: [String] = [],
         mcpMinSeverity: String = "high",
+        // WO-521: operator mutation notices remain opt-in.
+        operatorRedactionNotices: Bool = false,
         xmlSensitiveTags: [String] = [],
         placeholderPrefix: String? = nil,
         protectedPaths: [String] = ["~/.openclaw"],
@@ -437,6 +440,8 @@ public struct PastewatchConfig: Codable {
         self.allowedPatterns = allowedPatterns
         self.sensitiveIPPrefixes = sensitiveIPPrefixes
         self.mcpMinSeverity = mcpMinSeverity
+        // WO-521: persist the caller-selected operator notice behavior.
+        self.operatorRedactionNotices = operatorRedactionNotices
         self.xmlSensitiveTags = xmlSensitiveTags
         self.placeholderPrefix = placeholderPrefix
         self.protectedPaths = protectedPaths
@@ -466,6 +471,8 @@ public struct PastewatchConfig: Codable {
         allowedPatterns = try container.decodeIfPresent([String].self, forKey: .allowedPatterns) ?? []
         sensitiveIPPrefixes = try container.decodeIfPresent([String].self, forKey: .sensitiveIPPrefixes) ?? []
         mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? "high"
+        // WO-521: old config files must decode without enabling notices.
+        operatorRedactionNotices = try container.decodeIfPresent(Bool.self, forKey: .operatorRedactionNotices) ?? false
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []
         placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix)
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? ["~/.openclaw"]

@@ -1385,6 +1385,37 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertFalse(audit.contains("second-request"), audit)
     }
 
+    // WO-521: explicit operator notices override quiet mode and report every mutation.
+    func testOperatorRedactionNoticesOverrideQuietModeOnlyWhenEnabled() throws {
+        var enabledConfig = PastewatchConfig.defaultConfig
+        enabledConfig.operatorRedactionNotices = true
+        let enabledProxy = ProxyServer(port: 0, config: enabledConfig, quietLog: true)
+
+        let enabledOutput = try captureStandardError {
+            enabledProxy.recordBufferedResponseRedactionAuditForTesting(
+                path: "/v1/messages",
+                count: 1,
+                types: ["Credential"]
+            )
+            enabledProxy.recordBufferedResponseRedactionAuditForTesting(
+                path: "/v1/messages",
+                count: 1,
+                types: ["Credential"]
+            )
+        }
+        XCTAssertEqual(enabledOutput.components(separatedBy: "PROXY REDACTED").count - 1, 2)
+
+        let disabledProxy = ProxyServer(port: 0, config: .defaultConfig, quietLog: true)
+        let disabledOutput = try captureStandardError {
+            disabledProxy.recordBufferedResponseRedactionAuditForTesting(
+                path: "/v1/messages",
+                count: 1,
+                types: ["Credential"]
+            )
+        }
+        XCTAssertFalse(disabledOutput.contains("PROXY REDACTED"))
+    }
+
     // WO-486: a refused request must not copy query material into an audit record.
     func testRefusalAuditOmitsQueryMaterial() throws {
         let upstream = try StubHTTPServer { _ in
