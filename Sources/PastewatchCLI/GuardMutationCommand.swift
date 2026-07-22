@@ -53,6 +53,11 @@ private enum GuardMutationInputError: Error {
     case invalidPayload
 }
 
+// WO-526@v3: invalid active configuration is a distinct fail-closed boundary.
+private enum GuardMutationConfigurationError: Error {
+    case invalidConfiguration
+}
+
 // WO-526@v3: change-aware Edit/Write guard; guard-write remains the explicit legacy command.
 struct GuardMutation: ParsableCommand {
     // WO-526@v3: keep the command explicit rather than changing guard-write semantics.
@@ -76,7 +81,13 @@ struct GuardMutation: ParsableCommand {
             return
         }
 
-        let config = PastewatchConfig.resolve()
+        let config: PastewatchConfig
+        do {
+            config = try validatedConfig()
+        } catch {
+            try deny("configuration is invalid")
+            return
+        }
         guard !config.isPathProtected(input.filePath) else {
             try deny("target is inside a protected directory")
             return
@@ -139,6 +150,26 @@ struct GuardMutation: ParsableCommand {
         try deny(reason == .touchesExistingFinding
             ? "proposed edit overlaps protected content"
             : "proposed mutation changes protected content")
+    }
+
+    // WO-526@v3: resolve only after the highest-priority active config validates.
+    private func validatedConfig() throws -> PastewatchConfig {
+        let fileManager = FileManager.default
+        let projectPath = fileManager.currentDirectoryPath + "/.pastewatch.json"
+        let activePath: String?
+        if fileManager.fileExists(atPath: PastewatchConfig.systemConfigPath) {
+            activePath = PastewatchConfig.systemConfigPath
+        } else if fileManager.fileExists(atPath: projectPath) {
+            activePath = projectPath
+        } else if fileManager.fileExists(atPath: PastewatchConfig.configPath.path) {
+            activePath = PastewatchConfig.configPath.path
+        } else {
+            activePath = nil
+        }
+        guard ConfigValidator.validate(path: activePath).isValid else {
+            throw GuardMutationConfigurationError.invalidConfiguration
+        }
+        return PastewatchConfig.resolve()
     }
 
     // WO-526@v3: unresolved MCP placeholders still require the restorative write path.

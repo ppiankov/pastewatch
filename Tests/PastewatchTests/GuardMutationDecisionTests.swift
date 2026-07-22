@@ -363,6 +363,34 @@ final class GuardMutationDecisionTests: XCTestCase {
         XCTAssertFalse((edit.stdout + edit.stderr + write.stdout + write.stderr).contains(placeholder))
     }
 
+    // WO-526@v3: malformed active configuration fails closed at the executable boundary.
+    func testGuardMutationCommandBlocksInvalidConfiguration() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-guard-config-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+        let fileURL = testDirectory.appendingPathComponent("fixture.swift")
+        try "let value = \"clean\"\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        try "{".write(
+            to: testDirectory.appendingPathComponent(".pastewatch.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = try runGuardMutation([
+            "tool_name": "Edit",
+            "tool_input": [
+                "file_path": fileURL.path,
+                "old_string": "clean",
+                "new_string": "still-clean",
+            ],
+        ], home: testDirectory)
+
+        XCTAssertEqual(result.status, 2, result.stderr)
+        XCTAssertTrue(result.stderr.contains("configuration is invalid"))
+    }
+
     // WO-526@v3: exercise the executable boundary with structured stdin.
     private func runGuardMutation(
         _ payload: [String: Any],
