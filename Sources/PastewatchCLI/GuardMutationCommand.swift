@@ -2,9 +2,9 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-// WO-526@v2: normalized structured input keeps hook-specific JSON parsing out of policy code.
+// WO-526@v3: normalized structured input keeps hook-specific JSON parsing out of policy code.
 struct GuardMutationInput {
-    // WO-526@v2: only structured mutation operations reach the evaluator.
+    // WO-526@v3: only structured mutation operations reach the evaluator.
     enum Operation {
         case edit(oldString: String, newString: String, replaceAll: Bool)
         case write(content: String)
@@ -13,7 +13,7 @@ struct GuardMutationInput {
     let filePath: String
     let operation: Operation
 
-    // WO-526@v2: malformed or foreign hook payloads fail closed before file access.
+    // WO-526@v3: malformed or foreign hook payloads fail closed before file access.
     static func parse(_ data: Data) throws -> GuardMutationInput {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tool = root["tool_name"] as? String,
@@ -48,14 +48,14 @@ struct GuardMutationInput {
     }
 }
 
-// WO-526@v2: parsing exposes no payload details in diagnostics.
+// WO-526@v3: parsing exposes no payload details in diagnostics.
 private enum GuardMutationInputError: Error {
     case invalidPayload
 }
 
-// WO-526@v2: change-aware Edit/Write guard; guard-write remains the explicit legacy command.
+// WO-526@v3: change-aware Edit/Write guard; guard-write remains the explicit legacy command.
 struct GuardMutation: ParsableCommand {
-    // WO-526@v2: keep the command explicit rather than changing guard-write semantics.
+    // WO-526@v3: keep the command explicit rather than changing guard-write semantics.
     static let configuration = CommandConfiguration(
         commandName: "guard-mutation",
         abstract: "Check a structured Edit or Write without blocking unrelated findings"
@@ -64,7 +64,7 @@ struct GuardMutation: ParsableCommand {
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
     var failOnSeverity: Severity = .high
 
-    // WO-526@v2: stdin content is evaluated without copying secrets into argv.
+    // WO-526@v3: stdin content is evaluated without copying secrets into argv.
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
@@ -98,7 +98,10 @@ struct GuardMutation: ParsableCommand {
         case .edit where currentContent.isEmpty:
             try deny("edit target is unavailable")
             return
-        case .write(let content) where containsPlaceholder(content):
+        case .edit(_, let newString, _) where containsPlaceholder(newString, config: config):
+            try deny("proposed content contains unresolved placeholders")
+            return
+        case .write(let content) where containsPlaceholder(content, config: config):
             try deny("proposed content contains unresolved placeholders")
             return
         default:
@@ -138,16 +141,25 @@ struct GuardMutation: ParsableCommand {
             : "proposed mutation changes protected content")
     }
 
-    // WO-526@v2: unresolved MCP placeholders still require the restorative write path.
-    private func containsPlaceholder(_ content: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern) else {
+    // WO-526@v3: unresolved MCP placeholders still require the restorative write path.
+    private func containsPlaceholder(_ content: String, config: PastewatchConfig) -> Bool {
+        let fullRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let structuredRegex = try? NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern) else {
             return true
         }
-        let range = NSRange(content.startIndex..<content.endIndex, in: content)
-        return regex.firstMatch(in: content, range: range) != nil
+        if structuredRegex.firstMatch(in: content, range: fullRange) != nil {
+            return true
+        }
+        guard let prefix = config.placeholderPrefix else { return false }
+        guard let customRegex = try? NSRegularExpression(
+            pattern: Obfuscator.customPlaceholderPattern(prefix: prefix)
+        ) else {
+            return true
+        }
+        return customRegex.firstMatch(in: content, range: fullRange) != nil
     }
 
-    // WO-526@v2: denial messages disclose policy class, never matched values.
+    // WO-526@v3: denial messages disclose policy class, never matched values.
     private func deny(_ reason: String) throws {
         FileHandle.standardError.write(Data("BLOCKED: \(reason)\n".utf8))
         print("Use pastewatch_read_file and pastewatch_write_file for protected mutations.")

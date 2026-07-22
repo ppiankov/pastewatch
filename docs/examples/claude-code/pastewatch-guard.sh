@@ -92,7 +92,7 @@ fi
 # Fail-open if pastewatch-cli not installed
 command -v pastewatch-cli &>/dev/null || exit 0
 
-# WO-526@v2: Edit/Write decisions compare proposed content with findings on disk.
+# WO-526@v3: Edit/Write decisions compare proposed content with findings on disk.
 if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
   printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
   if [ $? -ne 0 ]; then

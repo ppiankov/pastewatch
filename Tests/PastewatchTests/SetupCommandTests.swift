@@ -270,7 +270,7 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertTrue(script.hasPrefix("#!/bin/bash"))
     }
 
-    // WO-526@v2: generated hooks use the structured mutation guard by default.
+    // WO-526@v3: generated hooks use the structured mutation guard by default.
     func testGeneratedMutationHooksAreChangeAware() {
         let claude = AgentSetup.claudeCodeGuardScript(severity: "high")
         let codex = AgentSetup.codexGuardScript(severity: "high")

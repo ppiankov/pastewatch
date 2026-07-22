@@ -3,7 +3,7 @@ import PastewatchCore
 
 @main
 struct PastewatchCLI: ParsableCommand {
-    // WO-526@v2: expose the structured mutation guard without changing legacy guards.
+    // WO-526@v3: expose the structured mutation guard without changing legacy guards.
     static let configuration = CommandConfiguration(
         commandName: "pastewatch-cli",
         abstract: "Scan text for sensitive data patterns",

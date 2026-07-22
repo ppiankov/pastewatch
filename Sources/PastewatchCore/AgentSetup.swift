@@ -381,7 +381,7 @@ public enum AgentSetup {
 
     // MARK: - Embedded Templates
 
-    // WO-526@v2: generated Claude hooks default structured mutations to change-aware policy.
+    // WO-526@v3: generated Claude hooks default structured mutations to change-aware policy.
     /// Generate Claude Code guard script with configured severity.
     public static func claudeCodeGuardScript(severity: String) -> String {
         return """
@@ -445,7 +445,7 @@ public enum AgentSetup {
         # Fail-open if pastewatch-cli not installed
         command -v pastewatch-cli &>/dev/null || exit 0
 
-        # WO-526@v2: Edit/Write decisions compare the proposed content with findings on disk.
+        # WO-526@v3: Edit/Write decisions compare the proposed content with findings on disk.
         if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
           printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
           if [ $? -ne 0 ]; then
@@ -687,7 +687,7 @@ public enum AgentSetup {
         json["hooks"] = hooks
     }
 
-    // WO-526@v2: structured Codex mutations share the same evaluator as Claude hooks.
+    // WO-526@v3: structured Codex mutations share the same evaluator as Claude hooks.
     /// Generate Codex CLI guard script with configured severity.
     /// Extends the Claude Code guard to also handle apply_patch and Bash.
     public static func codexGuardScript(severity: String) -> String {
@@ -758,7 +758,7 @@ public enum AgentSetup {
           fi
         fi
 
-        # WO-526@v2: structured Edit/Write calls use change-aware finding comparison.
+        # WO-526@v3: structured Edit/Write calls use change-aware finding comparison.
         if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
           printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
           if [ $? -ne 0 ]; then
