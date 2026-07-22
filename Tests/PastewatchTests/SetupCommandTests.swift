@@ -270,6 +270,19 @@ final class SetupCommandTests: XCTestCase {
         XCTAssertTrue(script.hasPrefix("#!/bin/bash"))
     }
 
+    // WO-526@v2: generated hooks use the structured mutation guard by default.
+    func testGeneratedMutationHooksAreChangeAware() {
+        let claude = AgentSetup.claudeCodeGuardScript(severity: "high")
+        let codex = AgentSetup.codexGuardScript(severity: "high")
+
+        for script in [claude, codex] {
+            XCTAssertTrue(script.contains("pastewatch-cli guard-mutation --fail-on-severity"))
+            XCTAssertTrue(script.contains("printf '%s' \"$input\""))
+        }
+        XCTAssertTrue(claude.contains("pastewatch-cli scan --check"))
+        XCTAssertTrue(codex.contains("apply_patch remain whole-file decisions"))
+    }
+
     func testClineScriptContainsSeverity() {
         let script = AgentSetup.clineHookScript(severity: "medium")
         XCTAssertTrue(script.contains("PW_SEVERITY=\"${PW_SEVERITY:-medium}\""))

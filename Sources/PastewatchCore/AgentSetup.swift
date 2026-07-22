@@ -381,6 +381,7 @@ public enum AgentSetup {
 
     // MARK: - Embedded Templates
 
+    // WO-526@v2: generated Claude hooks default structured mutations to change-aware policy.
     /// Generate Claude Code guard script with configured severity.
     public static func claudeCodeGuardScript(severity: String) -> String {
         return """
@@ -441,32 +442,30 @@ public enum AgentSetup {
           fi
         fi
 
-        # --- READ/WRITE/EDIT: Scan the file on disk for secrets ---
-        # Only scan existing files (new files won't have secrets on disk)
-        [ ! -f "$file_path" ] && exit 0
-
         # Fail-open if pastewatch-cli not installed
         command -v pastewatch-cli &>/dev/null || exit 0
+
+        # WO-526@v2: Edit/Write decisions compare the proposed content with findings on disk.
+        if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
+          printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
+          if [ $? -ne 0 ]; then
+            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch_read_file and pastewatch_write_file."
+            echo "Blocked: protected content in mutation" >&2
+            exit 2
+          fi
+          exit 0
+        fi
+
+        # Read remains a whole-file decision. Only scan existing files.
+        [ ! -f "$file_path" ] && exit 0
 
         # Scan file at configured severity threshold
         pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
         scan_exit=$?
 
         if [ "$scan_exit" -eq 6 ]; then
-          case "$tool" in
-            Read)
-              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
-              echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
-              ;;
-            Write)
-              echo "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead. Do NOT delete the file or use python3 as a workaround."
-              echo "Blocked: secrets in Write target — use pastewatch_write_file" >&2
-              ;;
-            Edit)
-              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file to read, then pastewatch_write_file to write back. Do NOT use any workaround."
-              echo "Blocked: secrets in Edit target — use pastewatch_read_file + pastewatch_write_file" >&2
-              ;;
-          esac
+          echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
+          echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
           exit 2
         fi
 
@@ -688,6 +687,7 @@ public enum AgentSetup {
         json["hooks"] = hooks
     }
 
+    // WO-526@v2: structured Codex mutations share the same evaluator as Claude hooks.
     /// Generate Codex CLI guard script with configured severity.
     /// Extends the Claude Code guard to also handle apply_patch and Bash.
     public static func codexGuardScript(severity: String) -> String {
@@ -758,7 +758,17 @@ public enum AgentSetup {
           fi
         fi
 
-        # Scan file on disk for secrets
+        # WO-526@v2: structured Edit/Write calls use change-aware finding comparison.
+        if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
+          printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
+          if [ $? -ne 0 ]; then
+            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch MCP file tools."
+            exit 2
+          fi
+          exit 0
+        fi
+
+        # Read and unstructured apply_patch remain whole-file decisions.
         [ ! -f "$file_path" ] && exit 0
 
         pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
