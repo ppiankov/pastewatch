@@ -399,6 +399,70 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-390@v2: lowercase Go and Python assignments can carry code references, not secrets.
+    func testIgnoresLowercaseCodeReferenceAssignmentsAsCredentials() {
+        let codeReferences = [
+            "token = parse()",
+            "auth_token = args.small_p95_slo_seconds",
+            "api_key = options.apiKey",
+            "credentials := requestCredentials()",
+            "secret = computedValue",
+            "token = arg_small_p95",
+            "secret = opt_v2",
+        ]
+
+        for input in codeReferences {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect code reference: \(input)")
+        }
+    }
+
+    // WO-390@v2: schema instructions ending in an operator keyword are prose, not credentials.
+    func testIgnoresStructTagCredentialKeywords() {
+        let structTags = [
+            #"`jsonschema:"description=confirmation token: MERGE"`"#,
+            #"`jsonschema:"description=confirmation secret: DELETE"`"#,
+        ]
+
+        for input in structTags {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Should not detect struct-tag instruction: \(input)")
+        }
+    }
+
+    // WO-390@v2: code-reference exclusions must not hide deterministic secret evidence.
+    func testCodeReferenceExclusionsPreserveRealSecretShapes() {
+        let password = "password=" + ["s3cret", "value", "123"].joined(separator: "_")
+        let apiKey = "api_key=sk_live_" + String(repeating: "A1", count: 12)
+        let token = "token=TokenValue" + String(repeating: "A1", count: 8)
+        let prefixedToken = "token=arg_" + ["A1b2", "C3d4", "E5f6", "G7h8", "J9k0", "LmNp", "QrSt", "UvWx"].joined()
+        let userInfo = ["user", "pass"].joined(separator: ":")
+        let dsn = "dsn=postgres://" + userInfo + "@db-primary.internal/app"
+        let privateKey = "private_key=\n" + pemFixture(
+            label: "PRIVATE KEY",
+            payload: String(repeating: "QUJD", count: 12),
+            newline: "\n"
+        )
+        let cases: [(String, SensitiveDataType)] = [
+            (password, .credential),
+            (apiKey, .genericApiKey),
+            (token, .credential),
+            (prefixedToken, .credential),
+            (dsn, .dbConnectionString),
+            (privateKey, .sshPrivateKey),
+        ]
+
+        for (content, expectedType) in cases {
+            let matches = DetectionRules.scan(content, config: config)
+            XCTAssertTrue(
+                matches.contains { $0.type == expectedType },
+                "Should preserve \(expectedType.rawValue) detection"
+            )
+        }
+    }
+
     func testIgnoresStandaloneFortyCharStrings() {
         // Go test function names, git SHAs, markdown paths — should NOT match AWS key
         let falsePositives = [
