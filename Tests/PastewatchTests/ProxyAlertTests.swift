@@ -781,6 +781,36 @@ final class ProxyAlertTests: XCTestCase {
         XCTAssertEqual(blocks[4]["data"] as? String, metadataKey)
     }
 
+    // WO-459@v2: null siblings cannot suppress scanning of valid tool-result blocks.
+    func testMixedNullToolResultContentStillRedactsTextBlock() throws {
+        let credential = "AIza" + String(repeating: "N", count: 35)
+        let request: [String: Any] = [
+            "messages": [[
+                "role": "user",
+                "content": [[
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": [NSNull(), ["type": "text", "text": credential]],
+                ]],
+            ]],
+        ]
+        let body = String(data: try JSONSerialization.data(withJSONObject: request), encoding: .utf8)!
+
+        let result = server.scanAndRedactBody(body)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(output["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(messages[0]["content"] as? [[String: Any]])
+        let toolContent = try XCTUnwrap(blocks[0]["content"] as? [Any])
+        let textBlock = try XCTUnwrap(toolContent[1] as? [String: Any])
+
+        XCTAssertTrue(toolContent[0] is NSNull)
+        XCTAssertEqual(result.redacted, 1)
+        XCTAssertFalse(result.body.contains(credential))
+        XCTAssertTrue((textBlock["text"] as? String)?.hasPrefix("<GOOGLE_API_KEY_") == true)
+    }
+
     // WO-506: opaque execution payloads remain replayable while plaintext stderr is scanned.
     func testEncryptedCodeExecutionTraversalPreservesOpaqueFields() throws {
         let encryptedOutput = "AIza" + String(repeating: "E", count: 35)

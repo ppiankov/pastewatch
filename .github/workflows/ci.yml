@@ -79,7 +79,9 @@ jobs:
         id: tag
         if: steps.check.outputs.should_tag == 'true'
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # WO-520@v2: the built-in token suppresses recursive tag-push workflows;
+          # the following explicit dispatch is the sole automated release trigger.
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.check.outputs.version }}"
           if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
@@ -88,9 +90,7 @@ jobs:
             exit 0
           fi
           git tag "$TAG"
-          if [ -n "$GH_TOKEN" ]; then
-            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          fi
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin "$TAG"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
