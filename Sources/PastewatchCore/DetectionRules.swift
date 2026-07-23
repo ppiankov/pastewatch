@@ -693,6 +693,15 @@ public struct DetectionRules {
             scanTwoSegmentHosts(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
         }
 
+        // WO-529: Filter ambiguous class matches based on obfuscate config.
+        // Ambiguous classes (email, host, IP, filePath, phone, etc.) are opt-in:
+        // only matches that explicitly match an obfuscate entry are kept.
+        // Everything else is silently dropped — no nag, no advisory.
+        matches = matches.filter { match in
+            guard match.type.isAmbiguousClass else { return true }
+            return config.shouldObfuscateAmbiguousValue(match.value, type: match.type)
+        }
+
         return matches
     }
 

@@ -124,6 +124,20 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     /// Backward-compatible certainty name. New mutation code uses evidence sources.
     public var mutationSafe: Bool { intrinsicMutationAuthorized }
 
+    /// WO-529: ambiguous classes are opt-in-to-obfuscate, default OFF, no nag.
+    /// These types have high false-positive rates on benign content (emails in docs,
+    /// hostnames in import paths, IPs in logs) and require explicit operator opt-in.
+    public var isAmbiguousClass: Bool {
+        switch self {
+        case .email, .phone, .ipAddress, .filePath, .hostname,
+             .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid,
+             .xmlUsername, .xmlHostname, .highEntropyString:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Human-readable explanation of what this type detects.
     public var explanation: String {
         switch self {
@@ -384,6 +398,52 @@ public enum StreamingRedactionMode: String, Codable, CaseIterable, Equatable {
     case buffer
 }
 
+/// WO-529: domain-scoped obfuscation entry for ambiguous classes.
+/// Operators opt-in to obfuscate specific domains/addresses; everything else is ignored.
+public struct ObfuscateEntry: Codable, Equatable {
+    /// The ambiguous type this entry applies to: "email" or "host".
+    public let type: String
+    /// The pattern to match:
+    /// - Exact value: "user@example.com" or "host.example.com"
+    /// - Domain-scoped email: "@example.com" (any email at that domain)
+    /// - Domain-scoped host: ".example.com" (any host under that domain tree)
+    public let pattern: String
+
+    public init(type: String, pattern: String) {
+        self.type = type
+        self.pattern = pattern
+    }
+
+    /// Check if a value matches this obfuscate entry.
+    public func matches(_ value: String) -> Bool {
+        let lowerValue = value.lowercased()
+        let lowerPattern = pattern.lowercased()
+
+        switch type {
+        case "email":
+            if lowerPattern.hasPrefix("@") {
+                // Domain-scoped: @example.com matches any email at that domain
+                let domain = String(lowerPattern.dropFirst())
+                return lowerValue.hasSuffix("@" + domain)
+            } else {
+                // Exact match
+                return lowerValue == lowerPattern
+            }
+        case "host":
+            if lowerPattern.hasPrefix(".") {
+                // Domain-scoped: .example.com matches any host under that domain tree
+                let domain = String(lowerPattern.dropFirst())
+                return lowerValue == domain || lowerValue.hasSuffix("." + domain)
+            } else {
+                // Exact match
+                return lowerValue == lowerPattern
+            }
+        default:
+            return false
+        }
+    }
+}
+
 /// Configuration for Pastewatch.
 /// Loaded from ~/.config/pastewatch/config.json if present.
 public struct PastewatchConfig: Codable {
@@ -408,6 +468,9 @@ public struct PastewatchConfig: Codable {
     /// - raw_stream: skip SSE parsing; scan raw chunks with the certainty gate.
     /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
     public var responseStreamingRedactionMode: StreamingRedactionMode // WO-286: enum prevents typo-to-raw fallback
+    /// WO-529: opt-in obfuscation entries for ambiguous classes (email, host).
+    /// Default is empty — ambiguous classes are NOT detected/blocked/nagged unless explicitly listed here.
+    public var obfuscate: [ObfuscateEntry]
 
     public init(
         enabled: Bool,
@@ -427,7 +490,8 @@ public struct PastewatchConfig: Codable {
         placeholderPrefix: String? = nil,
         protectedPaths: [String] = ["~/.openclaw"],
         sharedPatternFiles: [String] = [],
-        responseStreamingRedactionMode: StreamingRedactionMode = .perSSEEvent
+        responseStreamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
+        obfuscate: [ObfuscateEntry] = []
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -447,6 +511,7 @@ public struct PastewatchConfig: Codable {
         self.protectedPaths = protectedPaths
         self.sharedPatternFiles = sharedPatternFiles
         self.responseStreamingRedactionMode = responseStreamingRedactionMode
+        self.obfuscate = obfuscate
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -454,11 +519,15 @@ public struct PastewatchConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decode(Bool.self, forKey: .enabled)
         var loaded = try container.decode([String].self, forKey: .enabledTypes)
-        // Auto-enable new detection types that weren't in the saved config
-        let allDefaults = SensitiveDataType.allCases
-            .filter { $0 != .highEntropyString }
+        // WO-529: Auto-enable only NEW INTRINSIC detectors, not ambiguous classes.
+        // Ambiguous classes (email, host, IP, filePath, phone, dbConnectionString,
+        // jdbcUrl, genericApiKey, credential, uuid, xmlUsername, xmlHostname) are
+        // opt-in via the obfuscate config section. This fixes the decoder force-re-add
+        // that was silently re-enabling noisy ambiguous types the operator removed.
+        let intrinsicDefaults = SensitiveDataType.allCases
+            .filter { !$0.isAmbiguousClass }
             .map { $0.rawValue }
-        for typeName in allDefaults where !loaded.contains(typeName) {
+        for typeName in intrinsicDefaults where !loaded.contains(typeName) {
             loaded.append(typeName)
         }
         enabledTypes = loaded
@@ -489,11 +558,15 @@ public struct PastewatchConfig: Codable {
             ))
             responseStreamingRedactionMode = .perSSEEvent
         }
+        // WO-529: opt-in obfuscation entries for ambiguous classes.
+        obfuscate = try container.decodeIfPresent([ObfuscateEntry].self, forKey: .obfuscate) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(
         enabled: true,
-        enabledTypes: SensitiveDataType.allCases.filter { $0 != .highEntropyString }.map { $0.rawValue },
+        // WO-529: Default config only enables intrinsic detectors, not ambiguous classes.
+        // Ambiguous classes (email, host, IP, etc.) are opt-in via the obfuscate config.
+        enabledTypes: SensitiveDataType.allCases.filter { !$0.isAmbiguousClass }.map { $0.rawValue },
         showNotifications: true,
         soundEnabled: false
     )
@@ -568,5 +641,21 @@ public struct PastewatchConfig: Codable {
             }
         }
         return false
+    }
+
+    /// WO-529: Check if an ambiguous-class value should be obfuscated based on the obfuscate config.
+    /// Returns true only if the value matches an explicit obfuscate entry.
+    /// Ambiguous classes are opt-in: no match = no obfuscation, no nag.
+    public func shouldObfuscateAmbiguousValue(_ value: String, type: SensitiveDataType) -> Bool {
+        guard type.isAmbiguousClass else { return false }
+        let entryType: String
+        switch type {
+        case .email: entryType = "email"
+        case .hostname, .xmlHostname: entryType = "host"
+        default: return false // Other ambiguous types not yet supported in obfuscate config
+        }
+        return obfuscate.contains { entry in
+            entry.type == entryType && entry.matches(value)
+        }
     }
 }
