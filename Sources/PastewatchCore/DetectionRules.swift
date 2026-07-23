@@ -1164,8 +1164,8 @@ public struct DetectionRules {
         let value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
 
-        // WO-390: Go struct field labels such as Token: makeToken() are code
-        // references, not literal credential values.
+        // WO-390@v2: source assignments and schema labels can carry code references,
+        // while values with deterministic secret evidence must remain detectable.
         if isLikelyStructFieldReference(key: key, separator: separator, value: value) {
             return false
         }
@@ -1173,18 +1173,45 @@ public struct DetectionRules {
         return isValidCredentialValue(value)
     }
 
+    // WO-390@v2: classify source-language references by value shape, not key casing.
     private static func isLikelyStructFieldReference(key: String, separator: String, value: String) -> Bool {
         let separatorText = separator.trimmingCharacters(in: .whitespaces)
-        guard separatorText == ":" else { return false }
-        guard let firstScalar = key.unicodeScalars.first,
-              CharacterSet.uppercaseLetters.contains(firstScalar) else {
+        guard [":", "=", ":="].contains(separatorText), !key.isEmpty else { return false }
+
+        let trailingSyntax = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: ",;\"'`"))
+        let cleanedValue = value.trimmingCharacters(in: trailingSyntax)
+        let identifierPattern = #"^[A-Za-z_][A-Za-z0-9_]*$"#
+        let dottedIdentifierPattern = #"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$"#
+        let callPattern = #"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\([^)]*\)$"#
+
+        if cleanedValue.range(of: callPattern, options: .regularExpression) != nil ||
+            cleanedValue.range(of: dottedIdentifierPattern, options: .regularExpression) != nil {
+            return true
+        }
+
+        guard cleanedValue.range(of: identifierPattern, options: .regularExpression) != nil else {
             return false
         }
-        let cleanedValue = value.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ",")))
-        let identifierPattern = #"^[A-Za-z_][A-Za-z0-9_]*$"#
-        let callPattern = #"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\([^)]*\)$"#
-        return cleanedValue.range(of: identifierPattern, options: .regularExpression) != nil ||
-            cleanedValue.range(of: callPattern, options: .regularExpression) != nil
+        return !hasDeterministicCredentialEvidence(cleanedValue)
+    }
+
+    // WO-390@v2: preserve generic credential findings only when the value itself
+    // carries deterministic evidence beyond being a source-language identifier.
+    private static func hasDeterministicCredentialEvidence(_ value: String) -> Bool {
+        let lowerValue = value.lowercased()
+        let hasDigit = value.contains(where: \.isNumber)
+        if hasDigit {
+            return true
+        }
+
+        let hasUnderscore = value.contains("_")
+        let credentialMarkers = ["password", "passwd", "secret", "token", "api_key", "apikey"]
+        if hasUnderscore && credentialMarkers.contains(where: lowerValue.contains) {
+            return true
+        }
+
+        return value.count >= minimumEntropyLength && shannonEntropy(value) >= entropyThreshold
     }
 
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.
