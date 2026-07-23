@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-07-23
+
 ### Fixed
 
 - Edit and Write hooks now evaluate the proposed mutation instead of blocking unrelated changes solely because an existing file contains an actionable fixture or credential.

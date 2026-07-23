@@ -33,6 +33,23 @@ final class ReleaseWorkflowTests: XCTestCase {
         XCTAssertTrue(workflow[formulaIndex...].contains("--method PUT"))
     }
 
+    // WO-528@v2: one source version must agree with every release-facing metadata surface.
+    func testReleaseMetadataMatchesSourceVersion() throws {
+        let versionSource = try source("Sources/PastewatchCore/Version.swift")
+        let regex = try NSRegularExpression(pattern: #"current\s*=\s*"([^"]+)""#)
+        let sourceRange = NSRange(versionSource.startIndex..<versionSource.endIndex, in: versionSource)
+        let match = try XCTUnwrap(regex.firstMatch(in: versionSource, range: sourceRange))
+        let versionRange = try XCTUnwrap(Range(match.range(at: 1), in: versionSource))
+        let version = String(versionSource[versionRange])
+
+        let readme = try source("README.md")
+        XCTAssertTrue(readme.contains("version-\(version)-blue"))
+        XCTAssertTrue(readme.contains("**v\(version)**"))
+        XCTAssertTrue(try source("docs/agent-safety.md").contains("rev: v\(version)"))
+        XCTAssertTrue(try source("docs/status.md").contains("v\(version)"))
+        XCTAssertTrue(try source("CHANGELOG.md").contains("## [\(version)] -"))
+    }
+
     // WO-520@v2: source-contract tests read workflow files from the package root.
     private func source(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
