@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.3] - 2026-07-23
+
+### Fixed
+
+- The credential detector no longer flags source-code identifiers — lowercase assignments, method calls, dotted references, struct-tag keywords, and versioned `arg_`/`opt_` names — as secrets, while values carrying deterministic credential evidence (high entropy, credential markers) are still detected.
+
 ## [0.33.2] - 2026-07-23
 
 ### Fixed
