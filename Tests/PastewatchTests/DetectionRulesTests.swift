@@ -437,6 +437,7 @@ final class DetectionRulesTests: XCTestCase {
         let password = "password=" + ["s3cret", "value", "123"].joined(separator: "_")
         let apiKey = "api_key=sk_live_" + String(repeating: "A1", count: 12)
         let token = "token=TokenValue" + String(repeating: "A1", count: 8)
+        let prefixedToken = "token=arg_" + ["A1b2", "C3d4", "E5f6", "G7h8", "J9k0", "LmNp", "QrSt", "UvWx"].joined()
         let userInfo = ["user", "pass"].joined(separator: ":")
         let dsn = "dsn=postgres://" + userInfo + "@db-primary.internal/app"
         let privateKey = "private_key=\n" + pemFixture(
@@ -448,6 +449,7 @@ final class DetectionRulesTests: XCTestCase {
             (password, .credential),
             (apiKey, .genericApiKey),
             (token, .credential),
+            (prefixedToken, .credential),
             (dsn, .dbConnectionString),
             (privateKey, .sshPrivateKey),
         ]

@@ -1200,6 +1200,11 @@ public struct DetectionRules {
     // carries deterministic evidence beyond being a source-language identifier.
     private static func hasDeterministicCredentialEvidence(_ value: String) -> Bool {
         let lowerValue = value.lowercased()
+        // WO-390@v2: high entropy remains credential evidence regardless of identifier prefix.
+        if value.count >= minimumEntropyLength && shannonEntropy(value) >= entropyThreshold {
+            return true
+        }
+
         // WO-390@v2: parser option/local names remain code identifiers even when versioned.
         let sourceIdentifierPrefixes = ["arg_", "args_", "opt_", "opts_", "option_", "options_"]
         if sourceIdentifierPrefixes.contains(where: lowerValue.hasPrefix) {
@@ -1217,7 +1222,7 @@ public struct DetectionRules {
             return true
         }
 
-        return value.count >= minimumEntropyLength && shannonEntropy(value) >= entropyThreshold
+        return false
     }
 
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.
