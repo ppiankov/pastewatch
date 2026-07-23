@@ -407,6 +407,8 @@ final class DetectionRulesTests: XCTestCase {
             "api_key = options.apiKey",
             "credentials := requestCredentials()",
             "secret = computedValue",
+            "token = arg_small_p95",
+            "secret = opt_v2",
         ]
 
         for input in codeReferences {
