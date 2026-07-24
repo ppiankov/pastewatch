@@ -695,16 +695,17 @@ public struct DetectionRules {
 
         // WO-529: Filter ambiguous class matches based on obfuscate config.
         // Email and hostname are domain-scoped: only matches that explicitly match
-        // an obfuscate entry are kept. Other ambiguous types (phone, IP, filePath,
-        // dbConnectionString, jdbcUrl, genericApiKey, credential, uuid) are allowed
-        // if enabled in enabledTypes (no obfuscate filtering).
+        // an obfuscate entry are kept. XML hostname matches are allowed if enabled
+        // (the XML tag structure provides context). Other ambiguous types (phone, IP,
+        // filePath, dbConnectionString, jdbcUrl, genericApiKey, credential, uuid)
+        // are allowed if enabled in enabledTypes (no obfuscate filtering).
         matches = matches.filter { match in
             guard match.type.isAmbiguousClass else { return true }
             // Email and hostname require obfuscate entry match
-            if match.type == .email || match.type == .hostname || match.type == .xmlHostname {
+            if match.type == .email || match.type == .hostname {
                 return config.shouldObfuscateAmbiguousValue(match.value, type: match.type)
             }
-            // Other ambiguous types are allowed if enabled
+            // XML hostname and other ambiguous types are allowed if enabled
             return true
         }
 

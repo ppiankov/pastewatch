@@ -11,7 +11,8 @@ final class DetectionRulesTests: XCTestCase {
         // Enable ambiguous types
         let ambiguousTypes: [SensitiveDataType] = [
             .email, .phone, .ipAddress, .filePath, .hostname,
-            .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid
+            .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid,
+            .xmlUsername, .xmlHostname
         ]
         for type in ambiguousTypes {
             if !config.enabledTypes.contains(type.rawValue) {
@@ -31,11 +32,20 @@ final class DetectionRulesTests: XCTestCase {
             ObfuscateEntry(type: "host", pattern: ".local"),
             ObfuscateEntry(type: "host", pattern: ".corp"),
             ObfuscateEntry(type: "host", pattern: ".corp.net"),
+            ObfuscateEntry(type: "host", pattern: ".shields.io"),
+            ObfuscateEntry(type: "host", pattern: ".jsdelivr.net"),
             ObfuscateEntry(type: "host", pattern: "nas.local"),
             ObfuscateEntry(type: "host", pattern: "printer.lan"),
             ObfuscateEntry(type: "host", pattern: "db.internal"),
             ObfuscateEntry(type: "host", pattern: "api.internal"),
-            ObfuscateEntry(type: "host", pattern: "db-primary.internal.corp.net")
+            ObfuscateEntry(type: "host", pattern: "db-primary.internal.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "img.shields.io"),
+            ObfuscateEntry(type: "host", pattern: "cdn.jsdelivr.net"),
+            ObfuscateEntry(type: "host", pattern: "overlap.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "admin.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "corp.net.example.org"),
+            ObfuscateEntry(type: "host", pattern: "replica-02.dc1.internal"),
+            ObfuscateEntry(type: "host", pattern: "ch-node3.corp.net")
         ]
         return config
     }()
@@ -1083,6 +1093,7 @@ final class DetectionRulesTests: XCTestCase {
         var customConfig = PastewatchConfig.defaultConfig
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["img.shields.io"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "img.shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1094,6 +1105,7 @@ final class DetectionRulesTests: XCTestCase {
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["overlap.corp.net"]
         customConfig.sensitiveHosts = ["overlap.corp.net"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "overlap.corp.net")]
         let content = "Connect to overlap.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1115,6 +1127,7 @@ final class DetectionRulesTests: XCTestCase {
         var customConfig = PastewatchConfig.defaultConfig
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["CDN.JSDELIVR.NET"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "cdn.jsdelivr.net")]
         let content = "load from cdn.jsdelivr.net/npm"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1139,6 +1152,7 @@ final class DetectionRulesTests: XCTestCase {
         var customConfig = PastewatchConfig.defaultConfig
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "corp.net.example.org")]
         let content = "Connect to corp.net.example.org"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1151,6 +1165,7 @@ final class DetectionRulesTests: XCTestCase {
         var customConfig = PastewatchConfig.defaultConfig
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = [".shields.io"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1162,6 +1177,7 @@ final class DetectionRulesTests: XCTestCase {
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
         customConfig.sensitiveHosts = [".corp.net"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".corp.net")]
         let content = "Connect to admin.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1176,6 +1192,7 @@ final class DetectionRulesTests: XCTestCase {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = [".local"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "nas.local")]
         let content = "Connect to nas.local for backups"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1196,6 +1213,7 @@ final class DetectionRulesTests: XCTestCase {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = ["printer.lan"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "printer.lan")]
         let content = "Print to printer.lan"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1208,6 +1226,7 @@ final class DetectionRulesTests: XCTestCase {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = [".local"]
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".local")]
         let content = "hosts: nas.local and db.staging.local"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1415,14 +1434,14 @@ final class DetectionRulesTests: XCTestCase {
     func testDetectsStripeWebhookSecret() {
         let secret = "whsec_" + String(repeating: "A", count: 32)
         let content = "STRIPE_WEBHOOK_SECRET=\(secret)"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
                       "Should detect Stripe webhook secret with whsec_ prefix")
     }
 
     func testDetectsStripeWebhookSecretStandalone() {
         let secret = "whsec_" + String(repeating: "B", count: 40)
-        let matches = DetectionRules.scan(secret, config: config)
+        let matches = DetectionRules.scan(secret, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
                       "Should detect standalone whsec_ secret")
     }
