@@ -3,6 +3,18 @@ import XCTest
 
 final class GitDiffScannerTests: XCTestCase {
 
+    // WO-529: Config with ambiguous types enabled for diff scanner tests.
+    let fullConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        let ambiguousTypes: [SensitiveDataType] = [.genericApiKey, .dbConnectionString]
+        for type in ambiguousTypes {
+            if !config.enabledTypes.contains(type.rawValue) {
+                config.enabledTypes.append(type.rawValue)
+            }
+        }
+        return config
+    }()
+
     // MARK: - parseDiff tests
 
     func testParseSingleFileSingleHunk() {
@@ -178,7 +190,7 @@ final class GitDiffScannerTests: XCTestCase {
         // Simulate: file has secrets on lines 1 and 3, but only line 3 was added
         let secret = ["sk_live_", "abc123def456ghi789jkl012"].joined()
         let content = "safe_value = 123\nexisting = true\napi_key = \"\(secret)\"\n"
-        let config = PastewatchConfig.defaultConfig
+        let config = fullConfig
         let addedLines: Set<Int> = [3]
 
         let allMatches = DirectoryScanner.scanFileContent(
@@ -217,7 +229,7 @@ final class GitDiffScannerTests: XCTestCase {
         // Secret on line 2 which was added
         let dbUrl = ["postgres://", "user:pass@host:5432/mydb"].joined()
         let content = "safe = true\ndb_url = \"\(dbUrl)\"\n"
-        let config = PastewatchConfig.defaultConfig
+        let config = fullConfig
         let addedLines: Set<Int> = [2]
 
         let allMatches = DirectoryScanner.scanFileContent(
