@@ -43,7 +43,7 @@ final class LaunchCommandTests: XCTestCase {
         }
     }
 
-    // WO-135: passthrough help reaches only fixture startup files if sweep runs.
+    // WO-135/WO-543: passthrough help reaches only fixture startup files if sweep runs.
     func testLaunchPassthroughHelpUsesFixtureStartupSweepHome() throws {
         let result = try runCLI(arguments: ["launch", "--quiet", "--port", "65435", "--", "--help"])
         let fixturePath = result.home.appendingPathComponent(".zshrc").path
@@ -51,7 +51,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains(fixturePath), "missing fixture warning path: \(result.stderr)")
         XCTAssertFalse(result.stdout.contains("OVERVIEW: Start the proxy"), "passthrough help became launch help")
         XCTAssertFalse(result.stderr.contains(FileManager.default.homeDirectoryForCurrentUser.path))
-        XCTAssertFalse(result.stderr.contains("user:pass"))
+        XCTAssertFalse(result.stderr.contains(Self.startupSweepFixtureValue))
     }
 
     // WO-409/WO-416: a proxy-routed agent receives the local proxy URL without
@@ -664,10 +664,12 @@ final class LaunchCommandTests: XCTestCase {
         return TermTrapAgent(script: script, pidFile: pidFile, termFile: termFile)
     }
 
+    // WO-543: keep fixture isolation independent of opt-in ambiguous detectors.
+    private static let startupSweepFixtureValue = "hvs." + String(repeating: "A1", count: 12)
+
     private func writeFixtureStartupFile(in home: URL) throws {
-        let fixtureValue = "postgres" + "://user:pass@host:5432/db"
         let path = home.appendingPathComponent(".zshrc")
-        try "DATABASE_URL=\(fixtureValue)\n".write(to: path, atomically: true, encoding: .utf8)
+        try "VAULT_TOKEN=\(Self.startupSweepFixtureValue)\n".write(to: path, atomically: true, encoding: .utf8)
     }
 
     private func environmentValue(_ key: String) -> String? {
