@@ -30,10 +30,12 @@ final class DetectionRulesTests: XCTestCase {
             ObfuscateEntry(type: "host", pattern: ".internal"),
             ObfuscateEntry(type: "host", pattern: ".local"),
             ObfuscateEntry(type: "host", pattern: ".corp"),
+            ObfuscateEntry(type: "host", pattern: ".corp.net"),
             ObfuscateEntry(type: "host", pattern: "nas.local"),
             ObfuscateEntry(type: "host", pattern: "printer.lan"),
             ObfuscateEntry(type: "host", pattern: "db.internal"),
-            ObfuscateEntry(type: "host", pattern: "api.internal")
+            ObfuscateEntry(type: "host", pattern: "api.internal"),
+            ObfuscateEntry(type: "host", pattern: "db-primary.internal.corp.net")
         ]
         return config
     }()
@@ -257,7 +259,11 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsInternalHostname() {
         let content = "Connect to db-primary.internal.corp.net"
-        let matches = DetectionRules.scan(content, config: ambiguousConfig)
+        var hostnameConfig = ambiguousConfig
+        if !hostnameConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            hostnameConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
+        let matches = DetectionRules.scan(content, config: hostnameConfig)
 
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertGreaterThanOrEqual(hostMatches.count, 1)
@@ -1064,6 +1070,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testUserSafeHostNotDetected() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["my-safe.internal.com"]
         let content = "Connect to my-safe.internal.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1074,6 +1081,7 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostDetectedEvenIfBuiltInSafe() {
         // img.shields.io is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["img.shields.io"]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1083,6 +1091,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostWinsOverUserSafeHost() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["overlap.corp.net"]
         customConfig.sensitiveHosts = ["overlap.corp.net"]
         let content = "Connect to overlap.corp.net"
@@ -1093,6 +1102,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testHostConfigCaseInsensitive() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["MY-SAFE.INTERNAL.COM"]
         let content = "Connect to my-safe.internal.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1103,6 +1113,7 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostCaseInsensitive() {
         // cdn.jsdelivr.net is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["CDN.JSDELIVR.NET"]
         let content = "load from cdn.jsdelivr.net/npm"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1114,6 +1125,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSafeHostSuffixSuppressesSubdomain() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".company.com"]
         let content = "Connect to db.company.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1125,6 +1137,7 @@ final class DetectionRulesTests: XCTestCase {
         // "company.com" is only 2 segments — won't match the FQDN regex anyway
         // Use a 3-segment domain to test suffix behavior
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
         let content = "Connect to corp.net.example.org"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1136,6 +1149,7 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostSuffixFlagsSubdomain() {
         // img.shields.io is built-in safe, but .shields.io suffix in sensitiveHosts should override
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = [".shields.io"]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1145,6 +1159,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostSuffixWinsOverSafeHostSuffix() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
         customConfig.sensitiveHosts = [".corp.net"]
         let content = "Connect to admin.corp.net"
@@ -1203,6 +1218,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixOverridesExclude() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["8.8."]
         let content = "dns at 8.8.8.8"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1212,6 +1228,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixMatchesRange() {
         var customConfig = PastewatchConfig.defaultConfig
+        customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["172.16."]
         let content = "db at 172.16.0.5 and dns at 8.8.8.8"
         let matches = DetectionRules.scan(content, config: customConfig)
