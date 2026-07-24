@@ -5,10 +5,17 @@ final class ConfigResolutionTests: XCTestCase {
 
     func testDefaultConfigHasAllTypesEnabled() {
         let config = PastewatchConfig.defaultConfig
-        // highEntropyString is opt-in only, excluded from defaults
-        let expectedCount = SensitiveDataType.allCases.count - 1
-        XCTAssertEqual(config.enabledTypes.count, expectedCount)
+        // WO-529: Default config only enables intrinsic detectors, not ambiguous classes.
+        // Ambiguous classes (email, host, IP, filePath, phone, dbConnectionString,
+        // jdbcUrl, genericApiKey, credential, uuid, xmlUsername, xmlHostname, highEntropyString)
+        // are opt-in via the obfuscate config.
+        let intrinsicCount = SensitiveDataType.allCases.filter { !$0.isAmbiguousClass }.count
+        XCTAssertEqual(config.enabledTypes.count, intrinsicCount)
         XCTAssertFalse(config.isTypeEnabled(.highEntropyString))
+        // Verify ambiguous types are NOT enabled by default
+        XCTAssertFalse(config.isTypeEnabled(.email))
+        XCTAssertFalse(config.isTypeEnabled(.hostname))
+        XCTAssertFalse(config.isTypeEnabled(.ipAddress))
         XCTAssertTrue(config.enabled)
     }
 
