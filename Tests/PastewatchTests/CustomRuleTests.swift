@@ -2,7 +2,20 @@ import XCTest
 @testable import PastewatchCore
 
 final class CustomRuleTests: XCTestCase {
+    // WO-529: Default config only enables intrinsic detectors.
     let config = PastewatchConfig.defaultConfig
+
+    // WO-529: Config with email enabled and obfuscate entry for test values.
+    let emailConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.email.rawValue)
+        }
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@corp.com")
+        ]
+        return config
+    }()
 
     func testCustomRuleDetection() throws {
         let rules = try CustomRule.compile([
@@ -80,7 +93,7 @@ final class CustomRuleTests: XCTestCase {
 
     func testEmptyCustomRules() {
         let content = "admin@corp.com"
-        let matches = DetectionRules.scan(content, config: config, customRules: [])
+        let matches = DetectionRules.scan(content, config: emailConfig, customRules: [])
         XCTAssertGreaterThan(matches.count, 0)
     }
 

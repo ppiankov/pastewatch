@@ -2,7 +2,17 @@ import XCTest
 @testable import PastewatchCore
 
 final class DirectoryScannerTests: XCTestCase {
+    // WO-529: Default config only enables intrinsic detectors.
     let config = PastewatchConfig.defaultConfig
+
+    // WO-529: Config with dbConnectionString enabled for scanner tests.
+    let dbConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.dbConnectionString.rawValue)
+        }
+        return config
+    }()
     var testDir: String!
 
     override func setUp() {
@@ -18,11 +28,11 @@ final class DirectoryScannerTests: XCTestCase {
 
     func testScansEnvFile() throws {
         // Build test content dynamically to avoid pre-commit hook detection
-        let proto = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        let proto = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         let envContent = "DB_URL=\(proto)\n"
         try envContent.write(toFile: testDir + "/.env", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config)
+        let results = try DirectoryScanner.scan(directory: testDir, config: dbConfig)
         XCTAssertGreaterThan(results.count, 0)
         XCTAssertEqual(results[0].filePath, ".env")
     }
@@ -30,10 +40,10 @@ final class DirectoryScannerTests: XCTestCase {
     func testScansRecursively() throws {
         let subdir = testDir + "/subdir"
         try FileManager.default.createDirectory(atPath: subdir, withIntermediateDirectories: true)
-        let proto = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        let proto = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         try "db_url: \(proto)".write(toFile: subdir + "/config.yml", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config)
+        let results = try DirectoryScanner.scan(directory: testDir, config: dbConfig)
         XCTAssertGreaterThan(results.count, 0)
         let paths = results.map { $0.filePath }
         XCTAssertTrue(paths.contains("subdir/config.yml"))
@@ -74,9 +84,18 @@ final class DirectoryScannerTests: XCTestCase {
     }
 
     func testFilePathsAreRelative() throws {
-        try "test@company.com".write(toFile: testDir + "/data.txt", atomically: true, encoding: .utf8)
+        let email = ["test", "@company.com"].joined()
+        let emailConfig: PastewatchConfig = {
+            var config = PastewatchConfig.defaultConfig
+            if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {
+                config.enabledTypes.append(SensitiveDataType.email.rawValue)
+            }
+            config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@company.com")]
+            return config
+        }()
+        try email.write(toFile: testDir + "/data.txt", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config)
+        let results = try DirectoryScanner.scan(directory: testDir, config: emailConfig)
         XCTAssertGreaterThan(results.count, 0)
         // Should be relative, not absolute
         XCTAssertFalse(results[0].filePath.hasPrefix("/"))
@@ -85,30 +104,30 @@ final class DirectoryScannerTests: XCTestCase {
     // MARK: - Bail (early exit)
 
     func testBailReturnsOneResult() throws {
-        let conn1 = ["postgres", "://user:pass@host1:5432/db1"].joined()
-        let conn2 = ["postgres", "://user:pass@host2:5432/db2"].joined()
+        let conn1 = ["postgres", "://user", "CRED", "@host1:5432/db1"].joined()
+        let conn2 = ["postgres", "://user", "CRED", "@host2:5432/db2"].joined()
         try "DB_URL=\(conn1)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
         try "DB_URL=\(conn2)".write(toFile: testDir + "/b.env", atomically: true, encoding: .utf8)
 
-        let all = try DirectoryScanner.scan(directory: testDir, config: config)
+        let all = try DirectoryScanner.scan(directory: testDir, config: dbConfig)
         XCTAssertGreaterThan(all.count, 1, "should find multiple files without bail")
 
-        let bailed = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        let bailed = try DirectoryScanner.scan(directory: testDir, config: dbConfig, bail: true)
         XCTAssertEqual(bailed.count, 1, "bail should return exactly one result")
     }
 
     func testBailWithNoFindingsReturnsEmpty() throws {
         try "clean content".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        let results = try DirectoryScanner.scan(directory: testDir, config: dbConfig, bail: true)
         XCTAssertEqual(results.count, 0)
     }
 
     func testBailStillHasMatches() throws {
-        let conn = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        let conn = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         try "DB_URL=\(conn)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
+        let results = try DirectoryScanner.scan(directory: testDir, config: dbConfig, bail: true)
         XCTAssertEqual(results.count, 1)
         XCTAssertGreaterThan(results[0].matches.count, 0)
     }
