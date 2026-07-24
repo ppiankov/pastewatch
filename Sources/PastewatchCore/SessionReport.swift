@@ -12,6 +12,23 @@ public struct SessionReport: Codable {
     public let secretsByType: [TypeCount]
     public let filesAccessed: [FileAccess]
     public let verdict: String
+    // WO-531: Obfuscation coverage stats
+    public let obfuscationCoverage: ObfuscationCoverage?
+}
+
+/// WO-531: Obfuscation coverage stats showing tier-1/tier-2/seen-but-not-configured.
+public struct ObfuscationCoverage: Codable {
+    public let tier1Intrinsic: [TypeCount]  // Always-on intrinsic secrets
+    public let tier2OptIn: [TypeCount]      // Opt-in obfuscate hits
+    public let seenButNotConfigured: [DomainSuggestion]  // Suggestions for obfuscate config
+}
+
+/// WO-531: Suggestion for obfuscate config entry (grouped by domain, redacted specifics).
+public struct DomainSuggestion: Codable {
+    public let type: String  // "email" or "host"
+    public let domain: String  // Redacted domain (e.g., "@corp.com" or ".internal")
+    public let count: Int
+    public let suggestedEntry: String  // Suggested obfuscate config entry
 }
 
 /// Summary counters for a session.
@@ -160,6 +177,9 @@ public enum SessionReportBuilder {
             scanFindings: scanFindings
         )
 
+        // WO-531: Compute obfuscation coverage stats
+        let obfuscationCoverage = computeObfuscationCoverage(typeCounts: typeCounts)
+
         return SessionReport(
             generatedAt: now,
             auditLogPath: logPath,
@@ -168,7 +188,61 @@ public enum SessionReportBuilder {
             summary: summary,
             secretsByType: secretsByType,
             filesAccessed: filesAccessed,
-            verdict: verdict
+            verdict: verdict,
+            obfuscationCoverage: obfuscationCoverage
+        )
+    }
+
+    // MARK: - WO-531: Obfuscation Coverage
+
+    /// Compute obfuscation coverage stats from type counts.
+    private static func computeObfuscationCoverage(typeCounts: [String: Int]) -> ObfuscationCoverage? {
+        guard !typeCounts.isEmpty else { return nil }
+
+        var tier1: [TypeCount] = []
+        var tier2: [TypeCount] = []
+        var domainCounts: [String: (type: String, domain: String, count: Int)] = [:]
+
+        for (type, count) in typeCounts {
+            let typeCount = TypeCount(
+                type: type,
+                count: count,
+                severity: SensitiveDataType(rawValue: type)?.severity.rawValue ?? "unknown"
+            )
+
+            // Classify by intrinsic vs ambiguous
+            if let dataType = SensitiveDataType(rawValue: type) {
+                if dataType.isAmbiguousClass {
+                    tier2.append(typeCount)
+                    // Track domain suggestions for email and hostname
+                    if dataType == .email || dataType == .hostname {
+                        let key = "\(type)-domain"
+                        var existing = domainCounts[key] ?? (type: dataType == .email ? "email" : "host", domain: "unknown", count: 0)
+                        existing.count += count
+                        domainCounts[key] = existing
+                    }
+                } else {
+                    tier1.append(typeCount)
+                }
+            }
+        }
+
+        // Build domain suggestions (redacted specifics)
+        let suggestions = domainCounts.values.map { entry in
+            DomainSuggestion(
+                type: entry.type,
+                domain: entry.type == "email" ? "@<domain>" : ".<domain>",
+                count: entry.count,
+                suggestedEntry: entry.type == "email"
+                    ? "{\"type\": \"email\", \"pattern\": \"@your-domain.com\"}"
+                    : "{\"type\": \"host\", \"pattern\": \".your-domain.com\"}"
+            )
+        }
+
+        return ObfuscationCoverage(
+            tier1Intrinsic: tier1.sorted { $0.count > $1.count },
+            tier2OptIn: tier2.sorted { $0.count > $1.count },
+            seenButNotConfigured: suggestions.sorted { $0.count > $1.count }
         )
     }
 
@@ -297,6 +371,32 @@ public enum SessionReportBuilder {
             lines.append("Files accessed")
             for fa in report.filesAccessed {
                 lines.append("  \(fa.file)  reads=\(fa.reads) writes=\(fa.writes) redacted=\(fa.secretsRedacted)")
+            }
+            lines.append("")
+        }
+
+        // WO-531: Obfuscation coverage stats
+        if let coverage = report.obfuscationCoverage {
+            lines.append("Obfuscation Coverage")
+            if !coverage.tier1Intrinsic.isEmpty {
+                lines.append("  Tier-1 (intrinsic, always-on):")
+                for tc in coverage.tier1Intrinsic {
+                    let padType = tc.type.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    lines.append("    \(padType) \(tc.count)")
+                }
+            }
+            if !coverage.tier2OptIn.isEmpty {
+                lines.append("  Tier-2 (opt-in obfuscate):")
+                for tc in coverage.tier2OptIn {
+                    let padType = tc.type.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    lines.append("    \(padType) \(tc.count)")
+                }
+            }
+            if !coverage.seenButNotConfigured.isEmpty {
+                lines.append("  Seen but not configured (suggestions):")
+                for suggestion in coverage.seenButNotConfigured {
+                    lines.append("    \(suggestion.type): \(suggestion.count) seen — add \(suggestion.suggestedEntry)")
+                }
             }
             lines.append("")
         }

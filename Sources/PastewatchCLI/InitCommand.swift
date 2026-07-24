@@ -79,7 +79,8 @@ struct Init: ParsableCommand {
           "sensitiveIPPrefixes": [],
           "mcpMinSeverity": "high",
           "xmlSensitiveTags": [],
-          "placeholderPrefix": null
+          "placeholderPrefix": null,
+          "obfuscate": []
         }
         """
     }
@@ -111,14 +112,20 @@ struct Init: ParsableCommand {
           "sensitiveIPPrefixes": ["10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168."],
           "mcpMinSeverity": "medium",
           "xmlSensitiveTags": ["password", "connectionString", "jdbcUrl", "datasource"],
-          "placeholderPrefix": null
+          "placeholderPrefix": null,
+          "obfuscate": [
+            {"type": "email", "pattern": "@YOURBANK.com"},
+            {"type": "host", "pattern": ".internal.YOURBANK.com"},
+            {"type": "host", "pattern": ".corp.YOURBANK.net"}
+          ]
         }
         """
     }
 
     private static func defaultEnabledTypesJSON() -> String {
+        // WO-529: Only enable intrinsic detectors by default, not ambiguous classes.
         let types = SensitiveDataType.allCases
-            .filter { $0 != .highEntropyString }
+            .filter { !$0.isAmbiguousClass }
             .map { "\"\($0.rawValue)\"" }
         return "[\(types.joined(separator: ", "))]"
     }
