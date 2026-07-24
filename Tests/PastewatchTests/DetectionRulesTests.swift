@@ -14,10 +14,8 @@ final class DetectionRulesTests: XCTestCase {
             .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid,
             .xmlUsername, .xmlHostname
         ]
-        for type in ambiguousTypes {
-            if !config.enabledTypes.contains(type.rawValue) {
-                config.enabledTypes.append(type.rawValue)
-            }
+        for type in ambiguousTypes where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
         }
         config.obfuscate = [
             // Email patterns

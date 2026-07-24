@@ -630,8 +630,29 @@ public struct DetectionRules {
         scanGCPServiceAccountSecrets(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
         scanCompletePrivateKeyBlocks(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
 
+        // Scan with regex rules
+        scanWithRegexRules(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+
+        // Second pass: entropy-based detection (opt-in)
+        scanEntropyBased(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+
+        // Third pass: 2-segment hostnames for sensitiveHosts only
+        if config.isTypeEnabled(.hostname), !config.sensitiveHosts.isEmpty {
+            scanTwoSegmentHosts(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+        }
+
+        // WO-529: Filter ambiguous class matches based on obfuscate config.
+        return filterAmbiguousMatches(matches, config: config)
+    }
+
+    /// Scan content with regex rules.
+    private static func scanWithRegexRules(
+        _ content: String,
+        config: PastewatchConfig,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
         for (type, regex) in rules {
-            // Skip disabled types
             guard config.isTypeEnabled(type) else { continue }
 
             let nsRange = NSRange(content.startIndex..., in: content)
@@ -639,20 +660,11 @@ public struct DetectionRules {
 
             for match in regexMatches {
                 guard let range = Range(match.range, in: content) else { continue }
-
-                // Skip if this range overlaps with an already matched range
-                let overlaps = matchedRanges.contains { existingRange in
-                    range.overlaps(existingRange)
-                }
-                if overlaps { continue }
+                guard !matchedRanges.contains(where: { range.overlaps($0) }) else { continue }
 
                 let value = String(content[range])
-
-                // Check exclusion patterns
-                if shouldExclude(value) { continue }
-
-                // Additional validation per type
-                if !isValidMatch(value, type: type, config: config) { continue }
+                guard !shouldExclude(value) else { continue }
+                guard isValidMatch(value, type: type, config: config) else { continue }
 
                 let line = lineNumber(of: range.lowerBound, in: content)
                 matches.append(DetectedMatch(
@@ -665,51 +677,40 @@ public struct DetectionRules {
                 matchedRanges.append(range)
             }
         }
+    }
 
-        // Second pass: entropy-based detection (opt-in)
-        if config.isTypeEnabled(.highEntropyString) {
-            let tokens = tokenizeForEntropy(content)
-            for (token, range) in tokens {
-                guard token.count >= minimumEntropyLength else { continue }
+    /// Scan content for high-entropy strings.
+    private static func scanEntropyBased(
+        _ content: String,
+        config: PastewatchConfig,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        guard config.isTypeEnabled(.highEntropyString) else { return }
 
-                let overlaps = matchedRanges.contains { $0.overlaps(range) }
-                if overlaps { continue }
+        let tokens = tokenizeForEntropy(content)
+        for (token, range) in tokens {
+            guard token.count >= minimumEntropyLength else { continue }
+            guard !matchedRanges.contains(where: { range.overlaps($0) }) else { continue }
+            guard hasCharacterMix(token) else { continue }
+            guard !isLikelyGitSHA(token) else { continue }
+            guard shannonEntropy(token) >= entropyThreshold else { continue }
 
-                guard hasCharacterMix(token) else { continue }
-                guard !isLikelyGitSHA(token) else { continue }
-                guard shannonEntropy(token) >= entropyThreshold else { continue }
-
-                let line = lineNumber(of: range.lowerBound, in: content)
-                matches.append(DetectedMatch(type: .highEntropyString, value: token, range: range, line: line))
-                matchedRanges.append(range)
-            }
+            let line = lineNumber(of: range.lowerBound, in: content)
+            matches.append(DetectedMatch(type: .highEntropyString, value: token, range: range, line: line))
+            matchedRanges.append(range)
         }
+    }
 
-        // Third pass: 2-segment hostnames for sensitiveHosts only
-        // The main hostname regex requires 3+ segments (FQDN). This catches
-        // 2-segment hosts like nas.local or printer.lan when they match a
-        // sensitiveHosts entry.
-        if config.isTypeEnabled(.hostname), !config.sensitiveHosts.isEmpty {
-            scanTwoSegmentHosts(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
-        }
-
-        // WO-529: Filter ambiguous class matches based on obfuscate config.
-        // Email and hostname are domain-scoped: only matches that explicitly match
-        // an obfuscate entry are kept. XML hostname matches are allowed if enabled
-        // (the XML tag structure provides context). Other ambiguous types (phone, IP,
-        // filePath, dbConnectionString, jdbcUrl, genericApiKey, credential, uuid)
-        // are allowed if enabled in enabledTypes (no obfuscate filtering).
-        matches = matches.filter { match in
+    /// WO-529: Filter ambiguous class matches based on obfuscate config.
+    private static func filterAmbiguousMatches(_ matches: [DetectedMatch], config: PastewatchConfig) -> [DetectedMatch] {
+        matches.filter { match in
             guard match.type.isAmbiguousClass else { return true }
-            // Email and hostname require obfuscate entry match
             if match.type == .email || match.type == .hostname {
                 return config.shouldObfuscateAmbiguousValue(match.value, type: match.type)
             }
-            // XML hostname and other ambiguous types are allowed if enabled
             return true
         }
-
-        return matches
     }
 
     // WO-487/WO-488: genericApiKey provider evidence is attached to exact grammars;

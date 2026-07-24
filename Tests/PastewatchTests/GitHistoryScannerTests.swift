@@ -3,6 +3,15 @@ import XCTest
 
 final class GitHistoryScannerTests: XCTestCase {
 
+    // WO-529: Config with credential type enabled for git history tests.
+    let credentialConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.credential.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.credential.rawValue)
+        }
+        return config
+    }()
+
     // MARK: - Commit chunk parsing
 
     func testParseCommitChunksSimple() {
@@ -86,7 +95,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 
         XCTAssertEqual(result.commitsScanned, 2)
@@ -119,7 +128,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 
         // Same secret should appear only once (from first commit)
@@ -150,7 +159,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = credentialConfig
 
         // Scan only last commit
         let result = try GitHistoryScanner.scan(range: "HEAD~1..HEAD", config: config)
@@ -181,7 +190,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config, bail: true)
 
         // Bail: should stop after first finding
@@ -201,7 +210,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
-        let config = PastewatchConfig.defaultConfig
+        let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 
         XCTAssertTrue(result.findings.isEmpty)

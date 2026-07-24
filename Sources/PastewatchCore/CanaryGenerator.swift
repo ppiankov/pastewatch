@@ -66,10 +66,8 @@ public enum CanaryGenerator {
         var config = PastewatchConfig.defaultConfig
         // Enable ambiguous types used by canaries
         let canaryTypes: [SensitiveDataType] = [.genericApiKey, .dbConnectionString]
-        for type in canaryTypes {
-            if !config.enabledTypes.contains(type.rawValue) {
-                config.enabledTypes.append(type.rawValue)
-            }
+        for type in canaryTypes where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
         }
         return manifest.canaries.map { token in
             let matches = DetectionRules.scan(token.value, config: config)

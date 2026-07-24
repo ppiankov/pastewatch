@@ -195,13 +195,20 @@ public enum SessionReportBuilder {
 
     // MARK: - WO-531: Obfuscation Coverage
 
+    /// WO-531: Internal struct for tracking domain counts.
+    private struct DomainCount {
+        let type: String
+        let domain: String
+        var count: Int
+    }
+
     /// Compute obfuscation coverage stats from type counts.
     private static func computeObfuscationCoverage(typeCounts: [String: Int]) -> ObfuscationCoverage? {
         guard !typeCounts.isEmpty else { return nil }
 
         var tier1: [TypeCount] = []
         var tier2: [TypeCount] = []
-        var domainCounts: [String: (type: String, domain: String, count: Int)] = [:]
+        var domainCounts: [String: DomainCount] = [:]
 
         for (type, count) in typeCounts {
             let typeCount = TypeCount(
@@ -217,7 +224,11 @@ public enum SessionReportBuilder {
                     // Track domain suggestions for email and hostname
                     if dataType == .email || dataType == .hostname {
                         let key = "\(type)-domain"
-                        var existing = domainCounts[key] ?? (type: dataType == .email ? "email" : "host", domain: "unknown", count: 0)
+                        var existing = domainCounts[key] ?? DomainCount(
+                            type: dataType == .email ? "email" : "host",
+                            domain: "unknown",
+                            count: 0
+                        )
                         existing.count += count
                         domainCounts[key] = existing
                     }

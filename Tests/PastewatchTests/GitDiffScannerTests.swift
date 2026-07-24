@@ -7,10 +7,8 @@ final class GitDiffScannerTests: XCTestCase {
     let fullConfig: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig
         let ambiguousTypes: [SensitiveDataType] = [.genericApiKey, .dbConnectionString]
-        for type in ambiguousTypes {
-            if !config.enabledTypes.contains(type.rawValue) {
-                config.enabledTypes.append(type.rawValue)
-            }
+        for type in ambiguousTypes where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
         }
         return config
     }()
