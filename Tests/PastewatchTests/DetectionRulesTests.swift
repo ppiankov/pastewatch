@@ -2,13 +2,47 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-529: Default config only enables intrinsic detectors.
     let config = PastewatchConfig.defaultConfig
+
+    // WO-529: Config with ambiguous classes enabled and obfuscate entries for test values.
+    let ambiguousConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        // Enable ambiguous types
+        let ambiguousTypes: [SensitiveDataType] = [
+            .email, .phone, .ipAddress, .filePath, .hostname,
+            .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid
+        ]
+        for type in ambiguousTypes {
+            if !config.enabledTypes.contains(type.rawValue) {
+                config.enabledTypes.append(type.rawValue)
+            }
+        }
+        config.obfuscate = [
+            // Email patterns
+            ObfuscateEntry(type: "email", pattern: "@company.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.org"),
+            ObfuscateEntry(type: "email", pattern: "@test.net"),
+            ObfuscateEntry(type: "email", pattern: "@corp.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@test.com"),
+            // Host patterns
+            ObfuscateEntry(type: "host", pattern: ".internal"),
+            ObfuscateEntry(type: "host", pattern: ".local"),
+            ObfuscateEntry(type: "host", pattern: ".corp"),
+            ObfuscateEntry(type: "host", pattern: "nas.local"),
+            ObfuscateEntry(type: "host", pattern: "printer.lan"),
+            ObfuscateEntry(type: "host", pattern: "db.internal"),
+            ObfuscateEntry(type: "host", pattern: "api.internal")
+        ]
+        return config
+    }()
 
     // MARK: - Email Detection
 
     func testDetectsEmail() {
         let content = "Contact me at john.doe@company.com for details"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches.first?.type, .email)
@@ -17,7 +51,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsMultipleEmails() {
         let content = "Send to alice@example.org and bob@test.net"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         XCTAssertEqual(matches.count, 2)
         XCTAssertTrue(matches.allSatisfy { $0.type == .email })
@@ -27,7 +61,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsInternationalPhone() {
         let content = "Call me at +60123456789"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let phoneMatches = matches.filter { $0.type == .phone }
         XCTAssertGreaterThanOrEqual(phoneMatches.count, 1)
@@ -35,7 +69,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsUSPhone() {
         let content = "My number is (555) 123-4567"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let phoneMatches = matches.filter { $0.type == .phone }
         XCTAssertGreaterThanOrEqual(phoneMatches.count, 1)
@@ -45,7 +79,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsIPAddress() {
         let content = "Server is at 192.168.1.100"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches.first?.type, .ipAddress)
@@ -77,7 +111,7 @@ final class DetectionRulesTests: XCTestCase {
     // WO-485: preserve the established type for classic GitHub token prefixes.
     func testDetectsClassicGitHubTokenAsGenericAPIKey() {
         let content = "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let apiKeyMatches = matches.filter { $0.type == .genericApiKey }
         XCTAssertGreaterThanOrEqual(apiKeyMatches.count, 1)
@@ -86,7 +120,7 @@ final class DetectionRulesTests: XCTestCase {
     func testDetectsGenericSecretKey() {
         // Test generic secret_ prefix pattern (avoids GitHub secret scanning)
         let content = "my_secret: secret_abcdefghijklmnopqrstuvwxyz"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let apiKeyMatches = matches.filter { $0.type == .genericApiKey }
         XCTAssertGreaterThanOrEqual(apiKeyMatches.count, 1)
@@ -96,7 +130,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsUUID() {
         let content = "User ID: 550e8400-e29b-41d4-a716-446655440000"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let uuidMatches = matches.filter { $0.type == .uuid }
         XCTAssertEqual(uuidMatches.count, 1)
@@ -107,7 +141,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsPostgresConnectionString() {
         let content = "DATABASE_URL=postgres://user:pass@host:5432/db"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
         XCTAssertGreaterThanOrEqual(dbMatches.count, 1)
@@ -115,7 +149,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsMongoDBConnectionString() {
         let content = "MONGO_URI=mongodb://user:pass@host:27017/db"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
         XCTAssertGreaterThanOrEqual(dbMatches.count, 1)
@@ -196,7 +230,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsLinuxFilePath() {
         let content = "Config at /etc/nginx/nginx.conf"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let pathMatches = matches.filter { $0.type == .filePath }
         XCTAssertEqual(pathMatches.count, 1)
@@ -204,7 +238,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsHomePath() {
         let content = "SSH key at /home/deploy/.ssh/id_rsa"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let pathMatches = matches.filter { $0.type == .filePath }
         XCTAssertGreaterThanOrEqual(pathMatches.count, 1)
@@ -223,7 +257,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsInternalHostname() {
         let content = "Connect to db-primary.internal.corp.net"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertGreaterThanOrEqual(hostMatches.count, 1)
@@ -264,7 +298,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testStillDetectsServiceHostnames() {
         let content = "Connect to api.internal.corp and myservice.default.svc.cluster.local"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let values = Set(matches.filter { $0.type == .hostname }.map(\.value))
         XCTAssertTrue(values.contains("api.internal.corp"))
@@ -275,7 +309,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsPasswordKeyValue() {
         let content = "password=s3cret_value"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let credMatches = matches.filter { $0.type == .credential }
         XCTAssertEqual(credMatches.count, 1)
@@ -283,7 +317,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsSecretColonValue() {
         let content = "secret: my_api_secret_123"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let credMatches = matches.filter { $0.type == .credential }
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
@@ -291,7 +325,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsTokenAssignment() {
         let content = "auth=bearer_token_xyz123"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let credMatches = matches.filter { $0.type == .credential }
         XCTAssertGreaterThanOrEqual(credMatches.count, 1)
@@ -341,7 +375,7 @@ final class DetectionRulesTests: XCTestCase {
                 DetectionRules.isValidCredentialValue(testCase.value),
                 "Should keep detecting credential value: \(testCase.name)"
             )
-            let matches = DetectionRules.scan(testCase.source, config: config)
+            let matches = DetectionRules.scan(testCase.source, config: ambiguousConfig)
             let credMatches = matches.filter { $0.type == .credential }
             XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect credential: \(testCase.name)")
         }
@@ -455,7 +489,7 @@ final class DetectionRulesTests: XCTestCase {
         ]
 
         for (content, expectedType) in cases {
-            let matches = DetectionRules.scan(content, config: config)
+            let matches = DetectionRules.scan(content, config: ambiguousConfig)
             XCTAssertTrue(
                 matches.contains { $0.type == expectedType },
                 "Should preserve \(expectedType.rawValue) detection"
@@ -492,7 +526,7 @@ final class DetectionRulesTests: XCTestCase {
             "api_key=sk_live_abc123def456"
         ]
         for input in realSecrets {
-            let matches = DetectionRules.scan(input, config: config)
+            let matches = DetectionRules.scan(input, config: ambiguousConfig)
             let credMatches = matches.filter { $0.type == .credential }
             XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect: \(input)")
         }
@@ -559,7 +593,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsClickHouseConnectionString() {
         let content = "CH_URL=clickhouse://user:pass@host:9000/db"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
         XCTAssertGreaterThanOrEqual(dbMatches.count, 1)
     }
@@ -817,51 +851,51 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsJDBCOracleThin() {
         let content = "url=jdbc:oracle:thin:@dbhost.internal.com:1521:PRODDB"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCOracleThinServiceName() {
         let content = "jdbc:oracle:thin:@//dbhost.internal.com:1521/PRODDB"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCPostgreSQL() {
         let content = "jdbc:postgresql://db.internal.com:5432/mydb"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         // May match as dbConnectionString (postgresql://) or jdbcUrl — either is correct
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
     }
 
     func testDetectsJDBCMySQL() {
         let content = "jdbc:mysql://db.internal.com:3306/mydb?ssl=true"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         // May match as dbConnectionString (mysql://) or jdbcUrl — either is correct
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
     }
 
     func testDetectsJDBCSQLServer() {
         let content = "jdbc:sqlserver://db.internal.com:1433;databaseName=mydb"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCDB2() {
         let content = "jdbc:db2://db.internal.com:50000/mydb"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCAS400() {
         let content = "jdbc:as400://as400.internal.com/MYLIB"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testJDBCInSpringConfig() {
         let content = "spring.datasource.url=jdbc:oracle:thin:@prod-db:1521:FINDB"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
@@ -879,43 +913,43 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsXMLPasswordTag() {
         let content = "<password>my_secret_pass</password>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLPasswordSHA256Tag() {
         let content = "<password_sha256_hex>abcdef1234567890</password_sha256_hex>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLSecretAccessKeyTag() {
         let content = "<secret_access_key>wJalrXUtnFEMI</secret_access_key>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLUserTag() {
         let content = "<user>admin</user>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlUsername })
     }
 
     func testDetectsXMLHostTag() {
         let content = "<host>db-primary.internal.corp.net</host>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
 
     func testDetectsXMLHostnameTag() {
         let content = "<hostname>replica-02.dc1.internal</hostname>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
 
     func testDetectsXMLInterserverHttpHostTag() {
         let content = "<interserver_http_host>ch-node3.corp.net</interserver_http_host>"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
 
@@ -959,7 +993,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testLineNumbersOnMultilineContent() {
         let content = "First line is clean\nSecond has test@corp.com\nThird line\nFourth has 192.168.1.50"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         let emailMatch = matches.first { $0.type == .email }
         XCTAssertEqual(emailMatch?.line, 2)
@@ -970,7 +1004,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testLineNumberSingleLine() {
         let content = "Server at 10.0.0.1"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
 
         XCTAssertEqual(matches.first?.line, 1)
     }
@@ -1123,6 +1157,9 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostDetectedViaSensitiveHosts() {
         var customConfig = PastewatchConfig.defaultConfig
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = [".local"]
         let content = "Connect to nas.local for backups"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1133,13 +1170,16 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostNotDetectedWithoutSensitiveHosts() {
         let content = "Connect to nas.local for backups"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertEqual(hostMatches.count, 0, "2-segment hosts should not be detected by default")
     }
 
     func testTwoSegmentHostExactMatch() {
         var customConfig = PastewatchConfig.defaultConfig
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = ["printer.lan"]
         let content = "Print to printer.lan"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1149,6 +1189,9 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostMultipleDepths() {
         var customConfig = PastewatchConfig.defaultConfig
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = [".local"]
         let content = "hosts: nas.local and db.staging.local"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1179,9 +1222,9 @@ final class DetectionRulesTests: XCTestCase {
     }
 
     func testSensitiveIPPrefixEmpty() {
-        // Default config — no sensitive prefixes, normal behavior
+        // Default ambiguousConfig — no sensitive prefixes, normal behavior
         let content = "server at 8.8.8.8"
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: ambiguousConfig)
         let ipMatches = matches.filter { $0.type == .ipAddress }
         XCTAssertEqual(ipMatches.count, 0, "8.8.8.8 should be excluded by default")
     }
