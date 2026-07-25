@@ -5,7 +5,7 @@ final class ConfigResolutionTests: XCTestCase {
 
     func testDefaultConfigHasAllTypesEnabled() {
         let config = PastewatchConfig.defaultConfig
-        // WO-529: Default config only enables intrinsic detectors, not ambiguous classes.
+        // WO-529@v3: Default config only enables intrinsic detectors, not ambiguous classes.
         // Ambiguous classes (email, host, IP, filePath, phone, dbConnectionString,
         // jdbcUrl, genericApiKey, credential, uuid, xmlUsername, xmlHostname, highEntropyString)
         // are opt-in via the obfuscate config.

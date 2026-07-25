@@ -1,7 +1,7 @@
 import Foundation
 @testable import PastewatchCore
 
-/// WO-529: Test helper for creating configs with obfuscate entries.
+/// WO-529@v3: Test helper for creating configs with obfuscate entries.
 /// Ambiguous classes (email, host, IP, etc.) are opt-in via the obfuscate config.
 enum TestConfigHelper {
     /// WO-542: legacy advisory fixtures must opt ambiguous detectors in without authorizing mutation.

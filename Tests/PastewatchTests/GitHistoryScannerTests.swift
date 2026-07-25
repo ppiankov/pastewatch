@@ -3,7 +3,7 @@ import XCTest
 
 final class GitHistoryScannerTests: XCTestCase {
 
-    // WO-529: Config with credential type enabled for git history tests.
+    // WO-529@v3: Config with credential type enabled for git history tests.
     let credentialConfig: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig
         if !config.enabledTypes.contains(SensitiveDataType.credential.rawValue) {
@@ -95,6 +95,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
+        // WO-542: history fixtures explicitly enable generic credential detection.
         let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 
@@ -128,6 +129,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
+        // WO-542: dedup coverage uses the same explicit credential policy.
         let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 
@@ -159,6 +161,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
+        // WO-542: range filtering uses the explicit credential fixture policy.
         let config = credentialConfig
 
         // Scan only last commit
@@ -190,6 +193,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
+        // WO-542: bail behavior uses the explicit credential fixture policy.
         let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config, bail: true)
 
@@ -210,6 +214,7 @@ final class GitHistoryScannerTests: XCTestCase {
         FileManager.default.changeCurrentDirectoryPath(tempDir)
         defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
 
+        // WO-542: clean history stays empty with the explicit credential policy.
         let config = credentialConfig
         let result = try GitHistoryScanner.scan(config: config)
 

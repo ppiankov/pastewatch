@@ -61,7 +61,7 @@ public enum CanaryGenerator {
     }
 
     /// Verify all canaries in manifest are detected by DetectionRules.
-    /// WO-529: Use a config with ambiguous types enabled for canary verification.
+    /// WO-529@v3: Use a config with ambiguous types enabled for canary verification.
     public static func verify(manifest: CanaryManifest) -> [CanaryVerifyResult] {
         var config = PastewatchConfig.defaultConfig
         // Enable ambiguous types used by canaries

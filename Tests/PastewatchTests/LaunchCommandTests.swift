@@ -43,7 +43,7 @@ final class LaunchCommandTests: XCTestCase {
         }
     }
 
-    // WO-135/WO-543: passthrough help reaches only fixture startup files if sweep runs.
+    // WO-135 (revised by WO-543): passthrough help reaches only fixture startup files if sweep runs.
     func testLaunchPassthroughHelpUsesFixtureStartupSweepHome() throws {
         let result = try runCLI(arguments: ["launch", "--quiet", "--port", "65435", "--", "--help"])
         let fixturePath = result.home.appendingPathComponent(".zshrc").path
@@ -51,6 +51,7 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains(fixturePath), "missing fixture warning path: \(result.stderr)")
         XCTAssertFalse(result.stdout.contains("OVERVIEW: Start the proxy"), "passthrough help became launch help")
         XCTAssertFalse(result.stderr.contains(FileManager.default.homeDirectoryForCurrentUser.path))
+        // WO-543: the intrinsic fixture value must not leak through launch diagnostics.
         XCTAssertFalse(result.stderr.contains(Self.startupSweepFixtureValue))
     }
 

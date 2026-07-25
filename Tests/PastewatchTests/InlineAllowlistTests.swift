@@ -2,7 +2,7 @@ import XCTest
 @testable import PastewatchCore
 
 final class InlineAllowlistTests: XCTestCase {
-    // WO-529: Use a config with obfuscate entries for email testing.
+    // WO-529@v3: Use a config with obfuscate entries for email testing.
     let config: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig
         if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {

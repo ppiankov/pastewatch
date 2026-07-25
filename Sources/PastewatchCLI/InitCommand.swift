@@ -126,7 +126,7 @@ struct Init: ParsableCommand {
     }
 
     private static func defaultEnabledTypesJSON() -> String {
-        // WO-529: Only enable intrinsic detectors by default, not ambiguous classes.
+        // WO-529@v3: Only enable intrinsic detectors by default, not ambiguous classes.
         let types = SensitiveDataType.allCases
             .filter { !$0.isAmbiguousClass }
             .map { "\"\($0.rawValue)\"" }
