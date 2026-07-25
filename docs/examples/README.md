@@ -7,6 +7,10 @@ Ready-to-use configurations for enforcing pastewatch secret redaction with AI co
 brew install ppiankov/tap/pastewatch
 ```
 
+Start from [pastewatch.json](pastewatch.json) when email or host values should be obfuscated.
+Exact patterns authorize one value; `@example.com` and `.example.com` authorize a domain.
+Intrinsic provider tokens and validated secret formats remain enabled without these entries.
+
 ---
 
 ## Quick Setup
@@ -222,9 +226,10 @@ Result: IP never leaves your machine
 
 ### How to set severity
 
-**Default (`high`)** - protects credentials, API keys, emails, phones. IPs and hostnames pass through. Good for most workflows.
+**Default (`high`)** - reports enabled high-severity advisory classes. Intrinsic secrets still
+mutate independently of this threshold.
 
-**Medium** - also protects IPs, hostnames, file paths. Use when infrastructure identifiers are sensitive.
+**Medium** - also reports enabled medium-severity advisory classes such as IPs and file paths.
 
 For hooks, set the `PW_SEVERITY` environment variable or edit the script directly:
 ```bash
@@ -282,12 +287,16 @@ Remember: if Cline's MCP uses `--min-severity medium`, the Cline hook must also 
 
 ## What Gets Redacted
 
-| `min_severity` | Redacted | Passes Through |
+Mutation authorization and advisory severity are separate:
+
+| Class | Default behavior | How to change it |
 |---|---|---|
-| `critical` | AWS keys, API keys, DB connections, SSH keys, JWTs, webhooks | Credentials, emails, phones, IPs, hostnames |
-| `high` (default) | All critical + credentials, emails, phones | IPs, hostnames, file paths, UUIDs |
-| `medium` | All high + IPs, hostnames, file paths | UUIDs, high entropy |
-| `low` | Everything | Nothing |
+| Intrinsic provider/validated secret formats | Redacted | Always enabled by the built-in safety policy |
+| Email and host | Unchanged; privacy-safe proxy coverage only | Add an exact or domain-scoped `obfuscate` entry |
+| Custom rule | Redacted | Remove or allowlist the rule |
+| Other ambiguous detector | Disabled or advisory-only | Enable the type; use a custom rule to authorize mutation |
+
+`min_severity` controls advisory reporting volume. It does not authorize additional mutation.
 
 ---
 

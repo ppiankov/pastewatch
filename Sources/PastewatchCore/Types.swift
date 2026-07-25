@@ -124,7 +124,7 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
     /// Backward-compatible certainty name. New mutation code uses evidence sources.
     public var mutationSafe: Bool { intrinsicMutationAuthorized }
 
-    /// WO-529: ambiguous classes are opt-in-to-obfuscate, default OFF, no nag.
+    /// WO-529@v3: ambiguous classes are opt-in-to-obfuscate, default OFF, no nag.
     /// These types have high false-positive rates on benign content (emails in docs,
     /// hostnames in import paths, IPs in logs) and require explicit operator opt-in.
     public var isAmbiguousClass: Bool {
@@ -261,6 +261,7 @@ public enum MutationAuthorizationSource: Hashable {
     case intrinsicFormat
     case exactKnownSecret
     case customRule
+    case configuredObfuscate // WO-529@v3: explicit operator opt-in authorizes ambiguous mutation.
 }
 
 /// A single detected match in the clipboard content.
@@ -275,6 +276,7 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let customSeverity: Severity?
     public let advisory: DetectionAdvisory? // WO-478: non-mutating malformed-input evidence.
     public let mutationAuthorizationSources: Set<MutationAuthorizationSource> // WO-454: OR-merged provenance.
+    public let obfuscateRuleIdentifier: String? // WO-529@v3: privacy-safe configured-rule provenance.
 
     public init(
         type: SensitiveDataType,
@@ -285,7 +287,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         customRuleName: String? = nil,
         customSeverity: Severity? = nil,
         advisory: DetectionAdvisory? = nil,
-        mutationAuthorizationSources: Set<MutationAuthorizationSource>? = nil
+        mutationAuthorizationSources: Set<MutationAuthorizationSource>? = nil,
+        obfuscateRuleIdentifier: String? = nil
     ) {
         self.type = type
         self.value = value
@@ -295,6 +298,7 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.customRuleName = customRuleName
         self.customSeverity = customSeverity
         self.advisory = advisory
+        self.obfuscateRuleIdentifier = obfuscateRuleIdentifier
         var sources = mutationAuthorizationSources ?? []
         // WO-488: type-level intrinsic formats authorize dedicated detector types;
         // genericApiKey provider grammars attach the same source in DetectionRules.
@@ -328,7 +332,24 @@ public struct DetectedMatch: Identifiable, Equatable {
             customRuleName: customRuleName,
             customSeverity: customSeverity,
             advisory: advisory,
-            mutationAuthorizationSources: mutationAuthorizationSources.union(sources)
+            mutationAuthorizationSources: mutationAuthorizationSources.union(sources),
+            obfuscateRuleIdentifier: obfuscateRuleIdentifier
+        )
+    }
+
+    /// WO-529@v3: attach configured opt-in provenance without exposing the configured pattern.
+    func authorizingConfiguredObfuscate(ruleIdentifier: String) -> DetectedMatch {
+        DetectedMatch(
+            type: type,
+            value: value,
+            range: range,
+            line: line,
+            filePath: filePath,
+            customRuleName: customRuleName,
+            customSeverity: customSeverity,
+            advisory: advisory,
+            mutationAuthorizationSources: mutationAuthorizationSources.union([.configuredObfuscate]),
+            obfuscateRuleIdentifier: ruleIdentifier
         )
     }
 
@@ -398,10 +419,57 @@ public enum StreamingRedactionMode: String, Codable, CaseIterable, Equatable {
     case buffer
 }
 
-/// WO-529: domain-scoped obfuscation entry for ambiguous classes.
+/// WO-541: closed entry types prevent unknown config values from silently no-oping.
+public enum ObfuscateEntryType: String, Codable, CaseIterable {
+    case email
+    case host
+}
+
+/// WO-539: structured proxy coverage distinguishes action from observation.
+public enum ObfuscationCoverageTier: String, Codable {
+    case intrinsic
+    case configured
+    case advisory
+    case observed
+}
+
+/// WO-539: every proxy surface is explicit in the audit receipt.
+public enum ObfuscationCoverageSource: String, Codable {
+    case request
+    case response
+    case toolCall = "tool_call"
+}
+
+/// WO-539: privacy-safe, aggregatable audit evidence; no matched value is retained.
+public struct ObfuscationCoverageEvent: Codable, Equatable, Hashable {
+    public let tier: ObfuscationCoverageTier
+    public let type: String
+    public let ruleIdentifier: String?
+    public let count: Int
+    public let source: ObfuscationCoverageSource
+    public let domainBucket: String?
+
+    public init(
+        tier: ObfuscationCoverageTier,
+        type: String,
+        ruleIdentifier: String? = nil,
+        count: Int = 1,
+        source: ObfuscationCoverageSource,
+        domainBucket: String? = nil
+    ) {
+        self.tier = tier
+        self.type = type
+        self.ruleIdentifier = ruleIdentifier
+        self.count = count
+        self.source = source
+        self.domainBucket = domainBucket
+    }
+}
+
+/// WO-529@v3: domain-scoped obfuscation entry for ambiguous classes.
 /// Operators opt-in to obfuscate specific domains/addresses; everything else is ignored.
 public struct ObfuscateEntry: Codable, Equatable {
-    /// The ambiguous type this entry applies to: "email" or "host".
+    /// The decoded raw value is retained so ConfigValidator can issue indexed diagnostics.
     public let type: String
     /// The pattern to match:
     /// - Exact value: "user@example.com" or "host.example.com"
@@ -414,13 +482,16 @@ public struct ObfuscateEntry: Codable, Equatable {
         self.pattern = pattern
     }
 
+    public var entryType: ObfuscateEntryType? { ObfuscateEntryType(rawValue: type) }
+
     /// Check if a value matches this obfuscate entry.
     public func matches(_ value: String) -> Bool {
+        guard let entryType else { return false }
         let lowerValue = value.lowercased()
         let lowerPattern = pattern.lowercased()
 
-        switch type {
-        case "email":
+        switch entryType {
+        case .email:
             if lowerPattern.hasPrefix("@") {
                 // Domain-scoped: @example.com matches any email at that domain
                 let domain = String(lowerPattern.dropFirst())
@@ -429,7 +500,7 @@ public struct ObfuscateEntry: Codable, Equatable {
                 // Exact match
                 return lowerValue == lowerPattern
             }
-        case "host":
+        case .host:
             if lowerPattern.hasPrefix(".") {
                 // Domain-scoped: .example.com matches any host under that domain tree
                 let domain = String(lowerPattern.dropFirst())
@@ -438,8 +509,6 @@ public struct ObfuscateEntry: Codable, Equatable {
                 // Exact match
                 return lowerValue == lowerPattern
             }
-        default:
-            return false
         }
     }
 }
@@ -468,7 +537,7 @@ public struct PastewatchConfig: Codable {
     /// - raw_stream: skip SSE parsing; scan raw chunks with the certainty gate.
     /// - buffer: legacy full-buffer-then-redact (pre-streaming behavior).
     public var responseStreamingRedactionMode: StreamingRedactionMode // WO-286: enum prevents typo-to-raw fallback
-    /// WO-529: opt-in obfuscation entries for ambiguous classes (email, host).
+    /// WO-529@v3: opt-in obfuscation entries for ambiguous classes (email, host).
     /// Default is empty — ambiguous classes are NOT detected/blocked/nagged unless explicitly listed here.
     public var obfuscate: [ObfuscateEntry]
 
@@ -519,7 +588,7 @@ public struct PastewatchConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decode(Bool.self, forKey: .enabled)
         var loaded = try container.decode([String].self, forKey: .enabledTypes)
-        // WO-529: Auto-enable only NEW INTRINSIC detectors, not ambiguous classes.
+        // WO-529@v3: Auto-enable only NEW INTRINSIC detectors, not ambiguous classes.
         // Ambiguous classes (email, host, IP, filePath, phone, dbConnectionString,
         // jdbcUrl, genericApiKey, credential, uuid, xmlUsername, xmlHostname) are
         // opt-in via the obfuscate config section. This fixes the decoder force-re-add
@@ -558,13 +627,13 @@ public struct PastewatchConfig: Codable {
             ))
             responseStreamingRedactionMode = .perSSEEvent
         }
-        // WO-529: opt-in obfuscation entries for ambiguous classes.
+        // WO-529@v3: opt-in obfuscation entries for ambiguous classes.
         obfuscate = try container.decodeIfPresent([ObfuscateEntry].self, forKey: .obfuscate) ?? []
     }
 
     public static let defaultConfig = PastewatchConfig(
         enabled: true,
-        // WO-529: Default config only enables intrinsic detectors, not ambiguous classes.
+        // WO-529@v3: Default config only enables intrinsic detectors, not ambiguous classes.
         // Ambiguous classes (email, host, IP, etc.) are opt-in via the obfuscate config.
         enabledTypes: SensitiveDataType.allCases.filter { !$0.isAmbiguousClass }.map { $0.rawValue },
         showNotifications: true,
@@ -622,7 +691,16 @@ public struct PastewatchConfig: Codable {
     }
 
     public func isTypeEnabled(_ type: SensitiveDataType) -> Bool {
-        enabledTypes.contains(type.rawValue)
+        if enabledTypes.contains(type.rawValue) { return true }
+        // WO-529@v3: an opt-in entry activates the minimum detector it authorizes.
+        switch type {
+        case .email:
+            return obfuscate.contains { $0.entryType == .email }
+        case .hostname:
+            return obfuscate.contains { $0.entryType == .host }
+        default:
+            return false
+        }
     }
 
     /// Returns true if the given file path is inside a protected directory.
@@ -643,19 +721,25 @@ public struct PastewatchConfig: Codable {
         return false
     }
 
-    /// WO-529: Check if an ambiguous-class value should be obfuscated based on the obfuscate config.
+    /// WO-529@v3: Check if an ambiguous-class value should be obfuscated based on the obfuscate config.
     /// Returns true only if the value matches an explicit obfuscate entry.
     /// Ambiguous classes are opt-in: no match = no obfuscation, no nag.
-    public func shouldObfuscateAmbiguousValue(_ value: String, type: SensitiveDataType) -> Bool {
-        guard type.isAmbiguousClass else { return false }
-        let entryType: String
+    public func obfuscateRuleIdentifier(for value: String, type: SensitiveDataType) -> String? {
+        guard type.isAmbiguousClass else { return nil }
+        let entryType: ObfuscateEntryType
         switch type {
-        case .email: entryType = "email"
-        case .hostname, .xmlHostname: entryType = "host"
-        default: return false // Other ambiguous types not yet supported in obfuscate config
+        case .email: entryType = .email
+        case .hostname: entryType = .host
+        default: return nil // Other ambiguous types require exact-known or custom-rule evidence.
         }
-        return obfuscate.contains { entry in
-            entry.type == entryType && entry.matches(value)
+        for (index, entry) in obfuscate.enumerated()
+            where entry.entryType == entryType && entry.matches(value) {
+            return "\(entryType.rawValue)[\(index)]"
         }
+        return nil
+    }
+
+    public func shouldObfuscateAmbiguousValue(_ value: String, type: SensitiveDataType) -> Bool {
+        obfuscateRuleIdentifier(for: value, type: type) != nil
     }
 }

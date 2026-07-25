@@ -2,7 +2,12 @@ import XCTest
 @testable import PastewatchCore
 
 final class SarifOutputTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-542: SARIF fixtures opt in to the ambiguous classes whose formatting they exercise.
+    let config: PastewatchConfig = {
+        var config = TestConfigHelper.configWithEmailObfuscation()
+        config.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
+        return config
+    }()
 
     func testSarifStructure() throws {
         let content = "Contact test@corp.com"
@@ -32,7 +37,8 @@ final class SarifOutputTests: XCTestCase {
 
         XCTAssertEqual(results.count, matches.count)
 
-        let firstResult = results[0]
+        // WO-542: avoid positional traps while preserving SARIF assertions.
+        let firstResult = try XCTUnwrap(results.first)
         XCTAssertNotNil(firstResult["ruleId"])
         XCTAssertNotNil(firstResult["message"])
         XCTAssertNotNil(firstResult["locations"])
@@ -47,7 +53,9 @@ final class SarifOutputTests: XCTestCase {
         let runs = try XCTUnwrap(json["runs"] as? [[String: Any]])
         let results = try XCTUnwrap(runs[0]["results"] as? [[String: Any]])
 
-        XCTAssertEqual(results[0]["ruleId"] as? String, "pastewatch/EMAIL")
+        // WO-542: unwrap the configured email result before checking its rule ID.
+        let firstResult = try XCTUnwrap(results.first)
+        XCTAssertEqual(firstResult["ruleId"] as? String, "pastewatch/EMAIL")
     }
 
     func testSarifLineNumbers() throws {
@@ -58,8 +66,11 @@ final class SarifOutputTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let runs = try XCTUnwrap(json["runs"] as? [[String: Any]])
         let results = try XCTUnwrap(runs[0]["results"] as? [[String: Any]])
-        let locations = try XCTUnwrap(results[0]["locations"] as? [[String: Any]])
-        let physical = try XCTUnwrap(locations[0]["physicalLocation"] as? [String: Any])
+        // WO-542: unwrap nested SARIF arrays while retaining line-number coverage.
+        let firstResult = try XCTUnwrap(results.first)
+        let locations = try XCTUnwrap(firstResult["locations"] as? [[String: Any]])
+        let firstLocation = try XCTUnwrap(locations.first)
+        let physical = try XCTUnwrap(firstLocation["physicalLocation"] as? [String: Any])
         let region = try XCTUnwrap(physical["region"] as? [String: Any])
 
         XCTAssertEqual(region["startLine"] as? Int, 2)
@@ -73,8 +84,11 @@ final class SarifOutputTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let runs = try XCTUnwrap(json["runs"] as? [[String: Any]])
         let results = try XCTUnwrap(runs[0]["results"] as? [[String: Any]])
-        let locations = try XCTUnwrap(results[0]["locations"] as? [[String: Any]])
-        let physical = try XCTUnwrap(locations[0]["physicalLocation"] as? [String: Any])
+        // WO-542: unwrap nested SARIF arrays while retaining stdin URI coverage.
+        let firstResult = try XCTUnwrap(results.first)
+        let locations = try XCTUnwrap(firstResult["locations"] as? [[String: Any]])
+        let firstLocation = try XCTUnwrap(locations.first)
+        let physical = try XCTUnwrap(firstLocation["physicalLocation"] as? [String: Any])
         let artifact = try XCTUnwrap(physical["artifactLocation"] as? [String: Any])
 
         XCTAssertEqual(artifact["uri"] as? String, "stdin")

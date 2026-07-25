@@ -48,6 +48,7 @@ struct SSEFrameRedactionResult {
     let advisoryCount: Int
     let advisoryTypes: [String]
     let toolCallRedactionCount: Int // WO-512: distinguish tool payload mutation from ordinary text.
+    let coverageEvents: [ObfuscationCoverageEvent] // WO-539: stream receipt evidence.
 
     init(
         data: Data,
@@ -55,7 +56,8 @@ struct SSEFrameRedactionResult {
         types: [String],
         advisoryCount: Int = 0,
         advisoryTypes: [String] = [],
-        toolCallRedactionCount: Int = 0
+        toolCallRedactionCount: Int = 0,
+        coverageEvents: [ObfuscationCoverageEvent] = []
     ) {
         self.data = data
         self.redactionCount = count
@@ -63,6 +65,7 @@ struct SSEFrameRedactionResult {
         self.advisoryCount = advisoryCount
         self.advisoryTypes = advisoryTypes
         self.toolCallRedactionCount = toolCallRedactionCount
+        self.coverageEvents = coverageEvents
     }
 
     var count: Int { redactionCount }
@@ -117,12 +120,20 @@ func redactRawStreamBytes(
         site: .proxyResponse,
         minAdvisorySeverity: severity
     )
+    let coverageEvents = DetectionRules.obfuscationCoverageEvents(
+        in: text,
+        config: config,
+        mutatedMatches: outcome.mutated,
+        advisoryMatches: outcome.advisory,
+        source: .response
+    )
     let advisoryTypes = outcome.advisory.map { $0.displayName }
     guard !outcome.mutated.isEmpty else {
         return SSEFrameRedactionResult(
             data: raw, count: 0, types: [],
             advisoryCount: outcome.advisory.count,
-            advisoryTypes: advisoryTypes
+            advisoryTypes: advisoryTypes,
+            coverageEvents: coverageEvents
         )
     }
     return SSEFrameRedactionResult(
@@ -130,7 +141,8 @@ func redactRawStreamBytes(
         count: outcome.mutated.count,
         types: outcome.mutated.map { $0.displayName },
         advisoryCount: outcome.advisory.count,
-        advisoryTypes: advisoryTypes
+        advisoryTypes: advisoryTypes,
+        coverageEvents: coverageEvents
     )
 }
 
@@ -195,6 +207,7 @@ func redactSSEFrame(
     var types: [String] = []
     var advisoryCount = 0
     var advisoryTypes: [String] = []
+    var coverageEvents: [ObfuscationCoverageEvent] = []
 
     for (field, value) in delta {
         guard field != "type", let text = value as? String else { continue }
@@ -207,6 +220,13 @@ func redactSSEFrame(
         )
         advisoryCount += outcome.advisory.count
         advisoryTypes.append(contentsOf: outcome.advisory.map { $0.displayName })
+        coverageEvents.append(contentsOf: DetectionRules.obfuscationCoverageEvents(
+            in: text,
+            config: config,
+            mutatedMatches: outcome.mutated,
+            advisoryMatches: outcome.advisory,
+            source: .response
+        ))
         guard !outcome.mutated.isEmpty else { continue }
         // WO-295: redact thinking_delta/input_json_delta and future text-bearing
         // delta string fields, not only text_delta's `text` field.
@@ -218,7 +238,8 @@ func redactSSEFrame(
     guard redacted > 0 else {
         return SSEFrameRedactionResult(
             data: frame.raw, count: 0, types: [],
-            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+            coverageEvents: coverageEvents
         )
     }
     var modifiedJson = json
@@ -227,7 +248,8 @@ func redactSSEFrame(
           let resultStr = String(data: resultData, encoding: .utf8) else {
         return SSEFrameRedactionResult(
             data: frame.raw, count: 0, types: [],
-            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes
+            advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
+            coverageEvents: coverageEvents
         )
     }
     return SSEFrameRedactionResult(
@@ -235,6 +257,7 @@ func redactSSEFrame(
         count: redacted,
         types: types,
         advisoryCount: advisoryCount,
-        advisoryTypes: advisoryTypes
+        advisoryTypes: advisoryTypes,
+        coverageEvents: coverageEvents
     )
 }

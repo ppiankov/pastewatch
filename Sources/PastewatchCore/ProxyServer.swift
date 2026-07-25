@@ -159,6 +159,7 @@ public final class ProxyServer {
         let advisoryCount: Int // WO-353/354: advisory-only stream matches delivered to the client.
         let advisoryTypes: [String]
         let toolCallCount: Int // WO-512: subset of streamCount originating in tool arguments.
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: structured stream coverage receipts.
 
         init(
             path: String,
@@ -168,7 +169,8 @@ public final class ProxyServer {
             streamTypes: [String],
             advisoryCount: Int,
             advisoryTypes: [String],
-            toolCallCount: Int = 0
+            toolCallCount: Int = 0,
+            coverageEvents: [ObfuscationCoverageEvent] = []
         ) {
             self.path = path
             self.bodyCount = bodyCount
@@ -178,6 +180,7 @@ public final class ProxyServer {
             self.advisoryCount = advisoryCount
             self.advisoryTypes = advisoryTypes
             self.toolCallCount = toolCallCount
+            self.coverageEvents = coverageEvents
         }
     }
 
@@ -240,6 +243,7 @@ public final class ProxyServer {
         let responseRedactionTypes: [String]
         let responseAdvisoryCount: Int // WO-404: Linux binary response body advisories.
         let responseAdvisoryTypes: [String]
+        let responseCoverageEvents: [ObfuscationCoverageEvent] // WO-539: preserve match provenance.
 
         init(
             status: Int,
@@ -248,7 +252,8 @@ public final class ProxyServer {
             responseRedactionCount: Int = 0,
             responseRedactionTypes: [String] = [],
             responseAdvisoryCount: Int = 0,
-            responseAdvisoryTypes: [String] = []
+            responseAdvisoryTypes: [String] = [],
+            responseCoverageEvents: [ObfuscationCoverageEvent] = []
         ) {
             self.status = status
             self.headers = headers
@@ -257,6 +262,7 @@ public final class ProxyServer {
             self.responseRedactionTypes = responseRedactionTypes
             self.responseAdvisoryCount = responseAdvisoryCount
             self.responseAdvisoryTypes = responseAdvisoryTypes
+            self.responseCoverageEvents = responseCoverageEvents
         }
     }
 
@@ -782,6 +788,7 @@ public final class ProxyServer {
         var redactedTypes: [String] = []
         var bodyAdvisoryCount = 0
         var bodyAdvisoryTypes: [String] = []
+        var requestCoverageEvents: [ObfuscationCoverageEvent] = []
         if isCanonicalScannablePostMethod(parsed.method) && isSupportedAnthropicPostPath(parsed.path) {
             // WO-429: malformed/non-UTF-8 supported-path bodies are already refused by
             // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
@@ -799,6 +806,7 @@ public final class ProxyServer {
                 redactedTypes = result.redactedTypes
                 bodyAdvisoryCount = result.advisoryCount
                 bodyAdvisoryTypes = result.advisoryTypes
+                requestCoverageEvents = result.coverageEvents
                 // WO-452/WO-458: preserve all scan evidence, but never forward the
                 // original body when an authorized mutation cannot be serialized.
                 if result.serializationFailed {
@@ -848,6 +856,7 @@ public final class ProxyServer {
             logRedaction(path: parsed.path, count: redactionCount, types: redactedTypes)
         }
         recordBodyAdvisoryStats(path: parsed.path, count: bodyAdvisoryCount, types: bodyAdvisoryTypes)
+        logCoverageEvents(requestCoverageEvents)
 
         // Platform dispatch: returns a BufferedResponse for the convergence tail,
         // or nil when the response was fully handled (streamed or error sent to client).
@@ -892,6 +901,12 @@ public final class ProxyServer {
             count: buffered.responseAdvisoryCount,
             types: buffered.responseAdvisoryTypes
         )
+        let responseCoverageEvents = buffered.responseCoverageEvents.isEmpty
+            ? (String(data: buffered.body, encoding: .utf8).map {
+                proxyCoverageEvents(in: $0, redactedTypes: [], source: .response)
+            } ?? [])
+            : buffered.responseCoverageEvents
+        logCoverageEvents(responseCoverageEvents)
 
         let alertRedactionCount = requestRedactionCount + buffered.responseRedactionCount
         let alertTypes = requestRedactedTypes + buffered.responseRedactionTypes
@@ -1055,7 +1070,8 @@ public final class ProxyServer {
                 streamTypes: curlResponse.streamRedactionTypes,
                 advisoryCount: curlResponse.streamAdvisoryCount,
                 advisoryTypes: curlResponse.streamAdvisoryTypes,
-                toolCallCount: curlResponse.streamToolCallRedactionCount
+                toolCallCount: curlResponse.streamToolCallRedactionCount,
+                coverageEvents: curlResponse.streamCoverageEvents
             ))
             return nil
         }
@@ -1066,7 +1082,8 @@ public final class ProxyServer {
             responseRedactionCount: curlResponse.responseRedactionCount,
             responseRedactionTypes: curlResponse.responseRedactionTypes,
             responseAdvisoryCount: curlResponse.responseAdvisoryCount,
-            responseAdvisoryTypes: curlResponse.responseAdvisoryTypes
+            responseAdvisoryTypes: curlResponse.responseAdvisoryTypes,
+            responseCoverageEvents: curlResponse.responseCoverageEvents
         )
     }
 
@@ -1111,6 +1128,7 @@ public final class ProxyServer {
         let advisoryTypes: [String]
         let serializationFailed: Bool // WO-452: caller must block forwarding on failure.
         let blockingAdvisory: DetectionAdvisory? // WO-478: fail-closed request evidence.
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: structured request receipt.
     }
 
     // WO-478: malformed recognized key containers fail closed before mutation.
@@ -1120,7 +1138,7 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
                 advisoryCount: 0, advisoryTypes: [], serializationFailed: false,
-                blockingAdvisory: nil
+                blockingAdvisory: nil, coverageEvents: []
             )
         }
 
@@ -1130,7 +1148,8 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
                 advisoryCount: 1, advisoryTypes: ["Malformed private key"],
-                serializationFailed: false, blockingAdvisory: .malformedPrivateKey
+                serializationFailed: false, blockingAdvisory: .malformedPrivateKey,
+                coverageEvents: []
             )
         }
 
@@ -1161,7 +1180,13 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: 0, redactedTypes: [],
                 advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-                serializationFailed: false, blockingAdvisory: nil
+                serializationFailed: false, blockingAdvisory: nil,
+                coverageEvents: proxyCoverageEvents(
+                    in: body,
+                    redactedTypes: types,
+                    advisoryTypes: advisoryTypes,
+                    source: .request
+                )
             )
         }
         guard let resultData = try? requestBodySerializer(processed),
@@ -1169,14 +1194,26 @@ public final class ProxyServer {
             return ScanResult(
                 body: body, redacted: redacted, redactedTypes: types,
                 advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-                serializationFailed: true, blockingAdvisory: nil
+                serializationFailed: true, blockingAdvisory: nil,
+                coverageEvents: proxyCoverageEvents(
+                    in: body,
+                    redactedTypes: types,
+                    advisoryTypes: advisoryTypes,
+                    source: .request
+                )
             )
         }
 
         return ScanResult(
             body: resultString, redacted: redacted, redactedTypes: types,
             advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
-            serializationFailed: false, blockingAdvisory: nil
+            serializationFailed: false, blockingAdvisory: nil,
+            coverageEvents: proxyCoverageEvents(
+                in: body,
+                redactedTypes: types,
+                advisoryTypes: advisoryTypes,
+                source: .request
+            )
         )
     }
 
@@ -1486,6 +1523,45 @@ public final class ProxyServer {
             config: config,
             customRules: customRules
         )
+    }
+
+    // WO-539: map actual mutation counts back to privacy-safe match provenance,
+    // then append silent observations for unconfigured email/host domains.
+    private func proxyCoverageEvents(
+        in text: String,
+        redactedTypes: [String],
+        advisoryTypes: [String] = [],
+        source: ObfuscationCoverageSource
+    ) -> [ObfuscationCoverageEvent] {
+        var candidates = scanProxyText(text)
+        var mutatedMatches: [DetectedMatch] = []
+        var advisoryMatches: [DetectedMatch] = []
+        var unmatchedTypes: [String] = []
+        for type in redactedTypes {
+            if let index = candidates.firstIndex(where: { $0.displayName == type }) {
+                mutatedMatches.append(candidates.remove(at: index))
+            } else {
+                unmatchedTypes.append(type)
+            }
+        }
+        for type in advisoryTypes {
+            if let index = candidates.firstIndex(where: { $0.displayName == type }) {
+                advisoryMatches.append(candidates.remove(at: index))
+            } else {
+                unmatchedTypes.append(type)
+            }
+        }
+        let matchedEvents = DetectionRules.obfuscationCoverageEvents(
+            in: text,
+            config: config,
+            mutatedMatches: mutatedMatches,
+            advisoryMatches: advisoryMatches,
+            source: source
+        )
+        return matchedEvents + unmatchedTypes.map {
+            let tier: ObfuscationCoverageTier = advisoryTypes.contains($0) ? .advisory : .intrinsic
+            return ObfuscationCoverageEvent(tier: tier, type: $0, source: source)
+        }
     }
 
     // WO-444/WO-447: count_tokens and batch params can carry system text as either a
@@ -2023,6 +2099,7 @@ public final class ProxyServer {
         if summary.toolCallCount > 0 {
             logToolCallMutation(path: summary.path, count: summary.toolCallCount)
         }
+        logCoverageEvents(summary.coverageEvents) // WO-539: audit coverage without exposing matched values.
     }
 
     func responseContentType(_ headers: [AnyHashable: Any]) -> String {
@@ -2144,7 +2221,8 @@ public final class ProxyServer {
             streamTypes: streamStats.redactionTypes,
             advisoryCount: streamStats.advisoryCount,
             advisoryTypes: streamStats.advisoryTypes,
-            toolCallCount: streamStats.toolCallRedactionCount
+            toolCallCount: streamStats.toolCallRedactionCount,
+            coverageEvents: streamStats.coverageEvents
         ))
     }
 
@@ -2650,6 +2728,31 @@ public final class ProxyServer {
                 } else {
                     FileManager.default.createFile(atPath: logPath, contents: Data(line.utf8))
                 }
+            }
+        }
+    }
+
+    // WO-539: coverage is a pull-model audit receipt, never terminal nag output.
+    private func logCoverageEvents(_ events: [ObfuscationCoverageEvent]) {
+        guard !events.isEmpty, let logPath = auditLogPath else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let timestamp = formatAuditTimestamp(Date())
+        let lines = events.compactMap { event -> String? in
+            guard let data = try? encoder.encode(event),
+                  let payload = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return "[\(timestamp)] PROXY COVERAGE \(payload)\n"
+        }.joined()
+        guard !lines.isEmpty else { return }
+        logQueue.async {
+            if let handle = FileHandle(forWritingAtPath: logPath) {
+                handle.seekToEndOfFile()
+                handle.write(Data(lines.utf8))
+                handle.closeFile()
+            } else {
+                FileManager.default.createFile(atPath: logPath, contents: Data(lines.utf8))
             }
         }
     }

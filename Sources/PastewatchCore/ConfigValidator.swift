@@ -34,6 +34,11 @@ public enum ConfigValidator {
             validateRule(rule, index: i, errors: &errors)
         }
 
+        // WO-541: invalid opt-in entries must fail closed instead of silently no-oping.
+        for (index, entry) in config.obfuscate.enumerated() {
+            validateObfuscateEntry(entry, index: index, errors: &errors)
+        }
+
         // Validate safeHosts / sensitiveHosts
         for (i, host) in config.safeHosts.enumerated()
             where host.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -99,6 +104,66 @@ public enum ConfigValidator {
         }
         if let sev = rule.severity, Severity(rawValue: sev) == nil {
             errors.append("customRules[\(i)] '\(rule.name)': invalid severity '\(sev)' (use: critical, high, medium, low)")
+        }
+    }
+
+    // WO-541: diagnostics identify only the entry index and shape error, never its value.
+    private static func validateObfuscateEntry(
+        _ entry: ObfuscateEntry,
+        index: Int,
+        errors: inout [String]
+    ) {
+        guard let type = entry.entryType else {
+            errors.append("obfuscate[\(index)]: unknown type (use: email, host)")
+            return
+        }
+        let pattern = entry.pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.isEmpty else {
+            errors.append("obfuscate[\(index)]: pattern is empty")
+            return
+        }
+        guard !pattern.contains(where: \.isWhitespace) else {
+            errors.append("obfuscate[\(index)]: pattern must not contain whitespace")
+            return
+        }
+
+        switch type {
+        case .email:
+            if pattern.hasPrefix(".") {
+                errors.append("obfuscate[\(index)]: email pattern must be an address or start with @")
+            } else if pattern.hasPrefix("@") {
+                if !isValidDomain(String(pattern.dropFirst())) {
+                    errors.append("obfuscate[\(index)]: email domain pattern is malformed")
+                }
+            } else if !isValidExactEmail(pattern) {
+                errors.append("obfuscate[\(index)]: exact email pattern is malformed")
+            }
+        case .host:
+            if pattern.hasPrefix("@") {
+                errors.append("obfuscate[\(index)]: host pattern must be a hostname or start with .")
+            } else {
+                let domain = pattern.hasPrefix(".") ? String(pattern.dropFirst()) : pattern
+                if !isValidDomain(domain) {
+                    errors.append("obfuscate[\(index)]: host pattern is malformed")
+                }
+            }
+        }
+    }
+
+    private static func isValidExactEmail(_ value: String) -> Bool {
+        let components = value.split(separator: "@", omittingEmptySubsequences: false)
+        guard components.count == 2, !components[0].isEmpty else { return false }
+        return isValidDomain(String(components[1]))
+    }
+
+    private static func isValidDomain(_ value: String) -> Bool {
+        guard !value.isEmpty, !value.hasPrefix("."), !value.hasSuffix("."),
+              value.contains(".") else {
+            return false
+        }
+        return value.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { label in
+            guard !label.isEmpty, label.first != "-", label.last != "-" else { return false }
+            return label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
         }
     }
 

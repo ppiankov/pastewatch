@@ -62,9 +62,12 @@ struct Init: ParsableCommand {
         let profileLabel = profile.map { " (profile: \($0))" } ?? ""
         print("created .pastewatch.json\(profileLabel)")
         print("created .pastewatch-allow")
+        // WO-532: JSON cannot carry comments, so keep opt-in examples adjacent in CLI output.
+        print("obfuscate examples: exact email, @example.com, exact host, .example.com")
     }
 
-    private static func defaultTemplate() -> String {
+    // WO-532: internal visibility keeps generated config behavior directly testable.
+    static func defaultTemplate() -> String {
         return """
         {
           "enabled": true,
@@ -94,7 +97,7 @@ struct Init: ParsableCommand {
         }
     }
 
-    private static func bankingTemplate() -> String {
+    static func bankingTemplate() -> String {
         return """
         {
           "enabled": true,

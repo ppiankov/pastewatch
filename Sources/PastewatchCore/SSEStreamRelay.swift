@@ -20,6 +20,23 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         let advisoryCount: Int
         let advisoryTypes: [String]
         let toolCallRedactionCount: Int // WO-512: tool payload mutations remain separately observable.
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: full stream receipt.
+
+        init(
+            redactionCount: Int,
+            redactionTypes: [String],
+            advisoryCount: Int,
+            advisoryTypes: [String],
+            toolCallRedactionCount: Int,
+            coverageEvents: [ObfuscationCoverageEvent] = []
+        ) {
+            self.redactionCount = redactionCount
+            self.redactionTypes = redactionTypes
+            self.advisoryCount = advisoryCount
+            self.advisoryTypes = advisoryTypes
+            self.toolCallRedactionCount = toolCallRedactionCount
+            self.coverageEvents = coverageEvents
+        }
     }
 
     typealias TLSChallengeHandler = (
@@ -87,6 +104,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     private var streamAdvisoryCountStorage = 0
     private var streamAdvisoryTypesStorage: [String] = []
     private var streamToolCallRedactionCountStorage = 0 // WO-512: subset of streamRedactionCountStorage.
+    private var streamCoverageEventsStorage: [ObfuscationCoverageEvent] = [] // WO-539: lock-protected receipt.
     var streamRedactionCount: Int { snapshotStreamStats().redactionCount }
     var streamRedactionTypes: [String] { snapshotStreamStats().redactionTypes }
     var streamAdvisoryCount: Int { snapshotStreamStats().advisoryCount }
@@ -160,7 +178,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             redactionTypes: streamRedactionTypesStorage,
             advisoryCount: streamAdvisoryCountStorage,
             advisoryTypes: streamAdvisoryTypesStorage,
-            toolCallRedactionCount: streamToolCallRedactionCountStorage
+            toolCallRedactionCount: streamToolCallRedactionCountStorage,
+            coverageEvents: streamCoverageEventsStorage
         )
     }
 
@@ -477,6 +496,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         streamRedactionCountStorage += redaction.count
         streamRedactionTypesStorage.append(contentsOf: redaction.types)
         streamToolCallRedactionCountStorage += redaction.toolCallRedactionCount
+        streamCoverageEventsStorage.append(contentsOf: redaction.coverageEvents)
         streamStatsLock.unlock()
     }
 
@@ -814,7 +834,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             redactionTypes: current.redactionTypes,
             advisoryCount: current.advisoryCount + count,
             advisoryTypes: current.advisoryTypes + advisoryTypes,
-            toolCallRedactionCount: current.toolCallRedactionCount
+            toolCallRedactionCount: current.toolCallRedactionCount,
+            coverageEvents: current.coverageEvents
         )
     }
 

@@ -421,22 +421,6 @@ public struct DetectionRules {
             result.append((.xmlHostname, regex))
         }
 
-        // GitHub Token - high confidence
-        if let regex = githubClassicTokenRegex {
-            result.append((.genericApiKey, regex))
-        }
-
-        // Stripe API Key - high confidence
-        if let regex = stripeAPIKeyRegex {
-            result.append((.genericApiKey, regex))
-        }
-
-        // Stripe Webhook Secret - high confidence
-        // whsec_ prefix not covered by the generic sk/pk/api/key/token catch-all
-        if let regex = stripeWebhookSecretRegex {
-            result.append((.genericApiKey, regex))
-        }
-
         // WO-487: broad prefixed lookalikes remain visible but advisory-only.
         // Keep this fallback after every sourced provider grammar.
         if let regex = try? NSRegularExpression(
@@ -629,6 +613,9 @@ public struct DetectionRules {
         // ranges before ordinary regex rules can claim marker-only success.
         scanGCPServiceAccountSecrets(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
         scanCompletePrivateKeyBlocks(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
+        // WO-537: sourced provider grammars remain active when the broad generic
+        // API-key family is opt-in.
+        scanSourcedGenericProviderTokens(content, matches: &matches, matchedRanges: &matchedRanges)
 
         // Scan with regex rules
         scanWithRegexRules(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
@@ -641,7 +628,7 @@ public struct DetectionRules {
             scanTwoSegmentHosts(content, config: config, matches: &matches, matchedRanges: &matchedRanges)
         }
 
-        // WO-529: Filter ambiguous class matches based on obfuscate config.
+        // WO-529@v3: Filter ambiguous class matches based on obfuscate config.
         return filterAmbiguousMatches(matches, config: config)
     }
 
@@ -702,14 +689,133 @@ public struct DetectionRules {
         }
     }
 
-    /// WO-529: Filter ambiguous class matches based on obfuscate config.
-    private static func filterAmbiguousMatches(_ matches: [DetectedMatch], config: PastewatchConfig) -> [DetectedMatch] {
-        matches.filter { match in
-            guard match.type.isAmbiguousClass else { return true }
-            if match.type == .email || match.type == .hostname {
-                return config.shouldObfuscateAmbiguousValue(match.value, type: match.type)
+    /// WO-537: exact provider grammars are intrinsic evidence, not broad generic detection.
+    private static func scanSourcedGenericProviderTokens(
+        _ content: String,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        let regexes = [
+            githubClassicTokenRegex,
+            stripeAPIKeyRegex,
+            stripeWebhookSecretRegex,
+        ].compactMap { $0 }
+        let nsRange = NSRange(content.startIndex..., in: content)
+        for regex in regexes {
+            for match in regex.matches(in: content, options: [], range: nsRange) {
+                guard let range = Range(match.range, in: content),
+                      !matchedRanges.contains(where: { range.overlaps($0) }) else {
+                    continue
+                }
+                let value = String(content[range])
+                guard !shouldExclude(value) else { continue }
+                matches.append(DetectedMatch(
+                    type: .genericApiKey,
+                    value: value,
+                    range: range,
+                    line: lineNumber(of: range.lowerBound, in: content),
+                    mutationAuthorizationSources: [.intrinsicFormat]
+                ))
+                matchedRanges.append(range)
             }
-            return true
+        }
+    }
+
+    /// WO-529@v3: Filter ambiguous class matches based on obfuscate config.
+    private static func filterAmbiguousMatches(_ matches: [DetectedMatch], config: PastewatchConfig) -> [DetectedMatch] {
+        matches.compactMap { match in
+            guard match.type.isAmbiguousClass else { return match }
+            if match.type == .email || match.type == .hostname {
+                guard let identifier = config.obfuscateRuleIdentifier(
+                    for: match.value,
+                    type: match.type
+                ) else {
+                    return nil
+                }
+                return match.authorizingConfiguredObfuscate(ruleIdentifier: identifier)
+            }
+            return match
+        }
+    }
+
+    /// WO-539: emit action evidence plus silent unconfigured observations without
+    /// feeding those observations into mutation or advisory decisions.
+    static func obfuscationCoverageEvents(
+        in content: String,
+        config: PastewatchConfig,
+        mutatedMatches: [DetectedMatch],
+        advisoryMatches: [DetectedMatch] = [],
+        source: ObfuscationCoverageSource
+    ) -> [ObfuscationCoverageEvent] {
+        let mutations = mutatedMatches.map { match in
+            let configured = match.mutationAuthorizationSources.contains(.configuredObfuscate)
+            return ObfuscationCoverageEvent(
+                tier: configured ? .configured : .intrinsic,
+                type: match.type.rawValue,
+                ruleIdentifier: configured ? match.obfuscateRuleIdentifier : nil,
+                source: source,
+                domainBucket: coverageDomainBucket(for: match.value, type: match.type)
+            )
+        }
+        let advisories = advisoryMatches.map { match in
+            ObfuscationCoverageEvent(
+                tier: .advisory,
+                type: match.type.rawValue,
+                source: source,
+                domainBucket: coverageDomainBucket(for: match.value, type: match.type)
+            )
+        }
+        return mutations + advisories + unconfiguredObfuscationEvents(
+            in: content,
+            config: config,
+            source: source
+        )
+    }
+
+    private static func unconfiguredObfuscationEvents(
+        in content: String,
+        config: PastewatchConfig,
+        source: ObfuscationCoverageSource
+    ) -> [ObfuscationCoverageEvent] {
+        let nsRange = NSRange(content.startIndex..., in: content)
+        var seen: Set<String> = []
+        var events: [ObfuscationCoverageEvent] = []
+        for (type, regex) in rules where type == .email || type == .hostname {
+            for match in regex.matches(in: content, options: [], range: nsRange) {
+                guard let range = Range(match.range, in: content) else { continue }
+                let value = String(content[range])
+                guard !shouldExclude(value),
+                      isValidMatch(value, type: type, config: config),
+                      config.obfuscateRuleIdentifier(for: value, type: type) == nil else {
+                    continue
+                }
+                let key = "\(type.rawValue):\(value.lowercased())"
+                guard seen.insert(key).inserted else { continue }
+                events.append(ObfuscationCoverageEvent(
+                    tier: .observed,
+                    type: type.rawValue,
+                    source: source,
+                    domainBucket: coverageDomainBucket(for: value, type: type)
+                ))
+            }
+        }
+        return events
+    }
+
+    private static func coverageDomainBucket(
+        for value: String,
+        type: SensitiveDataType
+    ) -> String? {
+        switch type {
+        case .email:
+            guard let separator = value.lastIndex(of: "@") else { return nil }
+            return "@" + value[value.index(after: separator)...].lowercased()
+        case .hostname:
+            let labels = value.lowercased().split(separator: ".")
+            guard labels.count >= 2 else { return nil }
+            return "." + labels.suffix(2).joined(separator: ".")
+        default:
+            return nil
         }
     }
 
@@ -1081,6 +1187,15 @@ public struct DetectionRules {
         var matches: [DetectedMatch] = []
         var matchedRanges: [Range<String.Index>] = []
 
+        // WO-538: exact evidence is independent of detector enablement and claims
+        // its complete literal range before broader pattern families run.
+        scanExactKnownSecrets(
+            content,
+            knownSecretValues: knownSecretValues,
+            matches: &matches,
+            matchedRanges: &matchedRanges
+        )
+
         // WO-404: custom rules are explicit operator approval, so they promote
         // overlapping uncertain built-ins into mutation-safe matches.
         for rule in customRules {
@@ -1090,6 +1205,21 @@ public struct DetectionRules {
             for match in regexMatches {
                 guard let range = Range(match.range, in: content) else { continue }
 
+                if let index = matches.firstIndex(where: { $0.range == range }) {
+                    let value = String(content[range])
+                    let customMatch = DetectedMatch(
+                        type: rule.type,
+                        value: value,
+                        range: range,
+                        line: lineNumber(of: range.lowerBound, in: content),
+                        customRuleName: rule.name,
+                        customSeverity: rule.severity
+                    )
+                    matches[index] = customMatch.addingMutationAuthorizationSources(
+                        matches[index].mutationAuthorizationSources
+                    )
+                    continue
+                }
                 let overlaps = matchedRanges.contains { $0.overlaps(range) }
                 if overlaps { continue }
 
@@ -1132,14 +1262,42 @@ public struct DetectionRules {
             matches = allowlist.filter(matches)
         }
 
-        if !knownSecretValues.isEmpty {
-            matches = matches.map { match in
-                guard knownSecretValues.contains(match.value), match.advisory == nil else { return match }
-                return match.addingMutationAuthorizationSources([.exactKnownSecret])
+        return matches
+    }
+
+    /// WO-538: longest-first matching protects complete known values when entries overlap.
+    private static func scanExactKnownSecrets(
+        _ content: String,
+        knownSecretValues: Set<String>,
+        matches: inout [DetectedMatch],
+        matchedRanges: inout [Range<String.Index>]
+    ) {
+        let orderedValues = knownSecretValues
+            .filter { !$0.isEmpty }
+            .sorted { lhs, rhs in
+                if lhs.count == rhs.count { return lhs < rhs }
+                return lhs.count > rhs.count
+            }
+        for value in orderedValues {
+            var searchStart = content.startIndex
+            while searchStart < content.endIndex,
+                  let range = content.range(
+                    of: value,
+                    range: searchStart..<content.endIndex
+                  ) {
+                if !matchedRanges.contains(where: { $0.overlaps(range) }) {
+                    matches.append(DetectedMatch(
+                        type: .credential,
+                        value: value,
+                        range: range,
+                        line: lineNumber(of: range.lowerBound, in: content),
+                        mutationAuthorizationSources: [.exactKnownSecret]
+                    ))
+                    matchedRanges.append(range)
+                }
+                searchStart = range.upperBound
             }
         }
-
-        return matches
     }
 
     /// Check if a value should be excluded from detection.

@@ -84,8 +84,15 @@ struct ToolCallStreamRedactor {
         let types: [String]
         let advisoryCount: Int
         let advisoryTypes: [String]
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: tool-call receipt evidence.
 
-        static let empty = FrameStats(count: 0, types: [], advisoryCount: 0, advisoryTypes: [])
+        static let empty = FrameStats(
+            count: 0,
+            types: [],
+            advisoryCount: 0,
+            advisoryTypes: [],
+            coverageEvents: []
+        )
     }
 
     private let config: PastewatchConfig
@@ -258,7 +265,15 @@ struct ToolCallStreamRedactor {
                     types: existing.types + toolTypes,
                     advisoryCount: existing.advisoryCount + scan.advisory.count,
                     advisoryTypes: existing.advisoryTypes
-                        + scan.advisory.map { "Tool argument: \($0.displayName)" }
+                        + scan.advisory.map { "Tool argument: \($0.displayName)" },
+                    coverageEvents: existing.coverageEvents
+                        + DetectionRules.obfuscationCoverageEvents(
+                            in: text,
+                            config: config,
+                            mutatedMatches: scan.mutated,
+                            advisoryMatches: scan.advisory,
+                            source: .toolCall
+                        )
                 )
             }
         }
@@ -283,7 +298,8 @@ struct ToolCallStreamRedactor {
                 types: stats.types + frameWide.types,
                 advisoryCount: stats.advisoryCount + frameWide.advisoryCount,
                 advisoryTypes: stats.advisoryTypes + frameWide.advisoryTypes,
-                toolCallRedactionCount: stats.count
+                toolCallRedactionCount: stats.count,
+                coverageEvents: stats.coverageEvents + frameWide.coverageEvents
             )
             guard Self.frameMutationPreservesJSON(result.data, original: item.frame) else {
                 return blockPending(.invalidJSONAfterMutation)
@@ -514,7 +530,14 @@ struct ToolCallStreamRedactor {
             count: outcome.mutated.count,
             types: outcome.mutated.map(\.displayName),
             advisoryCount: outcome.advisory.count,
-            advisoryTypes: outcome.advisory.map(\.displayName)
+            advisoryTypes: outcome.advisory.map(\.displayName),
+            coverageEvents: DetectionRules.obfuscationCoverageEvents(
+                in: text,
+                config: config,
+                mutatedMatches: outcome.mutated,
+                advisoryMatches: outcome.advisory,
+                source: .response
+            )
         )
     }
 

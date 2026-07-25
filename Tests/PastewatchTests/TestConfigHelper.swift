@@ -4,6 +4,17 @@ import Foundation
 /// WO-529: Test helper for creating configs with obfuscate entries.
 /// Ambiguous classes (email, host, IP, etc.) are opt-in via the obfuscate config.
 enum TestConfigHelper {
+    /// WO-542: legacy advisory fixtures must opt ambiguous detectors in without authorizing mutation.
+    static func configWithAmbiguousAdvisories(
+        _ types: [SensitiveDataType]
+    ) -> PastewatchConfig {
+        var config = PastewatchConfig.defaultConfig
+        for type in types where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
+        }
+        return config
+    }
+
     /// Creates a config with email obfuscation enabled for common test domains.
     static func configWithEmailObfuscation() -> PastewatchConfig {
         var config = PastewatchConfig.defaultConfig

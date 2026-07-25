@@ -39,8 +39,8 @@ final class GuardCommandTests: XCTestCase {
     // .agentControlled so the inline allow comment cannot self-authorize the secret.
     func testAgentReferencedFileCannotSelfAuthorizeWithInlineAllow() throws {
         let testFile = testDir + "/agent-written.env"
-        // A real (non-"EXAMPLE") credential so it is not suppressed as a test value.
-        let secret = "password=" + "hunter2LongEnoughToDetect"
+        // WO-542: use an intrinsic detector so this trust test does not depend on ambiguous defaults.
+        let secret = "AWS_KEY=" + "AKIA" + "QWERTYUIOPASDFGH"
         try "\(secret) # pastewatch:allow".write(toFile: testFile, atomically: true, encoding: .utf8)
 
         let paths = CommandParser.extractFilePaths(from: "cat \(testFile)")
@@ -86,19 +86,24 @@ final class GuardCommandTests: XCTestCase {
 
     func testSeverityThresholdFiltering() throws {
         let testFile = testDir + "/hosts.txt"
-        // Email is high severity, IP is medium
-        try "contact: admin@internal-corp.com\nserver: 10.0.1.50".write(
+        // WO-542: declare ambiguous fixture intent instead of relying on defaults.
+        // Phone is high severity, IP is medium.
+        try "contact: +1-415-555-2671\nserver: 10.0.1.50".write(
             toFile: testFile, atomically: true, encoding: .utf8)
 
         let content = try String(contentsOfFile: testFile, encoding: .utf8)
-        let matches = DetectionRules.scan(content, config: config)
+        // WO-542: preserve threshold coverage with explicit ambiguous detectors.
+        let matches = DetectionRules.scan(
+            content,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.phone, .ipAddress])
+        )
 
         let criticalOnly = matches.filter { $0.effectiveSeverity >= .critical }
         let highAndUp = matches.filter { $0.effectiveSeverity >= .high }
 
         // Critical threshold: nothing should match
         XCTAssertTrue(criticalOnly.isEmpty)
-        // High threshold: email should match
+        // High threshold: phone should match.
         XCTAssertFalse(highAndUp.isEmpty)
     }
 
@@ -182,7 +187,8 @@ final class GuardCommandTests: XCTestCase {
 
     // WO-139: JSON command redaction must not depend on block threshold.
     func testGuardJSONRedactsLowerSeverityInlineFindingBelowThreshold() throws {
-        let email = ["admin", "@", "internal-corp.com"].joined()
+        let email = ["admin", "@", "corp.com"].joined()
+        try writeConfig(TestConfigHelper.configWithEmailObfuscation())
         let result = try runGuardCLI(arguments: [
             "guard", "--json", "--fail-on-severity", "critical", "echo \(email)",
         ])
@@ -199,9 +205,11 @@ final class GuardCommandTests: XCTestCase {
 
     // WO-139: file blocking must not leak below-threshold inline findings in JSON command context.
     func testGuardJSONRedactsLowerSeverityInlineFindingWhenFileBlocks() throws {
-        let email = ["admin", "@", "internal-corp.com"].joined()
+        let email = ["admin", "@", "corp.com"].joined()
         let testFile = testDir + "/config.env"
-        try "password=\(syntheticCredentialLiteral())".write(
+        try writeConfig(TestConfigHelper.configWithEmailObfuscation())
+        let intrinsicKey = "AKIA" + "QWERTYUIOPASDFGH"
+        try "AWS_KEY=\(intrinsicKey)".write(
             toFile: testFile, atomically: true, encoding: .utf8)
 
         let result = try runGuardCLI(arguments: [
@@ -296,6 +304,12 @@ final class GuardCommandTests: XCTestCase {
             stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
             stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         )
+    }
+
+    // WO-542: subprocess tests must declare ambiguous obfuscation instead of inheriting it.
+    private func writeConfig(_ config: PastewatchConfig) throws {
+        let configData = try JSONEncoder().encode(config)
+        try configData.write(to: URL(fileURLWithPath: testDir + "/.pastewatch.json"))
     }
 
     private func pastewatchCLIURL() -> URL {
