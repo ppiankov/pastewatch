@@ -256,12 +256,13 @@ final class ProxyRealServerTests: XCTestCase {
             .appendingPathComponent("pastewatch-evidence-matrix-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: auditPath) }
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
-        // WO-542: preserve this advisory-path fixture with an explicitly enabled
-        // ambiguous detector; unconfigured email is intentionally silent.
+        // WO-542: preserve this advisory-path fixture with explicitly enabled
+        // ambiguous detectors; unconfigured email is intentionally silent.
+        // WO-529: Enable dbConnectionString for DSN advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
-            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress, .dbConnectionString]),
             severity: .low,
             auditLogPath: auditPath.path,
             quietLog: true
