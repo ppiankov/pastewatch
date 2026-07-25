@@ -43,7 +43,8 @@ final class LaunchCommandTests: XCTestCase {
         }
     }
 
-    // WO-135 (revised by WO-543): passthrough help reaches only fixture startup files if sweep runs.
+    // WO-135: passthrough help reaches only fixture startup files if sweep runs.
+    // WO-543: replace the ambiguous sweep fixture with an intrinsic token.
     func testLaunchPassthroughHelpUsesFixtureStartupSweepHome() throws {
         let result = try runCLI(arguments: ["launch", "--quiet", "--port", "65435", "--", "--help"])
         let fixturePath = result.home.appendingPathComponent(".zshrc").path
@@ -670,6 +671,7 @@ final class LaunchCommandTests: XCTestCase {
 
     private func writeFixtureStartupFile(in home: URL) throws {
         let path = home.appendingPathComponent(".zshrc")
+        // WO-543: write only the intrinsic fixture into the isolated startup file.
         try "VAULT_TOKEN=\(Self.startupSweepFixtureValue)\n".write(to: path, atomically: true, encoding: .utf8)
     }
 

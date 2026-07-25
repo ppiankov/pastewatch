@@ -1106,6 +1106,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testUserSafeHostNotDetected() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["my-safe.internal.com"]
         let content = "Connect to my-safe.internal.com"
@@ -1117,8 +1118,10 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostDetectedEvenIfBuiltInSafe() {
         // img.shields.io is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["img.shields.io"]
+        // WO-542: explicitly authorize the sensitive host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "img.shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1128,9 +1131,11 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostWinsOverUserSafeHost() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the overlapping host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["overlap.corp.net"]
         customConfig.sensitiveHosts = ["overlap.corp.net"]
+        // WO-542: explicitly authorize the overlapping host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "overlap.corp.net")]
         let content = "Connect to overlap.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1140,6 +1145,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testHostConfigCaseInsensitive() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the case-insensitive host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["MY-SAFE.INTERNAL.COM"]
         let content = "Connect to my-safe.internal.com"
@@ -1151,8 +1157,10 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostCaseInsensitive() {
         // cdn.jsdelivr.net is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the case-insensitive host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["CDN.JSDELIVR.NET"]
+        // WO-542: explicitly authorize the normalized host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "cdn.jsdelivr.net")]
         let content = "load from cdn.jsdelivr.net/npm"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1164,6 +1172,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSafeHostSuffixSuppressesSubdomain() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the suffix host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".company.com"]
         let content = "Connect to db.company.com"
@@ -1176,8 +1185,10 @@ final class DetectionRulesTests: XCTestCase {
         // "company.com" is only 2 segments — won't match the FQDN regex anyway
         // Use a 3-segment domain to test suffix behavior
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the exact-domain host fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
+        // WO-542: explicitly authorize the non-suppressed host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "corp.net.example.org")]
         let content = "Connect to corp.net.example.org"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1189,8 +1200,10 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostSuffixFlagsSubdomain() {
         // img.shields.io is built-in safe, but .shields.io suffix in sensitiveHosts should override
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive suffix host detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = [".shields.io"]
+        // WO-542: explicitly authorize the sensitive suffix fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1200,9 +1213,11 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostSuffixWinsOverSafeHostSuffix() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the overlapping suffix detector.
         customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
         customConfig.sensitiveHosts = [".corp.net"]
+        // WO-542: explicitly authorize the overlapping suffix fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".corp.net")]
         let content = "Connect to admin.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1214,10 +1229,12 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostDetectedViaSensitiveHosts() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable two-segment host detection.
         if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = [".local"]
+        // WO-542: explicitly authorize the two-segment host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "nas.local")]
         let content = "Connect to nas.local for backups"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1236,10 +1253,12 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostExactMatch() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable exact two-segment host detection.
         if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = ["printer.lan"]
+        // WO-542: explicitly authorize the exact two-segment fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "printer.lan")]
         let content = "Print to printer.lan"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1249,10 +1268,12 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostMultipleDepths() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable multi-depth host detection.
         if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
             customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         }
         customConfig.sensitiveHosts = [".local"]
+        // WO-542: explicitly authorize the multi-depth host fixture.
         customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".local")]
         let content = "hosts: nas.local and db.staging.local"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1264,6 +1285,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixOverridesExclude() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive IP fixture detector.
         customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["8.8."]
         let content = "dns at 8.8.8.8"
@@ -1274,6 +1296,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixMatchesRange() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive IP range detector.
         customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["172.16."]
         let content = "db at 172.16.0.5 and dns at 8.8.8.8"
