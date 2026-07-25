@@ -1812,9 +1812,11 @@ final class ProxyRealServerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: auditPath) }
 
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        // WO-529: Enable ipAddress for advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: .low,
             auditLogPath: auditPath.path,
             quietLog: true

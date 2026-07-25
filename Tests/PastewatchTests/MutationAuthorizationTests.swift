@@ -2,7 +2,17 @@ import XCTest
 @testable import PastewatchCore
 
 final class MutationAuthorizationTests: XCTestCase {
+    // WO-529: Default config only enables intrinsic detectors.
     private let config = PastewatchConfig.defaultConfig
+
+    // WO-529: Config with dbConnectionString enabled for DSN tests.
+    private let dsnConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.dbConnectionString.rawValue)
+        }
+        return config
+    }()
 
     func testIntrinsicAuthorizationSetIsExplicit() {
         // WO-454: this literal set makes detector promotion a reviewed policy change.
@@ -188,6 +198,7 @@ final class MutationAuthorizationTests: XCTestCase {
         XCTAssertFalse(outcome.text.contains(value))
     }
 
+    // WO-529: Enable dbConnectionString for DSN advisory detection.
     func testProxyUsesEvidenceAcrossRequestSites() throws {
         let token = "AIza" + String(repeating: "K", count: 35)
         let dsn = "postgres" + "://user:example@localhost/db"
@@ -195,7 +206,7 @@ final class MutationAuthorizationTests: XCTestCase {
         {"system":"\(dsn)","tools":[{"name":"lookup","description":"\(dsn)","input_schema":{"type":"object","default":"\(dsn)"},"input_examples":[{"token":"\(token)","dsn":"\(dsn)"}]}],"stop_sequences":["\(token)"],"messages":[{"role":"user","content":"\(dsn) \(token)"},{"role":"assistant","content":[{"type":"tool_use","id":"x","name":"lookup","input":{"token":"\(token)","dsn":"\(dsn)"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"\(token) \(dsn)"}]}]}
         """
 
-        let result = ProxyServer(port: 0).scanAndRedactBody(body)
+        let result = ProxyServer(port: 0, config: dsnConfig).scanAndRedactBody(body)
         XCTAssertGreaterThan(result.redacted, 0)
         XCTAssertGreaterThan(result.advisoryCount, 0)
         XCTAssertFalse(result.body.contains(token))

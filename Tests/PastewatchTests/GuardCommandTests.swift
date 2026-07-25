@@ -4,7 +4,17 @@ import XCTest
 final class GuardCommandTests: XCTestCase {
 
     private var testDir: String!
+    // WO-529: Default config only enables intrinsic detectors.
     private let config = PastewatchConfig.defaultConfig
+
+    // WO-529: Config with credential type enabled for inline credential tests.
+    private let credentialConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.credential.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.credential.rawValue)
+        }
+        return config
+    }()
 
     override func setUp() {
         super.setUp()
@@ -142,7 +152,9 @@ final class GuardCommandTests: XCTestCase {
     }
 
     // WO-138: literal env assignments in command text must block without leaking values.
+    // WO-529: Enable credential type for this test.
     func testGuardQuietBlocksInlineLiteralCredentials() throws {
+        try writeConfig(credentialConfig)
         let literal = syntheticCredentialLiteral()
         let blockedCommands = [
             "env api_key=\(literal) gh api",
@@ -160,7 +172,9 @@ final class GuardCommandTests: XCTestCase {
     }
 
     // WO-138: machine-readable output must not echo inline credential literals.
+    // WO-529: Enable credential type for this test.
     func testGuardJSONRedactsInlineLiteralCommand() throws {
+        try writeConfig(credentialConfig)
         let literal = syntheticCredentialLiteral()
         let command = "env api_key=\(literal) gh api"
 
@@ -173,7 +187,9 @@ final class GuardCommandTests: XCTestCase {
     }
 
     // WO-138: human output should report counts/types only, never the literal value.
+    // WO-529: Enable credential type for this test.
     func testGuardTextOutputOmitsInlineLiteralValue() throws {
+        try writeConfig(credentialConfig)
         let literal = syntheticCredentialLiteral()
         let command = "env api_key=\(literal) gh api"
 
