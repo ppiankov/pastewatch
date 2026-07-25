@@ -2,7 +2,17 @@ import XCTest
 @testable import PastewatchCore
 
 final class MutationAuthorizationTests: XCTestCase {
+    // WO-529@v3: Default config only enables intrinsic detectors.
     private let config = PastewatchConfig.defaultConfig
+
+    // WO-529@v3: Config with dbConnectionString enabled for DSN tests.
+    private let dsnConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.dbConnectionString.rawValue)
+        }
+        return config
+    }()
 
     func testIntrinsicAuthorizationSetIsExplicit() {
         // WO-454: this literal set makes detector promotion a reviewed policy change.
@@ -41,10 +51,12 @@ final class MutationAuthorizationTests: XCTestCase {
             matches.count
         )
         XCTAssertTrue(partition.authorized.contains { $0.type == .googleApiKey })
-        XCTAssertTrue(partition.advisory.contains { $0.type == .dbConnectionString })
+        // WO-529@v3: unconfigured ambiguous classes are absent, not advisory noise.
+        XCTAssertFalse(matches.contains { $0.type == .dbConnectionString })
     }
 
-    func testExactKnownValueAuthorizesFormatOnlyMatch() {
+    // WO-538: verify exact known values authorize mutation without detector enablement.
+    func testExactKnownValueAuthorizesFormatOnlyMatch() throws {
         let value = "postgres" + "://user:example@localhost/db"
         let matches = DetectionRules.scan(
             value,
@@ -52,8 +64,9 @@ final class MutationAuthorizationTests: XCTestCase {
             knownSecretValues: [value]
         )
 
+        let match = try XCTUnwrap(matches.first)
         XCTAssertEqual(matches.count, 1)
-        XCTAssertTrue(matches[0].mutationAuthorizationSources.contains(.exactKnownSecret))
+        XCTAssertTrue(match.mutationAuthorizationSources.contains(.exactKnownSecret))
         let outcome = applyAuthorizedMutations(
             to: value,
             matches: matches,
@@ -61,6 +74,49 @@ final class MutationAuthorizationTests: XCTestCase {
             minAdvisorySeverity: .critical
         )
         XCTAssertFalse(outcome.text.contains(value))
+    }
+
+    // WO-538: preserve exact and custom authorization when both match one range.
+    func testExactKnownAndCustomRuleProvenanceMergeOnSameRange() throws {
+        let value = "postgres" + "://user:example@localhost/db"
+        let rule = CustomRule(
+            name: "Approved DSN",
+            regex: try NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: value)),
+            severity: .low,
+            type: .dbConnectionString
+        )
+
+        let matches = DetectionRules.scan(
+            value,
+            config: config,
+            customRules: [rule],
+            knownSecretValues: [value]
+        )
+
+        let match = try XCTUnwrap(matches.first)
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(match.customRuleName, rule.name)
+        XCTAssertTrue(match.mutationAuthorizationSources.contains(.customRule))
+        XCTAssertTrue(match.mutationAuthorizationSources.contains(.exactKnownSecret))
+    }
+
+    // WO-538: prefer complete known values and retain every non-overlapping occurrence.
+    func testExactKnownMatchingPrefersCompleteLongestValueAtEveryOccurrence() {
+        let complete = "known-secret-value"
+        let prefix = "known-secret"
+        let text = "\(complete) then \(complete)"
+
+        let matches = DetectionRules.scan(
+            text,
+            config: config,
+            knownSecretValues: [complete, prefix]
+        )
+
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertTrue(matches.allSatisfy { $0.value == complete })
+        XCTAssertTrue(matches.allSatisfy {
+            $0.mutationAuthorizationSources.contains(.exactKnownSecret)
+        })
     }
 
     func testCustomRuleAuthorizationSurvivesBuiltInOverlap() throws {
@@ -89,7 +145,9 @@ final class MutationAuthorizationTests: XCTestCase {
         // WO-487: the broad fallback remains visible but cannot mutate from its
         // prefix alone; an operator rule can promote the same exact match.
         let value = ["token", "_", String(repeating: "z", count: 24)].joined()
-        let builtInMatches = DetectionRules.scan(value, config: config)
+        var genericVisibleConfig = config
+        genericVisibleConfig.enabledTypes.append(SensitiveDataType.genericApiKey.rawValue)
+        let builtInMatches = DetectionRules.scan(value, config: genericVisibleConfig)
         let builtIn = try XCTUnwrap(builtInMatches.first { $0.type == .genericApiKey })
         XCTAssertTrue(builtIn.mutationAuthorizationSources.isEmpty)
         XCTAssertTrue(
@@ -121,6 +179,26 @@ final class MutationAuthorizationTests: XCTestCase {
         )
     }
 
+    func testConfiguredEmailActivatesDetectorAndAuthorizesMutation() throws {
+        // WO-529@v3: the single opt-in entry is both activation and authorization.
+        let value = ["operator", "@", "example.com"].joined()
+        var configured = PastewatchConfig.defaultConfig
+        configured.obfuscate = [ObfuscateEntry(type: "email", pattern: "@example.com")]
+
+        let match = try XCTUnwrap(DetectionRules.scan(value, config: configured).first)
+        XCTAssertTrue(match.mutationAuthorizationSources.contains(.configuredObfuscate))
+        XCTAssertEqual(match.obfuscateRuleIdentifier, "email[0]")
+        let outcome = applyAuthorizedMutations(
+            to: value,
+            matches: [match],
+            site: .proxyUserText,
+            minAdvisorySeverity: .critical
+        )
+        XCTAssertEqual(outcome.mutated.count, 1)
+        XCTAssertFalse(outcome.text.contains(value))
+    }
+
+    // WO-529@v3: Enable dbConnectionString for DSN advisory detection.
     func testProxyUsesEvidenceAcrossRequestSites() throws {
         let token = "AIza" + String(repeating: "K", count: 35)
         let dsn = "postgres" + "://user:example@localhost/db"
@@ -128,7 +206,7 @@ final class MutationAuthorizationTests: XCTestCase {
         {"system":"\(dsn)","tools":[{"name":"lookup","description":"\(dsn)","input_schema":{"type":"object","default":"\(dsn)"},"input_examples":[{"token":"\(token)","dsn":"\(dsn)"}]}],"stop_sequences":["\(token)"],"messages":[{"role":"user","content":"\(dsn) \(token)"},{"role":"assistant","content":[{"type":"tool_use","id":"x","name":"lookup","input":{"token":"\(token)","dsn":"\(dsn)"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"\(token) \(dsn)"}]}]}
         """
 
-        let result = ProxyServer(port: 0).scanAndRedactBody(body)
+        let result = ProxyServer(port: 0, config: dsnConfig).scanAndRedactBody(body)
         XCTAssertGreaterThan(result.redacted, 0)
         XCTAssertGreaterThan(result.advisoryCount, 0)
         XCTAssertFalse(result.body.contains(token))

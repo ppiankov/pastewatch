@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Domain-scoped `obfuscate` configuration lets operators authorize exact email/host values or
+  whole domains for mutation. `init` templates and `docs/examples/pastewatch.json` include valid
+  examples, and invalid entries fail configuration validation without echoing their values.
+- Proxy audit logs and session reports now expose privacy-safe obfuscation coverage across
+  request, buffered response, streaming response, and tool-call surfaces.
+
+### Changed
+
+- Default detection enables intrinsic secret formats only. Unconfigured email and host values
+  remain unchanged and silent while aggregate domain observations stay available in coverage
+  reports; exact known secrets and sourced provider formats remain independently authorized.
+
 ## [0.33.3] - 2026-07-23
 
 ### Fixed

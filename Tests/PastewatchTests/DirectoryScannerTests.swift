@@ -2,7 +2,14 @@ import XCTest
 @testable import PastewatchCore
 
 final class DirectoryScannerTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-529@v3: scanner fixtures explicitly restore their ambiguous DB detector.
+    let config: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.dbConnectionString.rawValue)
+        }
+        return config
+    }()
     var testDir: String!
 
     override func setUp() {
@@ -18,7 +25,8 @@ final class DirectoryScannerTests: XCTestCase {
 
     func testScansEnvFile() throws {
         // Build test content dynamically to avoid pre-commit hook detection
-        let proto = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        // WO-542: keep the DB fixture detector-valid without embedding a credential literal.
+        let proto = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         let envContent = "DB_URL=\(proto)\n"
         try envContent.write(toFile: testDir + "/.env", atomically: true, encoding: .utf8)
 
@@ -30,7 +38,8 @@ final class DirectoryScannerTests: XCTestCase {
     func testScansRecursively() throws {
         let subdir = testDir + "/subdir"
         try FileManager.default.createDirectory(atPath: subdir, withIntermediateDirectories: true)
-        let proto = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        // WO-542: keep the recursive DB fixture detector-valid without a literal.
+        let proto = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         try "db_url: \(proto)".write(toFile: subdir + "/config.yml", atomically: true, encoding: .utf8)
 
         let results = try DirectoryScanner.scan(directory: testDir, config: config)
@@ -74,9 +83,19 @@ final class DirectoryScannerTests: XCTestCase {
     }
 
     func testFilePathsAreRelative() throws {
-        try "test@company.com".write(toFile: testDir + "/data.txt", atomically: true, encoding: .utf8)
+        // WO-542: opt in only the email fixture used for relative path reporting.
+        let email = ["test", "@company.com"].joined()
+        let emailConfig: PastewatchConfig = {
+            var config = PastewatchConfig.defaultConfig
+            if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {
+                config.enabledTypes.append(SensitiveDataType.email.rawValue)
+            }
+            config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@company.com")]
+            return config
+        }()
+        try email.write(toFile: testDir + "/data.txt", atomically: true, encoding: .utf8)
 
-        let results = try DirectoryScanner.scan(directory: testDir, config: config)
+        let results = try DirectoryScanner.scan(directory: testDir, config: emailConfig)
         XCTAssertGreaterThan(results.count, 0)
         // Should be relative, not absolute
         XCTAssertFalse(results[0].filePath.hasPrefix("/"))
@@ -85,8 +104,9 @@ final class DirectoryScannerTests: XCTestCase {
     // MARK: - Bail (early exit)
 
     func testBailReturnsOneResult() throws {
-        let conn1 = ["postgres", "://user:pass@host1:5432/db1"].joined()
-        let conn2 = ["postgres", "://user:pass@host2:5432/db2"].joined()
+        // WO-542: preserve multiple DB findings with detector-valid composed fixtures.
+        let conn1 = ["postgres", "://user", "CRED", "@host1:5432/db1"].joined()
+        let conn2 = ["postgres", "://user", "CRED", "@host2:5432/db2"].joined()
         try "DB_URL=\(conn1)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
         try "DB_URL=\(conn2)".write(toFile: testDir + "/b.env", atomically: true, encoding: .utf8)
 
@@ -100,12 +120,14 @@ final class DirectoryScannerTests: XCTestCase {
     func testBailWithNoFindingsReturnsEmpty() throws {
         try "clean content".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
 
+        // WO-542: clean scans retain the same explicit fixture policy.
         let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)
         XCTAssertEqual(results.count, 0)
     }
 
     func testBailStillHasMatches() throws {
-        let conn = ["postgres", "://user:pass@host:5432/mydb"].joined()
+        // WO-542: preserve bail coverage with a detector-valid composed DB fixture.
+        let conn = ["postgres", "://user", "CRED", "@host:5432/mydb"].joined()
         try "DB_URL=\(conn)".write(toFile: testDir + "/a.env", atomically: true, encoding: .utf8)
 
         let results = try DirectoryScanner.scan(directory: testDir, config: config, bail: true)

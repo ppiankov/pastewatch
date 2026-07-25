@@ -104,6 +104,23 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.count, 1)
         XCTAssertFalse(redacted.contains(credential))
         XCTAssertEqual(parser.remainingBytes, Data([0xFF]))
+        // WO-539: intrinsic stream mutations emit response coverage evidence.
+        XCTAssertTrue(redaction.coverageEvents.contains {
+            $0.tier == .intrinsic && $0.source == .response
+        })
+    }
+
+    // WO-539: unconfigured ambiguous values remain unchanged but produce privacy-safe coverage.
+    func testUnconfiguredStreamEmailProducesObservedCoverageOnly() {
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"admin@corp.example"}}"#
+        let redaction = redactFirstFrame(payload: payload)
+
+        XCTAssertEqual(redaction.count, 0)
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertEqual(redaction.coverageEvents.count, 1)
+        XCTAssertEqual(redaction.coverageEvents.first?.tier, .observed)
+        XCTAssertEqual(redaction.coverageEvents.first?.source, .response)
+        XCTAssertEqual(redaction.coverageEvents.first?.domainBucket, "@corp.example")
     }
 
     func testThinkingDeltaSecretIsRedacted() {
@@ -162,35 +179,43 @@ final class ProxyStreamRedactionTests: XCTestCase {
         }
     }
 
-    func testHighBuiltInMatchIsAdvisoryOnlyAndByteIdentical() {
+    // WO-529@v3: configured ambiguous email mutation is independent of advisory severity.
+    func testConfiguredEmailMutatesStreamBytesAtEverySeverity() {
         let email = "operator@example.com"
         let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"contact \#(email)"}}"#
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
         XCTAssertEqual(result.frames.count, 1)
+        // WO-529@v3: explicit email configuration authorizes this fixture.
+        let config = TestConfigHelper.configWithEmailObfuscation()
 
         for severity in [Severity.high, .medium, .low] {
+            // WO-529@v3: every advisory threshold uses the same configured mutation set.
             let redaction = redactSSEFrame(
                 result.frames[0],
-                config: PastewatchConfig.defaultConfig,
+                config: config,
                 severity: severity
             )
 
-            XCTAssertEqual(redaction.count, 0, "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.types, [], "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.advisoryCount, 1, "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.advisoryTypes, ["Email"], "severity \(severity.rawValue)")
-            XCTAssertEqual(redaction.data, result.frames[0].raw, "severity \(severity.rawValue)")
+            // WO-539: configured mutation receipts retain tier and rule identity.
+            XCTAssertEqual(redaction.count, 1, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.types, ["Email"], "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.advisoryCount, 0, "severity \(severity.rawValue)")
+            XCTAssertNotEqual(redaction.data, result.frames[0].raw, "severity \(severity.rawValue)")
+            XCTAssertEqual(redaction.coverageEvents.first?.tier, .configured)
+            XCTAssertNotNil(redaction.coverageEvents.first?.ruleIdentifier)
         }
 
+        // WO-529@v3: critical advisory filtering cannot disable configured mutation.
         let critical = redactSSEFrame(
             result.frames[0],
-            config: PastewatchConfig.defaultConfig,
+            config: config,
             severity: .critical
         )
-        XCTAssertEqual(critical.count, 0)
+        // WO-529@v3: configured mutation remains authorized at critical threshold.
+        XCTAssertEqual(critical.count, 1)
         XCTAssertEqual(critical.advisoryCount, 0)
-        XCTAssertEqual(critical.data, result.frames[0].raw)
+        XCTAssertNotEqual(critical.data, result.frames[0].raw)
     }
 
     func testHighCustomRuleMatchMutatesStreamBytes() {
@@ -253,18 +278,22 @@ final class ProxyStreamRedactionTests: XCTestCase {
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
         XCTAssertEqual(result.frames.count, 1)
+        // WO-542: explicitly expose only the ambiguous classes used by this matrix.
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress, .uuid])
 
+        // WO-542: email stays silent while enabled IP and UUID remain thresholded advisories.
         let cases: [(Severity, Set<String>)] = [
             (.critical, []),
-            (.high, ["Email"]),
-            (.medium, ["Email", "IP"]),
-            (.low, ["Email", "IP", "UUID"])
+            (.high, []),
+            (.medium, ["IP"]),
+            (.low, ["IP", "UUID"])
         ]
 
         for (severity, advisoryTypes) in cases {
+            // WO-542: use the explicit fixture config at every threshold.
             let redaction = redactSSEFrame(
                 result.frames[0],
-                config: PastewatchConfig.defaultConfig,
+                config: config,
                 severity: severity
             )
             let output = String(data: redaction.data, encoding: .utf8) ?? ""
@@ -287,10 +316,11 @@ final class ProxyStreamRedactionTests: XCTestCase {
         var parser = SSEFrameParser()
         let result = parser.feed(sseFrame(eventType: "content_block_delta", data: payload))
         XCTAssertEqual(result.frames.count, 1)
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress])
 
         let redaction = redactSSEFrame(
             result.frames[0],
-            config: PastewatchConfig.defaultConfig,
+            config: config,
             severity: .medium
         )
         let output = String(data: redaction.data, encoding: .utf8) ?? ""
@@ -299,6 +329,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(redaction.types, ["Google API Key"])
         XCTAssertEqual(redaction.advisoryCount, 1)
         XCTAssertEqual(redaction.advisoryTypes, ["IP"])
+        XCTAssertEqual(redaction.coverageEvents.filter { $0.tier == .advisory }.count, 1)
         XCTAssertFalse(output.contains(credential))
         XCTAssertTrue(output.contains("<GOOGLE_API_KEY_1>"))
         XCTAssertTrue(output.contains(ipAddress))
@@ -396,16 +427,22 @@ final class ProxyStreamRedactionTests: XCTestCase {
 
     func testUTF8ProxyBodyLeavesHighBuiltInUnmutated() {
         let email = "operator@example.com"
-        let server = ProxyServer(port: 0, severity: .high)
+        // WO-529@v3: expose email for coverage without granting mutation authorization.
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.email])
+        let server = ProxyServer(port: 0, config: config, severity: .high)
         let body = #"{"messages":[{"role":"user","content":[{"type":"tool_result","content":"contact \#(email)"}]}]}"#
 
         let result = server.scanAndRedactBody(body)
 
         XCTAssertEqual(result.redacted, 0)
         XCTAssertEqual(result.redactedTypes, [])
-        XCTAssertEqual(result.advisoryCount, 1)
-        XCTAssertEqual(result.advisoryTypes, ["Email"])
+        // WO-529@v3: unconfigured ambiguity is silent and byte-preserving.
+        XCTAssertEqual(result.advisoryCount, 0)
+        XCTAssertEqual(result.advisoryTypes, [])
         XCTAssertEqual(result.body, body)
+        // WO-539: silent observations remain visible only as privacy-safe coverage.
+        XCTAssertEqual(result.coverageEvents.first?.tier, .observed)
+        XCTAssertEqual(result.coverageEvents.first?.domainBucket, "@example.com")
     }
 
     func testUTF8ProxyBodyCustomRuleMutatesAtCriticalThreshold() {
@@ -450,16 +487,38 @@ final class ProxyStreamRedactionTests: XCTestCase {
         body.append(Data("prefix \(email) suffix".utf8))
         body.append(0x00)
 
+        // WO-529@v3: expose email for observation without authorizing binary mutation.
         let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
             body,
-            config: PastewatchConfig.defaultConfig,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.email]),
             severity: .high
         )
 
+        // WO-529@v3: unconfigured ambiguous bytes remain unchanged and non-advisory.
         XCTAssertEqual(redaction.count, 0)
-        XCTAssertEqual(redaction.advisoryCount, 1)
-        XCTAssertEqual(redaction.advisoryTypes, ["Email"])
+        XCTAssertEqual(redaction.advisoryCount, 0)
+        XCTAssertEqual(redaction.advisoryTypes, [])
         XCTAssertEqual(redaction.data, body)
+        // WO-539: binary observations produce privacy-safe coverage evidence.
+        XCTAssertEqual(redaction.coverageEvents.first?.tier, .observed)
+    }
+
+    // WO-539: buffered binary mutation retains configured-rule provenance after replacement.
+    func testCurlNonUTF8ConfiguredEmailCoverageRetainsRuleIdentifier() {
+        let email = "operator@example.com"
+        var body = Data([0xFF, 0xFE])
+        body.append(Data("prefix \(email) suffix".utf8))
+
+        let redaction = CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: TestConfigHelper.configWithEmailObfuscation(),
+            severity: .high
+        )
+
+        XCTAssertEqual(redaction.count, 1)
+        XCTAssertEqual(redaction.coverageEvents.first?.tier, .configured)
+        XCTAssertNotNil(redaction.coverageEvents.first?.ruleIdentifier)
+        XCTAssertEqual(redaction.coverageEvents.first?.source, .response)
     }
 
     /// A frame with no secret is passed through byte-identical.
@@ -696,7 +755,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         }
         let ctx = CurlHTTPClient.StreamContext(
             clientSocket: sockets[1], sendFlags: testSendFlags, redactionMode: .rawStream,
-            config: PastewatchConfig.defaultConfig, severity: .medium
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]), severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?
         let finished = expectation(description: "duplicate done relay finishes")
@@ -730,7 +789,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         }
         let ctx = CurlHTTPClient.StreamContext(
             clientSocket: sockets[1], sendFlags: testSendFlags, redactionMode: .rawStream,
-            config: PastewatchConfig.defaultConfig, severity: .medium
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]), severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?
         let finished = expectation(description: "post-done split credential relay finishes")
@@ -798,7 +857,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             clientSocket: sockets[1],
             sendFlags: testSendFlags,
             redactionMode: .perSSEEvent,
-            config: PastewatchConfig.defaultConfig,
+            // WO-542: preserve the EPIPE advisory fixture through explicit IP enablement.
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?
@@ -862,6 +922,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformed.redactionCount, 1)
         XCTAssertEqual(transformed.toolCallRedactionCount, 1)
         XCTAssertEqual(transformed.types, ["Tool argument: Google API Key"])
+        XCTAssertEqual(transformed.coverageEvents.filter { $0.source == .toolCall }.count, 1)
     }
 
     // WO-509 and WO-510: nested JSON escapes are decoded for detection but spliced in raw bytes.
@@ -915,7 +976,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let fixture = anthropicToolCallFixture(fragments: [truncated])
         var parser = SSEFrameParser()
         var transformer = ToolCallStreamRedactor(
-            config: PastewatchConfig.defaultConfig,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.email]),
             customRules: [],
             severity: .high
         )
@@ -1104,14 +1165,17 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformed.toolCallRedactionCount, 1)
     }
 
-    // WO-512: the reassembled tool scan and sibling-frame scan must not double-count one advisory.
-    func testToolArgumentAdvisoryIsCountedOnce() {
+    // WO-539: unconfigured tool-call email is observed without mutation or operator nag.
+    func testToolArgumentUnconfiguredEmailProducesCoverageOnly() {
         let fixture = openAIToolCallFixture(fragments: [#"{"contact":"operator@example.com"}"#])
 
         let transformed = transformToolCallFixture(fixture, severity: .low)
 
-        XCTAssertEqual(transformed.advisoryCount, 1)
+        XCTAssertEqual(transformed.advisoryCount, 0)
         XCTAssertEqual(transformed.redactionCount, 0)
+        XCTAssertEqual(transformed.coverageEvents.filter {
+            $0.tier == .observed && $0.source == .toolCall
+        }.count, 1)
     }
 
     // WO-511: the Linux curl relay must use the same cross-frame transformer.
@@ -1499,6 +1563,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let toolCallRedactionCount: Int
         let advisoryCount: Int
         let types: [String]
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: verify tool-call source evidence.
     }
 
     // WO-511: direct transformer tests exercise the platform-shared state machine.
@@ -1510,7 +1575,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         let parsed = parser.feed(fixture)
         XCTAssertFalse(parsed.overflowFlushed)
         var transformer = ToolCallStreamRedactor(
-            config: PastewatchConfig.defaultConfig,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.email]),
             customRules: [],
             severity: severity
         )
@@ -1519,6 +1584,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
         var toolCallRedactionCount = 0
         var advisoryCount = 0
         var types: [String] = []
+        var coverageEvents: [ObfuscationCoverageEvent] = []
         for frame in parsed.frames {
             let result = transformer.process(frame)
             XCTAssertFalse(result.terminateStream)
@@ -1528,6 +1594,7 @@ final class ProxyStreamRedactionTests: XCTestCase {
                 toolCallRedactionCount += transformed.toolCallRedactionCount
                 advisoryCount += transformed.advisoryCount
                 types.append(contentsOf: transformed.types)
+                coverageEvents.append(contentsOf: transformed.coverageEvents)
             }
         }
         let tail = transformer.finish()
@@ -1538,13 +1605,15 @@ final class ProxyStreamRedactionTests: XCTestCase {
             toolCallRedactionCount += transformed.toolCallRedactionCount
             advisoryCount += transformed.advisoryCount
             types.append(contentsOf: transformed.types)
+            coverageEvents.append(contentsOf: transformed.coverageEvents)
         }
         return ToolCallFixtureTransform(
             data: output,
             redactionCount: redactionCount,
             toolCallRedactionCount: toolCallRedactionCount,
             advisoryCount: advisoryCount,
-            types: types
+            types: types,
+            coverageEvents: coverageEvents
         )
     }
 
@@ -1637,7 +1706,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             clientSocket: sockets[1],
             sendFlags: testSendFlags,
             redactionMode: mode,
-            config: PastewatchConfig.defaultConfig,
+            // WO-542: helper callers declare the ambiguous advisory fixture explicitly.
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: severity
         )
         let result = CurlHTTPClient.relayBodyChunks(from: pipe, ctx: ctx, alertBeforeDone: alertBeforeDone)
@@ -1661,7 +1731,8 @@ final class ProxyStreamRedactionTests: XCTestCase {
             clientSocket: sockets[1],
             sendFlags: testSendFlags,
             redactionMode: .rawStream,
-            config: PastewatchConfig.defaultConfig,
+            // WO-542: partial raw-stream fixtures explicitly enable IP advisories.
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: .medium
         )
         var result: CurlHTTPClient.StreamRelayResult?

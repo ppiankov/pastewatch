@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "enabledTypes": ["AWS Key", "SSH Private Key", "JWT Token", "Vault Token"],
+  "showNotifications": true,
+  "soundEnabled": false,
+  "allowedValues": [],
+  "allowedPatterns": [],
+  "customRules": [],
+  "safeHosts": [],
+  "sensitiveHosts": [],
+  "sensitiveIPPrefixes": [],
+  "mcpMinSeverity": "high",
+  "operatorRedactionNotices": false,
+  "obfuscate": [
+    {"type": "email", "pattern": "operator@example.com"},
+    {"type": "email", "pattern": "@example.com"},
+    {"type": "host", "pattern": "gateway.example.com"},
+    {"type": "host", "pattern": ".example.com"}
+  ]
+}

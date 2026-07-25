@@ -2,12 +2,54 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-529@v3: Detector tests explicitly restore the pre-opt-in detector matrix.
+    let config: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        // Enable ambiguous types
+        let ambiguousTypes: [SensitiveDataType] = [
+            .email, .phone, .ipAddress, .filePath, .hostname,
+            .dbConnectionString, .jdbcUrl, .genericApiKey, .credential, .uuid,
+            .xmlUsername, .xmlHostname
+        ]
+        for type in ambiguousTypes where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
+        }
+        config.obfuscate = [
+            // Email patterns
+            ObfuscateEntry(type: "email", pattern: "@company.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.org"),
+            ObfuscateEntry(type: "email", pattern: "@test.net"),
+            ObfuscateEntry(type: "email", pattern: "@corp.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@test.com"),
+            // Host patterns
+            ObfuscateEntry(type: "host", pattern: ".internal"),
+            ObfuscateEntry(type: "host", pattern: ".local"),
+            ObfuscateEntry(type: "host", pattern: ".corp"),
+            ObfuscateEntry(type: "host", pattern: ".corp.net"),
+            ObfuscateEntry(type: "host", pattern: ".shields.io"),
+            ObfuscateEntry(type: "host", pattern: ".jsdelivr.net"),
+            ObfuscateEntry(type: "host", pattern: "nas.local"),
+            ObfuscateEntry(type: "host", pattern: "printer.lan"),
+            ObfuscateEntry(type: "host", pattern: "db.internal"),
+            ObfuscateEntry(type: "host", pattern: "api.internal"),
+            ObfuscateEntry(type: "host", pattern: "db-primary.internal.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "img.shields.io"),
+            ObfuscateEntry(type: "host", pattern: "cdn.jsdelivr.net"),
+            ObfuscateEntry(type: "host", pattern: "overlap.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "admin.corp.net"),
+            ObfuscateEntry(type: "host", pattern: "corp.net.example.org"),
+            ObfuscateEntry(type: "host", pattern: "replica-02.dc1.internal"),
+            ObfuscateEntry(type: "host", pattern: "ch-node3.corp.net")
+        ]
+        return config
+    }()
 
     // MARK: - Email Detection
 
     func testDetectsEmail() {
         let content = "Contact me at john.doe@company.com for details"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         XCTAssertEqual(matches.count, 1)
@@ -17,6 +59,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsMultipleEmails() {
         let content = "Send to alice@example.org and bob@test.net"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         XCTAssertEqual(matches.count, 2)
@@ -27,6 +70,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsInternationalPhone() {
         let content = "Call me at +60123456789"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let phoneMatches = matches.filter { $0.type == .phone }
@@ -35,6 +79,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsUSPhone() {
         let content = "My number is (555) 123-4567"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let phoneMatches = matches.filter { $0.type == .phone }
@@ -45,6 +90,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsIPAddress() {
         let content = "Server is at 192.168.1.100"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         XCTAssertEqual(matches.count, 1)
@@ -86,6 +132,7 @@ final class DetectionRulesTests: XCTestCase {
     func testDetectsGenericSecretKey() {
         // Test generic secret_ prefix pattern (avoids GitHub secret scanning)
         let content = "my_secret: secret_abcdefghijklmnopqrstuvwxyz"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let apiKeyMatches = matches.filter { $0.type == .genericApiKey }
@@ -96,6 +143,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsUUID() {
         let content = "User ID: 550e8400-e29b-41d4-a716-446655440000"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let uuidMatches = matches.filter { $0.type == .uuid }
@@ -107,6 +155,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsPostgresConnectionString() {
         let content = "DATABASE_URL=postgres://user:pass@host:5432/db"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
@@ -115,6 +164,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsMongoDBConnectionString() {
         let content = "MONGO_URI=mongodb://user:pass@host:27017/db"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
@@ -196,6 +246,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsLinuxFilePath() {
         let content = "Config at /etc/nginx/nginx.conf"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let pathMatches = matches.filter { $0.type == .filePath }
@@ -204,6 +255,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsHomePath() {
         let content = "SSH key at /home/deploy/.ssh/id_rsa"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let pathMatches = matches.filter { $0.type == .filePath }
@@ -223,6 +275,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsInternalHostname() {
         let content = "Connect to db-primary.internal.corp.net"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -264,6 +317,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testStillDetectsServiceHostnames() {
         let content = "Connect to api.internal.corp and myservice.default.svc.cluster.local"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let values = Set(matches.filter { $0.type == .hostname }.map(\.value))
@@ -275,6 +329,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsPasswordKeyValue() {
         let content = "password=s3cret_value"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let credMatches = matches.filter { $0.type == .credential }
@@ -283,6 +338,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsSecretColonValue() {
         let content = "secret: my_api_secret_123"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let credMatches = matches.filter { $0.type == .credential }
@@ -291,6 +347,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsTokenAssignment() {
         let content = "auth=bearer_token_xyz123"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let credMatches = matches.filter { $0.type == .credential }
@@ -492,6 +549,7 @@ final class DetectionRulesTests: XCTestCase {
             "api_key=sk_live_abc123def456"
         ]
         for input in realSecrets {
+        // WO-542: preserve detector fixture intent under opt-in defaults.
             let matches = DetectionRules.scan(input, config: config)
             let credMatches = matches.filter { $0.type == .credential }
             XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect: \(input)")
@@ -559,6 +617,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsClickHouseConnectionString() {
         let content = "CH_URL=clickhouse://user:pass@host:9000/db"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         let dbMatches = matches.filter { $0.type == .dbConnectionString }
         XCTAssertGreaterThanOrEqual(dbMatches.count, 1)
@@ -817,18 +876,21 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsJDBCOracleThin() {
         let content = "url=jdbc:oracle:thin:@dbhost.internal.com:1521:PRODDB"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCOracleThinServiceName() {
         let content = "jdbc:oracle:thin:@//dbhost.internal.com:1521/PRODDB"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCPostgreSQL() {
         let content = "jdbc:postgresql://db.internal.com:5432/mydb"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         // May match as dbConnectionString (postgresql://) or jdbcUrl — either is correct
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
@@ -836,6 +898,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsJDBCMySQL() {
         let content = "jdbc:mysql://db.internal.com:3306/mydb?ssl=true"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         // May match as dbConnectionString (mysql://) or jdbcUrl — either is correct
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl || $0.type == .dbConnectionString })
@@ -843,24 +906,28 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsJDBCSQLServer() {
         let content = "jdbc:sqlserver://db.internal.com:1433;databaseName=mydb"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCDB2() {
         let content = "jdbc:db2://db.internal.com:50000/mydb"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testDetectsJDBCAS400() {
         let content = "jdbc:as400://as400.internal.com/MYLIB"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
 
     func testJDBCInSpringConfig() {
         let content = "spring.datasource.url=jdbc:oracle:thin:@prod-db:1521:FINDB"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .jdbcUrl })
     }
@@ -879,42 +946,49 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsXMLPasswordTag() {
         let content = "<password>my_secret_pass</password>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLPasswordSHA256Tag() {
         let content = "<password_sha256_hex>abcdef1234567890</password_sha256_hex>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLSecretAccessKeyTag() {
         let content = "<secret_access_key>wJalrXUtnFEMI</secret_access_key>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlCredential })
     }
 
     func testDetectsXMLUserTag() {
         let content = "<user>admin</user>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlUsername })
     }
 
     func testDetectsXMLHostTag() {
         let content = "<host>db-primary.internal.corp.net</host>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
 
     func testDetectsXMLHostnameTag() {
         let content = "<hostname>replica-02.dc1.internal</hostname>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
 
     func testDetectsXMLInterserverHttpHostTag() {
         let content = "<interserver_http_host>ch-node3.corp.net</interserver_http_host>"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .xmlHostname })
     }
@@ -959,6 +1033,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testLineNumbersOnMultilineContent() {
         let content = "First line is clean\nSecond has test@corp.com\nThird line\nFourth has 192.168.1.50"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         let emailMatch = matches.first { $0.type == .email }
@@ -970,6 +1045,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testLineNumberSingleLine() {
         let content = "Server at 10.0.0.1"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
 
         XCTAssertEqual(matches.first?.line, 1)
@@ -1030,6 +1106,8 @@ final class DetectionRulesTests: XCTestCase {
 
     func testUserSafeHostNotDetected() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["my-safe.internal.com"]
         let content = "Connect to my-safe.internal.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1040,7 +1118,11 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostDetectedEvenIfBuiltInSafe() {
         // img.shields.io is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["img.shields.io"]
+        // WO-542: explicitly authorize the sensitive host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "img.shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1049,8 +1131,12 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostWinsOverUserSafeHost() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the overlapping host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["overlap.corp.net"]
         customConfig.sensitiveHosts = ["overlap.corp.net"]
+        // WO-542: explicitly authorize the overlapping host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "overlap.corp.net")]
         let content = "Connect to overlap.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1059,6 +1145,8 @@ final class DetectionRulesTests: XCTestCase {
 
     func testHostConfigCaseInsensitive() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the case-insensitive host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = ["MY-SAFE.INTERNAL.COM"]
         let content = "Connect to my-safe.internal.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1069,7 +1157,11 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostCaseInsensitive() {
         // cdn.jsdelivr.net is a built-in safe host and matches the 3-segment FQDN regex
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the case-insensitive host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = ["CDN.JSDELIVR.NET"]
+        // WO-542: explicitly authorize the normalized host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "cdn.jsdelivr.net")]
         let content = "load from cdn.jsdelivr.net/npm"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1080,6 +1172,8 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSafeHostSuffixSuppressesSubdomain() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the suffix host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".company.com"]
         let content = "Connect to db.company.com"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1091,7 +1185,11 @@ final class DetectionRulesTests: XCTestCase {
         // "company.com" is only 2 segments — won't match the FQDN regex anyway
         // Use a 3-segment domain to test suffix behavior
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the exact-domain host fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
+        // WO-542: explicitly authorize the non-suppressed host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "corp.net.example.org")]
         let content = "Connect to corp.net.example.org"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1102,7 +1200,11 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveHostSuffixFlagsSubdomain() {
         // img.shields.io is built-in safe, but .shields.io suffix in sensitiveHosts should override
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive suffix host detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.sensitiveHosts = [".shields.io"]
+        // WO-542: explicitly authorize the sensitive suffix fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".shields.io")]
         let content = "badge at img.shields.io/badge"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1111,8 +1213,12 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveHostSuffixWinsOverSafeHostSuffix() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the overlapping suffix detector.
+        customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
         customConfig.safeHosts = [".corp.net"]
         customConfig.sensitiveHosts = [".corp.net"]
+        // WO-542: explicitly authorize the overlapping suffix fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".corp.net")]
         let content = "Connect to admin.corp.net"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1123,7 +1229,13 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostDetectedViaSensitiveHosts() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable two-segment host detection.
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = [".local"]
+        // WO-542: explicitly authorize the two-segment host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "nas.local")]
         let content = "Connect to nas.local for backups"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1133,6 +1245,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostNotDetectedWithoutSensitiveHosts() {
         let content = "Connect to nas.local for backups"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         let hostMatches = matches.filter { $0.type == .hostname }
         XCTAssertEqual(hostMatches.count, 0, "2-segment hosts should not be detected by default")
@@ -1140,7 +1253,13 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostExactMatch() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable exact two-segment host detection.
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = ["printer.lan"]
+        // WO-542: explicitly authorize the exact two-segment fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: "printer.lan")]
         let content = "Print to printer.lan"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1149,7 +1268,13 @@ final class DetectionRulesTests: XCTestCase {
 
     func testTwoSegmentHostMultipleDepths() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable multi-depth host detection.
+        if !customConfig.enabledTypes.contains(SensitiveDataType.hostname.rawValue) {
+            customConfig.enabledTypes.append(SensitiveDataType.hostname.rawValue)
+        }
         customConfig.sensitiveHosts = [".local"]
+        // WO-542: explicitly authorize the multi-depth host fixture.
+        customConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: ".local")]
         let content = "hosts: nas.local and db.staging.local"
         let matches = DetectionRules.scan(content, config: customConfig)
         let hostMatches = matches.filter { $0.type == .hostname }
@@ -1160,6 +1285,8 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixOverridesExclude() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive IP fixture detector.
+        customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["8.8."]
         let content = "dns at 8.8.8.8"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1169,6 +1296,8 @@ final class DetectionRulesTests: XCTestCase {
 
     func testSensitiveIPPrefixMatchesRange() {
         var customConfig = PastewatchConfig.defaultConfig
+        // WO-542: explicitly enable the sensitive IP range detector.
+        customConfig.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
         customConfig.sensitiveIPPrefixes = ["172.16."]
         let content = "db at 172.16.0.5 and dns at 8.8.8.8"
         let matches = DetectionRules.scan(content, config: customConfig)
@@ -1181,6 +1310,7 @@ final class DetectionRulesTests: XCTestCase {
     func testSensitiveIPPrefixEmpty() {
         // Default config — no sensitive prefixes, normal behavior
         let content = "server at 8.8.8.8"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         let ipMatches = matches.filter { $0.type == .ipAddress }
         XCTAssertEqual(ipMatches.count, 0, "8.8.8.8 should be excluded by default")
@@ -1355,6 +1485,7 @@ final class DetectionRulesTests: XCTestCase {
     func testDetectsStripeWebhookSecret() {
         let secret = "whsec_" + String(repeating: "A", count: 32)
         let content = "STRIPE_WEBHOOK_SECRET=\(secret)"
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(content, config: config)
         XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
                       "Should detect Stripe webhook secret with whsec_ prefix")
@@ -1362,6 +1493,7 @@ final class DetectionRulesTests: XCTestCase {
 
     func testDetectsStripeWebhookSecretStandalone() {
         let secret = "whsec_" + String(repeating: "B", count: 40)
+        // WO-542: preserve detector fixture intent under opt-in defaults.
         let matches = DetectionRules.scan(secret, config: config)
         XCTAssertTrue(matches.contains { $0.type == .genericApiKey },
                       "Should detect standalone whsec_ secret")

@@ -49,6 +49,8 @@ final class SessionReportTests: XCTestCase {
         let emailType = report.secretsByType.first { $0.type == "Email" }
         XCTAssertEqual(emailType?.count, 1)
         XCTAssertEqual(emailType?.severity, "high")
+        // WO-540: legacy logs without structured receipts must not infer coverage.
+        XCTAssertNil(report.obfuscationCoverage)
     }
 
     // MARK: - WRITE Parsing
@@ -194,6 +196,73 @@ final class SessionReportTests: XCTestCase {
         let decoded = try? JSONDecoder().decode(SessionReport.self, from: data)
         XCTAssertNotNil(decoded)
         XCTAssertEqual(decoded?.summary.secretsRedacted, 1)
+    }
+
+    // WO-540: text, JSON, and Markdown must mirror the same structured coverage receipts.
+    func testCoverageReceiptsAggregateAcrossSourcesWithoutMatchedValues() throws {
+        let events = [
+            ObfuscationCoverageEvent(
+                tier: .intrinsic,
+                type: SensitiveDataType.awsKey.rawValue,
+                count: 2,
+                source: .request
+            ),
+            ObfuscationCoverageEvent(
+                tier: .configured,
+                type: SensitiveDataType.email.rawValue,
+                ruleIdentifier: "email[0]",
+                source: .request
+            ),
+            ObfuscationCoverageEvent(
+                tier: .advisory,
+                type: SensitiveDataType.ipAddress.rawValue,
+                source: .response
+            ),
+            ObfuscationCoverageEvent(
+                tier: .observed,
+                type: SensitiveDataType.email.rawValue,
+                count: 2,
+                source: .response,
+                domainBucket: "@corp.example"
+            ),
+            ObfuscationCoverageEvent(
+                tier: .observed,
+                type: SensitiveDataType.hostname.rawValue,
+                source: .toolCall,
+                domainBucket: ".internal.example"
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let lines = try events.enumerated().map { index, event -> String in
+            let data = try encoder.encode(event)
+            let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+            return "[2026-03-02T10:0\(index):00Z] PROXY COVERAGE \(json)"
+        }
+
+        let report = SessionReportBuilder.build(
+            content: lines.joined(separator: "\n"),
+            logPath: "/tmp/test.log"
+        )
+        let coverage = try XCTUnwrap(report.obfuscationCoverage)
+        XCTAssertEqual(coverage.tier1Intrinsic.first?.count, 2)
+        XCTAssertEqual(coverage.tier1Intrinsic.first?.source, .request)
+        XCTAssertEqual(coverage.tier2OptIn.first?.ruleIdentifier, "email[0]")
+        XCTAssertEqual(coverage.advisory.first?.type, SensitiveDataType.ipAddress.rawValue)
+        XCTAssertEqual(coverage.seenButNotConfigured.map(\.count).reduce(0, +), 3)
+        XCTAssertEqual(
+            Set(coverage.seenButNotConfigured.map(\.domain)),
+            Set(["@corp.example", ".internal.example"])
+        )
+
+        let text = SessionReportBuilder.formatText(report)
+        let markdown = SessionReportBuilder.formatMarkdown(report)
+        let json = SessionReportBuilder.formatJSON(report)
+        for rendered in [text, markdown, json] {
+            XCTAssertTrue(rendered.contains("email[0]"))
+            XCTAssertTrue(rendered.contains("@corp.example"))
+            XCTAssertFalse(rendered.contains("alice@corp.example"))
+        }
     }
 
     // MARK: - Helper

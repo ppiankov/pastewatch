@@ -369,7 +369,7 @@ final class ProxyTimeoutTests: XCTestCase {
             clientSocket: sockets[1],
             sendFlags: 0,
             redactionMode: .perSSEEvent,
-            config: PastewatchConfig.defaultConfig,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: .medium,
             idleTimeoutSeconds: 0.05,
             maxSessionSeconds: 1
@@ -880,7 +880,8 @@ final class ProxyTimeoutTests: XCTestCase {
         }
         let relay = SSEStreamRelay(
             clientSocket: sockets[1], sendFlags: 0, redactionMode: .rawStream,
-            config: PastewatchConfig.defaultConfig, severity: .medium,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
+            severity: .medium,
             idleTimeoutSeconds: 5, maxSessionSeconds: 1
         )
         relay.buildAlertBeforeDone = { _, _, advisoryCount, _ in

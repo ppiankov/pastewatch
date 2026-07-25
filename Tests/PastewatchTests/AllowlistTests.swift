@@ -2,7 +2,22 @@ import XCTest
 @testable import PastewatchCore
 
 final class AllowlistTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-529@v3: Use a config with obfuscate entries for email testing.
+    // Ambiguous classes (email, host, etc.) are opt-in via the obfuscate config.
+    let config: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        // Enable email detection (ambiguous class, opt-in)
+        if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.email.rawValue)
+        }
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@corp.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@test.com"),
+            ObfuscateEntry(type: "email", pattern: "@safe.com")
+        ]
+        return config
+    }()
 
     func testFiltersSuppressedValues() {
         let content = "Contact admin@corp.com and test@example.com"
@@ -83,6 +98,8 @@ final class AllowlistTests: XCTestCase {
         let allowlist = Allowlist(values: [], patterns: [p1, p2])
         let matches = DetectionRules.scan(content, config: config)
         let filtered = allowlist.filter(matches)
+        // WO-529@v3: email is now opt-in, so only the API key match is present
+        // and it gets filtered by the pattern
         XCTAssertEqual(filtered.count, 0, "both patterns should suppress their matches")
     }
 

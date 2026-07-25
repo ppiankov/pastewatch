@@ -166,14 +166,15 @@ final class StartupSweepTests: XCTestCase {
     }
 
     private var firstDatabaseURL: String {
-        "postgres" + "://user:pass@host:5432/db"
+        // WO-542: startup-sweep behavior must not depend on default-off ambiguous detectors.
+        "AKIA" + "QWERTYUIOPASDFGH"
     }
 
     private var secondDatabaseURL: String {
-        "postgres" + "://user:pass@host:5432/otherdb"
+        "AKIA" + "ZXCVBNMASDFGHJKL"
     }
 
     private var cacheDatabaseURL: String {
-        "redis" + "://user:pass@host:6379/0"
+        "AKIA" + "MNBVCXZLKJHGFDSA"
     }
 }

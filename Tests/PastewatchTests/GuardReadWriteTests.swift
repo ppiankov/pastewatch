@@ -64,7 +64,11 @@ final class GuardReadWriteTests: XCTestCase {
         let dbUrl = ["postgres://user:", "pass@host:5432/mydb"].joined()
         try "database_url: \(dbUrl)".write(
             toFile: path, atomically: true, encoding: .utf8)
-        let findings = try scanFile(at: path)
+        // WO-542: preserve the ambiguous DB fixture through explicit test opt-in.
+        let findings = try scanFile(
+            at: path,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString])
+        )
         XCTAssertFalse(findings.isEmpty, "DB connection string should be detected")
         XCTAssertTrue(findings.contains { $0.type == .dbConnectionString })
     }
@@ -95,7 +99,11 @@ final class GuardReadWriteTests: XCTestCase {
         }
         """
         try content.write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = try scanFile(at: path)
+        // WO-542: preserve structured DB detection through explicit test opt-in.
+        let findings = try scanFile(
+            at: path,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString])
+        )
         XCTAssertFalse(findings.isEmpty, "JSON file should detect secrets in values")
         XCTAssertTrue(findings.contains { $0.type == .dbConnectionString })
     }
@@ -140,7 +148,12 @@ final class GuardReadWriteTests: XCTestCase {
         let path = testDir + "/data.txt"
         // IP address is medium severity
         try "server: 10.0.1.50".write(toFile: path, atomically: true, encoding: .utf8)
-        let findings = try scanFile(at: path, failOnSeverity: .low)
+        // WO-542: preserve severity behavior through explicit IP opt-in.
+        let findings = try scanFile(
+            at: path,
+            failOnSeverity: .low,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress])
+        )
         XCTAssertFalse(findings.isEmpty, "Low threshold should catch medium severity findings")
     }
 

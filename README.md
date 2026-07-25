@@ -78,8 +78,8 @@ All layers share the same detection engine — 30+ pattern types, deterministic 
 
 Pastewatch rewrites your data only when it is **certain** the value is a secret. This is a hard rule, not a tuning knob:
 
-- **Mutated:** intrinsically identifiable secrets such as provider tokens, complete private keys, validated JWTs and cards; exact values supplied by a trusted local source; and patterns **you** approve with a custom rule.
-- **Advisory only:** format-only DSN/JDBC URLs, broad generic API-key prefixes (`sk-`, `pk-`, `api_`), generic credential assignments, XML credential-shaped text, and ambiguous detections such as emails, phone numbers, IPs, hostnames, file paths, and UUIDs. Pastewatch reports these off-band without rewriting them unless exact-value or custom-rule evidence authorizes mutation. Exact sourced-provider grammars, including GitHub classic tokens and Stripe keys, remain intrinsically authorized.
+- **Mutated:** intrinsically identifiable secrets such as sourced provider tokens, complete private keys, validated JWTs and cards; exact values supplied by a trusted local source; patterns **you** approve with a custom rule; and email/host values covered by an `obfuscate` entry.
+- **Opt-in ambiguity:** intrinsic detectors are enabled by default. Email and host mutation requires an exact or domain-scoped `obfuscate` entry. Unconfigured email/host values are not rewritten or nagged; the proxy records only privacy-safe domain coverage so the operator can decide whether to opt in. Other ambiguous detectors remain advisory-only when explicitly enabled.
 - **`--severity` controls how much it nags, never what it rewrites.** Lowering severity surfaces more advisories; it never widens the set of values that get mutated.
 
 The result: false negatives are preferred over false positives, and mutation false positives are driven to ~zero by construction. Pastewatch never breaks a working agent response to redact something it only *might* be.
@@ -594,7 +594,10 @@ pastewatch-cli report --audit-log /tmp/pw.log --format markdown --output session
 pastewatch-cli report --audit-log /tmp/pw.log --since "2026-03-02T10:00:00Z"
 ```
 
-Aggregates files read/written, secrets redacted, placeholders resolved, output checks, and scan findings. Verdict indicates whether any secrets leaked.
+Aggregates files read/written, secrets redacted, placeholders resolved, output checks, scan
+findings, and proxy obfuscation coverage. Coverage separates intrinsic mutations, configured
+email/host mutations, and privacy-safe domains seen but not configured. Text, JSON, and Markdown
+reports never include matched values.
 
 ### Canary Secrets
 
@@ -905,7 +908,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 ```json
 {
   "enabled": true,
-  "enabledTypes": ["Email", "AWS Key", "API Key", "Credential", "High Entropy"],
+  "enabledTypes": ["AWS Key", "SSH Private Key", "JWT Token", "Vault Token"],
   "showNotifications": true,
   "soundEnabled": false,
   "allowedValues": ["test@example.com"],
@@ -918,6 +921,12 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
   "sensitiveIPPrefixes": ["172.16.", "10."],
   "mcpMinSeverity": "high",
   "operatorRedactionNotices": false,
+  "obfuscate": [
+    {"type": "email", "pattern": "operator@example.com"},
+    {"type": "email", "pattern": "@example.com"},
+    {"type": "host", "pattern": "gateway.example.com"},
+    {"type": "host", "pattern": ".example.com"}
+  ],
   "placeholderPrefix": "REDACTED_PLACEHOLDER_"
 }
 ```
@@ -925,7 +934,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable/disable scanning globally |
-| `enabledTypes` | string[] | Detection types to activate (default: all except High Entropy) |
+| `enabledTypes` | string[] | Detection types to activate (default: intrinsic detectors only) |
 | `showNotifications` | bool | System notifications on GUI obfuscation |
 | `soundEnabled` | bool | Sound on GUI obfuscation |
 | `allowedValues` | string[] | Exact values to suppress (merged with `.pastewatch-allow`) |
@@ -936,6 +945,7 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `sensitiveIPPrefixes` | string[] | IP prefixes always detected (overrides built-in exclude list, e.g., `172.16.`) |
 | `mcpMinSeverity` | string | Default severity threshold for MCP redacted reads (default: `high`) |
 | `operatorRedactionNotices` | bool | Emit a metadata-only operator notice for every proxy/MCP mutation, including under `--quiet` (default: `false`) |
+| `obfuscate` | object[] | Exact or domain-scoped email/host mutation rules. Email patterns are an address or `@domain`; host patterns are a hostname or `.domain`. Invalid entries fail configuration validation. |
 | `placeholderPrefix` | string? | Custom prefix for MCP placeholders (e.g., `REDACTED_` produces `REDACTED_001`). Default: `null` (uses `__PW_TYPE_N__` format) |
 
 GUI settings can also be changed via the menubar dropdown.
@@ -950,7 +960,9 @@ Pastewatch assumes:
 - AI systems are not trusted with raw secrets
 - Prevention is cheaper than remediation
 
-Pastewatch does not attempt to secure downstream systems. It prevents entry entirely.
+Pastewatch does not attempt to secure downstream systems. It prevents supported, positively identified
+secrets from entering configured agent transports; ambiguous classes stay unchanged unless the operator
+authorizes them.
 
 ---
 

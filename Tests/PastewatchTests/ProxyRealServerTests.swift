@@ -91,6 +91,85 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(forwarded.contains("<GOOGLE_API_KEY_1>"), "upstream request missing redaction placeholder")
     }
 
+    // WO-539: real request and buffered-response boundaries emit one privacy-safe event per outcome.
+    func testObfuscationCoverageEventsPreserveTierSourceAndPrivacy() throws {
+        let requestLock = NSLock()
+        var upstreamRequest = ""
+        let upstream = try StubHTTPServer { request in
+            requestLock.lock()
+            upstreamRequest = String(data: request, encoding: .utf8) ?? ""
+            requestLock.unlock()
+            return StubHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"message":"support@response.example"}"#.utf8)
+            )
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let auditPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-coverage-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: auditPath) }
+        var config = PastewatchConfig.defaultConfig
+        config.enabledTypes.append(SensitiveDataType.ipAddress.rawValue)
+        config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@private.example")]
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort,
+            upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            config: config,
+            severity: .medium,
+            auditLogPath: auditPath.path,
+            quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let configuredEmail = "operator@private.example"
+        let observedEmail = "contact@public.example"
+        let credential = "AIza" + String(repeating: "C", count: 35)
+        let body = """
+        {"model":"claude-3","messages":[{"role":"user","content":"\(configuredEmail) \(observedEmail) \(credential) 10.1.2.3"}]}
+        """
+        let response = try TCPTestSocket.roundTrip(
+            port: proxyPort,
+            request: TCPTestSocket.postRequest(path: "/v1/messages", body: body),
+            timeoutSeconds: 10
+        )
+        proxy.drainAuditLogForTesting()
+
+        requestLock.lock()
+        let forwarded = upstreamRequest
+        requestLock.unlock()
+        let audit = try String(contentsOf: auditPath, encoding: .utf8)
+        let events = audit.components(separatedBy: "\n").compactMap { line -> ObfuscationCoverageEvent? in
+            guard let range = line.range(of: "PROXY COVERAGE ") else { return nil }
+            return try? JSONDecoder().decode(
+                ObfuscationCoverageEvent.self,
+                from: Data(line[range.upperBound...].utf8)
+            )
+        }
+
+        XCTAssertTrue(response.contains("HTTP/1.1 200 OK"), TCPTestSocket.describeResponse(response))
+        XCTAssertFalse(forwarded.contains(configuredEmail))
+        XCTAssertTrue(forwarded.contains(observedEmail))
+        XCTAssertFalse(forwarded.contains(credential))
+        XCTAssertEqual(events.filter { $0.tier == .configured && $0.source == .request }.count, 1)
+        XCTAssertEqual(events.filter { $0.tier == .intrinsic && $0.source == .request }.count, 1)
+        XCTAssertEqual(events.filter { $0.tier == .advisory && $0.source == .request }.count, 1)
+        XCTAssertEqual(events.filter {
+            $0.tier == .observed && $0.source == .request && $0.domainBucket == "@public.example"
+        }.count, 1)
+        XCTAssertEqual(events.filter {
+            $0.tier == .observed && $0.source == .response && $0.domainBucket == "@response.example"
+        }.count, 1)
+        XCTAssertFalse(audit.contains(configuredEmail))
+        XCTAssertFalse(audit.contains(observedEmail))
+        XCTAssertFalse(audit.contains("support@response.example"))
+    }
+
     // WO-462/WO-478/WO-479/WO-481/WO-482/WO-483/WO-485: the real proxy
     // must contain complete intrinsic tokens and payload-bearing credentials.
     func testIntrinsicProviderTokensAndPayloadsDoNotReachUpstream() throws {
@@ -177,9 +256,13 @@ final class ProxyRealServerTests: XCTestCase {
             .appendingPathComponent("pastewatch-evidence-matrix-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: auditPath) }
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        // WO-542: preserve this advisory-path fixture with explicitly enabled
+        // ambiguous detectors; unconfigured email is intentionally silent.
+        // WO-529@v3: Enable dbConnectionString for DSN advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress, .dbConnectionString]),
             severity: .low,
             auditLogPath: auditPath.path,
             quietLog: true
@@ -1729,9 +1812,11 @@ final class ProxyRealServerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: auditPath) }
 
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        // WO-529@v3: Enable ipAddress for advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+            config: TestConfigHelper.configWithAmbiguousAdvisories([.ipAddress]),
             severity: .low,
             auditLogPath: auditPath.path,
             quietLog: true
@@ -1742,9 +1827,10 @@ final class ProxyRealServerTests: XCTestCase {
         defer { runningProxy.stop() }
 
         let rawCredential = "AIza" + String(repeating: "L", count: 35)
-        let rawEmail = "operator@example.net"
+        // WO-542: keep serialization-failure advisory evidence explicit under default-off ambiguity.
+        let rawAdvisory = "10.23.45.67"
         let body = """
-        {"model":"claude-3","system":"\(rawCredential) \(rawEmail)","messages":[{"role":"user","content":"hello"}]}
+        {"model":"claude-3","system":"\(rawCredential) \(rawAdvisory)","messages":[{"role":"user","content":"hello"}]}
         """
         let response = try TCPTestSocket.roundTrip(
             port: proxyPort,
@@ -1765,7 +1851,8 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertTrue(audit.contains("PROXY ADVISORY 1 possible secret match(es) in /v1/messages"), audit)
         XCTAssertFalse(audit.contains("PROXY REDACTED"), audit)
         XCTAssertFalse(audit.contains(rawCredential), audit)
-        XCTAssertFalse(audit.contains(rawEmail), audit)
+        // WO-542: audit output must not disclose the explicit advisory fixture.
+        XCTAssertFalse(audit.contains(rawAdvisory), audit)
     }
 
     func testBatchSerializationFailureBlocksForwarding() throws {

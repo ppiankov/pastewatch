@@ -2,11 +2,14 @@ import XCTest
 @testable import PastewatchCore
 
 final class RedactionStoreTests: XCTestCase {
+    // WO-542: store tests opt in to the ambiguous values used as round-trip fixtures.
+    private let ambiguousConfig = TestConfigHelper.configWithAllAmbiguousObfuscation()
 
     func testRedactReplacesSensitiveValues() {
         let store = RedactionStore()
         let text = "key=user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: opt in the ambiguous round-trip fixture explicitly.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         XCTAssertFalse(matches.isEmpty)
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
@@ -20,7 +23,8 @@ final class RedactionStoreTests: XCTestCase {
     func testResolveRestoresOriginalValues() {
         let store = RedactionStore()
         let text = "contact: user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: opt in the ambiguous resolve fixture explicitly.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
 
         let result = store.resolve(content: redacted, filePath: "/tmp/test.txt")
@@ -33,7 +37,7 @@ final class RedactionStoreTests: XCTestCase {
     func testDashScopeKeyRoundTripRestoresOriginalValue() {
         let key = "sk-" + "ws-abc." + String(repeating: "Q", count: 20)
         let text = "DASHSCOPE_API_KEY=\(key)"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         let store = RedactionStore()
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/qwen.json")
@@ -61,7 +65,7 @@ final class RedactionStoreTests: XCTestCase {
         ]
         for text in cases {
             let store = RedactionStore()
-            let matches = DetectionRules.scan(text, config: .defaultConfig)
+            let matches = DetectionRules.scan(text, config: ambiguousConfig)
             XCTAssertFalse(matches.isEmpty, "no match for: \(text)")
             let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/rt.txt")
             let result = store.resolve(content: redacted, filePath: "/tmp/rt.txt")
@@ -74,7 +78,8 @@ final class RedactionStoreTests: XCTestCase {
         let text = "a=\"sk-abc123DEF456ghi789JKL012mno345PQR\" 🚀 "
             + "b=\"sk-zzz999YYY888xxx777WWW666vvv555UUU\""
         let store = RedactionStore()
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: preserve the historical round-trip fixture under explicit config.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/rt2.txt")
         let result = store.resolve(content: redacted, filePath: "/tmp/rt2.txt")
         XCTAssertEqual(result.content, text)
@@ -84,7 +89,8 @@ final class RedactionStoreTests: XCTestCase {
     func testIdempotentReRead() {
         let store = RedactionStore()
         let text = "email: user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: opt in the ambiguous idempotency fixture explicitly.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
 
         let (redacted1, entries1) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
         let (redacted2, entries2) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
@@ -108,7 +114,8 @@ final class RedactionStoreTests: XCTestCase {
     func testClearRemovesAllMappings() {
         let store = RedactionStore()
         let text = "email: user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: opt in the ambiguous clear fixture explicitly.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
 
         store.clear()
@@ -122,11 +129,13 @@ final class RedactionStoreTests: XCTestCase {
         let store = RedactionStore()
 
         let text1 = "email: admin@corp.com"
-        let matches1 = DetectionRules.scan(text1, config: .defaultConfig)
+        // WO-542: both cross-file values use the same explicit ambiguous policy.
+        let matches1 = DetectionRules.scan(text1, config: ambiguousConfig)
         store.redact(content: text1, matches: matches1, filePath: "/tmp/a.txt")
 
         let text2 = "contact: dev@corp.com"
-        let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
+        // WO-542: preserve independent placeholder allocation for the second file.
+        let matches2 = DetectionRules.scan(text2, config: ambiguousConfig)
         store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
         // Global counters: admin@corp.com → EMAIL_1, dev@corp.com → EMAIL_2
@@ -142,11 +151,13 @@ final class RedactionStoreTests: XCTestCase {
         let email = "shared@corp.com"
 
         let text1 = "from: \(email)"
-        let matches1 = DetectionRules.scan(text1, config: .defaultConfig)
+        // WO-542: explicitly authorize the first consistency fixture.
+        let matches1 = DetectionRules.scan(text1, config: ambiguousConfig)
         let (redacted1, entries1) = store.redact(content: text1, matches: matches1, filePath: "/tmp/a.txt")
 
         let text2 = "to: \(email)"
-        let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
+        // WO-542: explicitly authorize the second consistency fixture.
+        let matches2 = DetectionRules.scan(text2, config: ambiguousConfig)
         let (redacted2, entries2) = store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
         // Same value across files → same placeholder
@@ -158,7 +169,8 @@ final class RedactionStoreTests: XCTestCase {
     func testNoMatchesReturnsOriginal() {
         let store = RedactionStore()
         let text = "nothing sensitive here"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: prove explicit ambiguity config still leaves clean text unchanged.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         XCTAssertTrue(matches.isEmpty)
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
@@ -170,7 +182,8 @@ final class RedactionStoreTests: XCTestCase {
     func testMultipleTypesInSameFile() {
         let store = RedactionStore()
         let text = "email: user@example.com ip: 192.168.1.100"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: opt in both ambiguous fixture types explicitly.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         XCTAssertTrue(matches.count >= 2)
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
@@ -188,7 +201,8 @@ final class RedactionStoreTests: XCTestCase {
     func testCustomPrefixRedact() {
         let store = RedactionStore(placeholderPrefix: "REDACTED_")
         let text = "key=user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: custom-prefix behavior uses an explicitly authorized email.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
         XCTAssertFalse(redacted.contains("user@example.com"))
@@ -199,7 +213,8 @@ final class RedactionStoreTests: XCTestCase {
     func testCustomPrefixResolve() {
         let store = RedactionStore(placeholderPrefix: "REDACTED_")
         let text = "contact: user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: custom-prefix resolution uses an explicitly authorized email.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         let (redacted, _) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
 
         let result = store.resolve(content: redacted, filePath: "/tmp/test.txt")
@@ -211,7 +226,8 @@ final class RedactionStoreTests: XCTestCase {
     func testCustomPrefixSequentialNumbering() {
         let store = RedactionStore(placeholderPrefix: "SAFE_VALUE_")
         let text = "email: user@example.com ip: 192.168.1.100"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: sequential numbering opts in both ambiguous fixture types.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
 
         let (redacted, entries) = store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
         XCTAssertTrue(redacted.contains("SAFE_VALUE_001"))
@@ -227,11 +243,13 @@ final class RedactionStoreTests: XCTestCase {
         let email = "shared@corp.com"
 
         let text1 = "from: \(email)"
-        let matches1 = DetectionRules.scan(text1, config: .defaultConfig)
+        // WO-542: explicitly authorize the first custom-prefix fixture.
+        let matches1 = DetectionRules.scan(text1, config: ambiguousConfig)
         let (_, entries1) = store.redact(content: text1, matches: matches1, filePath: "/tmp/a.txt")
 
         let text2 = "to: \(email)"
-        let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
+        // WO-542: explicitly authorize the second custom-prefix fixture.
+        let matches2 = DetectionRules.scan(text2, config: ambiguousConfig)
         let (_, entries2) = store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
         // Same value across files → same placeholder
@@ -242,7 +260,8 @@ final class RedactionStoreTests: XCTestCase {
     func testCustomPrefixClear() {
         let store = RedactionStore(placeholderPrefix: "PH_")
         let text = "email: user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: custom-prefix clear uses an explicitly authorized email.
+        let matches = DetectionRules.scan(text, config: ambiguousConfig)
         store.redact(content: text, matches: matches, filePath: "/tmp/test.txt")
 
         store.clear()
@@ -253,11 +272,13 @@ final class RedactionStoreTests: XCTestCase {
         let store = RedactionStore(placeholderPrefix: "SECRET_")
 
         let text1 = "email: admin@corp.com"
-        let matches1 = DetectionRules.scan(text1, config: .defaultConfig)
+        // WO-542: explicitly authorize the first cross-file resolve fixture.
+        let matches1 = DetectionRules.scan(text1, config: ambiguousConfig)
         store.redact(content: text1, matches: matches1, filePath: "/tmp/a.txt")
 
         let text2 = "contact: dev@corp.com"
-        let matches2 = DetectionRules.scan(text2, config: .defaultConfig)
+        // WO-542: explicitly authorize the second cross-file resolve fixture.
+        let matches2 = DetectionRules.scan(text2, config: ambiguousConfig)
         store.redact(content: text2, matches: matches2, filePath: "/tmp/b.txt")
 
         let mixed = "users: SECRET_001 and SECRET_002"

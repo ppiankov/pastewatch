@@ -5,10 +5,17 @@ final class ConfigResolutionTests: XCTestCase {
 
     func testDefaultConfigHasAllTypesEnabled() {
         let config = PastewatchConfig.defaultConfig
-        // highEntropyString is opt-in only, excluded from defaults
-        let expectedCount = SensitiveDataType.allCases.count - 1
-        XCTAssertEqual(config.enabledTypes.count, expectedCount)
+        // WO-529@v3: Default config only enables intrinsic detectors, not ambiguous classes.
+        // Ambiguous classes (email, host, IP, filePath, phone, dbConnectionString,
+        // jdbcUrl, genericApiKey, credential, uuid, xmlUsername, xmlHostname, highEntropyString)
+        // are opt-in via the obfuscate config.
+        let intrinsicCount = SensitiveDataType.allCases.filter { !$0.isAmbiguousClass }.count
+        XCTAssertEqual(config.enabledTypes.count, intrinsicCount)
         XCTAssertFalse(config.isTypeEnabled(.highEntropyString))
+        // Verify ambiguous types are NOT enabled by default
+        XCTAssertFalse(config.isTypeEnabled(.email))
+        XCTAssertFalse(config.isTypeEnabled(.hostname))
+        XCTAssertFalse(config.isTypeEnabled(.ipAddress))
         XCTAssertTrue(config.enabled)
     }
 
@@ -120,6 +127,62 @@ final class ConfigResolutionTests: XCTestCase {
         XCTAssertFalse(config.isTypeEnabled(.ipAddress))
     }
 
+    // WO-529@v3: verify configured entries activate only their matching ambiguous detectors.
+    func testObfuscateEntryActivatesOnlyItsDetectorAndRoundTrips() throws {
+        var config = PastewatchConfig.defaultConfig
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "host", pattern: ".example.com"),
+        ]
+
+        let decoded = try JSONDecoder().decode(
+            PastewatchConfig.self,
+            from: JSONEncoder().encode(config)
+        )
+
+        XCTAssertTrue(decoded.isTypeEnabled(.email))
+        XCTAssertTrue(decoded.isTypeEnabled(.hostname))
+        XCTAssertFalse(decoded.isTypeEnabled(.ipAddress))
+        XCTAssertEqual(decoded.obfuscate, config.obfuscate)
+    }
+
+    func testValidateRejectsMalformedObfuscateEntriesWithoutEchoingPatterns() throws {
+        // WO-541: every invalid shape fails closed with indexed, value-free diagnostics.
+        let cases = [
+            ObfuscateEntry(type: "unknown", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: ""),
+            ObfuscateEntry(type: "email", pattern: ".example.com"),
+            ObfuscateEntry(type: "email", pattern: "@"),
+            ObfuscateEntry(type: "host", pattern: "@example.com"),
+            ObfuscateEntry(type: "host", pattern: "."),
+        ]
+
+        for entry in cases {
+            let configURL = try writeConfig(obfuscate: [entry])
+            defer { try? FileManager.default.removeItem(at: configURL) }
+
+            let result = ConfigValidator.validate(path: configURL.path)
+
+            XCTAssertFalse(result.isValid, "accepted \(entry.type)")
+            XCTAssertTrue(result.errors.contains { $0.contains("obfuscate[0]") })
+            XCTAssertFalse(result.errors.contains { $0.contains(entry.pattern) && !entry.pattern.isEmpty })
+        }
+    }
+
+    // WO-541: verify every documented exact and domain-scoped shape validates.
+    func testValidateAcceptsEverySupportedObfuscateShape() throws {
+        let entries = [
+            ObfuscateEntry(type: "email", pattern: "operator@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "host", pattern: "gateway.example.com"),
+            ObfuscateEntry(type: "host", pattern: ".example.com"),
+        ]
+        let configURL = try writeConfig(obfuscate: entries)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        XCTAssertTrue(ConfigValidator.validate(path: configURL.path).isValid)
+    }
+
     func testValidateRejectsMissingSharedPatternFile() throws {
         let missingURL = temporaryJSONURL(prefix: "pastewatch-missing-shared")
         let configURL = try writeConfig(sharedPatternFiles: [missingURL.path])
@@ -222,6 +285,15 @@ final class ConfigResolutionTests: XCTestCase {
         var config = PastewatchConfig.defaultConfig
         config.sharedPatternFiles = sharedPatternFiles
         let url = temporaryJSONURL(prefix: "pastewatch-config")
+        try JSONEncoder().encode(config).write(to: url)
+        return url
+    }
+
+    // WO-541: build isolated obfuscate configs for fail-closed validation tests.
+    private func writeConfig(obfuscate: [ObfuscateEntry]) throws -> URL {
+        var config = PastewatchConfig.defaultConfig
+        config.obfuscate = obfuscate
+        let url = temporaryJSONURL(prefix: "pastewatch-obfuscate-config")
         try JSONEncoder().encode(config).write(to: url)
         return url
     }

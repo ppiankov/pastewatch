@@ -12,6 +12,33 @@ public struct SessionReport: Codable {
     public let secretsByType: [TypeCount]
     public let filesAccessed: [FileAccess]
     public let verdict: String
+    // WO-531: Obfuscation coverage stats
+    public let obfuscationCoverage: ObfuscationCoverage?
+}
+
+/// WO-531: Obfuscation coverage derived from structured proxy receipts.
+public struct ObfuscationCoverage: Codable {
+    public let tier1Intrinsic: [ObfuscationCoverageCount]
+    public let tier2OptIn: [ObfuscationCoverageCount]
+    public let advisory: [ObfuscationCoverageCount]
+    public let seenButNotConfigured: [DomainSuggestion]
+}
+
+/// WO-540: Renderable aggregate retaining the receipt's authorization and surface evidence.
+public struct ObfuscationCoverageCount: Codable {
+    public let tier: ObfuscationCoverageTier
+    public let type: String
+    public let ruleIdentifier: String?
+    public let source: ObfuscationCoverageSource
+    public let count: Int
+}
+
+/// WO-531: Suggestion for obfuscate config entry (grouped by domain, redacted specifics).
+public struct DomainSuggestion: Codable {
+    public let type: String  // "email" or "host"
+    public let domain: String  // Redacted domain (e.g., "@corp.com" or ".internal")
+    public let count: Int
+    public let suggestedEntry: String  // Suggested obfuscate config entry
 }
 
 /// Summary counters for a session.
@@ -79,13 +106,16 @@ public enum SessionReportBuilder {
         var outputChecksDirty = 0
         var scans = 0
         var scanFindings = 0
+        var coverageEvents: [ObfuscationCoverageEvent] = [] // WO-540: parse receipts independently of legacy logs.
 
         for line in lines {
             // Extract timestamp (ISO8601 = 20 chars min, up to first space after)
             guard let spaceIdx = line.firstIndex(of: " "),
                   spaceIdx > line.startIndex else { continue }
 
+            // WO-540: proxy audit lines bracket timestamps while MCP lines do not.
             let tsStr = String(line[line.startIndex..<spaceIdx])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             let rest = String(line[line.index(after: spaceIdx)...])
                 .trimmingCharacters(in: .whitespaces)
 
@@ -96,7 +126,9 @@ public enum SessionReportBuilder {
 
             timestamps.append(tsStr)
 
-            if rest.hasPrefix("READ") {
+            if rest.hasPrefix("PROXY COVERAGE ") {
+                parseCoverageLine(rest, events: &coverageEvents)
+            } else if rest.hasPrefix("READ") {
                 parseReadLine(rest, readFiles: &readFiles, typeCounts: &typeCounts,
                               totalRedacted: &totalRedacted)
             } else if rest.hasPrefix("WRITE") {
@@ -160,6 +192,8 @@ public enum SessionReportBuilder {
             scanFindings: scanFindings
         )
 
+        let obfuscationCoverage = computeObfuscationCoverage(events: coverageEvents)
+
         return SessionReport(
             generatedAt: now,
             auditLogPath: logPath,
@@ -168,8 +202,111 @@ public enum SessionReportBuilder {
             summary: summary,
             secretsByType: secretsByType,
             filesAccessed: filesAccessed,
-            verdict: verdict
+            verdict: verdict,
+            obfuscationCoverage: obfuscationCoverage
         )
+    }
+
+    // MARK: - WO-531: Obfuscation Coverage
+
+    /// WO-540: Internal aggregate keys prevent unrelated sources or rules from being conflated.
+    private struct CoverageKey: Hashable {
+        let tier: ObfuscationCoverageTier
+        let type: String
+        let ruleIdentifier: String?
+        let source: ObfuscationCoverageSource
+    }
+
+    /// WO-531: Internal struct for tracking privacy-safe domain counts.
+    private struct DomainCount {
+        let type: String
+        let domain: String
+        var count: Int
+    }
+
+    /// WO-540: Aggregate only structured coverage receipts; legacy type logs lack authorization evidence.
+    private static func computeObfuscationCoverage(
+        events: [ObfuscationCoverageEvent]
+    ) -> ObfuscationCoverage? {
+        guard !events.isEmpty else { return nil }
+
+        var coverageCounts: [CoverageKey: Int] = [:]
+        var domainCounts: [String: DomainCount] = [:]
+
+        for event in events {
+            if event.tier == .observed, let domain = event.domainBucket {
+                let suggestionType = event.type == SensitiveDataType.email.rawValue ? "email" : "host"
+                let key = "\(suggestionType)|\(domain)"
+                var existing = domainCounts[key] ?? DomainCount(
+                    type: suggestionType,
+                    domain: domain,
+                    count: 0
+                )
+                existing.count += event.count
+                domainCounts[key] = existing
+                continue
+            }
+
+            let key = CoverageKey(
+                tier: event.tier,
+                type: event.type,
+                ruleIdentifier: event.ruleIdentifier,
+                source: event.source
+            )
+            coverageCounts[key, default: 0] += event.count
+        }
+
+        let counts = coverageCounts.map { key, count in
+            ObfuscationCoverageCount(
+                tier: key.tier,
+                type: key.type,
+                ruleIdentifier: key.ruleIdentifier,
+                source: key.source,
+                count: count
+            )
+        }
+        let suggestions = domainCounts.values.map { entry in
+            DomainSuggestion(
+                type: entry.type,
+                domain: entry.domain,
+                count: entry.count,
+                suggestedEntry: entry.type == "email"
+                    ? "{\"type\":\"email\",\"pattern\":\"\(entry.domain)\"}"
+                    : "{\"type\":\"host\",\"pattern\":\"\(entry.domain)\"}"
+            )
+        }
+
+        return ObfuscationCoverage(
+            tier1Intrinsic: sortedCoverageCounts(counts.filter { $0.tier == .intrinsic }),
+            tier2OptIn: sortedCoverageCounts(counts.filter { $0.tier == .configured }),
+            advisory: sortedCoverageCounts(counts.filter { $0.tier == .advisory }),
+            seenButNotConfigured: suggestions.sorted {
+                ($0.count, $0.type, $0.domain) > ($1.count, $1.type, $1.domain)
+            }
+        )
+    }
+
+    private static func sortedCoverageCounts(
+        _ counts: [ObfuscationCoverageCount]
+    ) -> [ObfuscationCoverageCount] {
+        counts.sorted {
+            ($0.count, $0.type, $0.source.rawValue, $0.ruleIdentifier ?? "") >
+                ($1.count, $1.type, $1.source.rawValue, $1.ruleIdentifier ?? "")
+        }
+    }
+
+    /// WO-540: Malformed receipts are ignored without contaminating legacy report counters.
+    private static func parseCoverageLine(
+        _ line: String,
+        events: inout [ObfuscationCoverageEvent]
+    ) {
+        let prefix = "PROXY COVERAGE "
+        guard line.hasPrefix(prefix),
+              let data = String(line.dropFirst(prefix.count)).data(using: .utf8),
+              let event = try? JSONDecoder().decode(ObfuscationCoverageEvent.self, from: data) else {
+            return
+        }
+        events.append(event)
     }
 
     // MARK: - Line Parsers
@@ -301,6 +438,40 @@ public enum SessionReportBuilder {
             lines.append("")
         }
 
+        // WO-531: Obfuscation coverage stats
+        if let coverage = report.obfuscationCoverage {
+            lines.append("Obfuscation Coverage")
+            if !coverage.tier1Intrinsic.isEmpty {
+                lines.append("  Tier-1 (intrinsic, always-on):")
+                for tc in coverage.tier1Intrinsic {
+                    let padType = tc.type.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    lines.append("    \(padType) \(tc.count)  source=\(tc.source.rawValue)")
+                }
+            }
+            if !coverage.tier2OptIn.isEmpty {
+                lines.append("  Tier-2 (opt-in obfuscate):")
+                for tc in coverage.tier2OptIn {
+                    let padType = tc.type.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    let rule = tc.ruleIdentifier ?? "unknown"
+                    lines.append("    \(padType) \(tc.count)  source=\(tc.source.rawValue) rule=\(rule)")
+                }
+            }
+            if !coverage.advisory.isEmpty {
+                lines.append("  Advisory (reported, unchanged):")
+                for item in coverage.advisory {
+                    let padType = item.type.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    lines.append("    \(padType) \(item.count)  source=\(item.source.rawValue)")
+                }
+            }
+            if !coverage.seenButNotConfigured.isEmpty {
+                lines.append("  Seen but not configured (suggestions):")
+                for suggestion in coverage.seenButNotConfigured {
+                    lines.append("    \(suggestion.type): \(suggestion.count) seen — add \(suggestion.suggestedEntry)")
+                }
+            }
+            lines.append("")
+        }
+
         lines.append("Verdict: \(report.verdict)")
         lines.append("")
         return lines.joined(separator: "\n")
@@ -363,6 +534,26 @@ public enum SessionReportBuilder {
             lines.append("|------|-------|--------|-----------------|")
             for fa in report.filesAccessed {
                 lines.append("| \(fa.file) | \(fa.reads) | \(fa.writes) | \(fa.secretsRedacted) |")
+            }
+            lines.append("")
+        }
+
+        if let coverage = report.obfuscationCoverage {
+            lines.append("## Obfuscation Coverage")
+            lines.append("")
+            lines.append("| Tier | Type | Source | Rule | Count |")
+            lines.append("|------|------|--------|------|-------|")
+            for item in coverage.tier1Intrinsic + coverage.tier2OptIn + coverage.advisory {
+                lines.append(
+                    "| \(item.tier.rawValue) | \(item.type) | \(item.source.rawValue) | " +
+                        "\(item.ruleIdentifier ?? "-") | \(item.count) |"
+                )
+            }
+            for suggestion in coverage.seenButNotConfigured {
+                lines.append(
+                    "| observed | \(suggestion.type) | suggestion | " +
+                        "`\(suggestion.suggestedEntry)` | \(suggestion.count) |"
+                )
             }
             lines.append("")
         }

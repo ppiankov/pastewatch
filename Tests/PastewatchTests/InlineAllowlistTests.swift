@@ -2,7 +2,19 @@ import XCTest
 @testable import PastewatchCore
 
 final class InlineAllowlistTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-529@v3: Use a config with obfuscate entries for email testing.
+    let config: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        if !config.enabledTypes.contains(SensitiveDataType.email.rawValue) {
+            config.enabledTypes.append(SensitiveDataType.email.rawValue)
+        }
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@corp.com"),
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@test.com")
+        ]
+        return config
+    }()
 
     func testHashCommentStyleSuppressesMatch() {
         let content = "admin@corp.com # pastewatch:allow"

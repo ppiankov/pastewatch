@@ -50,19 +50,23 @@ struct CurlHTTPClient {
         /// WO-336: advisory-only type names detected during streaming (Linux path).
         let streamAdvisoryTypes: [String]
         let streamToolCallRedactionCount: Int // WO-512: subset of streaming mutations from tool arguments.
+        let streamCoverageEvents: [ObfuscationCoverageEvent] // WO-539: privacy-safe stream coverage receipts.
         /// WO-359: non-UTF-8 buffered response redactions detected on the Linux curl path.
         let responseRedactionCount: Int
         let responseRedactionTypes: [String]
         /// WO-404: non-mutating buffered response advisories detected on the Linux curl path.
         let responseAdvisoryCount: Int
         let responseAdvisoryTypes: [String]
+        let responseCoverageEvents: [ObfuscationCoverageEvent] // WO-539: buffered response receipt.
 
         init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
              streamRedactionCount: Int = 0, streamRedactionTypes: [String] = [],
              streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = [],
              streamToolCallRedactionCount: Int = 0,
+             streamCoverageEvents: [ObfuscationCoverageEvent] = [],
              responseRedactionCount: Int = 0, responseRedactionTypes: [String] = [],
-             responseAdvisoryCount: Int = 0, responseAdvisoryTypes: [String] = []) {
+             responseAdvisoryCount: Int = 0, responseAdvisoryTypes: [String] = [],
+             responseCoverageEvents: [ObfuscationCoverageEvent] = []) {
             self.statusCode = statusCode
             self.headers = headers
             self.body = body
@@ -72,10 +76,12 @@ struct CurlHTTPClient {
             self.streamAdvisoryCount = streamAdvisoryCount
             self.streamAdvisoryTypes = streamAdvisoryTypes
             self.streamToolCallRedactionCount = streamToolCallRedactionCount
+            self.streamCoverageEvents = streamCoverageEvents
             self.responseRedactionCount = responseRedactionCount
             self.responseRedactionTypes = responseRedactionTypes
             self.responseAdvisoryCount = responseAdvisoryCount
             self.responseAdvisoryTypes = responseAdvisoryTypes
+            self.responseCoverageEvents = responseCoverageEvents
         }
     }
 
@@ -251,7 +257,8 @@ struct CurlHTTPClient {
             responseRedactionCount: responseRedaction.count,
             responseRedactionTypes: responseRedaction.types,
             responseAdvisoryCount: responseRedaction.advisoryCount,
-            responseAdvisoryTypes: responseRedaction.advisoryTypes
+            responseAdvisoryTypes: responseRedaction.advisoryTypes,
+            responseCoverageEvents: responseRedaction.coverageEvents
         )
     }
 
@@ -401,6 +408,7 @@ struct CurlHTTPClient {
         let advisoryCount: Int
         let advisoryTypes: [String]
         let toolCallRedactionCount: Int // WO-512: separate signal for tool payload mutations.
+        let coverageEvents: [ObfuscationCoverageEvent] // WO-539: aggregate per-frame coverage receipts.
     }
 
     /// WO-336/WO-404: keep raw-stream mutation-safe/advisory counters together across helpers.
@@ -410,6 +418,7 @@ struct CurlHTTPClient {
         var advisoryCount = 0
         var advisoryTypes: [String] = []
         var toolCallRedactionCount = 0 // WO-512: included in redactionCount, also reported separately.
+        var coverageEvents: [ObfuscationCoverageEvent] = [] // WO-539: preserve source/tier evidence.
 
         mutating func record(_ redaction: SSEFrameRedactionResult) {
             recordCritical(redaction)
@@ -420,6 +429,7 @@ struct CurlHTTPClient {
             redactionCount += redaction.count
             redactionTypes.append(contentsOf: redaction.types)
             toolCallRedactionCount += redaction.toolCallRedactionCount
+            coverageEvents.append(contentsOf: redaction.coverageEvents)
         }
 
         mutating func recordAdvisory(count: Int, types: [String]) {
@@ -670,7 +680,8 @@ struct CurlHTTPClient {
         var relayResult = StreamRelayResult(
             redactionCount: 0, redactionTypes: [],
             advisoryCount: 0, advisoryTypes: [],
-            toolCallRedactionCount: 0
+            toolCallRedactionCount: 0,
+            coverageEvents: []
         )
         let bodyGroup = DispatchGroup()
         bodyGroup.enter()
@@ -696,7 +707,8 @@ struct CurlHTTPClient {
             streamRedactionTypes: relayResult.redactionTypes,
             streamAdvisoryCount: relayResult.advisoryCount,
             streamAdvisoryTypes: relayResult.advisoryTypes,
-            streamToolCallRedactionCount: relayResult.toolCallRedactionCount
+            streamToolCallRedactionCount: relayResult.toolCallRedactionCount,
+            streamCoverageEvents: relayResult.coverageEvents
         )
     }
 
@@ -826,7 +838,8 @@ struct CurlHTTPClient {
             redactionTypes: totals.redactionTypes,
             advisoryCount: totals.advisoryCount,
             advisoryTypes: totals.advisoryTypes,
-            toolCallRedactionCount: totals.toolCallRedactionCount
+            toolCallRedactionCount: totals.toolCallRedactionCount,
+            coverageEvents: totals.coverageEvents
         )
     }
 
@@ -916,6 +929,7 @@ struct CurlHTTPClient {
         totals.redactionCount += pending.redactionCount
         totals.redactionTypes.append(contentsOf: pending.redactionTypes)
         totals.toolCallRedactionCount += pending.toolCallRedactionCount
+        totals.coverageEvents.append(contentsOf: pending.coverageEvents)
         if delivered {
             totals.advisoryCount += pending.advisoryCount
             totals.advisoryTypes.append(contentsOf: pending.advisoryTypes)
@@ -1394,14 +1408,23 @@ struct CurlHTTPClient {
             site: .proxyResponse
         )
         let advisoryTypes = advisories.map { $0.displayName }
+        let observationEvents = DetectionRules.obfuscationCoverageEvents(
+            in: lossyText,
+            config: config,
+            mutatedMatches: [],
+            advisoryMatches: advisories,
+            source: .response
+        )
         guard !redactionMatches.isEmpty else {
             return SSEFrameRedactionResult(
                 data: body, count: 0, types: [],
-                advisoryCount: advisories.count, advisoryTypes: advisoryTypes
+                advisoryCount: advisories.count, advisoryTypes: advisoryTypes,
+                coverageEvents: observationEvents
             )
         }
 
         var replacements: [NonUTF8ResponseReplacement] = []
+        var mutatedMatches: [DetectedMatch] = []
         var typeCounters: [SensitiveDataType: Int] = [:]
         var searchStart = body.startIndex
         for match in redactionMatches {
@@ -1419,12 +1442,14 @@ struct CurlHTTPClient {
                 placeholder: placeholder,
                 type: match.displayName
             ))
+            mutatedMatches.append(match)
             searchStart = range.upperBound
         }
         guard !replacements.isEmpty else {
             return SSEFrameRedactionResult(
                 data: body, count: 0, types: [],
-                advisoryCount: advisories.count, advisoryTypes: advisoryTypes
+                advisoryCount: advisories.count, advisoryTypes: advisoryTypes,
+                coverageEvents: observationEvents
             )
         }
 
@@ -1437,7 +1462,14 @@ struct CurlHTTPClient {
             count: replacements.count,
             types: replacements.map(\.type),
             advisoryCount: advisories.count,
-            advisoryTypes: advisoryTypes
+            advisoryTypes: advisoryTypes,
+            coverageEvents: DetectionRules.obfuscationCoverageEvents(
+                in: lossyText,
+                config: config,
+                mutatedMatches: mutatedMatches,
+                advisoryMatches: advisories,
+                source: .response
+            )
         )
     }
 

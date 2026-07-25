@@ -2,7 +2,22 @@ import XCTest
 @testable import PastewatchCore
 
 final class ObfuscatorTests: XCTestCase {
-    let config = PastewatchConfig.defaultConfig
+    // WO-529@v3: Config with ambiguous types enabled for obfuscator tests.
+    let config: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        let types: [SensitiveDataType] = [.email, .ipAddress, .uuid, .genericApiKey]
+        for type in types where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
+        }
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@test.com"),
+            ObfuscateEntry(type: "email", pattern: "@company.com"),
+            ObfuscateEntry(type: "email", pattern: "@b.com"),
+            ObfuscateEntry(type: "email", pattern: "@d.com")
+        ]
+        return config
+    }()
 
     func testObfuscatesSingleEmail() {
         let content = "Contact john@example.com for help"

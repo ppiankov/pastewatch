@@ -61,9 +61,16 @@ public enum CanaryGenerator {
     }
 
     /// Verify all canaries in manifest are detected by DetectionRules.
+    /// WO-529@v3: Use a config with ambiguous types enabled for canary verification.
     public static func verify(manifest: CanaryManifest) -> [CanaryVerifyResult] {
-        manifest.canaries.map { token in
-            let matches = DetectionRules.scan(token.value, config: .defaultConfig)
+        var config = PastewatchConfig.defaultConfig
+        // Enable ambiguous types used by canaries
+        let canaryTypes: [SensitiveDataType] = [.genericApiKey, .dbConnectionString]
+        for type in canaryTypes where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
+        }
+        return manifest.canaries.map { token in
+            let matches = DetectionRules.scan(token.value, config: config)
             let firstMatch = matches.first
             return CanaryVerifyResult(
                 type: token.type,

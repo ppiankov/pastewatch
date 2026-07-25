@@ -3,6 +3,20 @@ import XCTest
 
 final class MCPRedactTests: XCTestCase {
 
+    // WO-529@v3: Config with email and IP enabled for MCP redact tests.
+    let testConfig: PastewatchConfig = {
+        var config = PastewatchConfig.defaultConfig
+        let types: [SensitiveDataType] = [.email, .ipAddress]
+        for type in types where !config.enabledTypes.contains(type.rawValue) {
+            config.enabledTypes.append(type.rawValue)
+        }
+        config.obfuscate = [
+            ObfuscateEntry(type: "email", pattern: "@example.com"),
+            ObfuscateEntry(type: "email", pattern: "@corp.com")
+        ]
+        return config
+    }()
+
     func testReadFileRedactsContent() throws {
         let tmpFile = NSTemporaryDirectory() + "mcp_read_test.txt"
         try "contact: user@example.com".write(toFile: tmpFile, atomically: true, encoding: .utf8)
@@ -10,7 +24,8 @@ final class MCPRedactTests: XCTestCase {
 
         let store = RedactionStore()
         let content = try String(contentsOfFile: tmpFile, encoding: .utf8)
-        let matches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: MCP read fixtures explicitly authorize their ambiguous values.
+        let matches = DetectionRules.scan(content, config: testConfig)
         let (redacted, entries) = store.redact(content: content, matches: matches, filePath: tmpFile)
 
         XCTAssertFalse(redacted.contains("user@example.com"))
@@ -24,7 +39,8 @@ final class MCPRedactTests: XCTestCase {
 
         let store = RedactionStore()
         let original = "key: user@example.com"
-        let matches = DetectionRules.scan(original, config: .defaultConfig)
+        // WO-542: MCP write fixtures explicitly authorize their ambiguous values.
+        let matches = DetectionRules.scan(original, config: testConfig)
         let (redacted, _) = store.redact(content: original, matches: matches, filePath: tmpFile)
 
         // Simulate agent modifying the redacted content (adding a comment)
@@ -48,7 +64,8 @@ final class MCPRedactTests: XCTestCase {
 
         let store = RedactionStore()
         let content = try String(contentsOfFile: tmpFile, encoding: .utf8)
-        let matches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: MCP round-trip fixtures explicitly authorize ambiguous values.
+        let matches = DetectionRules.scan(content, config: testConfig)
         let (redacted, _) = store.redact(content: content, matches: matches, filePath: tmpFile)
 
         // Agent reads redacted, makes no changes, writes back
@@ -60,13 +77,15 @@ final class MCPRedactTests: XCTestCase {
 
     func testCheckOutputDetectsSecrets() {
         let text = "config = user@example.com"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: output checks explicitly enable the email fixture.
+        let matches = DetectionRules.scan(text, config: testConfig)
         XCTAssertFalse(matches.isEmpty)
     }
 
     func testCheckOutputCleanText() {
         let text = "config = __PW_EMAIL_1__"
-        let matches = DetectionRules.scan(text, config: .defaultConfig)
+        // WO-542: clean placeholder checks use the same explicit fixture policy.
+        let matches = DetectionRules.scan(text, config: testConfig)
         XCTAssertTrue(matches.isEmpty)
     }
 
@@ -77,7 +96,8 @@ final class MCPRedactTests: XCTestCase {
 
         let store = RedactionStore()
         let content = try String(contentsOfFile: tmpFile, encoding: .utf8)
-        let matches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: clean file checks use the explicit ambiguous fixture policy.
+        let matches = DetectionRules.scan(content, config: testConfig)
 
         XCTAssertTrue(matches.isEmpty)
         XCTAssertFalse(store.hasMappings(for: tmpFile))
@@ -87,7 +107,8 @@ final class MCPRedactTests: XCTestCase {
 
     func testSeverityFilteringHighDefault() {
         let content = "contact: user@corp.com server: 192.168.1.50"
-        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: severity tests explicitly expose email and IP fixtures.
+        let allMatches = DetectionRules.scan(content, config: testConfig)
         let filtered = allMatches.filter { $0.effectiveSeverity >= .high }
 
         // Email is high severity — kept. IP is medium — dropped.
@@ -99,7 +120,8 @@ final class MCPRedactTests: XCTestCase {
 
     func testSeverityFilteringCriticalOnly() {
         let content = "email: user@corp.com"
-        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: critical filtering explicitly exposes the email fixture.
+        let allMatches = DetectionRules.scan(content, config: testConfig)
         let filtered = allMatches.filter { $0.effectiveSeverity >= .critical }
 
         // Email is high, not critical — filtered out
@@ -108,7 +130,8 @@ final class MCPRedactTests: XCTestCase {
 
     func testSeverityFilteringLow() {
         let content = "contact: user@corp.com server: 192.168.1.50"
-        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: low filtering explicitly exposes email and IP fixtures.
+        let allMatches = DetectionRules.scan(content, config: testConfig)
         let filtered = allMatches.filter { $0.effectiveSeverity >= .low }
 
         // Low threshold keeps everything
@@ -123,7 +146,8 @@ final class MCPRedactTests: XCTestCase {
 
         let store = RedactionStore()
         let content = try String(contentsOfFile: tmpFile, encoding: .utf8)
-        let allMatches = DetectionRules.scan(content, config: .defaultConfig)
+        // WO-542: README fixture scanning uses the explicit ambiguous policy.
+        let allMatches = DetectionRules.scan(content, config: testConfig)
         let matches = allMatches.filter { $0.effectiveSeverity >= .high }
 
         // No high+ severity findings in a typical README with badges

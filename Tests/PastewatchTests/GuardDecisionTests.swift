@@ -39,12 +39,15 @@ final class GuardDecisionTests: XCTestCase {
     }
 
     func testBelowThresholdMatchRemainsReportableButNotActionable() {
-        let content = ["admin", "@", "internal-corp.com"].joined()
+        // WO-542: declare the ambiguous advisory fixture explicitly.
+        let content = "+1-415-555-2671"
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
 
+        // WO-542: evaluate the same explicit config used to produce the match.
         let decision = GuardDecision.evaluate(
-            matches: DetectionRules.scan(content, config: .defaultConfig),
+            matches: DetectionRules.scan(content, config: config),
             content: content,
-            config: .defaultConfig,
+            config: config,
             contentTrust: .trustedFile,
             minimumSeverity: .critical
         )
