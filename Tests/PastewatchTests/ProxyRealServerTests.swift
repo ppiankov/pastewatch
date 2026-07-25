@@ -258,7 +258,7 @@ final class ProxyRealServerTests: XCTestCase {
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
         // WO-542: preserve this advisory-path fixture with explicitly enabled
         // ambiguous detectors; unconfigured email is intentionally silent.
-        // WO-529: Enable dbConnectionString for DSN advisory detection (intent v3).
+        // WO-529@v3: Enable dbConnectionString for DSN advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
@@ -1812,7 +1812,7 @@ final class ProxyRealServerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: auditPath) }
 
         let proxyPort = try TCPTestSocket.reserveLoopbackPort()
-        // WO-529: Enable ipAddress for advisory detection (intent v3).
+        // WO-529@v3: Enable ipAddress for advisory detection.
         let proxy = ProxyServer(
             port: proxyPort,
             upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,

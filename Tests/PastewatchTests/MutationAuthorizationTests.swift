@@ -2,10 +2,10 @@ import XCTest
 @testable import PastewatchCore
 
 final class MutationAuthorizationTests: XCTestCase {
-    // WO-529: Default config only enables intrinsic detectors.
+    // WO-529@v3: Default config only enables intrinsic detectors.
     private let config = PastewatchConfig.defaultConfig
 
-    // WO-529: Config with dbConnectionString enabled for DSN tests.
+    // WO-529@v3: Config with dbConnectionString enabled for DSN tests.
     private let dsnConfig: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig
         if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
@@ -198,7 +198,7 @@ final class MutationAuthorizationTests: XCTestCase {
         XCTAssertFalse(outcome.text.contains(value))
     }
 
-    // WO-529: Enable dbConnectionString for DSN advisory detection.
+    // WO-529@v3: Enable dbConnectionString for DSN advisory detection.
     func testProxyUsesEvidenceAcrossRequestSites() throws {
         let token = "AIza" + String(repeating: "K", count: 35)
         let dsn = "postgres" + "://user:example@localhost/db"

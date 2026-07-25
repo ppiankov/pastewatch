@@ -2,7 +2,7 @@ import XCTest
 @testable import PastewatchCore
 
 final class ObfuscatorTests: XCTestCase {
-    // WO-529: Config with ambiguous types enabled for obfuscator tests (intent v3).
+    // WO-529@v3: Config with ambiguous types enabled for obfuscator tests.
     let config: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig
         let types: [SensitiveDataType] = [.email, .ipAddress, .uuid, .genericApiKey]

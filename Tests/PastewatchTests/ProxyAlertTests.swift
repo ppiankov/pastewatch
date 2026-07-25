@@ -273,7 +273,7 @@ final class ProxyAlertTests: XCTestCase {
 
     func testToolSchemaEnumPreservesBuiltInAndMutatesCustomRule() throws {
         // WO-468: schema enums are recursively scanned as CONTRACT material.
-        // WO-529: Enable dbConnectionString for DSN detection (intent v3).
+        // WO-529@v3: Enable dbConnectionString for DSN detection.
         var config = PastewatchConfig.defaultConfig
         if !config.enabledTypes.contains(SensitiveDataType.dbConnectionString.rawValue) {
             config.enabledTypes.append(SensitiveDataType.dbConnectionString.rawValue)
