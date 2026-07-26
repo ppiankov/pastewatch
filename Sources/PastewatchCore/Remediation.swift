@@ -36,7 +36,7 @@ public enum Remediation {
     /// Build a fix plan from directory scan results.
     public static func buildPlan(
         results: [FileScanResult],
-        minSeverity: Severity = .high
+        minSeverity: Severity = .defaultThreshold
     ) -> FixPlan {
         var actions: [FixAction] = []
         var usedNames: [String: Int] = [:]

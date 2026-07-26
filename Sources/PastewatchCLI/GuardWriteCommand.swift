@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
+// WO-561: logic extracted to FileGuard.check in GuardReadCommand.swift.
 struct GuardWrite: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "guard-write",
@@ -12,60 +13,9 @@ struct GuardWrite: ParsableCommand {
     var filePath: String
 
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .high
+    var failOnSeverity: Severity = .defaultThreshold
 
     func run() throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
-        let config = PastewatchConfig.resolve()
-        if config.isPathProtected(filePath) {
-            let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
-            FileHandle.standardError.write(Data(msg.utf8))
-            print("You MUST use pastewatch_write_file instead of Write for files in protected directories.")
-            throw ExitCode(rawValue: 2)
-        }
-
-        guard FileManager.default.fileExists(atPath: filePath) else { return }
-
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8),
-              !content.isEmpty else {
-            return
-        }
-        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
-        let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
-        let ext = isEnvFile ? "env" : URL(fileURLWithPath: filePath).pathExtension.lowercased()
-
-        let matches: [DetectedMatch]
-        do {
-            matches = try DirectoryScanner.scanFileContentOrThrow(
-                content: content, ext: ext,
-                relativePath: filePath, config: config
-            )
-        } catch let error as SharedSecretPatternLoadError {
-            // WO-128: guard writes fail closed when configured shared coverage cannot load.
-            let msg = "BLOCKED: shared pattern load failed: \(error.localizedDescription)\n"
-            FileHandle.standardError.write(Data(msg.utf8))
-            print("Fix shared pattern configuration before using Write.")
-            throw ExitCode(rawValue: 2)
-        }
-        // WO-502: read/write/command/watch use one post-scan decision pipeline.
-        let filtered = GuardDecision.evaluate(
-            matches: matches,
-            content: content,
-            config: config,
-            contentTrust: .trustedFile,
-            minimumSeverity: failOnSeverity
-        ).actionableMatches
-        guard !filtered.isEmpty else { return }
-
-        let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
-        let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }.sorted()
-
-        let msg = "BLOCKED: \(filePath) contains \(filtered.count) secret(s) (\(counts.joined(separator: ", ")))\n"
-        FileHandle.standardError.write(Data(msg.utf8))
-
-        print("You MUST use pastewatch_write_file instead of Write for files containing secrets.")
-
-        throw ExitCode(rawValue: 2)
+        try FileGuard.check(filePath: filePath, failOnSeverity: failOnSeverity, operation: .write)
     }
 }

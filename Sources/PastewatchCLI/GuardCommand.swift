@@ -12,7 +12,7 @@ struct Guard: ParsableCommand {
     var command: String
 
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .high
+    var failOnSeverity: Severity = .defaultThreshold
 
     @Flag(name: .long, help: "Machine-readable JSON output")
     var json = false
@@ -31,7 +31,8 @@ struct Guard: ParsableCommand {
         var shouldBlock = false
 
         // Scan the full command string for inline secrets (DSNs, API keys, tokens)
-        let commandMatches = DetectionRules.scan(command, config: config)
+        // WO-550: use scanFileIO to load shared patterns + config.customRules (base scan misses both).
+        let commandMatches = DetectionRules.scanFileIO(command, config: config)
         // WO-502: one decision pipeline handles examples, allowlists, and severity.
         let commandDecision = GuardDecision.evaluate(
             matches: commandMatches,
@@ -65,7 +66,12 @@ struct Guard: ParsableCommand {
                 continue
             }
 
-            let matches = DetectionRules.scan(content, config: config)
+            // WO-550: use format-aware scanning for referenced files, matching guard-read behavior.
+            let refExt = (path as NSString).pathExtension.lowercased()
+            let matches = (try? DirectoryScanner.scanFileContentOrThrow(
+                content: content, ext: refExt,
+                relativePath: path, config: config
+            )) ?? DetectionRules.scanFileIO(content, config: config)
             // WO-502: files REFERENCED by an agent-controlled command are themselves
             // agent-controllable — the agent can write `# pastewatch:allow` into a file it
             // then `cat`s. Treat the referenced content as .agentControlled so inline allow
@@ -117,7 +123,7 @@ struct Guard: ParsableCommand {
                 }
                 FileHandle.standardError.write(Data("Use pastewatch MCP tools for files with secrets.\n".utf8))
             }
-            throw ExitCode(rawValue: 1)
+            throw ExitCode(rawValue: 2)
         }
 
         if json {

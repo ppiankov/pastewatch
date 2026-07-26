@@ -31,11 +31,14 @@ public struct PostureReport: Codable {
     public let totalFindings: Int
     public let severityBreakdown: SeverityBreakdown
     public let repositories: [RepositorySummary]
+    /// WO-553: true when org repo enumeration hit the 500-repo cap.
+    public let repoEnumerationCapped: Bool
 
     public init(version: String, generatedAt: String, organization: String,
                 totalRepos: Int, reposScanned: Int, totalFindings: Int,
                 severityBreakdown: SeverityBreakdown,
-                repositories: [RepositorySummary]) {
+                repositories: [RepositorySummary],
+                repoEnumerationCapped: Bool = false) {
         self.version = version
         self.generatedAt = generatedAt
         self.organization = organization
@@ -44,6 +47,7 @@ public struct PostureReport: Codable {
         self.totalFindings = totalFindings
         self.severityBreakdown = severityBreakdown
         self.repositories = repositories
+        self.repoEnumerationCapped = repoEnumerationCapped
     }
 }
 
@@ -90,12 +94,15 @@ public enum PostureScanner {
     public static func enumerateRepos(org: String) throws -> [String] {
         let output = try runCommand("gh", ["repo", "list", org,
                                            "--no-archived", "--source",
-                                           "--limit", "500",
+                                           "--limit", "\(repoEnumerationLimit)",
                                            "--json", "name", "-q", ".[].name"])
         return output.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
     }
+
+    /// WO-553: if enumerateRepos returns exactly this many repos, the list was likely truncated.
+    public static let repoEnumerationLimit = 500
 
     public static func cloneRepo(org: String, name: String, into baseDir: String) throws -> String {
         let dest = (baseDir as NSString).appendingPathComponent(name)
@@ -146,7 +153,8 @@ public enum PostureScanner {
             reposScanned: summaries.count,
             totalFindings: totalFindings,
             severityBreakdown: SeverityBreakdown(critical: crit, high: high, medium: med, low: low),
-            repositories: sorted
+            repositories: sorted,
+            repoEnumerationCapped: totalRepos >= repoEnumerationLimit
         )
     }
 

@@ -165,7 +165,7 @@ final class GuardCommandTests: XCTestCase {
 
         for command in blockedCommands {
             let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
-            XCTAssertEqual(result.status, 1, "literal credential assignment should block")
+            XCTAssertEqual(result.status, 2, "literal credential assignment should block")
             XCTAssertTrue(result.stdout.isEmpty, "quiet mode should not write stdout")
             XCTAssertTrue(result.stderr.isEmpty, "quiet mode should not write stderr")
         }
@@ -180,7 +180,7 @@ final class GuardCommandTests: XCTestCase {
 
         let result = try runGuardCLI(arguments: ["guard", "--json", command])
 
-        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(result.status, 2)
         XCTAssertFalse(result.stdout.contains(literal), "JSON output must not contain literal credential values")
         XCTAssertTrue(result.stdout.contains("<CREDENTIAL_1>"))
         XCTAssertTrue(result.stderr.isEmpty)
@@ -195,7 +195,7 @@ final class GuardCommandTests: XCTestCase {
 
         let result = try runGuardCLI(arguments: ["guard", command])
 
-        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(result.status, 2)
         XCTAssertTrue(result.stdout.isEmpty)
         XCTAssertFalse(result.stderr.contains(literal), "text output must not contain literal credential values")
         XCTAssertTrue(result.stderr.contains("command contains inline secret"))
@@ -236,7 +236,7 @@ final class GuardCommandTests: XCTestCase {
         let commandText = try XCTUnwrap(payload["command"] as? String)
         let inlineFindings = try XCTUnwrap(payload["inlineFindings"] as? [[String: Any]])
 
-        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(result.status, 2)
         XCTAssertEqual(payload["blocked"] as? Bool, true)
         XCTAssertTrue(commandText.contains("<EMAIL_1>"), "JSON command should contain placeholder")
         XCTAssertFalse(commandText.contains(email), "JSON command should redact inline values")
@@ -289,7 +289,7 @@ final class GuardCommandTests: XCTestCase {
             "guard", "--quiet", "echo \(key) # pastewatch:allow",
         ])
 
-        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(result.status, 2)
         XCTAssertTrue(result.stdout.isEmpty)
         XCTAssertTrue(result.stderr.isEmpty)
     }

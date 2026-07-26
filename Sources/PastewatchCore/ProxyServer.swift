@@ -291,7 +291,7 @@ public final class ProxyServer {
         forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
         compiledCustomRules: [CustomRule]? = nil,
-        severity: Severity = .high,
+        severity: Severity = .defaultThreshold,
         auditLogPath: String? = nil,
         injectAlert: Bool = true,
         quietLog: Bool = false,

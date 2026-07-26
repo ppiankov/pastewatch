@@ -84,13 +84,15 @@ public struct InventoryReport: Codable {
     public let severityBreakdown: SeverityBreakdown
     public let entries: [InventoryEntry]
     public let hotSpots: [HotSpot]
+    /// WO-556: total hot-spot files before the top-10 cap. When > hotSpots.count, the list was truncated.
+    public let hotSpotsTotal: Int
     public let typeGroups: [TypeGroup]
 
     public init(version: String, generatedAt: String, directory: String,
                 totalFindings: Int, filesAffected: Int,
                 severityBreakdown: SeverityBreakdown,
                 entries: [InventoryEntry], hotSpots: [HotSpot],
-                typeGroups: [TypeGroup]) {
+                typeGroups: [TypeGroup], hotSpotsTotal: Int = 0) {
         self.version = version
         self.generatedAt = generatedAt
         self.directory = directory
@@ -99,6 +101,7 @@ public struct InventoryReport: Codable {
         self.severityBreakdown = severityBreakdown
         self.entries = entries
         self.hotSpots = hotSpots
+        self.hotSpotsTotal = hotSpotsTotal
         self.typeGroups = typeGroups
     }
 }
@@ -166,6 +169,7 @@ public extension InventoryReport {
             )
         }
         hotSpots.sort { $0.findingCount > $1.findingCount }
+        let hotSpotsTotal = hotSpots.count
         if hotSpots.count > 10 { hotSpots = Array(hotSpots.prefix(10)) }
 
         // Type groups
@@ -192,7 +196,8 @@ public extension InventoryReport {
             severityBreakdown: SeverityBreakdown(critical: crit, high: high, medium: med, low: low),
             entries: entries,
             hotSpots: hotSpots,
-            typeGroups: typeGroups
+            typeGroups: typeGroups,
+            hotSpotsTotal: hotSpotsTotal
         )
     }
 

@@ -248,7 +248,7 @@ final class MCPServer {
         case "pastewatch_read_file":
             return handleReadFile(id: id, arguments: arguments, config: config)
         case "pastewatch_write_file":
-            return handleWriteFile(id: id, arguments: arguments)
+            return handleWriteFile(id: id, arguments: arguments, config: config)
         case "pastewatch_check_output":
             return handleCheckOutput(id: id, arguments: arguments, config: config)
         default:
@@ -266,7 +266,8 @@ final class MCPServer {
             return errorResult(id: id, text: "Missing required parameter: text")
         }
 
-        let matches = DetectionRules.scan(text, config: config)
+        // WO-550: use scanFileIO to load shared patterns + config.customRules.
+        let matches = DetectionRules.scanFileIO(text, config: config)
         auditLogger?.log("SCAN  (inline)  findings=\(matches.count)")
         return successResult(id: id, matches: matches)
     }
@@ -388,7 +389,7 @@ final class MCPServer {
         } else if let flagStr = defaultMinSeverity, let parsed = Severity(rawValue: flagStr) {
             minSeverity = parsed
         } else {
-            minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .high
+            minSeverity = Severity(rawValue: config.mcpMinSeverity) ?? .defaultThreshold
         }
 
         let scanResult = DetectionRules.scanFileIOResult(content, config: config)
@@ -398,8 +399,18 @@ final class MCPServer {
             return errorResult(id: id, text: "Shared pattern load failed: \(reason)")
         }
 
+        // WO-549: route MCP reads through GuardDecision so test-credential filtering,
+        // inline-allow, and config allowlist apply identically to guard-read.
+        let decision = GuardDecision.evaluate(
+            matches: scanResult.matches,
+            content: content,
+            config: config,
+            contentTrust: .trustedFile,
+            minimumSeverity: minSeverity
+        )
+
         let partition = partitionMutationMatches(
-            scanResult.matches,
+            decision.reportableMatches,
             site: .mcpRead,
             minAdvisorySeverity: minSeverity
         )
@@ -464,7 +475,7 @@ final class MCPServer {
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
     }
 
-    private func handleWriteFile(id: JSONRPCId?, arguments: [String: JSONValue]) -> JSONRPCResponse {
+    private func handleWriteFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
         }
@@ -475,6 +486,21 @@ final class MCPServer {
 
         // Resolve placeholders using all file mappings (agent may move values between files)
         let resolved = store.resolveAll(content: content)
+
+        // WO-549: scan original content for plaintext secrets (not placeholders).
+        // The MCP write path is the safe path — surface but do not block.
+        let writeScan = DetectionRules.scanFileIO(content, config: config)
+        let writeDecision = GuardDecision.evaluate(
+            matches: writeScan,
+            content: content,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: nil
+        )
+        if !writeDecision.reportableMatches.isEmpty {
+            let types = Set(writeDecision.reportableMatches.map { $0.displayName }).sorted()
+            auditLogger?.log("WRITE \(path)  plaintext-secrets=\(writeDecision.reportableMatches.count) [\(types.joined(separator: ", "))]")
+        }
 
         do {
             try resolved.content.write(toFile: path, atomically: true, encoding: .utf8)
@@ -495,6 +521,11 @@ final class MCPServer {
             responseObj["unresolvedPlaceholders"] = .array(resolved.unresolvedPlaceholders.map { .string($0) })
         }
 
+        // WO-549: surface plaintext secret count so the caller knows placeholders were not used.
+        if !writeDecision.reportableMatches.isEmpty {
+            responseObj["plaintextSecretWarnings"] = .number(Double(writeDecision.reportableMatches.count))
+        }
+
         let result: JSONValue = .array([
             .object([
                 "type": .string("text"),
@@ -510,7 +541,8 @@ final class MCPServer {
             return errorResult(id: id, text: "Missing required parameter: text")
         }
 
-        let matches = DetectionRules.scan(text, config: config)
+        // WO-550: use scanFileIO to load shared patterns + config.customRules.
+        let matches = DetectionRules.scanFileIO(text, config: config)
         auditLogger?.log("CHECK (inline)  clean=\(matches.isEmpty)")
 
         var findingsArray: [JSONValue] = []

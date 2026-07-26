@@ -1,5 +1,41 @@
 import Foundation
 
+// WO-562: shared helpers used by both GitDiffScanner and GitHistoryScanner.
+public enum GitScanHelpers {
+
+    /// Check if a file path should be scanned (extension or dotenv name).
+    public static func shouldScanFile(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let fileName = url.lastPathComponent
+        if DotenvClassifier.isDotenvFile(fileName) { return true }
+        return DirectoryScanner.allowedExtensions.contains(
+            url.pathExtension.lowercased()
+        )
+    }
+
+    /// Get the effective scan extension (maps dotenv filenames to "env").
+    public static func scanExtension(for path: String) -> String {
+        let url = URL(fileURLWithPath: path)
+        let fileName = url.lastPathComponent
+        if DotenvClassifier.isDotenvFile(fileName) { return "env" }
+        return url.pathExtension.lowercased()
+    }
+
+    /// Shared scan + filter pipeline: scan content, apply inline-allow, then config allowlist.
+    public static func scanAndFilter(
+        content: String, ext: String, relativePath: String,
+        config: PastewatchConfig
+    ) throws -> [DetectedMatch] {
+        var matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: content, ext: ext,
+            relativePath: relativePath, config: config
+        )
+        matches = Allowlist.filterInlineAllow(matches: matches, content: content)
+        matches = Allowlist.fromConfig(config).filter(matches)
+        return matches
+    }
+}
+
 /// Scans git diff output for sensitive data, reporting only findings on added lines.
 public struct GitDiffScanner {
 
@@ -59,13 +95,8 @@ public struct GitDiffScanner {
         var results: [FileScanResult] = []
 
         for df in diffFiles {
-            // Check extension filter (same as DirectoryScanner)
-            let url = URL(fileURLWithPath: df.path)
-            let fileName = url.lastPathComponent
-            let ext = url.pathExtension.lowercased()
-            let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
-
-            guard isEnvFile || DirectoryScanner.allowedExtensions.contains(ext) else {
+            // WO-562: shared extension classification.
+            guard GitScanHelpers.shouldScanFile(df.path) else {
                 continue
             }
 
@@ -85,13 +116,13 @@ public struct GitDiffScanner {
 
             guard !content.isEmpty else { continue }
 
-            let parsedExt = isEnvFile ? "env" : ext
-            var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
-                content: content, ext: parsedExt,
-                relativePath: df.path, config: config
+            // WO-562: shared scan + filter pipeline.
+            var fileMatches = try GitScanHelpers.scanAndFilter(
+                content: content,
+                ext: GitScanHelpers.scanExtension(for: df.path),
+                relativePath: df.path,
+                config: config
             )
-
-            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
 
             // Filter to only added lines
             fileMatches = fileMatches.filter { df.addedLines.contains($0.line) }

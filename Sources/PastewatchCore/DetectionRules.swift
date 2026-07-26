@@ -1393,7 +1393,9 @@ public struct DetectionRules {
 
         let hasUnderscore = value.contains("_")
         let credentialMarkers = ["password", "passwd", "secret", "token", "api_key", "apikey"]
-        if hasUnderscore && credentialMarkers.contains(where: lowerValue.contains) {
+        // WO-555: anchored matching — split on common key delimiters to prevent
+        // false positives like "nextPageToken", "widgetsnackbar", "secret_sauce_recipe".
+        if hasUnderscore && credentialMarkers.contains(where: { Self.matchesCredentialSegment(lowerValue, keyword: $0) }) {
             return true
         }
 
@@ -1409,7 +1411,34 @@ public struct DetectionRules {
             "auth_token", "access_key", "secret_key", "private_key",
             "credential", "dsn", "connection_string",
         ]
-        return keywords.contains(where: { lower.contains($0) })
+        // WO-555: anchored segment matching — prevents false positives where
+        // the keyword is a substring of an unrelated identifier (e.g. "nextPageToken",
+        // "widgetsnackbar"). Splits on camelCase boundaries and separators.
+        return keywords.contains(where: { Self.matchesCredentialSegment(lower, keyword: $0) })
+    }
+
+    /// WO-555: match a credential keyword against delimited segments of a key name.
+    /// Splits on camelCase boundaries and common separators so "authToken" → ["auth","token"]
+    /// matches "token", but "widgetsnackbar" → ["widgetsnackbar"] does NOT match "dsn".
+    /// Multi-word keywords with underscores (api_key, auth_token) use substring match
+    /// since they are already specific enough.
+    private static func matchesCredentialSegment(_ key: String, keyword: String) -> Bool {
+        if keyword.contains("_") {
+            return key.lowercased().contains(keyword)
+        }
+        var segments: [String] = []
+        var current = ""
+        for ch in key {
+            if ch.isUppercase && !current.isEmpty {
+                segments.append(current.lowercased())
+                current = String(ch)
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty { segments.append(current.lowercased()) }
+        segments = segments.flatMap { $0.components(separatedBy: CharacterSet.alphanumerics.inverted) }
+        return segments.contains(keyword)
     }
 
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).

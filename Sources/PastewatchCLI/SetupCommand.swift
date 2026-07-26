@@ -24,7 +24,7 @@ struct Setup: ParsableCommand {
                 "Unknown agent '\(agent)'. Valid: \(validAgents.joined(separator: ", "))"
             )
         }
-        let validSeverities = ["critical", "high", "medium", "low"]
+        let validSeverities = Severity.allCases.map(\.rawValue)
         guard validSeverities.contains(severity) else {
             throw ValidationError(
                 "Invalid severity '\(severity)'. Valid: \(validSeverities.joined(separator: ", "))"
@@ -130,7 +130,7 @@ struct Setup: ParsableCommand {
 
         // 4. Print summary
         var mcpArgs = "pastewatch-cli mcp --audit-log /tmp/pastewatch-audit.log"
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             mcpArgs += " --min-severity \(severity)"
         }
         let mcpStatus = mcpExisted ? "updated" : "created"
@@ -372,7 +372,7 @@ struct Setup: ParsableCommand {
         print("        - mcp")
         print("        - --audit-log")
         print("        - /tmp/pastewatch-audit.log")
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             print("        - --min-severity")
             print("        - \(severity)")
         }
@@ -658,7 +658,7 @@ struct Setup: ParsableCommand {
         print("")
         // WO-500: Preserve arbitrary TOML by printing an exact manual block.
         var mcpArgs = "\"mcp\", \"--audit-log\", \"/tmp/pastewatch-audit.log\""
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             mcpArgs += ", \"--min-severity\", \"\(severity)\""
         }
         print("  mcp      manual: add to ~/.codex/config.toml:")

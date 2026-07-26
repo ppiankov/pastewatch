@@ -50,14 +50,23 @@ public struct Allowlist {
         values.contains(value)
     }
 
-    /// Filter out matches on lines that contain a pastewatch:allow comment.
+    /// WO-554: tokenized inline-allow detection — requires "pastewatch:allow" as a
+    /// standalone directive, not an arbitrary substring. Prevents false negatives
+    /// where the marker appears inside a URL, filename, or secret value.
+    private static let inlineAllowPattern = try! NSRegularExpression(
+        pattern: #"(?:^|#|//|/\*|\*)\s*pastewatch:allow\b"#
+    )
+
+    /// Filter out matches on lines that contain a pastewatch:allow comment directive.
     public static func filterInlineAllow(matches: [DetectedMatch], content: String) -> [DetectedMatch] {
         guard !matches.isEmpty else { return [] }
         let lines = content.components(separatedBy: "\n")
         return matches.filter { match in
             let lineIndex = match.line - 1
             guard lineIndex >= 0, lineIndex < lines.count else { return true }
-            return !lines[lineIndex].contains("pastewatch:allow")
+            let line = lines[lineIndex]
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            return inlineAllowPattern.firstMatch(in: line, range: range) == nil
         }
     }
 }

@@ -1,5 +1,9 @@
 import Foundation
 
+/// WO-560: single source of truth for the SSE terminal marker.
+/// Shared by SSEStreamRelay (Darwin) and CurlHTTPClient (Linux/CurlHTTPClient utility path).
+let rawStreamDoneLine = Data("data: [DONE]".utf8)
+
 /// WO-206: shared socket send-all helper used by both the macOS URLSession path
 /// (SSEStreamRelay) and the Linux curl path (CurlHTTPClient).
 /// Retries until all bytes are written or a hard error (EPIPE / closed socket) occurs.

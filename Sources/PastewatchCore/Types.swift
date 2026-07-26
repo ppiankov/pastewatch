@@ -20,6 +20,10 @@ public enum Severity: String, Codable, CaseIterable, Comparable {
         lhs.rank < rhs.rank
     }
 
+    /// WO-559: single source of truth for the default severity threshold.
+    /// Every CLI option default, function default, and parse fallback should reference this.
+    public static let defaultThreshold: Severity = .high
+
     /// Map to SARIF result level.
     public var sarifLevel: String {
         switch self {
@@ -552,7 +556,7 @@ public struct PastewatchConfig: Codable {
         sensitiveHosts: [String] = [],
         allowedPatterns: [String] = [],
         sensitiveIPPrefixes: [String] = [],
-        mcpMinSeverity: String = "high",
+        mcpMinSeverity: String = Severity.defaultThreshold.rawValue,
         // WO-521: operator mutation notices remain opt-in.
         operatorRedactionNotices: Bool = false,
         xmlSensitiveTags: [String] = [],
@@ -608,7 +612,7 @@ public struct PastewatchConfig: Codable {
         sensitiveHosts = try container.decodeIfPresent([String].self, forKey: .sensitiveHosts) ?? []
         allowedPatterns = try container.decodeIfPresent([String].self, forKey: .allowedPatterns) ?? []
         sensitiveIPPrefixes = try container.decodeIfPresent([String].self, forKey: .sensitiveIPPrefixes) ?? []
-        mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? "high"
+        mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? Severity.defaultThreshold.rawValue
         // WO-521: old config files must decode without enabling notices.
         operatorRedactionNotices = try container.decodeIfPresent(Bool.self, forKey: .operatorRedactionNotices) ?? false
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []

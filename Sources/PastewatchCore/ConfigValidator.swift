@@ -80,7 +80,7 @@ public enum ConfigValidator {
 
         // Validate mcpMinSeverity
         if Severity(rawValue: config.mcpMinSeverity) == nil {
-            errors.append("mcpMinSeverity: invalid severity '\(config.mcpMinSeverity)' (use: critical, high, medium, low)")
+            errors.append("mcpMinSeverity: invalid severity '\(config.mcpMinSeverity)' (use: \(Severity.allCases.map(\.rawValue).joined(separator: ", ")))")
         }
 
         // WO-126: configured shared pattern files must not silently disable redaction coverage.
@@ -103,7 +103,7 @@ public enum ConfigValidator {
             }
         }
         if let sev = rule.severity, Severity(rawValue: sev) == nil {
-            errors.append("customRules[\(i)] '\(rule.name)': invalid severity '\(sev)' (use: critical, high, medium, low)")
+            errors.append("customRules[\(i)] '\(rule.name)': invalid severity '\(sev)' (use: \(Severity.allCases.map(\.rawValue).joined(separator: ", ")))")
         }
     }
 

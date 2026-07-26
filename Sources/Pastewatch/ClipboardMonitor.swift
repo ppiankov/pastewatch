@@ -116,12 +116,10 @@ final class ClipboardMonitor: ObservableObject {
         // Skip if monitoring is disabled in config
         guard config.enabled else { return }
 
-        // Scan for sensitive data
-        let matches = DetectionRules.scan(
-            content,
-            config: config,
-            customRules: CustomRule.compileValid(config.customRules)
-        )
+        // WO-552: use scanFileIO to load shared patterns + config.customRules,
+        // then apply the config allowlist — matching CLI scan behavior.
+        var matches = DetectionRules.scanFileIO(content, config: config)
+        matches = Allowlist.fromConfig(config).filter(matches)
 
         // No matches — nothing to do
         let outcome = applyAuthorizedMutations(

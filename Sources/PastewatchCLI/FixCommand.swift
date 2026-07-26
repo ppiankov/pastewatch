@@ -14,7 +14,7 @@ struct Fix: ParsableCommand {
     var dryRun = false
 
     @Option(name: .long, help: "Minimum severity to fix: critical, high, medium, low")
-    var minSeverity: Severity = .high
+    var minSeverity: Severity = .defaultThreshold
 
     @Option(name: .long, help: "Path for generated .env file (default: .env)")
     var envFile: String = ".env"

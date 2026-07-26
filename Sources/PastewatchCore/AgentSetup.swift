@@ -1,5 +1,10 @@
 import Foundation
 
+/// WO-557: single source of truth for the bash-compatible placeholder regex.
+/// Must stay aligned with Obfuscator.mcpPlaceholderPattern (which uses \d+ for Swift regex).
+/// Bash POSIX ERE uses [0-9]+ instead of \d+.
+private let bashPlaceholderRegex = #"__PW_[A-Z][A-Z0-9_]*_[0-9]+__"#
+
 // WO-500: Setup behavior is explicit so unsupported formats cannot look configured.
 public enum MCPSetupMode: String, Equatable {
     case automatic
@@ -138,7 +143,7 @@ public enum AgentSetup {
     ) {
         var mcpServers = json["mcpServers"] as? [String: Any] ?? [:]
         var args: [String] = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             args.append(contentsOf: ["--min-severity", severity])
         }
         var entry: [String: Any] = [
@@ -159,7 +164,7 @@ public enum AgentSetup {
     ) {
         var servers = json["mcp"] as? [String: Any] ?? [:]
         var command = ["pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             command.append(contentsOf: ["--min-severity", severity])
         }
         servers["pastewatch"] = [
@@ -184,7 +189,7 @@ public enum AgentSetup {
               - --audit-log
               - /tmp/pastewatch-audit.log
         """
-        if severity != "high" {
+        if severity != Severity.defaultThreshold.rawValue {
             config += """
 
                   - --min-severity
@@ -435,7 +440,7 @@ public enum AgentSetup {
         # --- WRITE: Check for pastewatch placeholders in content ---
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
             echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
             echo "Blocked: pastewatch placeholders in Write" >&2
             exit 2
@@ -518,7 +523,7 @@ public enum AgentSetup {
             # Write: check for pastewatch placeholders
             if [ "$action" = "pre_write_code" ]; then
               content=$(echo "$input" | jq -r '.content // empty')
-              if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+              if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
                 echo "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file MCP tool." >&2
                 exit 2
               fi
@@ -603,7 +608,7 @@ public enum AgentSetup {
         # --- WRITE: Check for pastewatch placeholders in content ---
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
             deny "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
           fi
         fi
@@ -752,7 +757,7 @@ public enum AgentSetup {
         # Write / apply_patch: check for pastewatch placeholders in content
         if [ "$tool" = "Write" ] || [ "$tool" = "apply_patch" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // .tool_input.patch // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
             echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
             exit 2
           fi
@@ -857,7 +862,7 @@ public enum AgentSetup {
                 if [ "$tool_name" = "write_to_file" ]; then
                   pw_content=$(echo "$input" | jq -r '.preToolUse.parameters.content // empty')
                   # WO-124: block pastewatch's active proxy-compatible placeholder envelope.
-                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE '__PW_[A-Z][A-Z0-9_]*_[0-9]+__'; then
+                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE "\(bashPlaceholderRegex)"; then
                     block "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file to resolve them."
                   fi
                 fi

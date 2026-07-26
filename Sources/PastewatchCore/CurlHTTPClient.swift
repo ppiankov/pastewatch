@@ -7,7 +7,9 @@ import Glibc
 
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
-/// On macOS this file compiles but is not used — ProxyServer uses URLSession there.
+/// WO-565: on macOS the HTTP transport path is not used, but shared utility
+/// functions (buildStreamingResponseHeaders, httpReasonPhrase, cancelActiveProcesses)
+/// ARE called from SSEStreamRelay and must remain compiled on both platforms.
 struct CurlHTTPClient {
     typealias StreamAlertBuilder = (
         _ streamCount: Int,
@@ -129,7 +131,7 @@ struct CurlHTTPClient {
         streamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
         proxyCustomRules: [CustomRule]? = nil,
-        proxySeverity: Severity = .high,
+        proxySeverity: Severity = .defaultThreshold,
         streamDebugSink: StreamDebugSink? = nil,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
@@ -479,7 +481,7 @@ struct CurlHTTPClient {
         var seenAdvisorySignatures: Set<String> = []
     }
 
-    private static let rawStreamDoneLine = Data("data: [DONE]".utf8)
+    // WO-560: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
     private static let rawStreamScanOverlapBytes = 4_096
     private static let rawStreamAdvisoryScanWindowBytes = rawStreamScanOverlapBytes
     private static let rawStreamDeliveryLookbehindBytes = rawStreamScanOverlapBytes
@@ -1395,11 +1397,8 @@ struct CurlHTTPClient {
         }
         // swiftlint:disable:next optional_data_string_conversion
         let lossyText = String(decoding: body, as: UTF8.self)
-        let matches = DetectionRules.scan(
-            lossyText,
-            config: config,
-            customRules: customRules ?? CustomRule.compileValid(config.customRules)
-        )
+        // WO-563: use shared scanStreamText for consistent custom-rule loading.
+        let matches = scanStreamText(lossyText, config: config, customRules: customRules)
         let redactionMatches = mutationSafeProxyMatches(matches, site: .proxyResponse)
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
         let advisories = streamAdvisoryMatches(

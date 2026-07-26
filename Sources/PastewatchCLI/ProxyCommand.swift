@@ -59,7 +59,7 @@ struct Proxy: ParsableCommand {
     var forwardProxy: String?
 
     @Option(name: .long, help: "Minimum severity to redact: critical, high, medium, low")
-    var severity: Severity = .high
+    var severity: Severity = .defaultThreshold
 
     @Option(name: .long, help: "Audit log file path")
     var auditLog: String?

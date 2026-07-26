@@ -10,7 +10,22 @@ public struct Dashboard: Codable {
     public let summary: SessionSummary
     public let topTypes: [TypeCount]
     public let hotFiles: [FileAccess]
+    /// WO-556: total hot files before the top-10 cap. When > hotFiles.count, the list was truncated.
+    public let hotFilesTotal: Int
     public let verdict: String
+
+    public init(generatedAt: String, sessions: Int, period: DashboardPeriod,
+                summary: SessionSummary, topTypes: [TypeCount], hotFiles: [FileAccess],
+                hotFilesTotal: Int = 0, verdict: String) {
+        self.generatedAt = generatedAt
+        self.sessions = sessions
+        self.period = period
+        self.summary = summary
+        self.topTypes = topTypes
+        self.hotFiles = hotFiles
+        self.hotFilesTotal = hotFilesTotal
+        self.verdict = verdict
+    }
 }
 
 /// Time range covered by the dashboard.
@@ -57,14 +72,17 @@ public enum DashboardBuilder {
                 generatedAt: now, sessions: 0,
                 period: DashboardPeriod(earliest: nil, latest: nil),
                 summary: emptySummary(),
-                topTypes: [], hotFiles: [], verdict: "No audit log entries found"
+                topTypes: [], hotFiles: [], hotFilesTotal: 0,
+                verdict: "No audit log entries found"
             )
         }
 
         // Aggregate summaries
         let summary = aggregateSummaries(reports)
         let topTypes = aggregateTypes(reports)
-        let hotFiles = aggregateFiles(reports)
+        let allHotFiles = aggregateFiles(reports)
+        let hotFilesTotal = allHotFiles.count
+        let hotFiles = Array(allHotFiles.prefix(10))
         let period = aggregatePeriod(reports)
         let verdict = computeVerdict(summary)
 
@@ -75,6 +93,7 @@ public enum DashboardBuilder {
             summary: summary,
             topTypes: topTypes,
             hotFiles: hotFiles,
+            hotFilesTotal: hotFilesTotal,
             verdict: verdict
         )
     }
@@ -150,8 +169,6 @@ public enum DashboardBuilder {
         return files
             .map { FileAccess(file: $0.key, reads: $0.value.reads, writes: $0.value.writes, secretsRedacted: $0.value.secrets) }
             .sorted { $0.secretsRedacted > $1.secretsRedacted }
-            .prefix(10)
-            .map { $0 }
     }
 
     private static func aggregatePeriod(_ reports: [SessionReport]) -> DashboardPeriod {

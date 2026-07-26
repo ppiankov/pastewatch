@@ -77,20 +77,19 @@ public struct GitHistoryScanner {
             let diffFiles = GitDiffScanner.parseDiff(chunk.diffContent)
 
             for df in diffFiles {
-                guard shouldScanFile(df.path) else { continue }
+                guard GitScanHelpers.shouldScanFile(df.path) else { continue }
                 filesScanned += 1
 
                 guard let content = try? GitDiffScanner.runGit(
                     ["show", "\(chunk.hash):\(df.path)"]
                 ), !content.isEmpty else { continue }
 
-                let ext = scanExtension(for: df.path)
-                var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
-                    content: content, ext: ext,
-                    relativePath: df.path, config: config
-                )
-                fileMatches = Allowlist.filterInlineAllow(
-                    matches: fileMatches, content: content
+                // WO-562: shared scan + filter pipeline.
+                var fileMatches = try GitScanHelpers.scanAndFilter(
+                    content: content,
+                    ext: GitScanHelpers.scanExtension(for: df.path),
+                    relativePath: df.path,
+                    config: config
                 )
 
                 // Filter to only added lines
@@ -204,26 +203,6 @@ public struct GitHistoryScanner {
         }
 
         return chunks
-    }
-
-    // MARK: - File filtering
-
-    /// Check if a file path should be scanned (by extension).
-    private static func shouldScanFile(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
-        let fileName = url.lastPathComponent
-        if DotenvClassifier.isDotenvFile(fileName) { return true }
-        return DirectoryScanner.allowedExtensions.contains(
-            url.pathExtension.lowercased()
-        )
-    }
-
-    /// Get the effective extension for scanning (handles .env files).
-    private static func scanExtension(for path: String) -> String {
-        let url = URL(fileURLWithPath: path)
-        let fileName = url.lastPathComponent
-        if DotenvClassifier.isDotenvFile(fileName) { return "env" }
-        return url.pathExtension.lowercased()
     }
 
     // MARK: - Dedup
