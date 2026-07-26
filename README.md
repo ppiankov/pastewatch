@@ -452,8 +452,11 @@ If a feature increases complexity without reducing risk, it is rejected.
 | macOS (Intel x86_64) | CLI only | Supported (universal binary) |
 | Linux x86_64 | CLI only | Supported |
 | Linux arm64 | CLI only | Supported |
+| Windows | — | Not supported natively — run the Linux binary under WSL2 |
 
-The GUI (clipboard monitoring) is macOS-only. CLI works on all platforms via Homebrew or direct download.
+The GUI (clipboard monitoring) is macOS-only. The CLI runs on macOS and Linux via Homebrew or direct download.
+
+**Windows:** there is no native Windows build. Run the CLI inside [WSL2](https://learn.microsoft.com/windows/wsl/) using the Linux `amd64` binary (see Installation → Linux x86_64). If you need native Windows secret-redaction on the API wire, that is the domain of the gateway layer, not this tool.
 
 **Linux proxy note:** On Linux, the proxy uses `curl` (Process) for upstream HTTP requests instead of Swift's `URLSession`. This works around a known `FoundationNetworking` bug on arm64 where `dataTask` completion handlers silently fail. Requires `curl` on `PATH` (present on all standard Linux distributions).
 
