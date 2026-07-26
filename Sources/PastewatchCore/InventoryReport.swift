@@ -104,6 +104,26 @@ public struct InventoryReport: Codable {
         self.hotSpotsTotal = hotSpotsTotal
         self.typeGroups = typeGroups
     }
+
+    // WO-556: backward-compatible decode — field is absent in pre-WO-556 JSON.
+    private enum CodingKeys: String, CodingKey {
+        case version, generatedAt, directory, totalFindings, filesAffected
+        case severityBreakdown, entries, hotSpots, hotSpotsTotal, typeGroups
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        directory = try c.decode(String.self, forKey: .directory)
+        totalFindings = try c.decode(Int.self, forKey: .totalFindings)
+        filesAffected = try c.decode(Int.self, forKey: .filesAffected)
+        severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
+        entries = try c.decode([InventoryEntry].self, forKey: .entries)
+        hotSpots = try c.decode([HotSpot].self, forKey: .hotSpots)
+        hotSpotsTotal = try c.decodeIfPresent(Int.self, forKey: .hotSpotsTotal) ?? 0
+        typeGroups = try c.decode([TypeGroup].self, forKey: .typeGroups)
+    }
 }
 
 private struct EntryAccumulator {

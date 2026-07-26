@@ -16,8 +16,8 @@ enum FileGuard {
         }
     }
 
-    /// Returns `true` when the file is clean (no actionable secrets), `false` when blocked.
     /// Throws `ExitCode(2)` on block or shared-pattern error.
+    /// Returns normally when the file is clean (no actionable secrets).
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 

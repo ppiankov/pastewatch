@@ -53,8 +53,9 @@ public struct Allowlist {
     /// WO-554: tokenized inline-allow detection — requires "pastewatch:allow" as a
     /// standalone directive, not an arbitrary substring. Prevents false negatives
     /// where the marker appears inside a URL, filename, or secret value.
+    /// WO-548 review: widened prefix set to cover HTML/XML, SQL, Lisp, INI, etc.
     private static let inlineAllowPattern = try! NSRegularExpression(
-        pattern: #"(?:^|#|//|/\*|\*)\s*pastewatch:allow\b"#
+        pattern: #"(?:^|#|//|/\*|\*|;|--|<!--|>|-)\s*pastewatch:allow\b"#
     )
 
     /// Filter out matches on lines that contain a pastewatch:allow comment directive.

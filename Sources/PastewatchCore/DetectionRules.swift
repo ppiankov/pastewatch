@@ -1395,7 +1395,7 @@ public struct DetectionRules {
         let credentialMarkers = ["password", "passwd", "secret", "token", "api_key", "apikey"]
         // WO-555: anchored matching — split on common key delimiters to prevent
         // false positives like "nextPageToken", "widgetsnackbar", "secret_sauce_recipe".
-        if hasUnderscore && credentialMarkers.contains(where: { Self.matchesCredentialSegment(lowerValue, keyword: $0) }) {
+        if hasUnderscore && credentialMarkers.contains(where: { Self.matchesCredentialSegment(value, keyword: $0) }) {
             return true
         }
 
@@ -1414,7 +1414,7 @@ public struct DetectionRules {
         // WO-555: anchored segment matching — prevents false positives where
         // the keyword is a substring of an unrelated identifier (e.g. "nextPageToken",
         // "widgetsnackbar"). Splits on camelCase boundaries and separators.
-        return keywords.contains(where: { Self.matchesCredentialSegment(lower, keyword: $0) })
+        return keywords.contains(where: { Self.matchesCredentialSegment(key, keyword: $0) })
     }
 
     /// WO-555: match a credential keyword against delimited segments of a key name.

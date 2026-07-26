@@ -49,6 +49,25 @@ public struct PostureReport: Codable {
         self.repositories = repositories
         self.repoEnumerationCapped = repoEnumerationCapped
     }
+
+    // WO-553: backward-compatible decode — field is absent in pre-WO-553 JSON.
+    private enum CodingKeys: String, CodingKey {
+        case version, generatedAt, organization, totalRepos, reposScanned
+        case totalFindings, severityBreakdown, repositories, repoEnumerationCapped
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        organization = try c.decode(String.self, forKey: .organization)
+        totalRepos = try c.decode(Int.self, forKey: .totalRepos)
+        reposScanned = try c.decode(Int.self, forKey: .reposScanned)
+        totalFindings = try c.decode(Int.self, forKey: .totalFindings)
+        severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
+        repositories = try c.decode([RepositorySummary].self, forKey: .repositories)
+        repoEnumerationCapped = try c.decodeIfPresent(Bool.self, forKey: .repoEnumerationCapped) ?? false
+    }
 }
 
 public struct PostureDelta: Codable {
