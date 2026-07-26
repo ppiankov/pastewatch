@@ -52,11 +52,14 @@ replace_in() {
 # Single source of truth — version number only (no surrounding quotes in pattern)
 replace_in "$VERSION_FILE" "${CURRENT}" "${VERSION}"
 
-# README.md — shields.io badge URL, tag URL, pre-commit rev, status line
+# README.md — shields.io badge URL, tag URL, status line
 replace_in "README.md" "version-${CURRENT}-blue"  "version-${VERSION}-blue"
 replace_in "README.md" "/tag/v${CURRENT}"          "/tag/v${VERSION}"
-replace_in "README.md" "rev: v${CURRENT}"          "rev: v${VERSION}"
 replace_in "README.md" "**v${CURRENT}**"           "**v${VERSION}**"
+
+# WO-545@v2: Keep extracted versioned documentation synchronized during releases.
+# docs/cli-reference.md — pre-commit rev
+replace_in "docs/cli-reference.md" "rev: v${CURRENT}" "rev: v${VERSION}"
 
 # docs/agent-safety.md — pre-commit rev
 replace_in "docs/agent-safety.md" "rev: v${CURRENT}" "rev: v${VERSION}"
@@ -91,4 +94,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Fill in CHANGELOG.md entry for [${VERSION}]"
 echo "  2. git add -A && git commit -m 'chore: bump version to ${VERSION}'"
-echo "  3. git tag v${VERSION} && git push origin main v${VERSION}"
+# WO-546: Releases must pass through branch CI before automation tags them.
+echo "  3. Push the release branch and open a PR; do not push directly to main"
+echo "  4. Merge after CI; release automation will tag and publish v${VERSION}"

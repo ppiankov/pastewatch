@@ -466,9 +466,8 @@ The GUI (clipboard monitoring) is macOS-only. CLI works on all platforms via Hom
 - [docs/agent-safety.md](docs/agent-safety.md) - Agent safety guide (layered defenses for AI coding agents)
 - [docs/examples/](docs/examples/) - Ready-to-use agent configs (Claude Code, Cline, Cursor)
 - [docs/hard-constraints.md](docs/hard-constraints.md) - Design philosophy and non-negotiable rules
-- [docs/status.md](docs/status.md) - Current scope and non-goals
+- [docs/status.md](docs/status.md) - Feature milestones, stability, current scope, and non-goals
 - [docs/cli-reference.md](docs/cli-reference.md) - Full CLI command reference (scan, proxy, guard, MCP, and all subcommands)
-- [docs/project-status.md](docs/project-status.md) - Feature milestones and stability status
 
 ---
 
@@ -486,4 +485,4 @@ Do not pretend it guarantees compliance or safety.
 
 **Status: Stable, feature-complete** · **v0.34.0** · Accepting compatibility and bug fixes only
 
-Pastewatch is stable and in maintenance mode. See [docs/project-status.md](docs/project-status.md) for the full feature-milestone breakdown.
+Pastewatch is stable and in maintenance mode. See [docs/status.md](docs/status.md) for the full feature-milestone breakdown.
