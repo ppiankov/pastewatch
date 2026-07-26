@@ -70,4 +70,56 @@ final class InlineAllowlistTests: XCTestCase {
         let filtered = Allowlist.filterInlineAllow(matches: [], content: "")
         XCTAssertTrue(filtered.isEmpty)
     }
+
+    // MARK: - WO-554: tokenized regex covers diverse comment styles
+
+    func testHTMLCommentStyleSuppressesMatch() {
+        let content = "admin@corp.com <!-- pastewatch:allow -->"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertTrue(filtered.isEmpty)
+    }
+
+    func testSQLCommentStyleSuppressesMatch() {
+        let content = "admin@corp.com -- pastewatch:allow"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertTrue(filtered.isEmpty)
+    }
+
+    func testSemicolonCommentStyleSuppressesMatch() {
+        let content = "admin@corp.com ; pastewatch:allow"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertTrue(filtered.isEmpty)
+    }
+
+    func testBlockCommentStyleSuppressesMatch() {
+        let content = "admin@corp.com /* pastewatch:allow */"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertTrue(filtered.isEmpty)
+    }
+
+    // MARK: - WO-554: tokenized regex prevents false positives
+
+    func testURLWithMarkerDoesNotSuppress() {
+        let content = "admin@corp.com?url=pastewatch:allow=true"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertFalse(filtered.isEmpty, "URL parameter should NOT suppress detection")
+    }
+
+    func testFilenameWithMarkerDoesNotSuppress() {
+        let content = "admin@corp.com pastewatch:allow.txt"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertFalse(filtered.isEmpty, "Filename should NOT suppress detection")
+    }
 }

@@ -1712,4 +1712,31 @@ final class DetectionRulesTests: XCTestCase {
     private func jwtFixture() -> String {
         "eyJ" + String(repeating: "A", count: 12) + ".eyJ" + String(repeating: "B", count: 12) + "." + String(repeating: "C", count: 20)
     }
+
+    // MARK: - WO-555: credential key name segment matching
+
+    func testCredentialKeyNameCamelCaseMatches() {
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("authToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("accessToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("refreshToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("apiSecret"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("clientSecret"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("userPassword"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("bearerToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("sessionToken"))
+    }
+
+    func testCredentialKeyNameSnakeCaseMatches() {
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("auth_token"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("api_key"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("secret_key"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("private_key"))
+    }
+
+    func testCredentialKeyNameFalsePositivesPrevented() {
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("widgetsnackbar"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("apikeyboard"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("secretive"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("tokenization"))
+    }
 }
