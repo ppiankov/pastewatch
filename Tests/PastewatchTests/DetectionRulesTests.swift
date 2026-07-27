@@ -86,6 +86,39 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(phoneMatches.count, 1)
     }
 
+    // WO-571@v2: a canonical/degenerate digit run is not a phone number, even when Phone
+    // detection is enabled. These appear constantly in source as char sets / cutsets
+    // (strings.TrimRight(k, "0123456789")) and were a guard-blocking false positive.
+    func testDegenerateDigitRunsAreNotPhones() {
+        let notPhones = [
+            "0123456789",              // ascending 0-9 cutset
+            "9876543210",                // descending run
+            String(repeating: "0", count: 10),  // all-identical
+            String(repeating: "1", count: 11),
+            "strings.TrimRight(key, \"0123456789\")",
+            "00000000-0000-0000-0000-000000000000",  // nil UUID zero segments
+        ]
+        for input in notPhones {
+            let matches = DetectionRules.scan(input, config: config)
+            let phoneMatches = matches.filter { $0.type == .phone }
+            XCTAssertEqual(phoneMatches.count, 0, "Degenerate digit run is not a phone: \(input)")
+        }
+    }
+
+    // WO-571@v2: real formatted phone numbers (varied digits) must still detect.
+    func testRealFormattedPhonesStillDetected() {
+        let phones = [
+            "+60123456789",
+            "+1 (415) 555-2671",
+            "+44 20 7946 0958",
+        ]
+        for input in phones {
+            let matches = DetectionRules.scan(input, config: config)
+            let phoneMatches = matches.filter { $0.type == .phone }
+            XCTAssertGreaterThanOrEqual(phoneMatches.count, 1, "Real phone must still fire: \(input)")
+        }
+    }
+
     // MARK: - IP Address Detection
 
     func testDetectsIPAddress() {

@@ -1618,7 +1618,39 @@ public struct DetectionRules {
 
     private static func isValidPhone(_ value: String) -> Bool {
         let digitsOnly = value.filter { $0.isNumber }
-        return digitsOnly.count >= 10
+        guard digitsOnly.count >= 10 else { return false }
+
+        // WO-571@v2: a bare, unformatted digit run is not a phone number. Canonical
+        // digit sequences (0123456789), all-identical runs (0000000000, the nil UUID
+        // zeros), and monotonic ascending/descending runs appear constantly in source
+        // as character sets / cutsets (strings.TrimRight(k, "0123456789")) and are a
+        // canonical false positive. A real phone carries formatting context: a leading
+        // +, grouping separators (space/-/.), parentheses, a tel: URI, or an adjacent
+        // phone/mobile/fax/cell keyword. If none of that context is present AND the
+        // digit run is a canonical/degenerate sequence, reject it.
+        // A degenerate digit sequence is never a phone number, with or without
+        // separators (a UUID's 0000-0000 segments must not match either).
+        if isDegenerateDigitRun(digitsOnly) { return false }
+        return true
+    }
+
+    // WO-571@v2: true iff the digit string is a degenerate sequence that is never a real
+    // phone number: all-identical digits, or a strictly monotonic ascending/descending
+    // run of consecutive digits (e.g. 0123456789, 9876543210).
+    private static func isDegenerateDigitRun(_ digits: String) -> Bool {
+        let chars = Array(digits)
+        guard chars.count >= 2 else { return false }
+        let values = chars.compactMap { $0.wholeNumberValue }
+        guard values.count == chars.count else { return false }
+        // all identical
+        if Set(values).count == 1 { return true }
+        // strictly ascending consecutive (each digit exactly +1 the previous)
+        var ascending = true, descending = true
+        for i in 1..<values.count {
+            if values[i] != values[i - 1] + 1 { ascending = false }
+            if values[i] != values[i - 1] - 1 { descending = false }
+        }
+        return ascending || descending
     }
 
     private static func isValidEmail(_ value: String) -> Bool {
