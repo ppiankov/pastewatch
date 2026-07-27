@@ -291,7 +291,7 @@ public final class ProxyServer {
         forwardProxy: URL? = nil,
         config: PastewatchConfig = PastewatchConfig.resolve(),
         compiledCustomRules: [CustomRule]? = nil,
-        severity: Severity = .high,
+        severity: Severity = .defaultGuardThreshold,
         auditLogPath: String? = nil,
         injectAlert: Bool = true,
         quietLog: Bool = false,
@@ -944,6 +944,20 @@ public final class ProxyServer {
         #endif
     }
 
+    /// WO-563@v3: Darwin buffered responses use the same byte-preserving binary
+    /// redaction policy as the Linux curl path.
+    func redactDarwinBufferedResponseBodyIfNeeded(_ body: Data) -> SSEFrameRedactionResult {
+        guard CurlHTTPClient.requiresBytePreservingResponseScan(body) else {
+            return SSEFrameRedactionResult(data: body, count: 0, types: [])
+        }
+        return CurlHTTPClient.redactNonUTF8ResponseBody(
+            body,
+            config: config,
+            severity: severity,
+            customRules: customRules
+        )
+    }
+
     #if canImport(Darwin)
     private func forwardDarwinRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         var upstreamRequest = URLRequest(url: ctx.upstreamURL)
@@ -989,7 +1003,17 @@ public final class ProxyServer {
             sendError(to: ctx.clientSocket, status: 502, message: "Bad Gateway")
             return nil
         }
-        return BufferedResponse(status: resp.statusCode, headers: resp.allHeaderFields, body: data)
+        let redaction = redactDarwinBufferedResponseBodyIfNeeded(data)
+        return BufferedResponse(
+            status: resp.statusCode,
+            headers: resp.allHeaderFields,
+            body: redaction.data,
+            responseRedactionCount: redaction.count,
+            responseRedactionTypes: redaction.types,
+            responseAdvisoryCount: redaction.advisoryCount,
+            responseAdvisoryTypes: redaction.advisoryTypes,
+            responseCoverageEvents: redaction.coverageEvents
+        )
     }
 
     func waitForNonStreamingTaskCompletion(

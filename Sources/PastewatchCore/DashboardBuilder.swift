@@ -10,7 +10,40 @@ public struct Dashboard: Codable {
     public let summary: SessionSummary
     public let topTypes: [TypeCount]
     public let hotFiles: [FileAccess]
+    /// WO-556@v2: total hot files before the top-10 cap. When > hotFiles.count, the list was truncated.
+    public let hotFilesTotal: Int
     public let verdict: String
+
+    public init(generatedAt: String, sessions: Int, period: DashboardPeriod,
+                summary: SessionSummary, topTypes: [TypeCount], hotFiles: [FileAccess],
+                hotFilesTotal: Int? = nil, verdict: String) {
+        self.generatedAt = generatedAt
+        self.sessions = sessions
+        self.period = period
+        self.summary = summary
+        self.topTypes = topTypes
+        self.hotFiles = hotFiles
+        self.hotFilesTotal = hotFilesTotal ?? hotFiles.count
+        self.verdict = verdict
+    }
+
+    // WO-556@v2: historical dashboard JSON derives a truthful lower bound instead of zero.
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, sessions, period, summary, topTypes, hotFiles, hotFilesTotal, verdict
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        sessions = try c.decode(Int.self, forKey: .sessions)
+        period = try c.decode(DashboardPeriod.self, forKey: .period)
+        summary = try c.decode(SessionSummary.self, forKey: .summary)
+        topTypes = try c.decode([TypeCount].self, forKey: .topTypes)
+        hotFiles = try c.decode([FileAccess].self, forKey: .hotFiles)
+        hotFilesTotal = try c.decodeIfPresent(Int.self, forKey: .hotFilesTotal)
+            ?? hotFiles.count
+        verdict = try c.decode(String.self, forKey: .verdict)
+    }
 }
 
 /// Time range covered by the dashboard.
@@ -53,18 +86,23 @@ public enum DashboardBuilder {
         }
 
         guard !reports.isEmpty else {
+            // WO-556@v2: empty dashboards still carry an explicit complete hot-file total.
             return Dashboard(
                 generatedAt: now, sessions: 0,
                 period: DashboardPeriod(earliest: nil, latest: nil),
                 summary: emptySummary(),
-                topTypes: [], hotFiles: [], verdict: "No audit log entries found"
+                topTypes: [], hotFiles: [], hotFilesTotal: 0,
+                verdict: "No audit log entries found"
             )
         }
 
         // Aggregate summaries
         let summary = aggregateSummaries(reports)
         let topTypes = aggregateTypes(reports)
-        let hotFiles = aggregateFiles(reports)
+        // WO-556@v2: retain the complete count before limiting rendered hot files.
+        let allHotFiles = aggregateFiles(reports)
+        let hotFilesTotal = allHotFiles.count
+        let hotFiles = Array(allHotFiles.prefix(10))
         let period = aggregatePeriod(reports)
         let verdict = computeVerdict(summary)
 
@@ -75,6 +113,8 @@ public enum DashboardBuilder {
             summary: summary,
             topTypes: topTypes,
             hotFiles: hotFiles,
+            // WO-556@v2: expose truncation without changing the existing limited list.
+            hotFilesTotal: hotFilesTotal,
             verdict: verdict
         )
     }
@@ -150,8 +190,6 @@ public enum DashboardBuilder {
         return files
             .map { FileAccess(file: $0.key, reads: $0.value.reads, writes: $0.value.writes, secretsRedacted: $0.value.secrets) }
             .sorted { $0.secretsRedacted > $1.secretsRedacted }
-            .prefix(10)
-            .map { $0 }
     }
 
     private static func aggregatePeriod(_ reports: [SessionReport]) -> DashboardPeriod {

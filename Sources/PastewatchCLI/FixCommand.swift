@@ -13,8 +13,9 @@ struct Fix: ParsableCommand {
     @Flag(name: .long, help: "Show fix plan without applying changes")
     var dryRun = false
 
+    // WO-559@v2: remediation owns an explicit default independent of guard policy.
     @Option(name: .long, help: "Minimum severity to fix: critical, high, medium, low")
-    var minSeverity: Severity = .high
+    var minSeverity: Severity = .defaultRemediationThreshold
 
     @Option(name: .long, help: "Path for generated .env file (default: .env)")
     var envFile: String = ".env"

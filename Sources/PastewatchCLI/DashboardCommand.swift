@@ -79,8 +79,12 @@ struct DashboardCommand: ParsableCommand {
             }
         }
 
+        // WO-556@v2: disclose truncation rather than presenting a partial list as complete.
         if !d.hotFiles.isEmpty {
-            print("\nHot files:")
+            let suffix = d.hotFilesTotal > d.hotFiles.count
+                ? " (showing \(d.hotFiles.count) of \(d.hotFilesTotal))"
+                : ""
+            print("\nHot files\(suffix):")
             for fa in d.hotFiles.prefix(10) {
                 print("  \(fa.file): \(fa.reads)R \(fa.writes)W \(fa.secretsRedacted) redacted")
             }
@@ -129,8 +133,12 @@ struct DashboardCommand: ParsableCommand {
             }
         }
 
+        // WO-556@v2: disclose truncation in the Markdown rendering too.
         if !d.hotFiles.isEmpty {
-            print("\n## Hot Files\n")
+            let suffix = d.hotFilesTotal > d.hotFiles.count
+                ? " (showing \(d.hotFiles.count) of \(d.hotFilesTotal))"
+                : ""
+            print("\n## Hot Files\(suffix)\n")
             print("| File | Reads | Writes | Redacted |")
             print("|------|-------|--------|----------|")
             for fa in d.hotFiles.prefix(10) {

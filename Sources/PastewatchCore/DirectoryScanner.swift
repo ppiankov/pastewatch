@@ -1,5 +1,16 @@
 import Foundation
 
+/// WO-549@v2: callers must fail closed when a parsed secret cannot be mapped back
+/// to the original bytes without risking mutation of a different occurrence.
+public struct StructuredMatchRangeError: LocalizedError {
+    public let filePath: String
+    public let line: Int
+
+    public var errorDescription: String? {
+        "Cannot safely map a structured finding in \(filePath) at line \(line)."
+    }
+}
+
 /// Result of scanning a single file.
 public struct FileScanResult {
     public let filePath: String
@@ -17,6 +28,26 @@ public struct FileScanResult {
 
 /// Recursive directory scanner for sensitive data detection.
 public struct DirectoryScanner {
+    /// WO-549@v2: parser-local identity distinguishes repeated equal matches.
+    private struct ParsedMatchKey: Hashable {
+        let value: String
+        let lowerOffset: Int
+        let upperOffset: Int
+    }
+
+    /// WO-549@v2: retain cross-value claims while resetting parser-local identity
+    /// for each structured value.
+    private struct SourceRangeState {
+        let content: String
+        var parsedContent = ""
+        var parsedValueRanges: [ParsedMatchKey: Range<String.Index>] = [:]
+        var claimedSourceRanges: [String: [Range<String.Index>]] = [:]
+
+        mutating func beginParsedValue(_ value: String) {
+            parsedContent = value
+            parsedValueRanges = [:]
+        }
+    }
 
     /// File extensions to scan.
     public static let allowedExtensions: Set<String> = [
@@ -117,6 +148,7 @@ public struct DirectoryScanner {
             )
 
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+            fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
             if !fileMatches.isEmpty {
                 results.append(FileScanResult(
@@ -213,11 +245,7 @@ public struct DirectoryScanner {
                 config: config,
                 customRules: customRules
             ).map { match in
-                DetectedMatch(
-                    type: match.type, value: match.value, range: match.range,
-                    line: match.line, filePath: relativePath,
-                    customRuleName: match.customRuleName, customSeverity: match.customSeverity
-                )
+                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
             }
         }
 
@@ -225,17 +253,41 @@ public struct DirectoryScanner {
         try DetectionRules.ensureSharedPatternsLoaded(config: config)
 
         // Format-aware: extract values and scan each
+        let parsedValues = parser.parseValues(from: content)
+        // WO-550@v2: an empty structured parse is not proof that non-empty input is
+        // clean. Preserve the raw diagnostic scan as the fail-closed fallback.
+        if parsedValues.isEmpty, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return try DetectionRules.scanFileIOOrThrow(
+                content,
+                config: config,
+                customRules: customRules
+            ).map { match in
+                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
+            }
+        }
+
         var matches: [DetectedMatch] = []
-        for pv in parser.parseValues(from: content) {
+        var sourceRangeState = SourceRangeState(content: content)
+        for pv in parsedValues {
+            sourceRangeState.beginParsedValue(pv.value)
             for vm in try DetectionRules.scanFileIOOrThrow(
                 pv.value,
                 config: config,
                 customRules: customRules
             ) {
-                matches.append(DetectedMatch(
-                    type: vm.type, value: vm.value, range: vm.range,
-                    line: pv.line, filePath: relativePath,
-                    customRuleName: vm.customRuleName, customSeverity: vm.customSeverity
+                guard let sourceRange = sourceRange(
+                    of: vm.value,
+                    line: pv.line,
+                    parsedRange: vm.range,
+                    state: &sourceRangeState
+                ) else {
+                    throw StructuredMatchRangeError(filePath: relativePath, line: pv.line)
+                }
+                matches.append(sourceMatch(
+                    vm,
+                    range: sourceRange,
+                    line: lineNumber(at: sourceRange.lowerBound, in: content),
+                    filePath: relativePath
                 ))
             }
 
@@ -243,13 +295,30 @@ public struct DirectoryScanner {
             // keyword and the value looks like a real secret, flag it.
             // This catches JSON {"API_KEY": "value"} where the value alone has no pattern.
             if let key = pv.key,
-               !matches.contains(where: { $0.line == pv.line && $0.type == .credential }),
                DetectionRules.isCredentialKeyName(key),
                DetectionRules.isValidCredentialValue(pv.value) {
-                matches.append(DetectedMatch(
-                    type: .credential, value: pv.value,
-                    range: pv.value.startIndex..<pv.value.endIndex,
-                    line: pv.line, filePath: relativePath
+                guard let sourceRange = sourceRange(
+                   of: pv.value,
+                   line: pv.line,
+                   parsedRange: pv.value.startIndex..<pv.value.endIndex,
+                   state: &sourceRangeState
+                ) else {
+                    throw StructuredMatchRangeError(filePath: relativePath, line: pv.line)
+                }
+                guard !matches.contains(where: {
+                   $0.type == .credential && $0.range == sourceRange
+                }) else {
+                    continue
+                }
+                matches.append(sourceMatch(
+                    DetectedMatch(
+                        type: .credential,
+                        value: pv.value,
+                        range: pv.value.startIndex..<pv.value.endIndex
+                    ),
+                    range: sourceRange,
+                    line: lineNumber(at: sourceRange.lowerBound, in: content),
+                    filePath: relativePath
                 ))
             }
         }
@@ -280,6 +349,108 @@ public struct DirectoryScanner {
         }
 
         return matches
+    }
+
+    /// WO-549@v2: source metadata rebasing must retain authorization provenance.
+    private static func sourceMatch(
+        _ match: DetectedMatch,
+        range: Range<String.Index>,
+        line: Int,
+        filePath: String
+    ) -> DetectedMatch {
+        DetectedMatch(
+            type: match.type,
+            value: match.value,
+            range: range,
+            line: line,
+            filePath: filePath,
+            customRuleName: match.customRuleName,
+            customSeverity: match.customSeverity,
+            advisory: match.advisory,
+            mutationAuthorizationSources: match.mutationAuthorizationSources,
+            obfuscateRuleIdentifier: match.obfuscateRuleIdentifier
+        )
+    }
+
+    /// WO-549@v2: parsed values must be rebased to the source string before callers
+    /// mutate content. A parser-local range cannot safely index the full file.
+    private static func sourceRange(
+        of value: String,
+        line: Int,
+        parsedRange: Range<String.Index>,
+        state: inout SourceRangeState
+    ) -> Range<String.Index>? {
+        let key = ParsedMatchKey(
+            value: value,
+            lowerOffset: state.parsedContent.distance(
+                from: state.parsedContent.startIndex,
+                to: parsedRange.lowerBound
+            ),
+            upperOffset: state.parsedContent.distance(
+                from: state.parsedContent.startIndex,
+                to: parsedRange.upperBound
+            )
+        )
+        if let cached = state.parsedValueRanges[key] {
+            return cached
+        }
+
+        let claimed = state.claimedSourceRanges[value] ?? []
+        var searchRanges: [Range<String.Index>] = []
+        if line > 0, let lineRange = sourceLineRange(line, in: state.content) {
+            searchRanges.append(lineRange)
+        }
+        // JSON's Foundation parser reports the first line for duplicate decoded
+        // values. Only broaden after a prior occurrence proves this is a duplicate;
+        // otherwise a decoded escape could be mapped to unrelated plaintext.
+        if line <= 0 || !claimed.isEmpty {
+            searchRanges.append(state.content.startIndex..<state.content.endIndex)
+        }
+
+        for searchRange in searchRanges {
+            var cursor = searchRange.lowerBound
+            while cursor < searchRange.upperBound,
+                  let candidate = state.content.range(
+                      of: value,
+                      range: cursor..<searchRange.upperBound
+                  ) {
+                if !claimed.contains(candidate) {
+                    state.parsedValueRanges[key] = candidate
+                    state.claimedSourceRanges[value, default: []].append(candidate)
+                    return candidate
+                }
+                cursor = candidate.upperBound
+            }
+        }
+        return nil
+    }
+
+    private static func sourceLineRange(
+        _ line: Int,
+        in content: String
+    ) -> Range<String.Index>? {
+        var lineStart = content.startIndex
+        if line > 1 {
+            for _ in 1..<line {
+                guard let newline = content[lineStart...].firstIndex(of: "\n") else {
+                    return nil
+                }
+                lineStart = content.index(after: newline)
+            }
+        }
+        let lineEnd = content[lineStart...].firstIndex(of: "\n") ?? content.endIndex
+        return lineStart..<lineEnd
+    }
+
+    private static func lineNumber(
+        at index: String.Index,
+        in content: String
+    ) -> Int {
+        content[..<index].reduce(into: 1) { line, character in
+            if character == "\n" {
+                line += 1
+            }
+        }
     }
 
     /// Check if a file appears to be binary by looking for null bytes.

@@ -2,27 +2,31 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-struct GuardRead: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "guard-read",
-        abstract: "Check if a file contains secrets before allowing Read tool access"
-    )
+// WO-561@v3: shared guard logic for read/write — eliminates 95% copy-paste.
+enum FileGuard {
+    enum Operation {
+        case read
+        case write
 
-    @Argument(help: "File path to check")
-    var filePath: String
+        var toolName: String {
+            switch self {
+            case .read: return "Read"
+            case .write: return "Write"
+            }
+        }
+    }
 
-    @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .high
-
-    func run() throws {
+    /// Throws `ExitCode(2)` on block or shared-pattern error.
+    /// Returns normally when the file is clean (no actionable secrets).
+    static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
         let config = PastewatchConfig.resolve()
         if config.isPathProtected(filePath) {
             let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
             FileHandle.standardError.write(Data(msg.utf8))
-            print("You MUST use pastewatch_read_file instead of Read for files in protected directories.")
-            throw ExitCode(rawValue: 2)
+            print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files in protected directories.")
+            throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
         guard FileManager.default.fileExists(atPath: filePath) else { return }
@@ -43,11 +47,10 @@ struct GuardRead: ParsableCommand {
                 relativePath: filePath, config: config
             )
         } catch let error as SharedSecretPatternLoadError {
-            // WO-128: guard reads fail closed when configured shared coverage cannot load.
             let msg = "BLOCKED: shared pattern load failed: \(error.localizedDescription)\n"
             FileHandle.standardError.write(Data(msg.utf8))
-            print("Fix shared pattern configuration before using Read.")
-            throw ExitCode(rawValue: 2)
+            print("Fix shared pattern configuration before using \(operation.toolName).")
+            throw ExitCode(rawValue: GuardExitContract.blocked)
         }
         // WO-502: read/write/command/watch use one post-scan decision pipeline.
         let filtered = GuardDecision.evaluate(
@@ -65,8 +68,28 @@ struct GuardRead: ParsableCommand {
         let msg = "BLOCKED: \(filePath) contains \(filtered.count) secret(s) (\(counts.joined(separator: ", ")))\n"
         FileHandle.standardError.write(Data(msg.utf8))
 
-        print("You MUST use pastewatch_read_file instead of Read for files containing secrets.")
+        print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files containing secrets.")
 
-        throw ExitCode(rawValue: 2)
+        throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+}
+
+// WO-558@v2: GuardRead is governed by the shared blocked-exit contract.
+struct GuardRead: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "guard-read",
+        abstract: "Check if a file contains secrets before allowing Read tool access"
+    )
+
+    @Argument(help: "File path to check")
+    var filePath: String
+
+    // WO-559@v2: guard-read uses the named guard threshold by default.
+    @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
+    var failOnSeverity: Severity = .defaultGuardThreshold
+
+    // WO-558@v2: guard-read shares the canonical blocked exit contract.
+    func run() throws {
+        try FileGuard.check(filePath: filePath, failOnSeverity: failOnSeverity, operation: .read)
     }
 }

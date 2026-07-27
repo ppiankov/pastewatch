@@ -50,14 +50,23 @@ public struct Allowlist {
         values.contains(value)
     }
 
-    /// Filter out matches on lines that contain a pastewatch:allow comment.
+    /// WO-554@v3: only documented line or trailing comment forms can authorize a value.
+    /// Requiring whitespace before the delimiter prevents URL fragments and operators
+    /// from becoming accidental authorization markers.
+    private static let inlineAllowPattern = try? NSRegularExpression(
+        pattern: #"(?:^|\s)(?:#|//)\s*pastewatch:allow(?=\s|$)"#
+    )
+
+    /// Filter out matches on lines that contain a pastewatch:allow comment directive.
     public static func filterInlineAllow(matches: [DetectedMatch], content: String) -> [DetectedMatch] {
-        guard !matches.isEmpty else { return [] }
+        guard !matches.isEmpty, let inlineAllowPattern else { return matches }
         let lines = content.components(separatedBy: "\n")
         return matches.filter { match in
             let lineIndex = match.line - 1
             guard lineIndex >= 0, lineIndex < lines.count else { return true }
-            return !lines[lineIndex].contains("pastewatch:allow")
+            let line = lines[lineIndex]
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            return inlineAllowPattern.firstMatch(in: line, range: range) == nil
         }
     }
 }

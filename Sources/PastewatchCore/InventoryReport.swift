@@ -84,13 +84,15 @@ public struct InventoryReport: Codable {
     public let severityBreakdown: SeverityBreakdown
     public let entries: [InventoryEntry]
     public let hotSpots: [HotSpot]
+    /// WO-556@v2: total hot-spot files before the top-10 cap. When > hotSpots.count, the list was truncated.
+    public let hotSpotsTotal: Int
     public let typeGroups: [TypeGroup]
 
     public init(version: String, generatedAt: String, directory: String,
                 totalFindings: Int, filesAffected: Int,
                 severityBreakdown: SeverityBreakdown,
                 entries: [InventoryEntry], hotSpots: [HotSpot],
-                typeGroups: [TypeGroup]) {
+                typeGroups: [TypeGroup], hotSpotsTotal: Int? = nil) {
         self.version = version
         self.generatedAt = generatedAt
         self.directory = directory
@@ -99,7 +101,29 @@ public struct InventoryReport: Codable {
         self.severityBreakdown = severityBreakdown
         self.entries = entries
         self.hotSpots = hotSpots
+        self.hotSpotsTotal = hotSpotsTotal ?? max(hotSpots.count, filesAffected)
         self.typeGroups = typeGroups
+    }
+
+    // WO-556@v2: backward-compatible decode — field is absent in pre-WO-556 JSON.
+    private enum CodingKeys: String, CodingKey {
+        case version, generatedAt, directory, totalFindings, filesAffected
+        case severityBreakdown, entries, hotSpots, hotSpotsTotal, typeGroups
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        directory = try c.decode(String.self, forKey: .directory)
+        totalFindings = try c.decode(Int.self, forKey: .totalFindings)
+        filesAffected = try c.decode(Int.self, forKey: .filesAffected)
+        severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
+        entries = try c.decode([InventoryEntry].self, forKey: .entries)
+        hotSpots = try c.decode([HotSpot].self, forKey: .hotSpots)
+        hotSpotsTotal = try c.decodeIfPresent(Int.self, forKey: .hotSpotsTotal)
+            ?? max(hotSpots.count, filesAffected)
+        typeGroups = try c.decode([TypeGroup].self, forKey: .typeGroups)
     }
 }
 
@@ -166,6 +190,8 @@ public extension InventoryReport {
             )
         }
         hotSpots.sort { $0.findingCount > $1.findingCount }
+        // WO-556@v2: preserve the pre-truncation count for report consumers.
+        let hotSpotsTotal = hotSpots.count
         if hotSpots.count > 10 { hotSpots = Array(hotSpots.prefix(10)) }
 
         // Type groups
@@ -192,7 +218,9 @@ public extension InventoryReport {
             severityBreakdown: SeverityBreakdown(critical: crit, high: high, medium: med, low: low),
             entries: entries,
             hotSpots: hotSpots,
-            typeGroups: typeGroups
+            typeGroups: typeGroups,
+            // WO-556@v2: serialize the complete count alongside the limited entries.
+            hotSpotsTotal: hotSpotsTotal
         )
     }
 
@@ -234,6 +262,7 @@ public extension InventoryReport {
 
 public enum InventoryFormatter {
 
+    // WO-556@v2: text reports disclose hot-spot truncation totals.
     public static func formatText(_ report: InventoryReport) -> String {
         var lines: [String] = []
         lines.append("Secret Inventory Report")
@@ -252,7 +281,10 @@ public enum InventoryFormatter {
 
         if !report.hotSpots.isEmpty {
             lines.append("")
-            lines.append("Hot spots:")
+            let suffix = report.hotSpotsTotal > report.hotSpots.count
+                ? " (showing \(report.hotSpots.count) of \(report.hotSpotsTotal))"
+                : ""
+            lines.append("Hot spots\(suffix):")
             for hs in report.hotSpots {
                 let types = hs.types.joined(separator: ", ")
                 lines.append("  \(hs.filePath)  \(hs.findingCount) findings (\(types))")
@@ -280,6 +312,7 @@ public enum InventoryFormatter {
         return str
     }
 
+    // WO-556@v2: Markdown reports disclose hot-spot truncation totals.
     public static func formatMarkdown(_ report: InventoryReport) -> String {
         var lines: [String] = []
         lines.append("## Secret Inventory Report")
@@ -299,7 +332,10 @@ public enum InventoryFormatter {
 
         if !report.hotSpots.isEmpty {
             lines.append("")
-            lines.append("### Hot Spots")
+            let suffix = report.hotSpotsTotal > report.hotSpots.count
+                ? " (showing \(report.hotSpots.count) of \(report.hotSpotsTotal))"
+                : ""
+            lines.append("### Hot Spots\(suffix)")
             lines.append("")
             lines.append("| File | Findings | Types |")
             lines.append("|------|----------|-------|")

@@ -72,12 +72,15 @@ public struct StartupSweep {
 
                 let content = try String(contentsOfFile: normalizedPath, encoding: .utf8)
                 let result = DetectionRules.scanFileIOResult(content, config: config)
+                // WO-551@v2: startup reporting honors the same operator allowlist as
+                // directory and git scans.
+                let matches = Allowlist.fromConfig(config).filter(result.matches)
                 let summary = StartupSweepFileSummary(
                     path: normalizedPath,
                     contentHash: Self.contentHash(for: content),
-                    findingCount: result.matches.count,
-                    severityCounts: Self.severityCounts(for: result.matches),
-                    lineNumbers: Self.lineNumbers(for: result.matches)
+                    findingCount: matches.count,
+                    severityCounts: Self.severityCounts(for: matches),
+                    lineNumbers: Self.lineNumbers(for: matches)
                 )
 
                 if result.sharedPatternErrors.isEmpty == false {

@@ -77,21 +77,24 @@ public struct GitHistoryScanner {
             let diffFiles = GitDiffScanner.parseDiff(chunk.diffContent)
 
             for df in diffFiles {
-                guard shouldScanFile(df.path) else { continue }
+                // WO-562@v3: history scanning shares the canonical file classifier.
+                guard GitScanHelpers.shouldScanFile(df.path) else { continue }
                 filesScanned += 1
 
                 guard let content = try? GitDiffScanner.runGit(
                     ["show", "\(chunk.hash):\(df.path)"]
                 ), !content.isEmpty else { continue }
 
-                let ext = scanExtension(for: df.path)
+                // WO-562@v3: share classification only; trust-policy filtering remains
+                // explicit at this caller.
                 var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
-                    content: content, ext: ext,
-                    relativePath: df.path, config: config
+                    content: content,
+                    ext: GitScanHelpers.scanExtension(for: df.path),
+                    relativePath: df.path,
+                    config: config
                 )
-                fileMatches = Allowlist.filterInlineAllow(
-                    matches: fileMatches, content: content
-                )
+                fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+                fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
                 // Filter to only added lines
                 fileMatches = fileMatches.filter { df.addedLines.contains($0.line) }
@@ -204,26 +207,6 @@ public struct GitHistoryScanner {
         }
 
         return chunks
-    }
-
-    // MARK: - File filtering
-
-    /// Check if a file path should be scanned (by extension).
-    private static func shouldScanFile(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
-        let fileName = url.lastPathComponent
-        if DotenvClassifier.isDotenvFile(fileName) { return true }
-        return DirectoryScanner.allowedExtensions.contains(
-            url.pathExtension.lowercased()
-        )
-    }
-
-    /// Get the effective extension for scanning (handles .env files).
-    private static func scanExtension(for path: String) -> String {
-        let url = URL(fileURLWithPath: path)
-        let fileName = url.lastPathComponent
-        if DotenvClassifier.isDotenvFile(fileName) { return "env" }
-        return url.pathExtension.lowercased()
     }
 
     // MARK: - Dedup

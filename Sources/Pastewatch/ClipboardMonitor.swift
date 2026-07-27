@@ -17,6 +17,9 @@ final class ClipboardMonitor: ObservableObject {
     /// Last scan result (for UI display).
     @Published var lastScanResult: ScanResult?
 
+    /// WO-552@v4: a configured detector failure is visible and leaves clipboard data unchanged.
+    @Published var lastScanError: String?
+
     /// Total obfuscations performed this session.
     @Published var sessionObfuscationCount: Int = 0
 
@@ -98,6 +101,7 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
+    // WO-552@v4: clipboard monitoring uses the fail-closed file-I/O scan policy.
     /// Check clipboard for changes and process if needed.
     private func checkClipboard() {
         let pasteboard = NSPasteboard.general
@@ -116,12 +120,7 @@ final class ClipboardMonitor: ObservableObject {
         // Skip if monitoring is disabled in config
         guard config.enabled else { return }
 
-        // Scan for sensitive data
-        let matches = DetectionRules.scan(
-            content,
-            config: config,
-            customRules: CustomRule.compileValid(config.customRules)
-        )
+        guard let matches = scanClipboardContent(content) else { return }
 
         // No matches — nothing to do
         let outcome = applyAuthorizedMutations(
@@ -158,17 +157,14 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
+    // WO-552@v4: previews use the same scan policy without mutating the clipboard.
     /// Manually scan current clipboard content without modifying it.
     /// Useful for preview/testing.
     func previewScan() -> ScanResult? {
         guard let content = NSPasteboard.general.string(forType: .string) else { return nil }
         guard !content.isEmpty else { return nil }
 
-        let matches = DetectionRules.scan(
-            content,
-            config: config,
-            customRules: CustomRule.compileValid(config.customRules)
-        )
+        guard let matches = scanClipboardContent(content) else { return nil }
         let outcome = applyAuthorizedMutations(
             to: content,
             matches: matches,
@@ -182,6 +178,17 @@ final class ClipboardMonitor: ObservableObject {
             obfuscatedContent: outcome.text,
             timestamp: Date()
         )
+    }
+
+    /// WO-552@v4: live monitoring and preview share one diagnostic scan policy.
+    private func scanClipboardContent(_ content: String) -> [DetectedMatch]? {
+        let result = DetectionRules.scanFileIOResult(content, config: config)
+        guard !result.hasSharedPatternErrors else {
+            lastScanError = "Shared secret patterns could not be loaded. Clipboard was left unchanged."
+            return nil
+        }
+        lastScanError = nil
+        return Allowlist.fromConfig(config).filter(result.matches)
     }
 
     /// Update configuration.

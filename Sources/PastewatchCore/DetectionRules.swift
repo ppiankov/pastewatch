@@ -1386,30 +1386,142 @@ public struct DetectionRules {
             return false
         }
 
+        // WO-568: crypto algorithm/scheme/curve names are digit-bearing but are a
+        // closed non-secret vocabulary (Ed25519, RS256, ...). A bare algorithm token
+        // as a value is not credential evidence; a real secret still trips the earlier
+        // entropy check or the marker check below.
+        if Self.isCryptoAlgorithmName(value) {
+            return false
+        }
+
         let hasDigit = value.contains(where: \.isNumber)
         if hasDigit {
             return true
         }
 
-        let hasUnderscore = value.contains("_")
         let credentialMarkers = ["password", "passwd", "secret", "token", "api_key", "apikey"]
-        if hasUnderscore && credentialMarkers.contains(where: lowerValue.contains) {
+        // WO-555@v2: credential-shaped identifiers remain evidence only when their
+        // underscore-delimited value contains an explicit credential marker.
+        if value.contains("_"),
+           credentialMarkers.contains(where: { Self.containsCredentialMarker(value, keyword: $0) }) {
             return true
         }
 
         return false
     }
 
+    // WO-568: closed vocabulary of well-known cryptographic algorithm, signature-
+    // scheme, curve, and primitive names. These are digit-bearing identifiers that
+    // legitimately appear as config/comment values (e.g. Auth: Ed25519, alg: RS256)
+    // and must never be treated as secrets. Exact-token match only.
+    private static let cryptoAlgorithmNames: Set<String> = [
+        "ed25519", "ed448", "x25519", "x448", "curve25519", "curve448",
+        "secp256k1", "secp256r1", "secp384r1", "secp521r1", "p-256", "p-384",
+        "p-521", "prime256v1", "rsa", "dsa", "ecdsa", "eddsa",
+        "dh", "ecdh", "ecdhe", "dhe", "rs256", "rs384",
+        "rs512", "ps256", "ps384", "ps512", "es256", "es256k",
+        "es384", "es512", "hs256", "hs384", "hs512", "sha1",
+        "sha224", "sha256", "sha384", "sha512", "sha3", "sha3-256",
+        "sha3-384", "sha3-512", "md5", "blake2b", "blake2s", "blake3",
+        "aes", "aes128", "aes192", "aes256", "aes-128", "aes-192",
+        "aes-256", "aes128-gcm", "aes256-gcm", "aes-256-gcm", "aes-128-gcm", "chacha20",
+        "chacha20-poly1305", "poly1305", "gcm", "cbc", "ctr", "hmac",
+        "hkdf", "pbkdf2", "scrypt", "argon2", "argon2id", "argon2i",
+        "bcrypt",
+        // WO-569: digit-bearing auth-scheme / protocol identifiers (same closed-vocab
+        // class as the algorithm names; e.g. auth: oauth2).
+        "oauth2", "oauth2.0", "fido2", "webauthn", "pkce", "base64", "base32", "utf8", "utf-8",
+    ]
+
+    // WO-568: true iff the value is exactly one known crypto algorithm token,
+    // after trimming trailing syntax. Case-insensitive; exact match, not substring.
+    static func isCryptoAlgorithmName(_ value: String) -> Bool {
+        let trailingSyntax = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: ",;\"'`"))
+        let token = value.trimmingCharacters(in: trailingSyntax).lowercased()
+        return cryptoAlgorithmNames.contains(token)
+    }
+
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.
     /// Used by DirectoryScanner for key-aware detection in structured formats.
     public static func isCredentialKeyName(_ key: String) -> Bool {
-        let lower = key.lowercased()
         let keywords = [
             "password", "passwd", "secret", "token", "api_key", "apikey",
             "auth_token", "access_key", "secret_key", "private_key",
             "credential", "dsn", "connection_string",
         ]
-        return keywords.contains(where: { lower.contains($0) })
+        // WO-555@v2: anchored segment matching — prevents false positives where
+        // the keyword is a substring of an unrelated identifier (e.g. "nextPageToken",
+        // "widgetsnackbar"). Splits on camelCase boundaries and separators.
+        return keywords.contains(where: { Self.matchesCredentialSegment(key, keyword: $0) })
+    }
+
+    /// WO-555@v2: match credential names after deterministic camel/acronym/separator
+    /// normalization. Pagination tokens are data cursors, not credentials.
+    private static func matchesCredentialSegment(_ key: String, keyword: String) -> Bool {
+        let segments = credentialKeySegments(key)
+        guard !segments.isEmpty else { return false }
+
+        let normalizedKey = segments.joined()
+        if ["pagetoken", "nextpagetoken"].contains(where: normalizedKey.hasPrefix) {
+            return false
+        }
+
+        if keyword == "apikey" || keyword == "api_key" {
+            return segments.contains("apikey") ||
+                containsContiguousSegments(["api", "key"], in: segments)
+        }
+        if keyword.contains("_") {
+            let keywordSegments = keyword.split(separator: "_").map(String.init)
+            return containsContiguousSegments(keywordSegments, in: segments)
+        }
+        return segments.contains(keyword)
+    }
+
+    private static func containsContiguousSegments(
+        _ needle: [String],
+        in haystack: [String]
+    ) -> Bool {
+        guard !needle.isEmpty, needle.count <= haystack.count else { return false }
+        for start in 0...(haystack.count - needle.count)
+            where Array(haystack[start..<(start + needle.count)]) == needle {
+            return true
+        }
+        return false
+    }
+
+    /// WO-555@v2: value-side evidence may contain a credential marker in the middle
+    /// (`my_api_secret_xyz`); this is intentionally broader than key-name matching.
+    private static func containsCredentialMarker(_ value: String, keyword: String) -> Bool {
+        let segments = credentialKeySegments(value)
+        let normalized = segments.joined(separator: "_")
+        if keyword == "apikey" {
+            return segments.contains("apikey") || normalized.contains("api_key")
+        }
+        if keyword.contains("_") {
+            return normalized.contains(keyword)
+        }
+        return segments.contains(keyword)
+    }
+
+    /// WO-555@v2: preserve acronym boundaries such as APIKey while also splitting
+    /// camelCase, snake_case, kebab-case, and dotted configuration keys.
+    private static func credentialKeySegments(_ key: String) -> [String] {
+        let scalarPattern = #"([a-z0-9])([A-Z])|([A-Z]+)([A-Z][a-z])"#
+        guard let boundaryRegex = try? NSRegularExpression(pattern: scalarPattern) else {
+            return []
+        }
+
+        let fullRange = NSRange(key.startIndex..., in: key)
+        let separated = boundaryRegex.stringByReplacingMatches(
+            in: key,
+            range: fullRange,
+            withTemplate: "$1$3_$2$4"
+        )
+        return separated
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .map { $0.lowercased() }
     }
 
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).

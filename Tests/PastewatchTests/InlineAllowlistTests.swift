@@ -70,4 +70,50 @@ final class InlineAllowlistTests: XCTestCase {
         let filtered = Allowlist.filterInlineAllow(matches: [], content: "")
         XCTAssertTrue(filtered.isEmpty)
     }
+
+    // MARK: - WO-554@v3: exact comment grammar prevents false authorization
+
+    // WO-554@v3: URL query text cannot authorize suppression.
+    func testURLWithMarkerDoesNotSuppress() {
+        let content = "admin@corp.com?url=pastewatch:allow=true"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertFalse(filtered.isEmpty, "URL parameter should NOT suppress detection")
+    }
+
+    // WO-554@v3: filename text cannot authorize suppression.
+    func testFilenameWithMarkerDoesNotSuppress() {
+        let content = "admin@corp.com pastewatch:allow.txt"
+        let matches = DetectionRules.scan(content, config: config)
+        XCTAssertFalse(matches.isEmpty)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertFalse(filtered.isEmpty, "Filename should NOT suppress detection")
+    }
+
+    // WO-554@v3: only supported comment grammars authorize suppression.
+    func testUnsupportedCommentStylesDoNotSuppress() {
+        for delimiter in ["<!--", "--", ";", "/*", "-", ">"] {
+            let content = "admin@corp.com \(delimiter) pastewatch:allow"
+            let matches = DetectionRules.scan(content, config: config)
+            let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+            XCTAssertEqual(filtered.count, matches.count, delimiter)
+        }
+    }
+
+    // WO-554@v3: directive suffixes cannot broaden authorization.
+    func testSuffixedDirectiveDoesNotSuppress() {
+        let content = "admin@corp.com # pastewatch:allowed"
+        let matches = DetectionRules.scan(content, config: config)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertEqual(filtered.count, matches.count)
+    }
+
+    // WO-554@v3: URL fragments cannot masquerade as inline directives.
+    func testURLFragmentDirectiveDoesNotSuppress() {
+        let content = "admin@corp.com https://example.test/#pastewatch:allow"
+        let matches = DetectionRules.scan(content, config: config)
+        let filtered = Allowlist.filterInlineAllow(matches: matches, content: content)
+        XCTAssertEqual(filtered.count, matches.count)
+    }
 }

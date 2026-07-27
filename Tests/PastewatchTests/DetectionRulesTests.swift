@@ -556,6 +556,51 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-568: crypto algorithm/scheme/curve names as values are not credentials.
+    func testIgnoresCryptoAlgorithmNamesAsCredentials() {
+        let algorithmValues = [
+            "Auth: Ed25519",
+            "alg: RS256",
+            "signature: ES256",
+            "hash: SHA256",
+            "cipher: AES256-GCM",
+            "kex: X25519",
+            "curve: secp256k1",
+            "kdf: argon2id",
+            // WO-569: digit-bearing auth-scheme identifiers are the same closed-vocab class.
+            "auth: oauth2",
+        ]
+        for input in algorithmValues {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Algorithm name is not a credential: \(input)")
+        }
+    }
+
+    // WO-568: the exemption is exact-token — a real high-entropy value that merely
+    // contains an algorithm substring must STILL be detected.
+    func testHighEntropyValueContainingAlgorithmSubstringStillDetected() {
+        // A real secret under a strong credential key whose value merely CONTAINS an
+        // algorithm substring is not an exact algorithm token, so it must still fire.
+        let input = "password=s3cretEd25519value123456789abc"
+        let matches = DetectionRules.scan(input, config: config)
+        let credMatches = matches.filter { $0.type == .credential }
+        XCTAssertGreaterThanOrEqual(credMatches.count, 1,
+            "Secret value containing an algorithm substring must still fire")
+    }
+
+    // WO-568: unit-level exact/case-insensitive/substring-negative behavior.
+    func testIsCryptoAlgorithmNameExactMatchOnly() {
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("Ed25519"))
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("rs256"))
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("AES256-GCM"))
+        // trailing syntax trimmed
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("Ed25519,"))
+        // not an exact token -> not exempt
+        XCTAssertFalse(DetectionRules.isCryptoAlgorithmName("Ed25519abcdef"))
+        XCTAssertFalse(DetectionRules.isCryptoAlgorithmName("not_an_algo_9x8y"))
+    }
+
     // MARK: - Slack Webhook Detection
 
     func testDetectsSlackWebhook() {
@@ -1711,5 +1756,46 @@ final class DetectionRulesTests: XCTestCase {
 
     private func jwtFixture() -> String {
         "eyJ" + String(repeating: "A", count: 12) + ".eyJ" + String(repeating: "B", count: 12) + "." + String(repeating: "C", count: 20)
+    }
+
+    // MARK: - WO-555@v2: credential key name segment matching
+
+    func testCredentialKeyNameCamelCaseMatches() {
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("authToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("accessToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("refreshToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("apiSecret"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("clientSecret"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("userPassword"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("bearerToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("sessionToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("apiKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("APIKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("accessKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("privateKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("clientSecretValue"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("passwordHash"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("dsnUrl"))
+    }
+
+    // WO-555@v2: separator-delimited credential keys remain detectable.
+    func testCredentialKeyNameSnakeCaseMatches() {
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("auth_token"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("api_key"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("secret_key"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("private_key"))
+    }
+
+    // WO-555@v2: pagination and lexical neighbors must not become credential keys.
+    func testCredentialKeyNameFalsePositivesPrevented() {
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("widgetsnackbar"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("apikeyboard"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("secretive"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("tokenization"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("pageToken"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("nextPageToken"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("nextPageTokenValue"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("page_token"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("next_page_token"))
     }
 }

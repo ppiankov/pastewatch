@@ -98,4 +98,17 @@ final class ObfuscatorTests: XCTestCase {
         XCTAssertEqual(matches.map(\.advisory), [.malformedPrivateKey])
         XCTAssertEqual(Obfuscator.obfuscate(content, matches: matches), content)
     }
+
+    // WO-557@v2: Foundation and generated-shell regexes recognize the same marker.
+    func testMCPPlaceholderRegexFormsMatchTheSameMarker() throws {
+        let marker = Obfuscator.makeMCPPlaceholder(type: .awsKey, number: 12)
+        let foundation = try NSRegularExpression(pattern: Obfuscator.mcpPlaceholderPattern)
+        XCTAssertNotNil(
+            foundation.firstMatch(
+                in: marker,
+                range: NSRange(marker.startIndex..., in: marker)
+            )
+        )
+        XCTAssertTrue(marker.range(of: Obfuscator.mcpPlaceholderPOSIXERE, options: .regularExpression) != nil)
+    }
 }

@@ -10,7 +10,7 @@ public struct CustomRule {
     public init(
         name: String,
         regex: NSRegularExpression,
-        severity: Severity = .high,
+        severity: Severity = .defaultCustomRuleSeverity,
         type: SensitiveDataType = .credential
     ) {
         self.name = name
@@ -35,7 +35,7 @@ public struct CustomRule {
                 if let sevStr = config.severity, let sev = Severity(rawValue: sevStr) {
                     severity = sev
                 } else {
-                    severity = .high
+                    severity = .defaultCustomRuleSeverity
                 }
                 return CustomRule(name: config.name, regex: regex, severity: severity)
             } catch {
@@ -67,7 +67,8 @@ public struct CustomRule {
             guard let regex = try? NSRegularExpression(pattern: config.pattern) else {
                 return nil
             }
-            let severity = config.severity.flatMap(Severity.init(rawValue:)) ?? .high
+            let severity = config.severity.flatMap(Severity.init(rawValue:))
+                ?? .defaultCustomRuleSeverity
             return CustomRule(name: config.name, regex: regex, severity: severity)
         }
     }

@@ -9,16 +9,37 @@ public struct RepositorySummary: Codable {
     public let severityBreakdown: SeverityBreakdown
     public let typeGroups: [TypeGroup]
     public let hotSpots: [HotSpot]
+    /// WO-556@v2: preserve the pre-truncation inventory count in posture output.
+    public let hotSpotsTotal: Int
 
     public init(name: String, totalFindings: Int, filesAffected: Int,
                 severityBreakdown: SeverityBreakdown,
-                typeGroups: [TypeGroup], hotSpots: [HotSpot]) {
+                typeGroups: [TypeGroup], hotSpots: [HotSpot],
+                hotSpotsTotal: Int? = nil) {
         self.name = name
         self.totalFindings = totalFindings
         self.filesAffected = filesAffected
         self.severityBreakdown = severityBreakdown
         self.typeGroups = typeGroups
         self.hotSpots = hotSpots
+        self.hotSpotsTotal = hotSpotsTotal ?? max(hotSpots.count, filesAffected)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, totalFindings, filesAffected, severityBreakdown
+        case typeGroups, hotSpots, hotSpotsTotal
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        totalFindings = try c.decode(Int.self, forKey: .totalFindings)
+        filesAffected = try c.decode(Int.self, forKey: .filesAffected)
+        severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
+        typeGroups = try c.decode([TypeGroup].self, forKey: .typeGroups)
+        hotSpots = try c.decode([HotSpot].self, forKey: .hotSpots)
+        hotSpotsTotal = try c.decodeIfPresent(Int.self, forKey: .hotSpotsTotal)
+            ?? max(hotSpots.count, filesAffected)
     }
 }
 
@@ -31,11 +52,17 @@ public struct PostureReport: Codable {
     public let totalFindings: Int
     public let severityBreakdown: SeverityBreakdown
     public let repositories: [RepositorySummary]
+    /// WO-553@v3: compatibility mirror for reports written before complete pagination.
+    public let repoEnumerationCapped: Bool
+    /// WO-553@v3: true only when the report can prove repository enumeration completed.
+    public let repoEnumerationComplete: Bool
 
     public init(version: String, generatedAt: String, organization: String,
                 totalRepos: Int, reposScanned: Int, totalFindings: Int,
                 severityBreakdown: SeverityBreakdown,
-                repositories: [RepositorySummary]) {
+                repositories: [RepositorySummary],
+                repoEnumerationCapped: Bool = false,
+                repoEnumerationComplete: Bool? = nil) {
         self.version = version
         self.generatedAt = generatedAt
         self.organization = organization
@@ -44,6 +71,36 @@ public struct PostureReport: Codable {
         self.totalFindings = totalFindings
         self.severityBreakdown = severityBreakdown
         self.repositories = repositories
+        self.repoEnumerationComplete = repoEnumerationComplete ?? !repoEnumerationCapped
+        self.repoEnumerationCapped = !self.repoEnumerationComplete
+    }
+
+    // WO-553@v3: backward-compatible decode — field is absent in pre-WO-553 JSON.
+    private enum CodingKeys: String, CodingKey {
+        case version, generatedAt, organization, totalRepos, reposScanned
+        case totalFindings, severityBreakdown, repositories
+        case repoEnumerationCapped, repoEnumerationComplete
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        organization = try c.decode(String.self, forKey: .organization)
+        totalRepos = try c.decode(Int.self, forKey: .totalRepos)
+        reposScanned = try c.decode(Int.self, forKey: .reposScanned)
+        totalFindings = try c.decode(Int.self, forKey: .totalFindings)
+        severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
+        repositories = try c.decode([RepositorySummary].self, forKey: .repositories)
+        if let complete = try c.decodeIfPresent(Bool.self, forKey: .repoEnumerationComplete) {
+            repoEnumerationComplete = complete
+        } else if let capped = try c.decodeIfPresent(Bool.self, forKey: .repoEnumerationCapped) {
+            repoEnumerationComplete = !capped
+        } else {
+            // Historical reports cannot prove that enumeration reached the final page.
+            repoEnumerationComplete = false
+        }
+        repoEnumerationCapped = !repoEnumerationComplete
     }
 }
 
@@ -67,35 +124,135 @@ public struct PostureDelta: Codable {
 // MARK: - Scanner
 
 public enum PostureScanner {
+    /// WO-553@v3: route pagination through the endpoint matching the account type.
+    enum RepositoryOwnerType: String {
+        case organization = "Organization"
+        case user = "User"
 
+        var endpointComponent: String {
+            switch self {
+            case .organization: return "orgs"
+            case .user: return "users"
+            }
+        }
+    }
+
+    /// WO-553@v3: preserve output-channel separation while draining both pipes.
+    private struct CommandOutput {
+        let standardOutput: Data
+        let standardError: Data
+    }
+    /// WO-553@v3: execute a command without folding diagnostics into data output.
     public static func runCommand(_ executable: String, _ arguments: [String]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [executable] + arguments
-        let pipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = errPipe
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
         try process.run()
-        process.waitUntilExit()
+        let output = collectCommandOutput(
+            process: process,
+            outputPipe: outputPipe,
+            errorPipe: errorPipe
+        )
         guard process.terminationStatus == 0 else {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let errMsg = String(data: errData, encoding: .utf8) ?? "unknown error"
+            let diagnostic = output.standardError.isEmpty
+                ? output.standardOutput
+                : output.standardError
+            let errMsg = String(data: diagnostic, encoding: .utf8) ?? "unknown error"
             throw PostureError.commandFailed(executable, errMsg.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return String(data: output.standardOutput, encoding: .utf8) ?? ""
+    }
+
+    /// WO-553@v3: drain both output channels while the child runs. Keeping stderr
+    /// separate prevents successful diagnostics from becoming repository names.
+    private static func collectCommandOutput(
+        process: Process,
+        outputPipe: Pipe,
+        errorPipe: Pipe
+    ) -> CommandOutput {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var standardOutput = Data()
+        var standardError = Data()
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            lock.lock()
+            standardOutput = data
+            lock.unlock()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            lock.lock()
+            standardError = data
+            lock.unlock()
+            group.leave()
+        }
+
+        outputPipe.fileHandleForWriting.closeFile()
+        errorPipe.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+        group.wait()
+
+        lock.lock()
+        defer { lock.unlock() }
+        return CommandOutput(
+            standardOutput: standardOutput,
+            standardError: standardError
+        )
+    }
+
+    /// WO-553@v3: use GitHub API pagination rather than a fixed repository cap.
+    static func enumerateReposArguments(org: String) -> [String] {
+        enumerateReposArguments(owner: org, ownerType: .organization)
+    }
+
+    /// WO-553@v3: build the paginated endpoint after owner-type resolution.
+    static func enumerateReposArguments(
+        owner: String,
+        ownerType: RepositoryOwnerType
+    ) -> [String] {
+        [
+            "api",
+            "--paginate",
+            "\(ownerType.endpointComponent)/\(owner)/repos?per_page=100",
+            "--jq",
+            ".[] | select(.archived == false and .fork == false) | .name",
+        ]
+    }
+
+    /// WO-553@v3: resolve whether the documented owner is a user or organization.
+    static func repositoryOwnerTypeArguments(owner: String) -> [String] {
+        ["api", "users/\(owner)", "--jq", ".type"]
     }
 
     public static func enumerateRepos(org: String) throws -> [String] {
-        let output = try runCommand("gh", ["repo", "list", org,
-                                           "--no-archived", "--source",
-                                           "--limit", "500",
-                                           "--json", "name", "-q", ".[].name"])
+        // WO-553@v3: `posture --org` historically accepts either an organization
+        // or user account; resolve the API type before choosing the endpoint.
+        let typeOutput = try runCommand("gh", repositoryOwnerTypeArguments(owner: org))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ownerType = RepositoryOwnerType(rawValue: typeOutput) else {
+            throw PostureError.commandFailed("gh", "unsupported GitHub account type")
+        }
+        let output = try runCommand(
+            "gh",
+            enumerateReposArguments(owner: org, ownerType: ownerType)
+        )
         return output.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
     }
+
+    /// WO-553@v3: compatibility constant retained for callers compiled against the prior API.
+    @available(*, deprecated, message: "Repository enumeration is fully paginated")
+    public static let repoEnumerationLimit = 500
 
     public static func cloneRepo(org: String, name: String, into baseDir: String) throws -> String {
         let dest = (baseDir as NSString).appendingPathComponent(name)
@@ -116,12 +273,16 @@ public enum PostureScanner {
             filesAffected: report.filesAffected,
             severityBreakdown: report.severityBreakdown,
             typeGroups: report.typeGroups,
-            hotSpots: report.hotSpots
+            hotSpots: report.hotSpots,
+            hotSpotsTotal: report.hotSpotsTotal
         )
     }
 
     public static func aggregate(
-        org: String, summaries: [RepositorySummary], totalRepos: Int
+        org: String,
+        summaries: [RepositorySummary],
+        totalRepos: Int,
+        repoEnumerationComplete: Bool = true
     ) -> PostureReport {
         var crit = 0, high = 0, med = 0, low = 0
         var totalFindings = 0
@@ -146,7 +307,8 @@ public enum PostureScanner {
             reposScanned: summaries.count,
             totalFindings: totalFindings,
             severityBreakdown: SeverityBreakdown(critical: crit, high: high, medium: med, low: low),
-            repositories: sorted
+            repositories: sorted,
+            repoEnumerationComplete: repoEnumerationComplete
         )
     }
 
@@ -192,12 +354,17 @@ public enum PostureError: Error, CustomStringConvertible {
 
 public enum PostureFormatter {
 
+    // WO-553@v3: text output distinguishes complete enumeration from partial results.
     public static func formatText(_ report: PostureReport, findingsOnly: Bool = false) -> String {
         var lines: [String] = []
         lines.append("Posture Report: \(report.organization)")
         lines.append(String(repeating: "=", count: 40))
         lines.append("Generated: \(report.generatedAt)")
-        lines.append("Repos scanned: \(report.reposScanned)/\(report.totalRepos)")
+        if report.repoEnumerationComplete {
+            lines.append("Repos scanned: \(report.reposScanned)/\(report.totalRepos)")
+        } else {
+            lines.append("Repos scanned: \(report.reposScanned) (enumeration incomplete; total unknown)")
+        }
         lines.append("Total findings: \(report.totalFindings)")
         lines.append("")
         lines.append("Severity breakdown:")
@@ -239,12 +406,17 @@ public enum PostureFormatter {
         return str
     }
 
+    // WO-553@v3: Markdown output distinguishes complete enumeration from partial results.
     public static func formatMarkdown(_ report: PostureReport, findingsOnly: Bool = false) -> String {
         var lines: [String] = []
         lines.append("## Posture Report: \(report.organization)")
         lines.append("")
         lines.append("**Generated:** \(report.generatedAt)")
-        lines.append("**Repos scanned:** \(report.reposScanned)/\(report.totalRepos)")
+        if report.repoEnumerationComplete {
+            lines.append("**Repos scanned:** \(report.reposScanned)/\(report.totalRepos)")
+        } else {
+            lines.append("**Repos scanned:** \(report.reposScanned) (enumeration incomplete; total unknown)")
+        }
         lines.append("**Total findings:** \(report.totalFindings)")
         lines.append("")
         lines.append("### Severity Breakdown")

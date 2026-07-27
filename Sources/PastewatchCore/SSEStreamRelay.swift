@@ -11,7 +11,7 @@ let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
-    private static let rawStreamDoneLine = Data("data: [DONE]".utf8) // WO-507: shared overflow latch.
+    // WO-560@v2: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
 
     /// WO-400: consistent connection-thread snapshot of delegate-queue stream stats.
     struct StreamStatsSnapshot {
@@ -763,7 +763,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         _ data: Data,
         stats: StreamStatsSnapshot
     ) -> Data {
-        let sawDone = data.range(of: Self.rawStreamDoneLine) != nil
+        let sawDone = data.range(of: rawStreamDoneLine) != nil
         let output = rawStreamSawDone
             ? data
             : insertingAlertBeforeDoneIfNeeded(data, stats: stats)

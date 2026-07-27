@@ -7,7 +7,9 @@ import Glibc
 
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
-/// On macOS this file compiles but is not used — ProxyServer uses URLSession there.
+/// WO-565@v2: on macOS the HTTP transport path is not used, but shared utility
+/// functions (buildStreamingResponseHeaders, httpReasonPhrase, cancelActiveProcesses)
+/// ARE called from SSEStreamRelay and must remain compiled on both platforms.
 struct CurlHTTPClient {
     typealias StreamAlertBuilder = (
         _ streamCount: Int,
@@ -129,7 +131,7 @@ struct CurlHTTPClient {
         streamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
         proxyConfig: PastewatchConfig = PastewatchConfig.defaultConfig,
         proxyCustomRules: [CustomRule]? = nil,
-        proxySeverity: Severity = .high,
+        proxySeverity: Severity = .defaultGuardThreshold,
         streamDebugSink: StreamDebugSink? = nil,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
@@ -225,7 +227,7 @@ struct CurlHTTPClient {
         guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { throw ExecuteError.failure }
         var responseBody = parsedOutput.body
         var responseRedaction = SSEFrameRedactionResult(data: responseBody, count: 0, types: [])
-        if String(data: parsedOutput.body, encoding: .utf8) == nil, !parsedOutput.body.isEmpty {
+        if requiresBytePreservingResponseScan(parsedOutput.body) {
             responseRedaction = redactNonUTF8ResponseBody(
                 parsedOutput.body,
                 config: proxyConfig,
@@ -234,7 +236,7 @@ struct CurlHTTPClient {
             )
             responseBody = responseRedaction.data
             FileHandle.standardError.write(Data(
-                "[pastewatch-proxy] non-UTF-8 response body, redacted \(responseRedaction.count) match(es)\n".utf8
+                "[pastewatch-proxy] binary response body, redacted \(responseRedaction.count) match(es)\n".utf8
             ))
         }
 
@@ -479,7 +481,7 @@ struct CurlHTTPClient {
         var seenAdvisorySignatures: Set<String> = []
     }
 
-    private static let rawStreamDoneLine = Data("data: [DONE]".utf8)
+    // WO-560@v2: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
     private static let rawStreamScanOverlapBytes = 4_096
     private static let rawStreamAdvisoryScanWindowBytes = rawStreamScanOverlapBytes
     private static let rawStreamDeliveryLookbehindBytes = rawStreamScanOverlapBytes
@@ -1382,8 +1384,23 @@ struct CurlHTTPClient {
         redactRawStreamBytes(raw, config: config, severity: severity, customRules: customRules)
     }
 
-    /// WO-359: detect ASCII credentials inside otherwise non-UTF-8 response bodies
-    /// without round-tripping the full binary body through a lossy string.
+    /// WO-563@v3: identify response bodies that require byte-preserving scanning,
+    /// including valid UTF-8 containing binary control bytes.
+    static func requiresBytePreservingResponseScan(_ body: Data) -> Bool {
+        guard !body.isEmpty else { return false }
+        if String(data: body, encoding: .utf8) == nil {
+            return true
+        }
+        // WO-563@v3: valid UTF-8 can still be binary. Preserve ordinary text
+        // whitespace, but route NUL and other ASCII controls through byte scanning.
+        return body.contains { byte in
+            (byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D) ||
+                byte == 0x7F
+        }
+    }
+
+    /// WO-359/WO-563@v3: mutate exact ASCII secret ranges without lossy
+    /// round-tripping of the surrounding binary response.
     static func redactNonUTF8ResponseBody(
         _ body: Data,
         config: PastewatchConfig,
@@ -1395,11 +1412,8 @@ struct CurlHTTPClient {
         }
         // swiftlint:disable:next optional_data_string_conversion
         let lossyText = String(decoding: body, as: UTF8.self)
-        let matches = DetectionRules.scan(
-            lossyText,
-            config: config,
-            customRules: customRules ?? CustomRule.compileValid(config.customRules)
-        )
+        // WO-563@v3: use shared scanStreamText for consistent custom-rule loading.
+        let matches = scanStreamText(lossyText, config: config, customRules: customRules)
         let redactionMatches = mutationSafeProxyMatches(matches, site: .proxyResponse)
             .sorted { $0.range.lowerBound < $1.range.lowerBound }
         let advisories = streamAdvisoryMatches(
