@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-07-27
+
+### Fixed
+
+- The phone detector no longer flags a bare, unformatted digit run as a phone number.
+  Canonical character sets and cutsets used in source code (for example
+  `strings.TrimRight(key, "0123456789")`), monotonic ascending/descending runs, and
+  all-identical runs (including the nil UUID's zero segments) are rejected. Real
+  formatted phone numbers still detect when phone detection is enabled.
+
 ## [0.35.0] - 2026-07-27
 
 ### Changed
