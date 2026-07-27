@@ -1386,6 +1386,14 @@ public struct DetectionRules {
             return false
         }
 
+        // WO-568: crypto algorithm/scheme/curve names are digit-bearing but are a
+        // closed non-secret vocabulary (Ed25519, RS256, ...). A bare algorithm token
+        // as a value is not credential evidence; a real secret still trips the earlier
+        // entropy check or the marker check below.
+        if Self.isCryptoAlgorithmName(value) {
+            return false
+        }
+
         let hasDigit = value.contains(where: \.isNumber)
         if hasDigit {
             return true
@@ -1400,6 +1408,35 @@ public struct DetectionRules {
         }
 
         return false
+    }
+
+    // WO-568: closed vocabulary of well-known cryptographic algorithm, signature-
+    // scheme, curve, and primitive names. These are digit-bearing identifiers that
+    // legitimately appear as config/comment values (e.g. Auth: Ed25519, alg: RS256)
+    // and must never be treated as secrets. Exact-token match only.
+    private static let cryptoAlgorithmNames: Set<String> = [
+        "ed25519", "ed448", "x25519", "x448", "curve25519", "curve448",
+        "secp256k1", "secp256r1", "secp384r1", "secp521r1", "p-256", "p-384",
+        "p-521", "prime256v1", "rsa", "dsa", "ecdsa", "eddsa",
+        "dh", "ecdh", "ecdhe", "dhe", "rs256", "rs384",
+        "rs512", "ps256", "ps384", "ps512", "es256", "es256k",
+        "es384", "es512", "hs256", "hs384", "hs512", "sha1",
+        "sha224", "sha256", "sha384", "sha512", "sha3", "sha3-256",
+        "sha3-384", "sha3-512", "md5", "blake2b", "blake2s", "blake3",
+        "aes", "aes128", "aes192", "aes256", "aes-128", "aes-192",
+        "aes-256", "aes128-gcm", "aes256-gcm", "aes-256-gcm", "aes-128-gcm", "chacha20",
+        "chacha20-poly1305", "poly1305", "gcm", "cbc", "ctr", "hmac",
+        "hkdf", "pbkdf2", "scrypt", "argon2", "argon2id", "argon2i",
+        "bcrypt",
+    ]
+
+    // WO-568: true iff the value is exactly one known crypto algorithm token,
+    // after trimming trailing syntax. Case-insensitive; exact match, not substring.
+    static func isCryptoAlgorithmName(_ value: String) -> Bool {
+        let trailingSyntax = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: ",;\"'`"))
+        let token = value.trimmingCharacters(in: trailingSyntax).lowercased()
+        return cryptoAlgorithmNames.contains(token)
     }
 
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.

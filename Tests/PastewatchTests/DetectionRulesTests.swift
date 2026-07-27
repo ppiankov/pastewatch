@@ -556,6 +556,49 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-568: crypto algorithm/scheme/curve names as values are not credentials.
+    func testIgnoresCryptoAlgorithmNamesAsCredentials() {
+        let algorithmValues = [
+            "Auth: Ed25519",
+            "alg: RS256",
+            "signature: ES256",
+            "hash: SHA256",
+            "cipher: AES256-GCM",
+            "kex: X25519",
+            "curve: secp256k1",
+            "kdf: argon2id",
+        ]
+        for input in algorithmValues {
+            let matches = DetectionRules.scan(input, config: config)
+            let credMatches = matches.filter { $0.type == .credential }
+            XCTAssertEqual(credMatches.count, 0, "Algorithm name is not a credential: \(input)")
+        }
+    }
+
+    // WO-568: the exemption is exact-token — a real high-entropy value that merely
+    // contains an algorithm substring must STILL be detected.
+    func testHighEntropyValueContainingAlgorithmSubstringStillDetected() {
+        // A real secret under a strong credential key whose value merely CONTAINS an
+        // algorithm substring is not an exact algorithm token, so it must still fire.
+        let input = "password=s3cretEd25519value123456789abc"
+        let matches = DetectionRules.scan(input, config: config)
+        let credMatches = matches.filter { $0.type == .credential }
+        XCTAssertGreaterThanOrEqual(credMatches.count, 1,
+            "Secret value containing an algorithm substring must still fire")
+    }
+
+    // WO-568: unit-level exact/case-insensitive/substring-negative behavior.
+    func testIsCryptoAlgorithmNameExactMatchOnly() {
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("Ed25519"))
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("rs256"))
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("AES256-GCM"))
+        // trailing syntax trimmed
+        XCTAssertTrue(DetectionRules.isCryptoAlgorithmName("Ed25519,"))
+        // not an exact token -> not exempt
+        XCTAssertFalse(DetectionRules.isCryptoAlgorithmName("Ed25519abcdef"))
+        XCTAssertFalse(DetectionRules.isCryptoAlgorithmName("not_an_algo_9x8y"))
+    }
+
     // MARK: - Slack Webhook Detection
 
     func testDetectsSlackWebhook() {
