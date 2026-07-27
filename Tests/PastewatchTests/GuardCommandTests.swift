@@ -44,7 +44,7 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertFalse(filtered.isEmpty, "Should find high+ severity secrets")
     }
 
-    // WO-558: the guard family shares one blocked-exit contract, and it is exit 2
+    // WO-558@v2: the guard family shares one blocked-exit contract, and it is exit 2
     // (the Claude Code PreToolUse deny code). guard moved from 1 to 2; this pins the
     // value so an accidental change fails CI. guard-read/write/mutation and the
     // generated hooks all throw ExitCode(rawValue: GuardExitContract.blocked).

@@ -69,6 +69,7 @@ final class FalsePositiveCorpusTests: XCTestCase {
         ],
     ]
 
+    // WO-569: benign corpus must not produce guard-blocking findings.
     func testBenignCorpusProducesNoGuardBlockingFindings() {
         for (klass, lines) in Self.benignCorpus {
             for line in lines {
@@ -83,11 +84,13 @@ final class FalsePositiveCorpusTests: XCTestCase {
         }
     }
 
+    // WO-569: corpus breadth guard.
     func testBenignCorpusHasMeaningfulSize() {
         let total = Self.benignCorpus.values.reduce(0) { $0 + $1.count }
         XCTAssertGreaterThanOrEqual(total, 60, "corpus should be broad enough to catch regressions")
     }
 
+    // WO-569: true-positive guard — intrinsic detection must not be weakened.
     /// True-positive guard: real-shaped secrets MUST still fire. Values assembled from
     /// fragments so no literal secret sits in source; each is a realistic secret shape.
     func testTruePositivesStillFire() {

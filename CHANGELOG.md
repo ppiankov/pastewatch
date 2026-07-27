@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-27
+
 ### Changed
 
 - **Breaking (guard exit code):** the `guard` command now exits `2` when it blocks a
@@ -25,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names (for example `Ed25519`, `RS256`, `ES256`, `SHA256`, `AES256-GCM`) as secrets
   when they appear as a value. A real secret whose value merely contains such a token,
   or any high-entropy value, is still detected.
+- Cross-surface scan parity: MCP read/scan, guard, and the check-output tool now apply
+  the same config allowlist and fail-closed shared-pattern handling as the file guards,
+  so a value allowlisted for one surface is treated consistently across all of them.
+- Inline `pastewatch:allow` is honored only as a real comment directive (anchored to a
+  `#` or `//` comment), so the marker appearing inside a URL, filename, or string value
+  no longer suppresses a finding.
+- Credential key-name matching is token-boundary aware: `apiKey`/`api_key`/`authToken`
+  still match, while `tokenizer`, `pageToken`, and similar benign identifiers do not.
+- Posture repository enumeration is complete and observable instead of silently stopping
+  at a fixed page, and inventory/dashboard top-N views expose truncation metadata.
+- Buffered non-UTF-8 proxy responses are redacted with byte-preserving handling on both
+  Darwin and Linux.
+
+### Added
+
+- A checked-in false-positive golden corpus runs in CI: a broad set of realistic benign
+  lines (crypto algorithm names, auth vocabulary, code identifiers, ecosystem hosts,
+  prose) must scan clean at the guard threshold, and a companion true-positive guard
+  keeps intrinsic secret detection from being weakened. Precision regressions now fail
+  the build instead of surfacing in production.
 
 ## [0.34.0] - 2026-07-25
 
