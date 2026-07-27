@@ -1428,6 +1428,9 @@ public struct DetectionRules {
         "chacha20-poly1305", "poly1305", "gcm", "cbc", "ctr", "hmac",
         "hkdf", "pbkdf2", "scrypt", "argon2", "argon2id", "argon2i",
         "bcrypt",
+        // WO-569: digit-bearing auth-scheme / protocol identifiers (same closed-vocab
+        // class as the algorithm names; e.g. auth: oauth2).
+        "oauth2", "oauth2.0", "fido2", "webauthn", "pkce", "base64", "base32", "utf8", "utf-8",
     ]
 
     // WO-568: true iff the value is exactly one known crypto algorithm token,

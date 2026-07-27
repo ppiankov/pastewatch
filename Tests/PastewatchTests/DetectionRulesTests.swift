@@ -567,6 +567,8 @@ final class DetectionRulesTests: XCTestCase {
             "kex: X25519",
             "curve: secp256k1",
             "kdf: argon2id",
+            // WO-569: digit-bearing auth-scheme identifiers are the same closed-vocab class.
+            "auth: oauth2",
         ]
         for input in algorithmValues {
             let matches = DetectionRules.scan(input, config: config)
