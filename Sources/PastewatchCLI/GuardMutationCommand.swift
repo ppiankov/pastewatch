@@ -194,6 +194,6 @@ struct GuardMutation: ParsableCommand {
     private func deny(_ reason: String) throws {
         FileHandle.standardError.write(Data("BLOCKED: \(reason)\n".utf8))
         print("Use pastewatch_read_file and pastewatch_write_file for protected mutations.")
-        throw ExitCode(rawValue: 2)
+        throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }

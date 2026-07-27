@@ -7,10 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (guard exit code):** the `guard` command now exits `2` when it blocks a
+  command, matching `guard-read`, `guard-write`, and `guard-mutation` and the exit code
+  Claude Code's PreToolUse hooks treat as a deny. It previously exited `1`. All
+  guard-family blocks and generated hooks now share one contract (`GuardExitContract`).
+  Migration: any script or CI step that keyed on `guard` returning `1` on a block must
+  treat `2` as the block signal (`1` remains a generic/error exit). Non-block failures
+  keep their existing exit codes.
+
 ### Fixed
 
-- Guard surfaces now share exit code 2 for blocked operations, and generated hooks use
-  the same canonical placeholder pattern as the in-process resolver.
+- Generated agent hooks emit the same canonical placeholder pattern as the in-process
+  resolver, so hook-blocked and MCP-redacted output stay consistent.
+- The credential detector no longer flags cryptographic algorithm, scheme, and curve
+  names (for example `Ed25519`, `RS256`, `ES256`, `SHA256`, `AES256-GCM`) as secrets
+  when they appear as a value. A real secret whose value merely contains such a token,
+  or any high-entropy value, is still detected.
 
 ## [0.34.0] - 2026-07-25
 

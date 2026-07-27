@@ -175,9 +175,11 @@ Check if a shell command would access files containing secrets. Used as a PreToo
 - `--json` — machine-readable JSON output
 - `--quiet` — exit code only, no output
 
-**Exit codes:**
+**Exit codes (shared guard-family contract):**
 - 0: command allowed (no secrets in referenced files)
-- 1: command blocked (file contains secrets)
+- 2: command blocked (file contains secrets at or above threshold) — same block code
+  as `guard-read`, `guard-write`, and `guard-mutation`; this is the exit code
+  Claude Code PreToolUse hooks treat as a deny. (Changed from `1` in a prior release.)
 
 ### pastewatch-cli guard-read
 

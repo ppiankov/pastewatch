@@ -44,6 +44,15 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertFalse(filtered.isEmpty, "Should find high+ severity secrets")
     }
 
+    // WO-558: the guard family shares one blocked-exit contract, and it is exit 2
+    // (the Claude Code PreToolUse deny code). guard moved from 1 to 2; this pins the
+    // value so an accidental change fails CI. guard-read/write/mutation and the
+    // generated hooks all throw ExitCode(rawValue: GuardExitContract.blocked).
+    func testGuardBlockedExitContractIsTwo() {
+        XCTAssertEqual(GuardExitContract.blocked, 2,
+            "Guard-family block exit code must be 2 (PreToolUse deny)")
+    }
+
     // WO-502: an agent can write `# pastewatch:allow` into a file it controls and then
     // `cat` it. Files referenced by an agent-controlled command must be scanned as
     // .agentControlled so the inline allow comment cannot self-authorize the secret.

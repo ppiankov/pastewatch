@@ -26,7 +26,7 @@ enum FileGuard {
             let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
             FileHandle.standardError.write(Data(msg.utf8))
             print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files in protected directories.")
-            throw ExitCode(rawValue: 2)
+            throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
         guard FileManager.default.fileExists(atPath: filePath) else { return }
@@ -50,7 +50,7 @@ enum FileGuard {
             let msg = "BLOCKED: shared pattern load failed: \(error.localizedDescription)\n"
             FileHandle.standardError.write(Data(msg.utf8))
             print("Fix shared pattern configuration before using \(operation.toolName).")
-            throw ExitCode(rawValue: 2)
+            throw ExitCode(rawValue: GuardExitContract.blocked)
         }
         // WO-502: read/write/command/watch use one post-scan decision pipeline.
         let filtered = GuardDecision.evaluate(
@@ -70,7 +70,7 @@ enum FileGuard {
 
         print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files containing secrets.")
 
-        throw ExitCode(rawValue: 2)
+        throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }
 
