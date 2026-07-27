@@ -72,6 +72,8 @@ public struct Obfuscator {
 
     /// Regex pattern matching MCP placeholders for resolution.
     public static let mcpPlaceholderPattern = "__PW_[A-Z][A-Z0-9_]*_\\d+__"
+    /// WO-557@v2: POSIX ERE form used by generated shell hooks.
+    public static let mcpPlaceholderPOSIXERE = "__PW_[A-Z][A-Z0-9_]*_[0-9]+__"
 
     /// Build a regex pattern matching custom-prefix placeholders.
     public static func customPlaceholderPattern(prefix: String) -> String {

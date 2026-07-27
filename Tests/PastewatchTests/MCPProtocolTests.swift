@@ -222,6 +222,119 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertFalse(enabledResult.stderr.contains(secretValue), enabledResult.stderr)
     }
 
+    // WO-549@v2: structured advisory evidence remains visible without mutation.
+    func testReadFileSurfacesStructuredCredentialEvidenceAsAdvisory() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-structured-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let value = "CredentialValueWithEntropy123456789"
+        let fileURL = tempDir.appendingPathComponent("config.json")
+        try #"{"apiKey":"\#(value)"}"#.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_read_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+        XCTAssertTrue(text.contains("\"clean\" : false"), text)
+        XCTAssertTrue(text.contains("\"advisories\""), text)
+        XCTAssertTrue(text.contains("\"Credential\""), text)
+    }
+
+    // WO-549@v2: agent-authored plaintext cannot bypass placeholder restoration.
+    func testWriteFileBlocksAgentAuthoredPlaintextSecret() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-write-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Write fixture", pattern: "PWWRITE-[A-F0-9]{12}")
+        ]
+        try JSONEncoder().encode(config).write(to: tempDir.appendingPathComponent(".pastewatch.json"))
+        let target = tempDir.appendingPathComponent("output.txt")
+        let value = "PWWRITE-" + syntheticSuffix()
+
+        let response = try callMCPTool(
+            name: "pastewatch_write_file",
+            arguments: ["path": .string(target.path), "content": .string(value)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+        XCTAssertTrue(text.contains("Write blocked"), text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    // WO-549@v2: source-range rebasing must retain configured mutation authorization.
+    func testReadFileRedactsConfiguredStructuredMatch() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-configured-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let value = ["operator", "@", "example.com"].joined()
+        var config = PastewatchConfig.defaultConfig
+        config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@example.com")]
+        try JSONEncoder().encode(config).write(to: tempDir.appendingPathComponent(".pastewatch.json"))
+        let fileURL = tempDir.appendingPathComponent("configured.json")
+        try #"{"contact":"\#(value)"}"#.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_read_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+        XCTAssertFalse(text.contains(value), text)
+        XCTAssertTrue(text.contains("__PW_EMAIL_1__"), text)
+    }
+
+    // WO-550@v2: malformed JSON must retain the raw fail-closed security scan.
+    func testReadFileRedactsSecretInMalformedJSON() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-malformed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        let fileURL = tempDir.appendingPathComponent("broken.json")
+        try #"{"token":"\#(credential)""#.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_read_file",
+            arguments: ["path": .string(fileURL.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+        XCTAssertFalse(text.contains(credential), text)
+        XCTAssertTrue(text.contains("__PW_GOOGLE_API_KEY_1__"), text)
+    }
+
+    // WO-550@v2: malformed structured writes use the same raw fail-closed fallback.
+    func testWriteFileBlocksSecretInMalformedJSON() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-malformed-write-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        let target = tempDir.appendingPathComponent("broken.json")
+        let content = #"{"token":"\#(credential)""#
+
+        let response = try callMCPTool(
+            name: "pastewatch_write_file",
+            arguments: ["path": .string(target.path), "content": .string(content)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+        XCTAssertTrue(text.contains("Write blocked"), text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
     private struct MCPCallResult {
         let response: JSONRPCResponse
         let stderr: String

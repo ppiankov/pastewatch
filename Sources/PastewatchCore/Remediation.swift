@@ -33,10 +33,11 @@ public enum Remediation {
 
     // MARK: - Plan building
 
+    // WO-559@v2: remediation applies its own named severity default.
     /// Build a fix plan from directory scan results.
     public static func buildPlan(
         results: [FileScanResult],
-        minSeverity: Severity = .defaultThreshold
+        minSeverity: Severity = .defaultRemediationThreshold
     ) -> FixPlan {
         var actions: [FixAction] = []
         var usedNames: [String: Int] = [:]

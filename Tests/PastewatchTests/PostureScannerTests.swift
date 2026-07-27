@@ -5,11 +5,13 @@ final class PostureScannerTests: XCTestCase {
 
     // MARK: - Aggregate
 
+    // WO-553@v3: an explicitly empty enumeration is still complete.
     func testAggregateEmptyRepos() {
         let report = PostureScanner.aggregate(org: "testorg", summaries: [], totalRepos: 0)
         XCTAssertEqual(report.totalFindings, 0)
         XCTAssertEqual(report.reposScanned, 0)
         XCTAssertEqual(report.organization, "testorg")
+        XCTAssertTrue(report.repoEnumerationComplete)
     }
 
     func testAggregateSumsSeverities() {
@@ -126,6 +128,60 @@ final class PostureScannerTests: XCTestCase {
         let text = PostureFormatter.formatText(report)
         XCTAssertTrue(text.contains("myorg"))
         XCTAssertTrue(text.contains("2/2"))
+    }
+
+    // WO-553@v3: repository enumeration has no fixed result cap.
+    func testEnumerationUsesUnboundedGitHubPagination() {
+        let arguments = PostureScanner.enumerateReposArguments(org: "example")
+        XCTAssertEqual(arguments.first, "api")
+        XCTAssertTrue(arguments.contains("--paginate"))
+        XCTAssertTrue(arguments.contains("orgs/example/repos?per_page=100"))
+        XCTAssertFalse(arguments.contains("--limit"))
+    }
+
+    // WO-553@v3: documented user accounts route to the users API, while
+    // organizations retain the orgs endpoint.
+    func testEnumerationRoutesByGitHubOwnerType() {
+        XCTAssertEqual(
+            PostureScanner.repositoryOwnerTypeArguments(owner: "example"),
+            ["api", "users/example", "--jq", ".type"]
+        )
+        XCTAssertTrue(
+            PostureScanner.enumerateReposArguments(owner: "example", ownerType: .user)
+                .contains("users/example/repos?per_page=100")
+        )
+        XCTAssertTrue(
+            PostureScanner.enumerateReposArguments(owner: "example", ownerType: .organization)
+                .contains("orgs/example/repos?per_page=100")
+        )
+    }
+
+    // WO-553@v3: successful diagnostics stay on stderr and cannot become repo names.
+    func testRunCommandKeepsSuccessfulStderrSeparate() throws {
+        let output = try PostureScanner.runCommand(
+            "/bin/sh",
+            ["-c", "printf 'repo-one\\n'; printf 'diagnostic\\n' >&2"]
+        )
+
+        XCTAssertEqual(output, "repo-one\n")
+        XCTAssertFalse(output.contains("diagnostic"))
+    }
+
+    // WO-553@v3: historical artifacts cannot claim unrecorded completeness.
+    func testLegacyReportDoesNotClaimCompleteEnumeration() throws {
+        let json = """
+        {
+          "version":"1","generatedAt":"2025-01-01T00:00:00Z","organization":"org",
+          "totalRepos":1,"reposScanned":1,"totalFindings":0,
+          "severityBreakdown":{"critical":0,"high":0,"medium":0,"low":0},
+          "repositories":[]
+        }
+        """
+        let report = try JSONDecoder().decode(PostureReport.self, from: Data(json.utf8))
+        XCTAssertFalse(report.repoEnumerationComplete)
+        XCTAssertTrue(report.repoEnumerationCapped)
+        XCTAssertTrue(PostureFormatter.formatText(report).contains("enumeration incomplete"))
+        XCTAssertTrue(PostureFormatter.formatMarkdown(report).contains("enumeration incomplete"))
     }
 
     func testFormatJSONRoundtrip() throws {

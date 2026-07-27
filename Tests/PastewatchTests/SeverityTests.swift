@@ -38,4 +38,16 @@ final class SeverityTests: XCTestCase {
         XCTAssertEqual(Severity.medium.sarifLevel, "warning")
         XCTAssertEqual(Severity.low.sarifLevel, "note")
     }
+
+    // WO-559@v2: product policies retain independent named defaults.
+    func testPolicyDefaultsAreExplicitAndIndependent() {
+        XCTAssertEqual(Severity.defaultGuardThreshold, .high)
+        XCTAssertEqual(Severity.defaultCustomRuleSeverity, .high)
+        XCTAssertEqual(Severity.defaultRemediationThreshold, .high)
+    }
+
+    // WO-558@v2: generated hooks and CLI guards share one blocked exit status.
+    func testGuardBlockedExitContract() {
+        XCTAssertEqual(GuardExitContract.blocked, 2)
+    }
 }

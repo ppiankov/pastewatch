@@ -1391,11 +1391,11 @@ public struct DetectionRules {
             return true
         }
 
-        let hasUnderscore = value.contains("_")
         let credentialMarkers = ["password", "passwd", "secret", "token", "api_key", "apikey"]
-        // WO-555: anchored matching — split on common key delimiters to prevent
-        // false positives like "nextPageToken", "widgetsnackbar", "secret_sauce_recipe".
-        if hasUnderscore && credentialMarkers.contains(where: { Self.matchesCredentialSegment(value, keyword: $0) }) {
+        // WO-555@v2: credential-shaped identifiers remain evidence only when their
+        // underscore-delimited value contains an explicit credential marker.
+        if value.contains("_"),
+           credentialMarkers.contains(where: { Self.containsCredentialMarker(value, keyword: $0) }) {
             return true
         }
 
@@ -1405,40 +1405,83 @@ public struct DetectionRules {
     /// Check if a key name (from JSON/YAML/properties) indicates a credential.
     /// Used by DirectoryScanner for key-aware detection in structured formats.
     public static func isCredentialKeyName(_ key: String) -> Bool {
-        let lower = key.lowercased()
         let keywords = [
             "password", "passwd", "secret", "token", "api_key", "apikey",
             "auth_token", "access_key", "secret_key", "private_key",
             "credential", "dsn", "connection_string",
         ]
-        // WO-555: anchored segment matching — prevents false positives where
+        // WO-555@v2: anchored segment matching — prevents false positives where
         // the keyword is a substring of an unrelated identifier (e.g. "nextPageToken",
         // "widgetsnackbar"). Splits on camelCase boundaries and separators.
         return keywords.contains(where: { Self.matchesCredentialSegment(key, keyword: $0) })
     }
 
-    /// WO-555: match a credential keyword against delimited segments of a key name.
-    /// Splits on camelCase boundaries and common separators so "authToken" → ["auth","token"]
-    /// matches "token", but "widgetsnackbar" → ["widgetsnackbar"] does NOT match "dsn".
-    /// Multi-word keywords with underscores (api_key, auth_token) use substring match
-    /// since they are already specific enough.
+    /// WO-555@v2: match credential names after deterministic camel/acronym/separator
+    /// normalization. Pagination tokens are data cursors, not credentials.
     private static func matchesCredentialSegment(_ key: String, keyword: String) -> Bool {
+        let segments = credentialKeySegments(key)
+        guard !segments.isEmpty else { return false }
+
+        let normalizedKey = segments.joined()
+        if ["pagetoken", "nextpagetoken"].contains(where: normalizedKey.hasPrefix) {
+            return false
+        }
+
+        if keyword == "apikey" || keyword == "api_key" {
+            return segments.contains("apikey") ||
+                containsContiguousSegments(["api", "key"], in: segments)
+        }
         if keyword.contains("_") {
-            return key.lowercased().contains(keyword)
+            let keywordSegments = keyword.split(separator: "_").map(String.init)
+            return containsContiguousSegments(keywordSegments, in: segments)
         }
-        var segments: [String] = []
-        var current = ""
-        for ch in key {
-            if ch.isUppercase && !current.isEmpty {
-                segments.append(current.lowercased())
-                current = String(ch)
-            } else {
-                current.append(ch)
-            }
-        }
-        if !current.isEmpty { segments.append(current.lowercased()) }
-        segments = segments.flatMap { $0.components(separatedBy: CharacterSet.alphanumerics.inverted) }
         return segments.contains(keyword)
+    }
+
+    private static func containsContiguousSegments(
+        _ needle: [String],
+        in haystack: [String]
+    ) -> Bool {
+        guard !needle.isEmpty, needle.count <= haystack.count else { return false }
+        for start in 0...(haystack.count - needle.count)
+            where Array(haystack[start..<(start + needle.count)]) == needle {
+            return true
+        }
+        return false
+    }
+
+    /// WO-555@v2: value-side evidence may contain a credential marker in the middle
+    /// (`my_api_secret_xyz`); this is intentionally broader than key-name matching.
+    private static func containsCredentialMarker(_ value: String, keyword: String) -> Bool {
+        let segments = credentialKeySegments(value)
+        let normalized = segments.joined(separator: "_")
+        if keyword == "apikey" {
+            return segments.contains("apikey") || normalized.contains("api_key")
+        }
+        if keyword.contains("_") {
+            return normalized.contains(keyword)
+        }
+        return segments.contains(keyword)
+    }
+
+    /// WO-555@v2: preserve acronym boundaries such as APIKey while also splitting
+    /// camelCase, snake_case, kebab-case, and dotted configuration keys.
+    private static func credentialKeySegments(_ key: String) -> [String] {
+        let scalarPattern = #"([a-z0-9])([A-Z])|([A-Z]+)([A-Z][a-z])"#
+        guard let boundaryRegex = try? NSRegularExpression(pattern: scalarPattern) else {
+            return []
+        }
+
+        let fullRange = NSRange(key.startIndex..., in: key)
+        let separated = boundaryRegex.stringByReplacingMatches(
+            in: key,
+            range: fullRange,
+            withTemplate: "$1$3_$2$4"
+        )
+        return separated
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .map { $0.lowercased() }
     }
 
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).

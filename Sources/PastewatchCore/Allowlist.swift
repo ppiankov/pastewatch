@@ -50,17 +50,16 @@ public struct Allowlist {
         values.contains(value)
     }
 
-    /// WO-554: tokenized inline-allow detection — requires "pastewatch:allow" as a
-    /// standalone directive, not an arbitrary substring. Prevents false negatives
-    /// where the marker appears inside a URL, filename, or secret value.
-    /// WO-548 review: widened prefix set to cover HTML/XML, SQL, Lisp, INI, etc.
-    private static let inlineAllowPattern = try! NSRegularExpression(
-        pattern: #"(?:^|#|//|/\*|\*|;|--|<!--|>|-)\s*pastewatch:allow\b"#
+    /// WO-554@v3: only documented line or trailing comment forms can authorize a value.
+    /// Requiring whitespace before the delimiter prevents URL fragments and operators
+    /// from becoming accidental authorization markers.
+    private static let inlineAllowPattern = try? NSRegularExpression(
+        pattern: #"(?:^|\s)(?:#|//)\s*pastewatch:allow(?=\s|$)"#
     )
 
     /// Filter out matches on lines that contain a pastewatch:allow comment directive.
     public static func filterInlineAllow(matches: [DetectedMatch], content: String) -> [DetectedMatch] {
-        guard !matches.isEmpty else { return [] }
+        guard !matches.isEmpty, let inlineAllowPattern else { return matches }
         let lines = content.components(separatedBy: "\n")
         return matches.filter { match in
             let lineIndex = match.line - 1

@@ -68,6 +68,13 @@ struct MenuBarView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
+            // WO-552@v4: surface fail-closed clipboard scan failures to the operator.
+            if let scanError = monitor.lastScanError {
+                Text(scanError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

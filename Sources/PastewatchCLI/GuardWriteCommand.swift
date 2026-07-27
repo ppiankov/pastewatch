@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-// WO-561: logic extracted to FileGuard.check in GuardReadCommand.swift.
+// WO-561@v3: logic extracted to FileGuard.check in GuardReadCommand.swift.
 struct GuardWrite: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "guard-write",
@@ -13,7 +13,7 @@ struct GuardWrite: ParsableCommand {
     var filePath: String
 
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .defaultThreshold
+    var failOnSeverity: Severity = .defaultGuardThreshold
 
     func run() throws {
         try FileGuard.check(filePath: filePath, failOnSeverity: failOnSeverity, operation: .write)

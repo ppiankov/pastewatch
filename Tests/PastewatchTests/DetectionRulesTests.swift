@@ -1713,7 +1713,7 @@ final class DetectionRulesTests: XCTestCase {
         "eyJ" + String(repeating: "A", count: 12) + ".eyJ" + String(repeating: "B", count: 12) + "." + String(repeating: "C", count: 20)
     }
 
-    // MARK: - WO-555: credential key name segment matching
+    // MARK: - WO-555@v2: credential key name segment matching
 
     func testCredentialKeyNameCamelCaseMatches() {
         XCTAssertTrue(DetectionRules.isCredentialKeyName("authToken"))
@@ -1724,6 +1724,13 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertTrue(DetectionRules.isCredentialKeyName("userPassword"))
         XCTAssertTrue(DetectionRules.isCredentialKeyName("bearerToken"))
         XCTAssertTrue(DetectionRules.isCredentialKeyName("sessionToken"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("apiKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("APIKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("accessKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("privateKey"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("clientSecretValue"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("passwordHash"))
+        XCTAssertTrue(DetectionRules.isCredentialKeyName("dsnUrl"))
     }
 
     func testCredentialKeyNameSnakeCaseMatches() {
@@ -1733,10 +1740,16 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertTrue(DetectionRules.isCredentialKeyName("private_key"))
     }
 
+    // WO-555@v2: pagination and lexical neighbors must not become credential keys.
     func testCredentialKeyNameFalsePositivesPrevented() {
         XCTAssertFalse(DetectionRules.isCredentialKeyName("widgetsnackbar"))
         XCTAssertFalse(DetectionRules.isCredentialKeyName("apikeyboard"))
         XCTAssertFalse(DetectionRules.isCredentialKeyName("secretive"))
         XCTAssertFalse(DetectionRules.isCredentialKeyName("tokenization"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("pageToken"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("nextPageToken"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("nextPageTokenValue"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("page_token"))
+        XCTAssertFalse(DetectionRules.isCredentialKeyName("next_page_token"))
     }
 }

@@ -101,6 +101,98 @@ final class DirectoryScannerTests: XCTestCase {
         XCTAssertFalse(results[0].filePath.hasPrefix("/"))
     }
 
+    // WO-549@v2: structured matches must index the source string used for mutation.
+    func testStructuredMatchRangesIndexTheOriginalContent() throws {
+        let value = "CredentialValueWithEntropy123456789"
+        let content = #"{"apiKey":"\#(value)"}"#
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "config.json",
+            config: .defaultConfig
+        )
+        let credential = try XCTUnwrap(matches.first { $0.type == .credential })
+        XCTAssertEqual(String(content[credential.range]), value)
+    }
+
+    // WO-549@v2: identical structured values must map to distinct source occurrences.
+    func testStructuredDuplicateValuesReceiveDistinctSourceRanges() throws {
+        let value = "CredentialValueWithEntropy123456789"
+        let content = #"{"apiKey":"\#(value)","clientSecret":"\#(value)"}"#
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "config.json",
+            config: .defaultConfig
+        ).filter { $0.type == .credential }
+
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(Set(matches.map(\.range.lowerBound)).count, 2)
+        XCTAssertTrue(matches.allSatisfy { String(content[$0.range]) == value })
+    }
+
+    // WO-549@v2: repeated matches inside one parsed value retain parser-local identity.
+    func testStructuredValueWithRepeatedSecretReceivesDistinctSourceRanges() throws {
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        let content = #"{"message":"\#(credential) and \#(credential)"}"#
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "config.json",
+            config: .defaultConfig
+        ).filter { $0.type == .googleApiKey }
+
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(Set(matches.map(\.range.lowerBound)).count, 2)
+    }
+
+    // WO-549@v2: configured mutation provenance survives source-range rebasing.
+    func testStructuredMatchesPreserveConfiguredObfuscationProvenance() throws {
+        let value = ["operator", "@", "example.com"].joined()
+        let content = #"{"contact":"\#(value)"}"#
+        var configured = PastewatchConfig.defaultConfig
+        configured.obfuscate = [ObfuscateEntry(type: "email", pattern: "@example.com")]
+
+        let match = try XCTUnwrap(DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "config.json",
+            config: configured
+        ).first)
+
+        XCTAssertTrue(match.mutationAuthorizationSources.contains(.configuredObfuscate))
+        XCTAssertEqual(match.obfuscateRuleIdentifier, "email[0]")
+    }
+
+    // WO-550@v2: malformed structured input falls back to the raw diagnostic scan.
+    func testMalformedJSONStillScansRawContent() throws {
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        let content = #"{"token":"\#(credential)""#
+
+        let matches = try DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "broken.json",
+            config: .defaultConfig
+        )
+
+        XCTAssertTrue(matches.contains { $0.value == credential })
+    }
+
+    // WO-549@v2: decoded escapes fail closed instead of mapping to unrelated bytes.
+    func testEscapedStructuredCredentialFailsClosedWhenRangeCannotBeMapped() {
+        let content = #"{"apiKey":"CredentialValue\nWithEntropy123456789"}"#
+
+        XCTAssertThrowsError(try DirectoryScanner.scanFileContentOrThrow(
+            content: content,
+            ext: "json",
+            relativePath: "escaped.json",
+            config: .defaultConfig
+        )) { error in
+            XCTAssertTrue(error is StructuredMatchRangeError)
+        }
+    }
+
     // MARK: - Bail (early exit)
 
     func testBailReturnsOneResult() throws {

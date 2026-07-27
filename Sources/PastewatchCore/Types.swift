@@ -20,9 +20,15 @@ public enum Severity: String, Codable, CaseIterable, Comparable {
         lhs.rank < rhs.rank
     }
 
-    /// WO-559: single source of truth for the default severity threshold.
-    /// Every CLI option default, function default, and parse fallback should reference this.
-    public static let defaultThreshold: Severity = .high
+    /// WO-559@v2: independent defaults prevent one product policy from silently
+    /// changing guard, custom-rule, and remediation behavior together.
+    public static let defaultGuardThreshold: Severity = .high
+    public static let defaultCustomRuleSeverity: Severity = .high
+    public static let defaultRemediationThreshold: Severity = .high
+
+    /// WO-559@v2: compatibility alias retained for existing API clients.
+    @available(*, deprecated, message: "Use the policy-specific severity default")
+    public static let defaultThreshold: Severity = defaultGuardThreshold
 
     /// Map to SARIF result level.
     public var sarifLevel: String {
@@ -32,6 +38,11 @@ public enum Severity: String, Codable, CaseIterable, Comparable {
         case .low: return "note"
         }
     }
+}
+
+/// WO-558@v2: one contract shared by the CLI and generated agent hooks.
+public enum GuardExitContract {
+    public static let blocked: Int32 = 2
 }
 
 /// Detected sensitive data types.
@@ -556,7 +567,7 @@ public struct PastewatchConfig: Codable {
         sensitiveHosts: [String] = [],
         allowedPatterns: [String] = [],
         sensitiveIPPrefixes: [String] = [],
-        mcpMinSeverity: String = Severity.defaultThreshold.rawValue,
+        mcpMinSeverity: String = Severity.defaultGuardThreshold.rawValue,
         // WO-521: operator mutation notices remain opt-in.
         operatorRedactionNotices: Bool = false,
         xmlSensitiveTags: [String] = [],
@@ -612,7 +623,8 @@ public struct PastewatchConfig: Codable {
         sensitiveHosts = try container.decodeIfPresent([String].self, forKey: .sensitiveHosts) ?? []
         allowedPatterns = try container.decodeIfPresent([String].self, forKey: .allowedPatterns) ?? []
         sensitiveIPPrefixes = try container.decodeIfPresent([String].self, forKey: .sensitiveIPPrefixes) ?? []
-        mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity) ?? Severity.defaultThreshold.rawValue
+        mcpMinSeverity = try container.decodeIfPresent(String.self, forKey: .mcpMinSeverity)
+            ?? Severity.defaultGuardThreshold.rawValue
         // WO-521: old config files must decode without enabling notices.
         operatorRedactionNotices = try container.decodeIfPresent(Bool.self, forKey: .operatorRedactionNotices) ?? false
         xmlSensitiveTags = try container.decodeIfPresent([String].self, forKey: .xmlSensitiveTags) ?? []

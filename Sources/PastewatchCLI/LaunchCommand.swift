@@ -69,8 +69,9 @@ struct Launch: ParsableCommand {
     @Option(name: .long, help: "Forward through corporate proxy (e.g., http://proxy.corp:8080)")
     var forwardProxy: String?
 
+    // WO-559@v2: launched proxies use the named guard threshold by default.
     @Option(name: .long, help: "Minimum severity to redact: critical, high, medium, low")
-    var severity: Severity = .defaultThreshold
+    var severity: Severity = .defaultGuardThreshold
 
     @Option(name: .long, help: "Audit log file path")
     var auditLog: String?

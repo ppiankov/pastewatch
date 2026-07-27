@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Guard surfaces now share exit code 2 for blocked operations, and generated hooks use
+  the same canonical placeholder pattern as the in-process resolver.
+
 ## [0.34.0] - 2026-07-25
 
 ### Added

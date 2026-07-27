@@ -84,13 +84,16 @@ public struct GitHistoryScanner {
                     ["show", "\(chunk.hash):\(df.path)"]
                 ), !content.isEmpty else { continue }
 
-                // WO-562: shared scan + filter pipeline.
-                var fileMatches = try GitScanHelpers.scanAndFilter(
+                // WO-562@v3: share classification only; trust-policy filtering remains
+                // explicit at this caller.
+                var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
                     content: content,
                     ext: GitScanHelpers.scanExtension(for: df.path),
                     relativePath: df.path,
                     config: config
                 )
+                fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+                fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
                 // Filter to only added lines
                 fileMatches = fileMatches.filter { df.addedLines.contains($0.line) }

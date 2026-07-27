@@ -11,8 +11,9 @@ struct Guard: ParsableCommand {
     @Argument(help: "Shell command to check")
     var command: String
 
+    // WO-559@v2: guard policy uses its own named default threshold.
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .defaultThreshold
+    var failOnSeverity: Severity = .defaultGuardThreshold
 
     @Flag(name: .long, help: "Machine-readable JSON output")
     var json = false
@@ -30,9 +31,18 @@ struct Guard: ParsableCommand {
         var allInlineResults: [InlineResult] = []
         var shouldBlock = false
 
-        // Scan the full command string for inline secrets (DSNs, API keys, tokens)
-        // WO-550: use scanFileIO to load shared patterns + config.customRules (base scan misses both).
-        let commandMatches = DetectionRules.scanFileIO(command, config: config)
+        // WO-550@v2: an invalid shared pattern blocks the command instead of silently
+        // evaluating a partial detector set.
+        let commandScan = DetectionRules.scanFileIOResult(command, config: config)
+        guard !commandScan.hasSharedPatternErrors else {
+            if !quiet {
+                FileHandle.standardError.write(
+                    Data("BLOCKED: configured shared patterns could not be loaded.\n".utf8)
+                )
+            }
+            throw ExitCode(rawValue: GuardExitContract.blocked)
+        }
+        let commandMatches = commandScan.matches
         // WO-502: one decision pipeline handles examples, allowlists, and severity.
         let commandDecision = GuardDecision.evaluate(
             matches: commandMatches,
@@ -66,12 +76,22 @@ struct Guard: ParsableCommand {
                 continue
             }
 
-            // WO-550: use format-aware scanning for referenced files, matching guard-read behavior.
+            // WO-550@v2: use format-aware scanning for referenced files, matching guard-read behavior.
             let refExt = (path as NSString).pathExtension.lowercased()
-            let matches = (try? DirectoryScanner.scanFileContentOrThrow(
-                content: content, ext: refExt,
-                relativePath: path, config: config
-            )) ?? DetectionRules.scanFileIO(content, config: config)
+            let matches: [DetectedMatch]
+            do {
+                matches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: content, ext: refExt,
+                    relativePath: path, config: config
+                )
+            } catch let error as SharedSecretPatternLoadError {
+                if !quiet {
+                    let message = "BLOCKED: configured shared patterns could not be loaded " +
+                        "for \(path): \(error.localizedDescription)\n"
+                    FileHandle.standardError.write(Data(message.utf8))
+                }
+                throw ExitCode(rawValue: GuardExitContract.blocked)
+            }
             // WO-502: files REFERENCED by an agent-controlled command are themselves
             // agent-controllable — the agent can write `# pastewatch:allow` into a file it
             // then `cat`s. Treat the referenced content as .agentControlled so inline allow
@@ -123,7 +143,7 @@ struct Guard: ParsableCommand {
                 }
                 FileHandle.standardError.write(Data("Use pastewatch MCP tools for files with secrets.\n".utf8))
             }
-            throw ExitCode(rawValue: 2)
+            throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
         if json {

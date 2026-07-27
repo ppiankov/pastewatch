@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-// WO-561: shared guard logic for read/write — eliminates 95% copy-paste.
+// WO-561@v3: shared guard logic for read/write — eliminates 95% copy-paste.
 enum FileGuard {
     enum Operation {
         case read
@@ -83,9 +83,11 @@ struct GuardRead: ParsableCommand {
     @Argument(help: "File path to check")
     var filePath: String
 
+    // WO-559@v2: guard-read uses the named guard threshold by default.
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .defaultThreshold
+    var failOnSeverity: Severity = .defaultGuardThreshold
 
+    // WO-558@v2: guard-read shares the canonical blocked exit contract.
     func run() throws {
         try FileGuard.check(filePath: filePath, failOnSeverity: failOnSeverity, operation: .read)
     }

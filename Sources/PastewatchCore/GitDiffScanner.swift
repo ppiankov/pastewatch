@@ -1,6 +1,6 @@
 import Foundation
 
-// WO-562: shared helpers used by both GitDiffScanner and GitHistoryScanner.
+// WO-562@v3: shared helpers used by both GitDiffScanner and GitHistoryScanner.
 public enum GitScanHelpers {
 
     /// Check if a file path should be scanned (extension or dotenv name).
@@ -21,7 +21,9 @@ public enum GitScanHelpers {
         return url.pathExtension.lowercased()
     }
 
-    /// Shared scan + filter pipeline: scan content, apply inline-allow, then config allowlist.
+    /// WO-562@v3: retained compatibility wrapper. Production callers keep trust-policy
+    /// filtering explicit at their decision boundary.
+    @available(*, deprecated, message: "Apply scan and allowlist policy explicitly at the caller")
     public static func scanAndFilter(
         content: String, ext: String, relativePath: String,
         config: PastewatchConfig
@@ -95,7 +97,7 @@ public struct GitDiffScanner {
         var results: [FileScanResult] = []
 
         for df in diffFiles {
-            // WO-562: shared extension classification.
+            // WO-562@v3: shared extension classification.
             guard GitScanHelpers.shouldScanFile(df.path) else {
                 continue
             }
@@ -116,13 +118,16 @@ public struct GitDiffScanner {
 
             guard !content.isEmpty else { continue }
 
-            // WO-562: shared scan + filter pipeline.
-            var fileMatches = try GitScanHelpers.scanAndFilter(
+            // WO-562@v3: share classification only; trust-policy filtering remains
+            // explicit at this caller.
+            var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
                 content: content,
                 ext: GitScanHelpers.scanExtension(for: df.path),
                 relativePath: df.path,
                 config: config
             )
+            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+            fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
             // Filter to only added lines
             fileMatches = fileMatches.filter { df.addedLines.contains($0.line) }

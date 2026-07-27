@@ -127,7 +127,7 @@ Add to `~/.claude/settings.json`:
 
 **Hook protocol:**
 - `guard-read` / `guard-write`: exit 0 = allow, exit 2 = block. Stdout is shown to the agent ("You MUST use pastewatch_read_file instead"). Stderr is shown to the human.
-- `guard`: exit 0 = allow, exit 1 = block. Parses shell commands to extract file paths, scans those files.
+- `guard`: exit 0 = allow, exit 2 = block. Parses shell commands to extract file paths, scans those files.
 
 ### Cline
 

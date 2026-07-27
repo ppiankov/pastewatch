@@ -67,7 +67,7 @@ struct GuardMutation: ParsableCommand {
     )
 
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
-    var failOnSeverity: Severity = .defaultThreshold
+    var failOnSeverity: Severity = .defaultGuardThreshold
 
     // WO-526@v3: stdin content is evaluated without copying secrets into argv.
     func run() throws {

@@ -6,6 +6,8 @@ public enum MutationSite: CaseIterable {
     case clipboard
     case cliScan
     case mcpRead
+    // WO-549@v2: MCP write restoration is an explicit data mutation site.
+    case mcpWrite
     case proxySystem
     case proxyToolDescription
     case proxyInputSchema

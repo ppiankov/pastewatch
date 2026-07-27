@@ -144,10 +144,15 @@ final class AgentSetupTests: XCTestCase {
         XCTAssertTrue(script.contains("medium"), "Codex guard script must embed severity")
     }
 
+    // WO-558@v2: generated guards use the shared blocked exit code.
     func testCodexGuardScriptHasAllowAndBlockExits() {
         let script = AgentSetup.codexGuardScript(severity: "high")
         XCTAssertTrue(script.contains("exit 0"), "Guard script must have allow exit")
-        XCTAssertTrue(script.contains("exit 2"), "Guard script must have block exit")
+        XCTAssertTrue(
+            script.contains("exit \(GuardExitContract.blocked)"),
+            "Guard script must use the shared block exit"
+        )
+        XCTAssertTrue(script.contains(Obfuscator.mcpPlaceholderPOSIXERE))
     }
 
     func testCodexGuardScriptIsExecutable() {

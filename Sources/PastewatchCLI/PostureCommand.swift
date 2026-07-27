@@ -47,10 +47,6 @@ struct Posture: ParsableCommand {
                 throw PostureError.noReposFound(orgName)
             }
             FileHandle.standardError.write(Data("Found \(repoNames.count) repos\n".utf8))
-            // WO-553: warn when repo enumeration was likely truncated.
-            if repoNames.count >= PostureScanner.repoEnumerationLimit {
-                FileHandle.standardError.write(Data("WARNING: repo list may be truncated at \(PostureScanner.repoEnumerationLimit). Additional repos exist but were not scanned.\n".utf8))
-            }
         }
 
         let totalRepos = repoNames.count

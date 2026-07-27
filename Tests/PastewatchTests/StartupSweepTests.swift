@@ -133,6 +133,7 @@ final class StartupSweepTests: XCTestCase {
         XCTAssertEqual(report.warnedFiles.first?.findingCount, 2)
     }
 
+    // WO-551@v2: cached clean scans cannot hide later allowlist-aware findings.
     func testCleanCacheDoesNotHideLaterFindingsAfterHashChange() throws {
         let home = try makeTempDirectory()
         let path = home.appendingPathComponent(".zshrc")
@@ -147,6 +148,23 @@ final class StartupSweepTests: XCTestCase {
 
         XCTAssertTrue(cleanReport.warnedFiles.isEmpty)
         XCTAssertEqual(dirtyReport.warnedFiles.count, 1)
+    }
+
+    // WO-551@v2: startup sweep applies the configured allowlist before reporting.
+    func testConfigAllowlistSuppressesStartupFinding() throws {
+        let home = try makeTempDirectory()
+        let value = firstDatabaseURL
+        try write("ACCESS_KEY=\(value)\n", to: home.appendingPathComponent(".zshrc"))
+        var config = PastewatchConfig.defaultConfig
+        config.allowedValues = [value]
+
+        let report = StartupSweep(
+            homeDirectory: home,
+            currentDirectory: home,
+            config: config
+        ).run()
+
+        XCTAssertTrue(report.warnedFiles.isEmpty)
     }
 
     private func makeTempDirectory() throws -> URL {

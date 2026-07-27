@@ -1,10 +1,5 @@
 import Foundation
 
-/// WO-557: single source of truth for the bash-compatible placeholder regex.
-/// Must stay aligned with Obfuscator.mcpPlaceholderPattern (which uses \d+ for Swift regex).
-/// Bash POSIX ERE uses [0-9]+ instead of \d+.
-private let bashPlaceholderRegex = #"__PW_[A-Z][A-Z0-9_]*_[0-9]+__"#
-
 // WO-500: Setup behavior is explicit so unsupported formats cannot look configured.
 public enum MCPSetupMode: String, Equatable {
     case automatic
@@ -143,7 +138,7 @@ public enum AgentSetup {
     ) {
         var mcpServers = json["mcpServers"] as? [String: Any] ?? [:]
         var args: [String] = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-        if severity != Severity.defaultThreshold.rawValue {
+        if severity != Severity.defaultGuardThreshold.rawValue {
             args.append(contentsOf: ["--min-severity", severity])
         }
         var entry: [String: Any] = [
@@ -164,7 +159,7 @@ public enum AgentSetup {
     ) {
         var servers = json["mcp"] as? [String: Any] ?? [:]
         var command = ["pastewatch-cli", "mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
-        if severity != Severity.defaultThreshold.rawValue {
+        if severity != Severity.defaultGuardThreshold.rawValue {
             command.append(contentsOf: ["--min-severity", severity])
         }
         servers["pastewatch"] = [
@@ -189,7 +184,7 @@ public enum AgentSetup {
               - --audit-log
               - /tmp/pastewatch-audit.log
         """
-        if severity != Severity.defaultThreshold.rawValue {
+        if severity != Severity.defaultGuardThreshold.rawValue {
             config += """
 
                   - --min-severity
@@ -440,10 +435,10 @@ public enum AgentSetup {
         # --- WRITE: Check for pastewatch placeholders in content ---
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
             echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
             echo "Blocked: pastewatch placeholders in Write" >&2
-            exit 2
+            exit \(GuardExitContract.blocked)
           fi
         fi
 
@@ -456,7 +451,7 @@ public enum AgentSetup {
           if [ $? -ne 0 ]; then
             echo "BLOCKED: proposed mutation changes protected content. Use pastewatch_read_file and pastewatch_write_file."
             echo "Blocked: protected content in mutation" >&2
-            exit 2
+            exit \(GuardExitContract.blocked)
           fi
           exit 0
         fi
@@ -471,7 +466,7 @@ public enum AgentSetup {
         if [ "$scan_exit" -eq 6 ]; then
           echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
           echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
-          exit 2
+          exit \(GuardExitContract.blocked)
         fi
 
         # Clean file or scan error — allow native tool
@@ -523,9 +518,9 @@ public enum AgentSetup {
             # Write: check for pastewatch placeholders
             if [ "$action" = "pre_write_code" ]; then
               content=$(echo "$input" | jq -r '.content // empty')
-              if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
+              if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
                 echo "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file MCP tool." >&2
-                exit 2
+                exit \(GuardExitContract.blocked)
               fi
             fi
 
@@ -535,7 +530,7 @@ public enum AgentSetup {
             pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
             if [ $? -eq 6 ]; then
               echo "BLOCKED: $file_path contains secrets. Use pastewatch_read_file or pastewatch_write_file MCP tool instead." >&2
-              exit 2
+              exit \(GuardExitContract.blocked)
             fi
             ;;
           pre_run_command)
@@ -545,7 +540,7 @@ public enum AgentSetup {
             pastewatch-cli guard "$command_str" >/dev/null 2>&1
             if [ $? -ne 0 ]; then
               echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access." >&2
-              exit 2
+              exit \(GuardExitContract.blocked)
             fi
             ;;
         esac
@@ -572,7 +567,7 @@ public enum AgentSetup {
         deny() {
           local msg="$1"
           printf '{"permission": "deny", "agent_message": "%s"}\\n' "$msg"
-          exit 2
+          exit \(GuardExitContract.blocked)
         }
 
         # Fail-open if pastewatch-cli not installed
@@ -608,7 +603,7 @@ public enum AgentSetup {
         # --- WRITE: Check for pastewatch placeholders in content ---
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
             deny "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
           fi
         fi
@@ -726,7 +721,7 @@ public enum AgentSetup {
           pastewatch-cli guard "$command_str" >/dev/null 2>&1
           if [ $? -ne 0 ]; then
             echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access."
-            exit 2
+            exit \(GuardExitContract.blocked)
           fi
           exit 0
         fi
@@ -757,9 +752,9 @@ public enum AgentSetup {
         # Write / apply_patch: check for pastewatch placeholders in content
         if [ "$tool" = "Write" ] || [ "$tool" = "apply_patch" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // .tool_input.patch // empty')
-          if [ -n "$content" ] && echo "$content" | grep -qE "\(bashPlaceholderRegex)"; then
+          if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
             echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
-            exit 2
+            exit \(GuardExitContract.blocked)
           fi
         fi
 
@@ -768,7 +763,7 @@ public enum AgentSetup {
           printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
           if [ $? -ne 0 ]; then
             echo "BLOCKED: proposed mutation changes protected content. Use pastewatch MCP file tools."
-            exit 2
+            exit \(GuardExitContract.blocked)
           fi
           exit 0
         fi
@@ -791,7 +786,7 @@ public enum AgentSetup {
               echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file then pastewatch_write_file."
               ;;
           esac
-          exit 2
+          exit \(GuardExitContract.blocked)
         fi
 
         exit 0
@@ -862,7 +857,7 @@ public enum AgentSetup {
                 if [ "$tool_name" = "write_to_file" ]; then
                   pw_content=$(echo "$input" | jq -r '.preToolUse.parameters.content // empty')
                   # WO-124: block pastewatch's active proxy-compatible placeholder envelope.
-                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE "\(bashPlaceholderRegex)"; then
+                  if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
                     block "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file to resolve them."
                   fi
                 fi

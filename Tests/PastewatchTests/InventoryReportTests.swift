@@ -56,6 +56,7 @@ final class InventoryReportTests: XCTestCase {
         XCTAssertEqual(report.severityBreakdown.low, 0)
     }
 
+    // WO-556@v2: limited hot spots retain and render the complete count.
     func testHotSpotsSortedAndLimited() {
         // Create 12 files with varying match counts
         var results: [FileScanResult] = []
@@ -67,8 +68,11 @@ final class InventoryReportTests: XCTestCase {
         }
         let report = InventoryReport.build(from: results, directory: ".")
         XCTAssertEqual(report.hotSpots.count, 10) // limited to 10
+        XCTAssertEqual(report.hotSpotsTotal, 12)
         XCTAssertEqual(report.hotSpots.first?.filePath, "file12.txt") // most findings first
         XCTAssertTrue(report.hotSpots.first!.findingCount >= report.hotSpots.last!.findingCount)
+        XCTAssertTrue(InventoryFormatter.formatText(report).contains("showing 10 of 12"))
+        XCTAssertTrue(InventoryFormatter.formatMarkdown(report).contains("showing 10 of 12"))
     }
 
     func testTypeGroupsAggregation() {
@@ -103,6 +107,18 @@ final class InventoryReportTests: XCTestCase {
         XCTAssertEqual(decoded.filesAffected, report.filesAffected)
         XCTAssertEqual(decoded.entries.count, report.entries.count)
         XCTAssertEqual(decoded.directory, report.directory)
+    }
+
+    // WO-556@v2: historical inventory artifacts retain a truthful list-size floor.
+    func testLegacyJSONDerivesHotSpotTotal() throws {
+        let report = InventoryReport.build(from: makeResults(), directory: "./test")
+        var object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any]
+        )
+        object.removeValue(forKey: "hotSpotsTotal")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(InventoryReport.self, from: legacy)
+        XCTAssertEqual(decoded.hotSpotsTotal, decoded.filesAffected)
     }
 
     func testCompareDetectsAddedAndRemoved() {

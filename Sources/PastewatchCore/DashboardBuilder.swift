@@ -10,21 +10,39 @@ public struct Dashboard: Codable {
     public let summary: SessionSummary
     public let topTypes: [TypeCount]
     public let hotFiles: [FileAccess]
-    /// WO-556: total hot files before the top-10 cap. When > hotFiles.count, the list was truncated.
+    /// WO-556@v2: total hot files before the top-10 cap. When > hotFiles.count, the list was truncated.
     public let hotFilesTotal: Int
     public let verdict: String
 
     public init(generatedAt: String, sessions: Int, period: DashboardPeriod,
                 summary: SessionSummary, topTypes: [TypeCount], hotFiles: [FileAccess],
-                hotFilesTotal: Int = 0, verdict: String) {
+                hotFilesTotal: Int? = nil, verdict: String) {
         self.generatedAt = generatedAt
         self.sessions = sessions
         self.period = period
         self.summary = summary
         self.topTypes = topTypes
         self.hotFiles = hotFiles
-        self.hotFilesTotal = hotFilesTotal
+        self.hotFilesTotal = hotFilesTotal ?? hotFiles.count
         self.verdict = verdict
+    }
+
+    // WO-556@v2: historical dashboard JSON derives a truthful lower bound instead of zero.
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, sessions, period, summary, topTypes, hotFiles, hotFilesTotal, verdict
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        sessions = try c.decode(Int.self, forKey: .sessions)
+        period = try c.decode(DashboardPeriod.self, forKey: .period)
+        summary = try c.decode(SessionSummary.self, forKey: .summary)
+        topTypes = try c.decode([TypeCount].self, forKey: .topTypes)
+        hotFiles = try c.decode([FileAccess].self, forKey: .hotFiles)
+        hotFilesTotal = try c.decodeIfPresent(Int.self, forKey: .hotFilesTotal)
+            ?? hotFiles.count
+        verdict = try c.decode(String.self, forKey: .verdict)
     }
 }
 
