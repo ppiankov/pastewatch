@@ -1733,6 +1733,7 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertTrue(DetectionRules.isCredentialKeyName("dsnUrl"))
     }
 
+    // WO-555@v2: separator-delimited credential keys remain detectable.
     func testCredentialKeyNameSnakeCaseMatches() {
         XCTAssertTrue(DetectionRules.isCredentialKeyName("auth_token"))
         XCTAssertTrue(DetectionRules.isCredentialKeyName("api_key"))

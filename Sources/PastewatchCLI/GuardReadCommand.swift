@@ -75,6 +75,7 @@ enum FileGuard {
 }
 
 struct GuardRead: ParsableCommand {
+    // WO-558@v2: GuardRead is governed by the shared blocked-exit contract.
     static let configuration = CommandConfiguration(
         commandName: "guard-read",
         abstract: "Check if a file contains secrets before allowing Read tool access"

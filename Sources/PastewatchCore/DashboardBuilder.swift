@@ -86,6 +86,7 @@ public enum DashboardBuilder {
         }
 
         guard !reports.isEmpty else {
+            // WO-556@v2: empty dashboards still carry an explicit complete hot-file total.
             return Dashboard(
                 generatedAt: now, sessions: 0,
                 period: DashboardPeriod(earliest: nil, latest: nil),
@@ -98,6 +99,7 @@ public enum DashboardBuilder {
         // Aggregate summaries
         let summary = aggregateSummaries(reports)
         let topTypes = aggregateTypes(reports)
+        // WO-556@v2: retain the complete count before limiting rendered hot files.
         let allHotFiles = aggregateFiles(reports)
         let hotFilesTotal = allHotFiles.count
         let hotFiles = Array(allHotFiles.prefix(10))
@@ -111,6 +113,7 @@ public enum DashboardBuilder {
             summary: summary,
             topTypes: topTypes,
             hotFiles: hotFiles,
+            // WO-556@v2: expose truncation without changing the existing limited list.
             hotFilesTotal: hotFilesTotal,
             verdict: verdict
         )

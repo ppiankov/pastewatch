@@ -190,6 +190,7 @@ public extension InventoryReport {
             )
         }
         hotSpots.sort { $0.findingCount > $1.findingCount }
+        // WO-556@v2: preserve the pre-truncation count for report consumers.
         let hotSpotsTotal = hotSpots.count
         if hotSpots.count > 10 { hotSpots = Array(hotSpots.prefix(10)) }
 
@@ -218,6 +219,7 @@ public extension InventoryReport {
             entries: entries,
             hotSpots: hotSpots,
             typeGroups: typeGroups,
+            // WO-556@v2: serialize the complete count alongside the limited entries.
             hotSpotsTotal: hotSpotsTotal
         )
     }

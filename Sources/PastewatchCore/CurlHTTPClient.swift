@@ -7,7 +7,7 @@ import Glibc
 
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
-/// WO-565: on macOS the HTTP transport path is not used, but shared utility
+/// WO-565@v2: on macOS the HTTP transport path is not used, but shared utility
 /// functions (buildStreamingResponseHeaders, httpReasonPhrase, cancelActiveProcesses)
 /// ARE called from SSEStreamRelay and must remain compiled on both platforms.
 struct CurlHTTPClient {
@@ -481,7 +481,7 @@ struct CurlHTTPClient {
         var seenAdvisorySignatures: Set<String> = []
     }
 
-    // WO-560: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
+    // WO-560@v2: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
     private static let rawStreamScanOverlapBytes = 4_096
     private static let rawStreamAdvisoryScanWindowBytes = rawStreamScanOverlapBytes
     private static let rawStreamDeliveryLookbehindBytes = rawStreamScanOverlapBytes

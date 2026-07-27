@@ -77,6 +77,7 @@ public struct GitHistoryScanner {
             let diffFiles = GitDiffScanner.parseDiff(chunk.diffContent)
 
             for df in diffFiles {
+                // WO-562@v3: history scanning shares the canonical file classifier.
                 guard GitScanHelpers.shouldScanFile(df.path) else { continue }
                 filesScanned += 1
 

@@ -11,7 +11,7 @@ let sseDelegateQueueDrainTimeoutSeconds: Double = 5
 /// Each incoming data chunk is immediately forwarded to the client socket,
 /// optionally passing through the SSE frame parser for per-event redaction.
 final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
-    // WO-560: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
+    // WO-560@v2: rawStreamDoneLine moved to SocketHelpers.swift as a shared module-level constant.
 
     /// WO-400: consistent connection-thread snapshot of delegate-queue stream stats.
     struct StreamStatsSnapshot {

@@ -245,6 +245,7 @@ final class MCPServer {
             return handleScanFile(id: id, arguments: arguments, config: config)
         case "pastewatch_scan_dir":
             return handleScanDir(id: id, arguments: arguments, config: config)
+        // WO-549@v2: MCP file dispatch preserves the guarded read/write policy.
         case "pastewatch_read_file":
             return handleReadFile(id: id, arguments: arguments, config: config)
         case "pastewatch_write_file":

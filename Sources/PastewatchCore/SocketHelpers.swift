@@ -1,6 +1,6 @@
 import Foundation
 
-/// WO-560: single source of truth for the SSE terminal marker.
+/// WO-560@v2: single source of truth for the SSE terminal marker.
 /// Shared by SSEStreamRelay (Darwin) and CurlHTTPClient (Linux/CurlHTTPClient utility path).
 let rawStreamDoneLine = Data("data: [DONE]".utf8)
 

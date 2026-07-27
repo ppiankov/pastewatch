@@ -282,6 +282,7 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue((payload["inlineFindings"] as? [[String: Any]])?.isEmpty == true)
     }
 
+    // WO-554@v3: agent-authored command comments cannot self-authorize a secret.
     func testGuardCommandCannotSelfAuthorizeWithInlineAllowComment() throws {
         let key = "AKIA" + "QWERTYUIOPASDFGH"
 
