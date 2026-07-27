@@ -86,7 +86,7 @@ final class DetectionRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(phoneMatches.count, 1)
     }
 
-    // WO-571: a canonical/degenerate digit run is not a phone number, even when Phone
+    // WO-571@v2: a canonical/degenerate digit run is not a phone number, even when Phone
     // detection is enabled. These appear constantly in source as char sets / cutsets
     // (strings.TrimRight(k, "0123456789")) and were a guard-blocking false positive.
     func testDegenerateDigitRunsAreNotPhones() {
@@ -105,7 +105,7 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
-    // WO-571: real formatted phone numbers (varied digits) must still detect.
+    // WO-571@v2: real formatted phone numbers (varied digits) must still detect.
     func testRealFormattedPhonesStillDetected() {
         let phones = [
             "+60123456789",

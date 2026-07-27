@@ -63,6 +63,7 @@ final class FalsePositiveCorpusTests: XCTestCase {
             "dependency: token-bucket", "package: jsonwebtoken", "module: crypto",
             "lib: secretbox", "crate: ring", "gem: bcrypt",
         ],
+        // WO-571@v2: canonical digit runs / cutsets are not phone numbers.
         "digit-runs-and-cutsets": [
             "strings.TrimRight(key, \"0123456789\")",
             "const digits = \"0123456789\"",

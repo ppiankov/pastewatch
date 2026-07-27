@@ -1620,7 +1620,7 @@ public struct DetectionRules {
         let digitsOnly = value.filter { $0.isNumber }
         guard digitsOnly.count >= 10 else { return false }
 
-        // WO-571: a bare, unformatted digit run is not a phone number. Canonical
+        // WO-571@v2: a bare, unformatted digit run is not a phone number. Canonical
         // digit sequences (0123456789), all-identical runs (0000000000, the nil UUID
         // zeros), and monotonic ascending/descending runs appear constantly in source
         // as character sets / cutsets (strings.TrimRight(k, "0123456789")) and are a
@@ -1634,7 +1634,7 @@ public struct DetectionRules {
         return true
     }
 
-    // WO-571: true iff the digit string is a degenerate sequence that is never a real
+    // WO-571@v2: true iff the digit string is a degenerate sequence that is never a real
     // phone number: all-identical digits, or a strictly monotonic ascending/descending
     // run of consecutive digits (e.g. 0123456789, 9876543210).
     private static func isDegenerateDigitRun(_ digits: String) -> Bool {
