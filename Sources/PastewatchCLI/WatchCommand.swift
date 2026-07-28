@@ -22,14 +22,14 @@ struct Watch: ParsableCommand {
     var json = false
 
     func run() throws {
+        // WO-574@v4: a long-running watcher cannot start with fallback detector policy.
+        let config = try requireValidatedConfig()
         let fm = FileManager.default
         let dirPath = (dir as NSString).standardizingPath
         guard fm.fileExists(atPath: dirPath) else {
             FileHandle.standardError.write(Data("error: directory not found: \(dirPath)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
-
-        let config = PastewatchConfig.resolve()
 
         if !json {
             FileHandle.standardError.write(Data("watching \(dirPath) (ctrl-c to stop)\n".utf8))

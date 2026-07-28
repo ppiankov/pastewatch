@@ -1,7 +1,15 @@
 import XCTest
+@testable import PastewatchCLI
 @testable import PastewatchCore
 
 final class SetupCommandTests: XCTestCase {
+
+    // WO-584@v2: setup's parsed default must track the canonical severity owner.
+    func testSetupDefaultSeverityUsesCanonicalGuardThreshold() throws {
+        let command = try Setup.parse(["claude-code"])
+
+        XCTAssertEqual(command.severity, Severity.defaultGuardThreshold.rawValue)
+    }
 
     // WO-500: Keep setup coverage exhaustive as agent config formats evolve.
     func testMCPSetupMatrixCoversEverySetupAgent() {

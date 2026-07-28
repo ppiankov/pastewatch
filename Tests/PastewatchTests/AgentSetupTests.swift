@@ -155,6 +155,22 @@ final class AgentSetupTests: XCTestCase {
         XCTAssertTrue(script.contains(Obfuscator.mcpPlaceholderPOSIXERE))
     }
 
+    // WO-580@v3: every generated scan guard pins the shared findings outcome.
+    func testGeneratedGuardScriptsUseScanFindingsExitContract() {
+        let expected = "-eq \(ScanExitContract.findingsDetected)"
+        let scripts = [
+            AgentSetup.claudeCodeGuardScript(severity: "high"),
+            AgentSetup.windsurfGuardScript(severity: "high"),
+            AgentSetup.cursorGuardScript(severity: "high"),
+            AgentSetup.codexGuardScript(severity: "high"),
+            AgentSetup.clineHookScript(severity: "high"),
+        ]
+
+        for script in scripts {
+            XCTAssertTrue(script.contains(expected), "Generated guard must use \(expected)")
+        }
+    }
+
     func testCodexGuardScriptIsExecutable() {
         let script = AgentSetup.codexGuardScript(severity: "high")
         XCTAssertTrue(script.hasPrefix("#!/bin/bash"), "Guard script must start with shebang")

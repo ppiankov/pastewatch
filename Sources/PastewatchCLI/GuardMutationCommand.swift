@@ -154,22 +154,12 @@ struct GuardMutation: ParsableCommand {
 
     // WO-526@v3: resolve only after the highest-priority active config validates.
     private func validatedConfig() throws -> PastewatchConfig {
-        let fileManager = FileManager.default
-        let projectPath = fileManager.currentDirectoryPath + "/.pastewatch.json"
-        let activePath: String?
-        if fileManager.fileExists(atPath: PastewatchConfig.systemConfigPath) {
-            activePath = PastewatchConfig.systemConfigPath
-        } else if fileManager.fileExists(atPath: projectPath) {
-            activePath = projectPath
-        } else if fileManager.fileExists(atPath: PastewatchConfig.configPath.path) {
-            activePath = PastewatchConfig.configPath.path
-        } else {
-            activePath = nil
-        }
-        guard ConfigValidator.validate(path: activePath).isValid else {
+        // WO-574@v4: use the same atomic read/decode/validate result as every guard.
+        do {
+            return try ConfigValidator.resolveValidated().config
+        } catch {
             throw GuardMutationConfigurationError.invalidConfiguration
         }
-        return PastewatchConfig.resolve()
     }
 
     // WO-526@v3: unresolved MCP placeholders still require the restorative write path.

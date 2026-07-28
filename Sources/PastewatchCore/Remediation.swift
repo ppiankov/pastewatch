@@ -5,10 +5,32 @@ public struct FixAction {
     public let filePath: String
     public let line: Int
     public let secretValue: String
+    public let sourceRange: NSRange? // WO-587@v3: authorize one exact source occurrence.
     public let envVarName: String
     public let replacement: String
     public let type: SensitiveDataType
     public let severity: Severity
+
+    // WO-587@v3: callers may retain exact source ownership without breaking legacy actions.
+    public init(
+        filePath: String,
+        line: Int,
+        secretValue: String,
+        sourceRange: NSRange? = nil,
+        envVarName: String,
+        replacement: String,
+        type: SensitiveDataType,
+        severity: Severity
+    ) {
+        self.filePath = filePath
+        self.line = line
+        self.secretValue = secretValue
+        self.sourceRange = sourceRange
+        self.envVarName = envVarName
+        self.replacement = replacement
+        self.type = type
+        self.severity = severity
+    }
 }
 
 /// Complete fix plan for a directory scan.
@@ -57,6 +79,7 @@ public enum Remediation {
                     filePath: fr.filePath,
                     line: match.line,
                     secretValue: match.value,
+                    sourceRange: NSRange(match.range, in: fr.content),
                     envVarName: name,
                     replacement: replacement,
                     type: match.type,
@@ -137,33 +160,167 @@ public enum Remediation {
 
     // MARK: - Private helpers
 
-    /// Extract the key name from the line containing the match.
+    // WO-587@v3: assignment parsing carries the header needed to bound its value token.
+    private struct AssignmentHeader {
+        let key: String
+        let range: NSRange
+    }
+
+    /// Extract the key whose value span owns the detected source range.
     private static func extractKeyFromLine(match: DetectedMatch, content: String) -> String? {
-        let lines = content.components(separatedBy: .newlines)
-        let lineIndex = match.line - 1
-        guard lineIndex >= 0, lineIndex < lines.count else { return nil }
-        let line = lines[lineIndex]
-
-        // Try common assignment patterns: key = "value", key: value, key=value
-        let patterns = [
-            "([a-zA-Z_][a-zA-Z0-9_]*)\\s*=",   // key = or key=
-            "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:",    // key: (YAML style)
-            "\"([a-zA-Z_][a-zA-Z0-9_]*)\"\\s*:"  // "key": (JSON style)
-        ]
-
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let result = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-                  let keyRange = Range(result.range(at: 1), in: line) else { continue }
-            let key = String(line[keyRange])
-            // Verify the match value appears after the key on this line
-            if let keyEnd = line.range(of: key)?.upperBound,
-               line[keyEnd...].contains(match.value) {
-                return key
-            }
+        guard String(content[match.range]) == match.value else {
+            return nil
         }
 
+        let lineStart = content[..<match.range.lowerBound].lastIndex(of: "\n")
+            .map { content.index(after: $0) } ?? content.startIndex
+        let lineEnd = content[match.range.upperBound...].firstIndex(of: "\n") ?? content.endIndex
+        let line = String(content[lineStart..<lineEnd])
+        let localMatchRange = NSRange(
+            location: content[lineStart..<match.range.lowerBound].utf16.count,
+            length: content[match.range].utf16.count
+        )
+        let headers = assignmentHeaders(in: line)
+
+        // WO-587@v3: authorization follows exact source ownership, never substring presence.
+        for (index, header) in headers.enumerated() {
+            let nextHeaderStart = index + 1 < headers.count
+                ? headers[index + 1].range.location
+                : line.utf16.count
+            guard let valueRange = assignmentValueRange(
+                after: header,
+                before: nextHeaderStart,
+                in: line as NSString
+            ) else {
+                continue
+            }
+            if localMatchRange.location >= valueRange.location,
+               NSMaxRange(localMatchRange) <= NSMaxRange(valueRange) {
+                return header.key
+            }
+        }
         return nil
+    }
+
+    // WO-587@v3: headers are candidates only; value ownership is proven separately.
+    private static func assignmentHeaders(in line: String) -> [AssignmentHeader] {
+        let pattern = "(?:\"([a-zA-Z_][a-zA-Z0-9_]*)\"|([a-zA-Z_][a-zA-Z0-9_]*))\\s*([:=])\\s*"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsLine = line as NSString
+        return regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length)).compactMap { result in
+            let quotedKeyRange = result.range(at: 1)
+            let unquotedKeyRange = result.range(at: 2)
+            let startsAtBoundary = quotedKeyRange.location != NSNotFound
+                || isAssignmentBoundary(at: result.range.location, in: nsLine)
+            guard !isInsideQuotedValue(at: result.range.location, in: nsLine),
+                  startsAtBoundary,
+                  let keyRange = [quotedKeyRange, unquotedKeyRange]
+                    .first(where: { $0.location != NSNotFound }),
+                  let delimiterRange = Range(result.range(at: 3), in: line) else {
+                return nil
+            }
+            let delimiter = line[delimiterRange]
+            if delimiter == ":",
+               NSMaxRange(result.range) + 1 < nsLine.length,
+               nsLine.substring(
+                   with: NSRange(location: NSMaxRange(result.range), length: 2)
+               ) == "//" {
+                return nil
+            }
+            return AssignmentHeader(
+                key: nsLine.substring(with: keyRange),
+                range: result.range
+            )
+        }
+    }
+
+    // WO-587@v3: bound quoted and scalar assignment values before trailing code/comments.
+    private static func assignmentValueRange(
+        after header: AssignmentHeader,
+        before upperBound: Int,
+        in line: NSString
+    ) -> NSRange? {
+        var start = NSMaxRange(header.range)
+        guard start < upperBound else { return nil }
+
+        let first = line.character(at: start)
+        if first == 0x22 || first == 0x27 {
+            let quote = first
+            start += 1
+            var cursor = start
+            var escaped = false
+            while cursor < upperBound {
+                let character = line.character(at: cursor)
+                if escaped {
+                    escaped = false
+                } else if character == 0x5C {
+                    escaped = true
+                } else if character == quote {
+                    return NSRange(location: start, length: cursor - start)
+                }
+                cursor += 1
+            }
+            return nil
+        }
+
+        var end = upperBound
+        var cursor = start
+        while cursor < upperBound {
+            let character = line.character(at: cursor)
+            let startsComment = (character == 0x23 || isSlashComment(at: cursor, in: line))
+                && (cursor == start || isWhitespace(line.character(at: cursor - 1)))
+            if character == 0x3B || character == 0x2C || character == 0x29 || startsComment {
+                end = cursor
+                break
+            }
+            cursor += 1
+        }
+        while end > start && isWhitespace(line.character(at: end - 1)) {
+            end -= 1
+        }
+        return end > start ? NSRange(location: start, length: end - start) : nil
+    }
+
+    private static func isSlashComment(at offset: Int, in line: NSString) -> Bool {
+        offset + 1 < line.length
+            && line.character(at: offset) == 0x2F
+            && line.character(at: offset + 1) == 0x2F
+    }
+
+    private static func isWhitespace(_ character: unichar) -> Bool {
+        UnicodeScalar(character).map(CharacterSet.whitespaces.contains) ?? false
+    }
+
+    // WO-587@v3: member and keyword assignments are valid header boundaries.
+    private static func isAssignmentBoundary(at offset: Int, in line: NSString) -> Bool {
+        guard offset > 0 else { return true }
+        let previous = line.character(at: offset - 1)
+        return isWhitespace(previous)
+            || previous == 0x7B // {
+            || previous == 0x5B // [
+            || previous == 0x2C // ,
+            || previous == 0x3B // ;
+            || previous == 0x2E // .
+            || previous == 0x28 // (
+    }
+
+    // WO-587@v3: assignment-like text inside an existing string is never a header.
+    private static func isInsideQuotedValue(at offset: Int, in line: NSString) -> Bool {
+        var activeQuote: unichar?
+        var escaped = false
+        for index in 0..<offset {
+            let character = line.character(at: index)
+            if escaped {
+                escaped = false
+            } else if character == 0x5C {
+                escaped = true
+            } else if let quote = activeQuote {
+                if character == quote { activeQuote = nil }
+            } else if character == 0x22 || character == 0x27 {
+                activeQuote = character
+            }
+        }
+        return activeQuote != nil
     }
 
     /// Normalize a key name to SCREAMING_SNAKE_CASE.
@@ -233,42 +390,88 @@ public enum Remediation {
     /// Patch a single file by replacing secret values with env var references.
     private static func patchFile(at path: String, actions: [FixAction]) throws {
         guard var content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
-        var lines = content.components(separatedBy: "\n")
 
-        // Process from bottom to top to preserve line indices
-        let sortedActions = actions.sorted { $0.line > $1.line }
-        for action in sortedActions {
+        // WO-587@v3: mutate exact source ranges from bottom to top; never broad-replace equals.
+        let exactActions = actions.compactMap { action -> (FixAction, NSRange)? in
+            guard let range = action.sourceRange else { return nil }
+            return (action, range)
+        }.sorted { $0.1.location > $1.1.location }
+        for (action, sourceRange) in exactActions {
+            guard let valueRange = Range(sourceRange, in: content),
+                  String(content[valueRange]) == action.secretValue else {
+                continue
+            }
+            let replacementRange = quotedRange(
+                around: valueRange,
+                in: content,
+                removeQuotes: true
+            )
+            content.replaceSubrange(replacementRange, with: action.replacement)
+        }
+
+        // Legacy/manual actions without source ranges retain line-scoped behavior.
+        let legacyActions = actions.filter { $0.sourceRange == nil }
+        if !legacyActions.isEmpty {
+            content = patchLegacyActions(legacyActions, in: content)
+        }
+        try content.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    // WO-587@v3: remove only quotes that directly enclose the authorized range.
+    private static func quotedRange(
+        around range: Range<String.Index>,
+        in content: String,
+        removeQuotes: Bool
+    ) -> Range<String.Index> {
+        guard removeQuotes,
+              range.lowerBound > content.startIndex,
+              range.upperBound < content.endIndex else {
+            return range
+        }
+        let previous = content.index(before: range.lowerBound)
+        let next = range.upperBound
+        let quote = content[previous]
+        guard quote == "\"" || quote == "'", content[next] == quote else {
+            return range
+        }
+        return previous..<content.index(after: next)
+    }
+
+    // WO-587@v3: legacy actions remain line-scoped only when no exact range exists.
+    private static func patchLegacyActions(
+        _ actions: [FixAction],
+        in content: String
+    ) -> String {
+        var lines = content.components(separatedBy: "\n")
+        for action in actions.sorted(by: { $0.line > $1.line }) {
             let lineIndex = action.line - 1
             guard lineIndex >= 0, lineIndex < lines.count else { continue }
-
             if action.replacement.isEmpty {
-                // .env file: clear the value after the = sign
                 if let eqIndex = lines[lineIndex].firstIndex(of: "=") {
-                    let key = String(lines[lineIndex][...eqIndex])
-                    lines[lineIndex] = key
+                    lines[lineIndex] = String(lines[lineIndex][...eqIndex])
                 }
             } else {
-                // Try replacing quoted value first (strip surrounding quotes)
                 let doubleQuoted = "\"\(action.secretValue)\""
                 let singleQuoted = "'\(action.secretValue)'"
                 if lines[lineIndex].contains(doubleQuoted) {
                     lines[lineIndex] = lines[lineIndex].replacingOccurrences(
-                        of: doubleQuoted, with: action.replacement
+                        of: doubleQuoted,
+                        with: action.replacement
                     )
                 } else if lines[lineIndex].contains(singleQuoted) {
                     lines[lineIndex] = lines[lineIndex].replacingOccurrences(
-                        of: singleQuoted, with: action.replacement
+                        of: singleQuoted,
+                        with: action.replacement
                     )
                 } else {
                     lines[lineIndex] = lines[lineIndex].replacingOccurrences(
-                        of: action.secretValue, with: action.replacement
+                        of: action.secretValue,
+                        with: action.replacement
                     )
                 }
             }
         }
-
-        content = lines.joined(separator: "\n")
-        try content.write(toFile: path, atomically: true, encoding: .utf8)
+        return lines.joined(separator: "\n")
     }
 
     /// Write or append entries to a .env file.

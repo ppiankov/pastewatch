@@ -1,7 +1,12 @@
+import ArgumentParser
 import XCTest
+@testable import PastewatchCLI
 @testable import PastewatchCore
 
 final class PostureScannerTests: XCTestCase {
+    private enum FixtureScanError: Error {
+        case failed
+    }
 
     // MARK: - Aggregate
 
@@ -240,6 +245,61 @@ final class PostureScannerTests: XCTestCase {
         XCTAssertFalse(withoutClean.contains("Clean repositories"))
     }
 
+    // WO-575@v2: skipped scans reduce completeness instead of becoming clean summaries.
+    func testAggregateDisclosesSkippedRepositories() throws {
+        let scanned = RepositorySummary(
+            name: "scanned",
+            totalFindings: 0,
+            filesAffected: 0,
+            severityBreakdown: SeverityBreakdown(critical: 0, high: 0, medium: 0, low: 0),
+            typeGroups: [],
+            hotSpots: []
+        )
+
+        let report = PostureScanner.aggregate(
+            org: "example",
+            summaries: [scanned],
+            totalRepos: 2
+        )
+
+        XCTAssertEqual(report.reposScanned, 1)
+        XCTAssertEqual(report.reposSkipped, 1)
+        XCTAssertFalse(report.repoScanComplete)
+        XCTAssertTrue(PostureFormatter.formatText(report).contains("Repos skipped: 1 (scan incomplete)"))
+        XCTAssertTrue(PostureFormatter.formatMarkdown(report).contains("**Repos skipped:** 1 (scan incomplete)"))
+
+        let decoded = try JSONDecoder().decode(
+            PostureReport.self,
+            from: try XCTUnwrap(PostureFormatter.formatJSON(report).data(using: .utf8))
+        )
+        XCTAssertEqual(decoded.reposSkipped, 1)
+        XCTAssertFalse(decoded.repoScanComplete)
+    }
+
+    // WO-575@v2: historical JSON derives scan completeness when the new fields are absent.
+    func testLegacyReportDerivesSkippedRepositoryCount() throws {
+        let json = """
+        {
+          "version": "1",
+          "generatedAt": "2025-01-01T00:00:00Z",
+          "organization": "example",
+          "totalRepos": 3,
+          "reposScanned": 2,
+          "totalFindings": 0,
+          "severityBreakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+          "repositories": []
+        }
+        """
+
+        let report = try JSONDecoder().decode(
+            PostureReport.self,
+            from: try XCTUnwrap(json.data(using: .utf8))
+        )
+
+        XCTAssertEqual(report.reposSkipped, 1)
+        XCTAssertFalse(report.repoScanComplete)
+    }
+
     // MARK: - ScanRepo integration
 
     func testScanRepoOnEmptyDirectory() throws {
@@ -268,5 +328,124 @@ final class PostureScannerTests: XCTestCase {
         XCTAssertEqual(summary.name, "leaky-repo")
         XCTAssertGreaterThan(summary.totalFindings, 0)
         XCTAssertGreaterThan(summary.filesAffected, 0)
+    }
+
+    // WO-575@v2: detector-configuration failures propagate instead of producing clean posture data.
+    func testScanRepoPropagatesSharedPatternFailure() throws {
+        let tempDir = NSTemporaryDirectory() + "posture-test-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+        try "TOKEN=ordinary-value\n".write(
+            toFile: (tempDir as NSString).appendingPathComponent("config.env"),
+            atomically: true,
+            encoding: .utf8
+        )
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [
+            (tempDir as NSString).appendingPathComponent("missing-patterns.json"),
+        ]
+
+        XCTAssertThrowsError(
+            try PostureScanner.scanRepo(at: tempDir, name: "invalid-config", config: config)
+        ) { error in
+            XCTAssertTrue(error is SharedSecretPatternLoadError)
+        }
+    }
+
+    // WO-591: command execution maps detector failures to exit 2 before rendering.
+    func testPostureExecutionRejectsSharedPatternFailureWithoutReport() throws {
+        var command = Posture()
+        command.repos = ["example/repository"]
+        let artifact = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-posture-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: artifact) }
+
+        XCTAssertThrowsError(
+            try command.run(
+                config: .defaultConfig,
+                cloneRepo: { _, _, baseDir in baseDir },
+                scanRepo: { _, _, _ in
+                    throw SharedSecretPatternLoadError(
+                        path: "fixture",
+                        message: "unavailable"
+                    )
+                },
+                emitReport: { _ in
+                    try Data("partial".utf8).write(to: artifact)
+                }
+            )
+        ) { error in
+            XCTAssertEqual((error as? ExitCode)?.rawValue, 2)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifact.path))
+    }
+
+    // WO-591: a later scan failure cannot emit an earlier repository as a partial report.
+    func testPostureExecutionRejectsLaterScanFailureWithoutPartialReport() throws {
+        var command = Posture()
+        command.repos = ["example/complete", "example/failure"]
+        var emitted = false
+
+        XCTAssertThrowsError(
+            try command.run(
+                config: .defaultConfig,
+                cloneRepo: { _, _, baseDir in baseDir },
+                scanRepo: { _, name, _ in
+                    if name == "failure" { throw FixtureScanError.failed }
+                    return RepositorySummary(
+                        name: name,
+                        totalFindings: 0,
+                        filesAffected: 0,
+                        severityBreakdown: SeverityBreakdown(
+                            critical: 0,
+                            high: 0,
+                            medium: 0,
+                            low: 0
+                        ),
+                        typeGroups: [],
+                        hotSpots: []
+                    )
+                },
+                emitReport: { _ in emitted = true }
+            )
+        ) { error in
+            XCTAssertEqual((error as? ExitCode)?.rawValue, 2)
+        }
+        XCTAssertFalse(emitted)
+    }
+
+    // WO-591: clone failures remain explicit incomplete evidence and still render once.
+    func testPostureExecutionRendersCloneFailureAsIncompleteReport() throws {
+        var command = Posture()
+        command.repos = ["example/skipped", "example/complete"]
+        var emittedReport: PostureReport?
+
+        try command.run(
+            config: .defaultConfig,
+            cloneRepo: { _, name, baseDir in
+                if name == "skipped" { throw FixtureScanError.failed }
+                return baseDir
+            },
+            scanRepo: { _, name, _ in
+                RepositorySummary(
+                    name: name,
+                    totalFindings: 0,
+                    filesAffected: 0,
+                    severityBreakdown: SeverityBreakdown(
+                        critical: 0,
+                        high: 0,
+                        medium: 0,
+                        low: 0
+                    ),
+                    typeGroups: [],
+                    hotSpots: []
+                )
+            },
+            emitReport: { emittedReport = $0 }
+        )
+
+        XCTAssertEqual(emittedReport?.reposScanned, 1)
+        XCTAssertEqual(emittedReport?.reposSkipped, 1)
+        XCTAssertEqual(emittedReport?.repoScanComplete, false)
     }
 }

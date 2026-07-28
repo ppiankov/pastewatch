@@ -215,10 +215,11 @@ struct Launch: ParsableCommand {
     func run() throws {
         try runStartupSweepFixtureProbeIfNeeded()
         let command = try normalizedCommand()
+        // WO-574@v4: validate before startup scanning, signal setup, or process launch.
+        let config = try requireValidatedConfig()
         installLaunchSignalHandlers()
         try throwIfLaunchTerminationRequested()
-        runStartupSweepIfNeeded()
-        let config = PastewatchConfig.resolve()
+        runStartupSweepIfNeeded(config: config)
         writeBufferModeWarningIfNeeded(config: config)
 
         let agentBinary = (command[0] as NSString).lastPathComponent
@@ -429,7 +430,7 @@ struct Launch: ParsableCommand {
         return command
     }
 
-    private func runStartupSweepIfNeeded() {
+    private func runStartupSweepIfNeeded(config: PastewatchConfig) {
         guard startupSweep else { return }
 
         // WO-121: warn before proxy/agent startup; findings never block launch.
@@ -437,7 +438,11 @@ struct Launch: ParsableCommand {
         let homeDirectory = context.homeDirectory
         let currentDirectory = context.currentDirectory
         let cache = StartupSweepCache(url: StartupSweepCache.defaultURL(homeDirectory: homeDirectory))
-        let sweep = StartupSweep(homeDirectory: homeDirectory, currentDirectory: currentDirectory)
+        let sweep = StartupSweep(
+            homeDirectory: homeDirectory,
+            currentDirectory: currentDirectory,
+            config: config
+        )
         if let warning = StartupSweepWarningRenderer.render(sweep.run(cache: cache)) {
             FileHandle.standardError.write(Data(warning.utf8))
         }

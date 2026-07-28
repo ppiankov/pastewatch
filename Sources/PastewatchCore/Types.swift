@@ -45,6 +45,13 @@ public enum GuardExitContract {
     public static let blocked: Int32 = 2
 }
 
+/// WO-580@v3: stable scan outcomes shared by the CLI and generated hooks.
+public enum ScanExitContract {
+    public static let clean: Int32 = 0
+    public static let operationalFailure: Int32 = 2
+    public static let findingsDetected: Int32 = 6
+}
+
 /// Detected sensitive data types.
 /// Each type has deterministic detection rules — no ML, no guessing.
 public enum SensitiveDataType: String, CaseIterable, Codable {
@@ -638,9 +645,7 @@ public struct PastewatchConfig: Codable {
         if let mode = StreamingRedactionMode(rawValue: rawMode) {
             responseStreamingRedactionMode = mode
         } else {
-            FileHandle.standardError.write(Data(
-                "pastewatch: unknown responseStreamingRedactionMode '\(rawMode)', defaulting to '\(StreamingRedactionMode.perSSEEvent.rawValue)'\n".utf8
-            ))
+            // WO-574@v4: Core decoding is side-effect free; validators own diagnostics.
             responseStreamingRedactionMode = .perSSEEvent
         }
         // WO-529@v3: opt-in obfuscation entries for ambiguous classes.

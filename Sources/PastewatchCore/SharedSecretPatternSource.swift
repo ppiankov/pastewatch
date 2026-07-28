@@ -92,6 +92,19 @@ public enum SharedSecretPatternSource {
         return SharedSecretPatternLoadResult(rules: rules, errors: errors)
     }
 
+    // WO-573@v4: configured coverage is mandatory; injected rules are additive only.
+    public static func proxyRuleSet(
+        for config: PastewatchConfig,
+        additionalRules: [CustomRule] = []
+    ) throws -> [CustomRule] {
+        var rules = try CustomRule.compileForProxyStartup(config.customRules)
+        for path in config.sharedPatternFiles {
+            rules.append(contentsOf: try loadConfiguredRules(from: path))
+        }
+        rules.append(contentsOf: additionalRules)
+        return deduplicated(rules)
+    }
+
     public static func fileIORules(for config: PastewatchConfig) -> [CustomRule] {
         fileIORuleSet(for: config).rules
     }
@@ -102,6 +115,20 @@ public enum SharedSecretPatternSource {
 
     public static func validationErrors(for config: PastewatchConfig) -> [String] {
         fileIORuleSet(for: config).errors.map { "sharedPatternFiles: \($0.localizedDescription)" }
+    }
+
+    // WO-573@v4: duplicated config/artifact entries must not multiply findings.
+    private static func deduplicated(_ rules: [CustomRule]) -> [CustomRule] {
+        var seen = Set<String>()
+        return rules.filter { rule in
+            let identity = [
+                rule.name,
+                rule.regex.pattern,
+                rule.severity.rawValue,
+                rule.type.rawValue
+            ].joined(separator: "\u{1F}")
+            return seen.insert(identity).inserted
+        }
     }
 
     private static func loadConfiguredRules(from path: String) throws -> [CustomRule] {

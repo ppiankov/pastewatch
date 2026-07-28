@@ -14,12 +14,13 @@ struct MCP: ParsableCommand {
     var minSeverity: String?
 
     func run() throws {
+        // WO-574@v4: MCP must fail before serving when active policy is invalid.
+        let config = try requireValidatedConfig()
         let logger = auditLog.map { MCPAuditLogger(path: $0) }
-        let config = PastewatchConfig.resolve()
         let server = MCPServer(
             auditLogger: logger,
             defaultMinSeverity: minSeverity,
-            placeholderPrefix: config.placeholderPrefix
+            config: config
         )
         server.start()
     }
@@ -31,12 +32,18 @@ final class MCPServer {
     private let auditLogger: MCPAuditLogger?
     private let defaultMinSeverity: String?
     private let modelRedactionNotice: String // WO-522@v3: fixed to the session placeholder format.
+    private let config: PastewatchConfig // WO-574@v4: validated once, immutable for the session.
 
-    init(auditLogger: MCPAuditLogger? = nil, defaultMinSeverity: String? = nil, placeholderPrefix: String? = nil) {
-        self.store = RedactionStore(placeholderPrefix: placeholderPrefix)
+    init(
+        auditLogger: MCPAuditLogger? = nil,
+        defaultMinSeverity: String? = nil,
+        config: PastewatchConfig = .defaultConfig
+    ) {
+        self.store = RedactionStore(placeholderPrefix: config.placeholderPrefix)
         self.auditLogger = auditLogger
         self.defaultMinSeverity = defaultMinSeverity
-        let placeholderExample = placeholderPrefix.map {
+        self.config = config
+        let placeholderExample = config.placeholderPrefix.map {
             Obfuscator.makeCustomPlaceholder(prefix: $0, number: 1)
         } ?? "__PW_TYPE_n__"
         self.modelRedactionNotice = RedactionFlowMode.mcpRestorable.modelNotice(
@@ -171,13 +178,15 @@ final class MCPServer {
                             ]),
                             "min_severity": .object([
                                 "type": .string("string"),
-                                "description": .string("Minimum severity to redact: critical, high, medium, low (default: high)"),
-                                "enum": .array([
-                                    .string("critical"),
-                                    .string("high"),
-                                    .string("medium"),
-                                    .string("low")
-                                ])
+                                // WO-584@v2: schema text and enum derive from Severity ownership.
+                                "description": .string(
+                                    "Minimum severity to redact: " +
+                                        Severity.allCases.map(\.rawValue).joined(separator: ", ") +
+                                        " (default: \(Severity.defaultGuardThreshold.rawValue))"
+                                ),
+                                "enum": .array(Severity.allCases.map {
+                                    .string($0.rawValue)
+                                })
                             ])
                         ]),
                         "required": .array([.string("path")])
@@ -236,8 +245,6 @@ final class MCPServer {
             arguments = [:]
         }
 
-        let config = PastewatchConfig.resolve()
-
         switch toolName {
         case "pastewatch_scan":
             return handleScanText(id: id, arguments: arguments, config: config)
@@ -273,7 +280,14 @@ final class MCPServer {
             auditLogger?.log("SCAN  (inline)  shared-pattern-error")
             return errorResult(id: id, text: "Shared pattern load failed.")
         }
-        let matches = scanResult.matches
+        // WO-577@v3: agent-controlled text cannot authorize its own inline suppression.
+        let matches = GuardDecision.evaluate(
+            matches: scanResult.matches,
+            content: text,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: nil
+        ).reportableMatches
         auditLogger?.log("SCAN  (inline)  findings=\(matches.count)")
         return successResult(id: id, matches: matches)
     }
@@ -314,8 +328,16 @@ final class MCPServer {
             return errorResult(id: id, text: "Scan error: \(error.localizedDescription)")
         }
 
-        auditLogger?.log("SCAN  \(path)  findings=\(matches.count)")
-        return successResult(id: id, matches: matches, filePath: path)
+        // WO-577@v3: file diagnostics share test, inline, and config allow policy.
+        let reportable = GuardDecision.evaluate(
+            matches: matches,
+            content: content,
+            config: config,
+            contentTrust: .trustedFile,
+            minimumSeverity: nil
+        ).reportableMatches
+        auditLogger?.log("SCAN  \(path)  findings=\(reportable.count)")
+        return successResult(id: id, matches: reportable, filePath: path)
     }
 
     private func handleScanDir(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
@@ -329,16 +351,33 @@ final class MCPServer {
 
         do {
             let fileResults = try DirectoryScanner.scan(directory: path, config: config)
-            let allMatches = fileResults.flatMap { $0.matches }
+            // WO-577@v3: directory diagnostics apply the same policy per trusted file.
+            let reportableResults = fileResults.compactMap { result -> FileScanResult? in
+                let matches = GuardDecision.evaluate(
+                    matches: result.matches,
+                    content: result.content,
+                    config: config,
+                    contentTrust: .trustedFile,
+                    minimumSeverity: nil
+                ).reportableMatches
+                guard !matches.isEmpty else { return nil }
+                return FileScanResult(
+                    filePath: result.filePath,
+                    matches: matches,
+                    content: result.content,
+                    gitignored: result.gitignored
+                )
+            }
+            let allMatches = reportableResults.flatMap { $0.matches }
             let filesScanned = fileResults.count
             let totalFindings = allMatches.count
 
             var findingsArray: [JSONValue] = []
-            for fr in fileResults {
+            for fr in reportableResults {
                 for match in fr.matches {
                     findingsArray.append(.object([
                         "type": .string(match.displayName),
-                        "value": .string(match.value),
+                        "severity": .string(match.effectiveSeverity.rawValue),
                         "file": .string(fr.filePath),
                         "line": .number(Double(match.line))
                     ]))
@@ -602,7 +641,14 @@ final class MCPServer {
             auditLogger?.log("CHECK (inline) shared-pattern-error")
             return errorResult(id: id, text: "Shared pattern load failed.")
         }
-        let matches = scanResult.matches
+        // WO-577@v3: output supplied by an agent cannot self-authorize inline suppression.
+        let matches = GuardDecision.evaluate(
+            matches: scanResult.matches,
+            content: text,
+            config: config,
+            contentTrust: .agentControlled,
+            minimumSeverity: nil
+        ).reportableMatches
         auditLogger?.log("CHECK (inline)  clean=\(matches.isEmpty)")
 
         var findingsArray: [JSONValue] = []
@@ -634,7 +680,8 @@ final class MCPServer {
         for match in matches {
             var entry: [String: JSONValue] = [
                 "type": .string(match.displayName),
-                "value": .string(match.value),
+                // WO-577@v3: diagnostic responses expose evidence, never secret bytes.
+                "severity": .string(match.effectiveSeverity.rawValue),
                 "line": .number(Double(match.line))
             ]
             if let fp = filePath ?? match.filePath {

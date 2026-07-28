@@ -137,6 +137,41 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(request.id, .string("req-1"))
     }
 
+    // WO-584@v2: MCP schema values and documentation derive from Severity ownership.
+    func testToolsListSeveritySchemaUsesCanonicalCasesAndDefault() throws {
+        let request = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(1),
+            method: "tools/list",
+            params: nil
+        )
+        let response = try callMCPRequest(
+            request,
+            currentDirectory: FileManager.default.temporaryDirectory
+        )
+
+        guard case .object(let result) = response.result,
+              case .array(let tools) = result["tools"],
+              let readTool = tools.first(where: {
+                  guard case .object(let tool) = $0 else { return false }
+                  return tool["name"] == .string("pastewatch_read_file")
+              }),
+              case .object(let readToolObject) = readTool,
+              case .object(let schema) = readToolObject["inputSchema"],
+              case .object(let properties) = schema["properties"],
+              case .object(let severity) = properties["min_severity"],
+              case .array(let cases) = severity["enum"],
+              case .string(let description) = severity["description"] else {
+            XCTFail("Expected pastewatch_read_file min_severity schema")
+            return
+        }
+
+        XCTAssertEqual(cases, Severity.allCases.map { .string($0.rawValue) })
+        XCTAssertTrue(description.contains(
+            "default: \(Severity.defaultGuardThreshold.rawValue)"
+        ))
+    }
+
     // WO-129: MCP scan_file must consume configured sharedPatternFiles.
     func testScanFileUsesSharedPatternFiles() throws {
         let secretValue = "PW" + "MCP-" + syntheticSuffix()
@@ -171,8 +206,82 @@ final class MCPProtocolTests: XCTestCase {
 
         XCTAssertNil(response.error)
         let responseText = try joinedMCPContentText(response)
-        XCTAssertTrue(responseText.contains(secretValue))
+        // WO-577@v3: diagnostic evidence must never echo the matched bytes.
+        XCTAssertFalse(responseText.contains(secretValue), responseText)
         XCTAssertTrue(responseText.contains("Found 1 finding(s)."))
+    }
+
+    // WO-577@v3: every MCP diagnostic endpoint returns metadata without plaintext.
+    func testDiagnosticScanEndpointsNeverSerializeMatchedValues() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let value = "PWDIAG-" + syntheticSuffix()
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Diagnostic fixture", pattern: "PWDIAG-[A-F0-9]{12}")
+        ]
+        try JSONEncoder().encode(config).write(
+            to: tempDir.appendingPathComponent(".pastewatch.json")
+        )
+        let fileURL = tempDir.appendingPathComponent("fixture.txt")
+        try value.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let calls: [(String, [String: JSONValue])] = [
+            ("pastewatch_scan", ["text": .string(value)]),
+            ("pastewatch_scan_file", ["path": .string(fileURL.path)]),
+            ("pastewatch_scan_dir", ["path": .string(tempDir.path)]),
+            ("pastewatch_check_output", ["text": .string(value)])
+        ]
+
+        for (name, arguments) in calls {
+            let response = try callMCPTool(
+                name: name,
+                arguments: arguments,
+                currentDirectory: tempDir
+            )
+            let encoded = try JSONEncoder().encode(response)
+            let responseText = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+            XCTAssertFalse(responseText.contains(value), "\(name): \(responseText)")
+            XCTAssertTrue(responseText.contains("Diagnostic fixture"), "\(name): \(responseText)")
+        }
+    }
+
+    // WO-577@v3: guard policy suppresses explicit allowlist values on every scan surface.
+    func testDiagnosticScanEndpointsHonorConfiguredAllowlist() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-mcp-allowlist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let value = "PWALLOW-" + syntheticSuffix()
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "Allowlist fixture", pattern: "PWALLOW-[A-F0-9]{12}")
+        ]
+        config.allowedValues = [value]
+        try JSONEncoder().encode(config).write(
+            to: tempDir.appendingPathComponent(".pastewatch.json")
+        )
+        let fileURL = tempDir.appendingPathComponent("fixture.txt")
+        try value.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        for (name, arguments) in [
+            ("pastewatch_scan", ["text": JSONValue.string(value)]),
+            ("pastewatch_scan_file", ["path": JSONValue.string(fileURL.path)]),
+            ("pastewatch_scan_dir", ["path": JSONValue.string(tempDir.path)]),
+            ("pastewatch_check_output", ["text": JSONValue.string(value)])
+        ] {
+            let response = try callMCPTool(
+                name: name,
+                arguments: arguments,
+                currentDirectory: tempDir
+            )
+            let text = try joinedMCPContentText(response)
+            XCTAssertFalse(text.contains("Allowlist fixture"), "\(name): \(text)")
+        }
     }
 
     // WO-521: MCP reads explain restorable markers and only nag when explicitly enabled.
@@ -368,6 +477,25 @@ final class MCPProtocolTests: XCTestCase {
                 "arguments": .object(arguments)
             ])
         )
+        return try callMCPRequestWithDiagnostics(request, currentDirectory: currentDirectory)
+    }
+
+    // WO-584@v2: protocol tests exercise non-tool MCP requests through the real process.
+    private func callMCPRequest(
+        _ request: JSONRPCRequest,
+        currentDirectory: URL
+    ) throws -> JSONRPCResponse {
+        try callMCPRequestWithDiagnostics(
+            request,
+            currentDirectory: currentDirectory
+        ).response
+    }
+
+    // WO-577@v3: capture diagnostics separately to prove matched values never serialize.
+    private func callMCPRequestWithDiagnostics(
+        _ request: JSONRPCRequest,
+        currentDirectory: URL
+    ) throws -> MCPCallResult {
         let requestData = try JSONEncoder().encode(request)
 
         let process = Process()

@@ -9,27 +9,33 @@ public struct Dashboard: Codable {
     public let period: DashboardPeriod
     public let summary: SessionSummary
     public let topTypes: [TypeCount]
+    /// WO-583@v2: complete type count before text and Markdown render limits.
+    public let topTypesTotal: Int
     public let hotFiles: [FileAccess]
     /// WO-556@v2: total hot files before the top-10 cap. When > hotFiles.count, the list was truncated.
     public let hotFilesTotal: Int
     public let verdict: String
 
+    // WO-583@v2: callers may provide a larger source total when the stored list is limited.
     public init(generatedAt: String, sessions: Int, period: DashboardPeriod,
                 summary: SessionSummary, topTypes: [TypeCount], hotFiles: [FileAccess],
-                hotFilesTotal: Int? = nil, verdict: String) {
+                topTypesTotal: Int? = nil, hotFilesTotal: Int? = nil, verdict: String) {
         self.generatedAt = generatedAt
         self.sessions = sessions
         self.period = period
         self.summary = summary
         self.topTypes = topTypes
+        // WO-583@v2: metadata cannot under-report the list actually stored.
+        self.topTypesTotal = max(topTypesTotal ?? topTypes.count, topTypes.count)
         self.hotFiles = hotFiles
         self.hotFilesTotal = hotFilesTotal ?? hotFiles.count
         self.verdict = verdict
     }
 
-    // WO-556@v2: historical dashboard JSON derives a truthful lower bound instead of zero.
+    // WO-556@v2, WO-583@v2: historical JSON derives truthful list-size lower bounds.
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, sessions, period, summary, topTypes, hotFiles, hotFilesTotal, verdict
+        case generatedAt, sessions, period, summary, topTypes, topTypesTotal
+        case hotFiles, hotFilesTotal, verdict
     }
 
     public init(from decoder: Decoder) throws {
@@ -39,6 +45,11 @@ public struct Dashboard: Codable {
         period = try c.decode(DashboardPeriod.self, forKey: .period)
         summary = try c.decode(SessionSummary.self, forKey: .summary)
         topTypes = try c.decode([TypeCount].self, forKey: .topTypes)
+        // WO-583@v2: legacy artifacts derive a truthful lower bound from their stored list.
+        topTypesTotal = max(
+            try c.decodeIfPresent(Int.self, forKey: .topTypesTotal) ?? topTypes.count,
+            topTypes.count
+        )
         hotFiles = try c.decode([FileAccess].self, forKey: .hotFiles)
         hotFilesTotal = try c.decodeIfPresent(Int.self, forKey: .hotFilesTotal)
             ?? hotFiles.count

@@ -1,21 +1,33 @@
+import ArgumentParser
 import XCTest
 @testable import PastewatchCore
+@testable import PastewatchCLI
 
 /// Tests for guard-read / guard-write scan logic.
 /// Both commands share the same format-aware scan and guard-decision path.
 final class GuardReadWriteTests: XCTestCase {
 
     private var testDir: String!
+    private var originalGuardValue: String?
     private let config = PastewatchConfig.defaultConfig
 
     override func setUp() {
         super.setUp()
+        // WO-588@v2: exercise production guard behavior even under PW_GUARD=0 test shells.
+        originalGuardValue = ProcessInfo.processInfo.environment["PW_GUARD"]
+        setenv("PW_GUARD", "1", 1)
         testDir = NSTemporaryDirectory() + "pastewatch-guard-rw-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 
+    // WO-588@v2: restore the guard environment after unreadable-input checks.
     override func tearDown() {
         try? FileManager.default.removeItem(atPath: testDir)
+        if let originalGuardValue {
+            setenv("PW_GUARD", originalGuardValue, 1)
+        } else {
+            unsetenv("PW_GUARD")
+        }
         super.tearDown()
     }
 
@@ -113,6 +125,56 @@ final class GuardReadWriteTests: XCTestCase {
         XCTAssertTrue(findings.isEmpty, "Non-existent file should return no findings")
     }
 
+    // WO-588@v2: missing paths and valid empty files retain their allow behavior.
+    func testFileGuardAllowsMissingAndValidEmptyFiles() throws {
+        let missingPath = testDir + "/missing.txt"
+        let emptyPath = testDir + "/empty.txt"
+        try Data().write(to: URL(fileURLWithPath: emptyPath))
+
+        for operation in [FileGuard.Operation.read, .write] {
+            XCTAssertNoThrow(
+                try FileGuard.check(
+                    filePath: missingPath,
+                    failOnSeverity: .high,
+                    operation: operation
+                )
+            )
+            XCTAssertNoThrow(
+                try FileGuard.check(
+                    filePath: emptyPath,
+                    failOnSeverity: .high,
+                    operation: operation
+                )
+            )
+        }
+    }
+
+    // WO-588@v2: invalid lead and embedded UTF-8 sequences block both operations.
+    func testFileGuardBlocksInvalidUTF8ForReadAndWrite() throws {
+        let invalidLeadPath = testDir + "/invalid-lead.txt"
+        let embeddedInvalidPath = testDir + "/embedded-invalid.txt"
+        try Data([0xFF, 0x61]).write(to: URL(fileURLWithPath: invalidLeadPath))
+        try Data([0x61, 0xC3, 0x28, 0x62]).write(to: URL(fileURLWithPath: embeddedInvalidPath))
+
+        for operation in [FileGuard.Operation.read, .write] {
+            assertFileGuardBlocks(path: invalidLeadPath, operation: operation)
+            assertFileGuardBlocks(path: embeddedInvalidPath, operation: operation)
+        }
+    }
+
+    // WO-588@v2: an existing path that cannot be read as file content fails closed.
+    func testFileGuardBlocksReadFailureForReadAndWrite() {
+        let directoryPath = testDir + "/not-a-file"
+        try? FileManager.default.createDirectory(
+            atPath: directoryPath,
+            withIntermediateDirectories: false
+        )
+
+        for operation in [FileGuard.Operation.read, .write] {
+            assertFileGuardBlocks(path: directoryPath, operation: operation)
+        }
+    }
+
     func testInlineAllowSuppressesFinding() throws {
         let path = testDir + "/config.env"
         let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
@@ -185,5 +247,18 @@ final class GuardReadWriteTests: XCTestCase {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         XCTAssertTrue(config.isPathProtected(home + "/.openclaw/workledger.key"),
                       "Guard should block access to ~/.openclaw/ by default")
+    }
+
+    // WO-588@v2: both file guard operations must use the same blocked exit contract.
+    private func assertFileGuardBlocks(path: String, operation: FileGuard.Operation) {
+        XCTAssertThrowsError(
+            try FileGuard.check(
+                filePath: path,
+                failOnSeverity: .high,
+                operation: operation
+            )
+        ) { error in
+            XCTAssertEqual((error as? ExitCode)?.rawValue, GuardExitContract.blocked)
+        }
     }
 }

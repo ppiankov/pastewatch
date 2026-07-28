@@ -49,6 +49,10 @@ public struct PostureReport: Codable {
     public let organization: String
     public let totalRepos: Int
     public let reposScanned: Int
+    /// WO-575@v2: distinguish repositories that were skipped from repositories proven clean.
+    public let reposSkipped: Int
+    /// WO-575@v2: expose whether every enumerated repository completed scanning.
+    public let repoScanComplete: Bool
     public let totalFindings: Int
     public let severityBreakdown: SeverityBreakdown
     public let repositories: [RepositorySummary]
@@ -57,6 +61,7 @@ public struct PostureReport: Codable {
     /// WO-553@v3: true only when the report can prove repository enumeration completed.
     public let repoEnumerationComplete: Bool
 
+    // WO-575@v2: new reports derive explicit scan-completeness metadata.
     public init(version: String, generatedAt: String, organization: String,
                 totalRepos: Int, reposScanned: Int, totalFindings: Int,
                 severityBreakdown: SeverityBreakdown,
@@ -68,6 +73,8 @@ public struct PostureReport: Codable {
         self.organization = organization
         self.totalRepos = totalRepos
         self.reposScanned = reposScanned
+        self.reposSkipped = max(totalRepos - reposScanned, 0)
+        self.repoScanComplete = self.reposSkipped == 0
         self.totalFindings = totalFindings
         self.severityBreakdown = severityBreakdown
         self.repositories = repositories
@@ -78,6 +85,7 @@ public struct PostureReport: Codable {
     // WO-553@v3: backward-compatible decode — field is absent in pre-WO-553 JSON.
     private enum CodingKeys: String, CodingKey {
         case version, generatedAt, organization, totalRepos, reposScanned
+        case reposSkipped, repoScanComplete
         case totalFindings, severityBreakdown, repositories
         case repoEnumerationCapped, repoEnumerationComplete
     }
@@ -89,6 +97,9 @@ public struct PostureReport: Codable {
         organization = try c.decode(String.self, forKey: .organization)
         totalRepos = try c.decode(Int.self, forKey: .totalRepos)
         reposScanned = try c.decode(Int.self, forKey: .reposScanned)
+        // WO-575@v2: historical reports derive scan completeness from their counts.
+        reposSkipped = max(totalRepos - reposScanned, 0)
+        repoScanComplete = reposSkipped == 0
         totalFindings = try c.decode(Int.self, forKey: .totalFindings)
         severityBreakdown = try c.decode(SeverityBreakdown.self, forKey: .severityBreakdown)
         repositories = try c.decode([RepositorySummary].self, forKey: .repositories)
@@ -365,6 +376,10 @@ public enum PostureFormatter {
         } else {
             lines.append("Repos scanned: \(report.reposScanned) (enumeration incomplete; total unknown)")
         }
+        // WO-575@v2: skipped scans are incomplete evidence, never clean repositories.
+        if !report.repoScanComplete {
+            lines.append("Repos skipped: \(report.reposSkipped) (scan incomplete)")
+        }
         lines.append("Total findings: \(report.totalFindings)")
         lines.append("")
         lines.append("Severity breakdown:")
@@ -416,6 +431,10 @@ public enum PostureFormatter {
             lines.append("**Repos scanned:** \(report.reposScanned)/\(report.totalRepos)")
         } else {
             lines.append("**Repos scanned:** \(report.reposScanned) (enumeration incomplete; total unknown)")
+        }
+        // WO-575@v2: Markdown reports carry the same explicit scan-completeness signal.
+        if !report.repoScanComplete {
+            lines.append("**Repos skipped:** \(report.reposSkipped) (scan incomplete)")
         }
         lines.append("**Total findings:** \(report.totalFindings)")
         lines.append("")

@@ -31,7 +31,29 @@ struct Posture: ParsableCommand {
             throw ExitCode(rawValue: 2)
         }
 
-        let config = PastewatchConfig.resolve()
+        // WO-574@v4: organization posture cannot be reported under fallback policy.
+        let config = try requireValidatedConfig()
+        try run(
+            config: config,
+            cloneRepo: { org, name, baseDir in
+                try PostureScanner.cloneRepo(org: org, name: name, into: baseDir)
+            },
+            scanRepo: { path, name, scanConfig in
+                try PostureScanner.scanRepo(at: path, name: name, config: scanConfig)
+            },
+            emitReport: { report in
+                try render(report)
+            }
+        )
+    }
+
+    // WO-591: injected scanning and emission pin the no-partial-report boundary.
+    func run(
+        config: PastewatchConfig,
+        cloneRepo: (_ org: String, _ name: String, _ baseDir: String) throws -> String,
+        scanRepo: (_ path: String, _ name: String, _ config: PastewatchConfig) throws -> RepositorySummary,
+        emitReport: (PostureReport) throws -> Void
+    ) throws {
         let orgName: String
         var repoNames: [String]
 
@@ -60,22 +82,41 @@ struct Posture: ParsableCommand {
         for (index, name) in repoNames.enumerated() {
             let cloneOrg = repos.isEmpty ? orgName : repos[index].split(separator: "/").first.map(String.init) ?? orgName
             FileHandle.standardError.write(Data("[\(index + 1)/\(totalRepos)] Scanning \(name)...\n".utf8))
+            let repoPath: String
             do {
-                let repoPath = try PostureScanner.cloneRepo(org: cloneOrg, name: name, into: tempDir)
-                let summary = try PostureScanner.scanRepo(at: repoPath, name: name, config: config)
-                summaries.append(summary)
+                repoPath = try cloneRepo(cloneOrg, name, tempDir)
             } catch {
-                FileHandle.standardError.write(Data("  warning: \(name) skipped (\(error))\n".utf8))
-                summaries.append(RepositorySummary(
-                    name: name, totalFindings: 0, filesAffected: 0,
-                    severityBreakdown: SeverityBreakdown(critical: 0, high: 0, medium: 0, low: 0),
-                    typeGroups: [], hotSpots: []
-                ))
+                // WO-575@v2: clone failures are retained as explicit incomplete scans
+                // without disclosing arbitrary process error output.
+                let errorType = String(describing: type(of: error))
+                FileHandle.standardError.write(Data("  warning: \(name) skipped (\(errorType))\n".utf8))
+                continue
+            }
+
+            do {
+                let summary = try scanRepo(repoPath, name, config)
+                summaries.append(summary)
+            } catch is SharedSecretPatternLoadError {
+                // WO-575@v2: detector-configuration failures invalidate the whole posture report.
+                FileHandle.standardError.write(
+                    Data("error: posture scan stopped because shared patterns could not be loaded\n".utf8)
+                )
+                throw ExitCode(rawValue: 2)
+            } catch {
+                // WO-575@v2: an incomplete detector run cannot support any posture report.
+                FileHandle.standardError.write(
+                    Data("error: posture scan stopped because a repository could not be scanned\n".utf8)
+                )
+                throw ExitCode(rawValue: 2)
             }
         }
 
         let report = PostureScanner.aggregate(org: resolvedOrg, summaries: summaries, totalRepos: totalRepos)
+        try emitReport(report)
+    }
 
+    // WO-591: filesystem/stdout side effects occur only after every repository scan resolves.
+    private func render(_ report: PostureReport) throws {
         try redirectStdoutIfNeeded()
 
         let reportOutput: String

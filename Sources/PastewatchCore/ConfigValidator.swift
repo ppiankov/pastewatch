@@ -5,7 +5,39 @@ public struct ConfigValidationResult {
     public var isValid: Bool { errors.isEmpty }
 }
 
+// WO-574@v4: identify the exact precedence source that governed enforcement.
+public enum PastewatchConfigSource: Equatable {
+    case system
+    case project
+    case user
+    case defaults
+}
+
+// WO-574@v4: carry validated config and source evidence as one atomic result.
+public struct ResolvedPastewatchConfig {
+    public let config: PastewatchConfig
+    public let source: PastewatchConfigSource
+    public let path: String?
+}
+
+// WO-574@v4: enforcement diagnostics disclose the failing path, never config values.
+public struct PastewatchConfigResolutionError: Error, Equatable, LocalizedError {
+    public enum Kind: Equatable {
+        case unreadable
+        case invalid
+    }
+
+    public let path: String
+    public let kind: Kind
+
+    public var errorDescription: String? {
+        let reason = kind == .unreadable ? "could not be read" : "is invalid"
+        return "configuration at \(path) \(reason); run pastewatch-cli config check --file \(path)"
+    }
+}
+
 public enum ConfigValidator {
+    // WO-574@v4: all enforcement commands share this strict config boundary.
     /// Validate a config file at the given path, or the resolved config if nil.
     public static func validate(path: String? = nil) -> ConfigValidationResult {
         let loaded = loadConfigData(path: path)
@@ -13,14 +45,77 @@ public enum ConfigValidator {
             return ConfigValidationResult(errors: loaded.errors)
         }
 
+        let decoded = decodeAndValidate(data: data, configPath: configPath)
+        return ConfigValidationResult(errors: decoded.errors)
+    }
+
+    // WO-574@v4: present invalid config is an enforcement failure, not a fallback signal.
+    public static func resolveValidated(
+        fileManager: FileManager = .default,
+        currentDirectory: String = FileManager.default.currentDirectoryPath,
+        systemConfigPath: String = PastewatchConfig.systemConfigPath,
+        userConfigPath: String = PastewatchConfig.configPath.path
+    ) throws -> ResolvedPastewatchConfig {
+        let candidates: [(PastewatchConfigSource, String)] = [
+            (.system, systemConfigPath),
+            (.project, currentDirectory + "/.pastewatch.json"),
+            (.user, userConfigPath)
+        ]
+
+        guard let (source, path) = candidates.first(where: {
+            pathExistsIncludingDanglingSymlink($0.1, fileManager: fileManager)
+        }) else {
+            return ResolvedPastewatchConfig(
+                config: .defaultConfig,
+                source: .defaults,
+                path: nil
+            )
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw PastewatchConfigResolutionError(path: path, kind: .unreadable)
+        }
+
+        let decoded = decodeAndValidate(data: data, configPath: path)
+        guard let config = decoded.config, decoded.errors.isEmpty else {
+            throw PastewatchConfigResolutionError(path: path, kind: .invalid)
+        }
+        return ResolvedPastewatchConfig(config: config, source: source, path: path)
+    }
+
+    // WO-574@v4: a dangling active-config symlink is present policy, not absence.
+    private static func pathExistsIncludingDanglingSymlink(
+        _ path: String,
+        fileManager: FileManager
+    ) -> Bool {
+        if fileManager.fileExists(atPath: path) {
+            return true
+        }
+        return (try? fileManager.destinationOfSymbolicLink(atPath: path)) != nil
+    }
+
+    private static func decodeAndValidate(
+        data: Data,
+        configPath: String
+    ) -> (config: PastewatchConfig?, errors: [String]) {
         var errors: [String] = []
+
+        // WO-574@v4: inspect soft-defaulted wire fields before decoding erases invalid input.
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let rawMode = object["responseStreamingRedactionMode"] as? String,
+           StreamingRedactionMode(rawValue: rawMode) == nil {
+            errors.append("responseStreamingRedactionMode: unknown value")
+        }
 
         // Validate JSON syntax
         let config: PastewatchConfig
         do {
             config = try JSONDecoder().decode(PastewatchConfig.self, from: data)
         } catch {
-            return ConfigValidationResult(errors: ["\(configPath): invalid JSON: \(error.localizedDescription)"])
+            return (nil, ["\(configPath): invalid JSON: \(error.localizedDescription)"])
         }
 
         // Validate enabledTypes
@@ -86,7 +181,7 @@ public enum ConfigValidator {
         // WO-126: configured shared pattern files must not silently disable redaction coverage.
         errors.append(contentsOf: SharedSecretPatternSource.validationErrors(for: config))
 
-        return ConfigValidationResult(errors: errors)
+        return (config, errors)
     }
 
     private static func validateRule(_ rule: CustomRuleConfig, index i: Int, errors: inout [String]) {

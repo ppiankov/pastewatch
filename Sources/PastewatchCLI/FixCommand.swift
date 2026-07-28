@@ -30,12 +30,14 @@ struct Fix: ParsableCommand {
     var initKey = false
 
     func run() throws {
+        // WO-574@v4: remediation must never mutate files under silently degraded policy.
+        let config = try requireValidatedConfig()
+
         guard FileManager.default.fileExists(atPath: dir) else {
             FileHandle.standardError.write(Data("error: directory not found: \(dir)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
 
-        let config = PastewatchConfig.resolve()
         let allowlist = Allowlist.fromConfig(config)
 
         // Scan directory

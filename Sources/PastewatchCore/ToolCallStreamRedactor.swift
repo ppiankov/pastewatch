@@ -612,7 +612,9 @@ struct ToolCallStreamRedactor {
                     segmentEnd = rawCursor + 2
                 }
             } else {
-                guard let width = utf8ScalarWidth(encoded[rawCursor]), rawCursor + width <= encoded.count else {
+                // WO-576@v3: reject overlong and out-of-range UTF-8 leads consistently.
+                guard let width = UTF8ScalarWidth.forLeadByte(encoded[rawCursor]),
+                      rawCursor + width <= encoded.count else {
                     return nil
                 }
                 segmentEnd = rawCursor + width
@@ -633,14 +635,6 @@ struct ToolCallStreamRedactor {
         token.append(content)
         token.append(0x22)
         return decodeJSONString(token)
-    }
-
-    private static func utf8ScalarWidth(_ leadingByte: UInt8) -> Int? {
-        if leadingByte < 0x80 { return 1 }
-        if leadingByte & 0xE0 == 0xC0 { return 2 }
-        if leadingByte & 0xF0 == 0xE0 { return 3 }
-        if leadingByte & 0xF8 == 0xF0 { return 4 }
-        return nil
     }
 
     private func record(

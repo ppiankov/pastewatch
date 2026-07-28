@@ -1,5 +1,16 @@
 import ArgumentParser
+import Foundation
 import PastewatchCore
+
+// WO-574@v4: every enforcement command shares one fail-closed config boundary.
+func requireValidatedConfig() throws -> PastewatchConfig {
+    do {
+        return try ConfigValidator.resolveValidated().config
+    } catch {
+        FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+        throw ExitCode(rawValue: 2)
+    }
+}
 
 @main
 struct PastewatchCLI: ParsableCommand {

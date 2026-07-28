@@ -91,10 +91,22 @@ struct Scan: ParsableCommand {
     func run() throws {
         if check && ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
-        let config = PastewatchConfig.resolve()
-        let mergedAllowlist = try loadAllowlist(config: config)
-        let customRulesList = try loadCustomRules(config: config)
-        let baselineFile = try loadBaseline()
+        // WO-574@v4: a present invalid active config must block scanning.
+        let config = try requireValidatedConfig()
+        let mergedAllowlist: Allowlist
+        let customRulesList: [CustomRule]
+        let baselineFile: BaselineFile?
+        do {
+            mergedAllowlist = try loadAllowlist(config: config)
+            customRulesList = try loadCustomRules(config: config)
+            baselineFile = try loadBaseline()
+        } catch let exitCode as ExitCode {
+            throw exitCode
+        } catch {
+            // WO-580@v3: every auxiliary policy read/decode failure uses the operational exit.
+            FileHandle.standardError.write(Data("error: scan configuration could not be loaded\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        }
 
         // Git history scanning mode
         if gitLog {
@@ -114,7 +126,8 @@ struct Scan: ParsableCommand {
         if let dirPath = dir {
             guard FileManager.default.fileExists(atPath: dirPath) else {
                 FileHandle.standardError.write(Data("error: directory not found: \(dirPath)\n".utf8))
-                throw ExitCode(rawValue: 2)
+                // WO-580@v3: scan setup failures use the stable operational exit.
+                throw ExitCode(rawValue: ScanExitContract.operationalFailure)
             }
             try runDirectoryScan(dirPath: dirPath, config: config,
                                  allowlist: mergedAllowlist, customRules: customRulesList,
@@ -123,7 +136,16 @@ struct Scan: ParsableCommand {
         }
 
         // Single file or stdin mode
-        let input = try readInput()
+        let input: String
+        do {
+            input = try readInput()
+        } catch let exitCode as ExitCode {
+            throw exitCode
+        } catch {
+            // WO-580@v3: unreadable or invalid UTF-8 input is an operational failure.
+            FileHandle.standardError.write(Data("error: input could not be read as UTF-8\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        }
 
         // WO-131: empty stdin still needs sharedPatternFiles validation before clean success.
         var matches: [DetectedMatch]
@@ -133,9 +155,18 @@ struct Scan: ParsableCommand {
         } catch let error as SharedSecretPatternLoadError {
             // WO-130: single-file and stdin scans fail closed when shared-pattern coverage is unavailable.
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
-        matches = Allowlist.filterInlineAllow(matches: matches, content: input)
+        // WO-577@v3: diagnostics share test/config/inline policy with file guards.
+        matches = GuardDecision.evaluate(
+            matches: matches,
+            content: input,
+            config: config,
+            // WO-577@v3: a filename selects parsing metadata, not caller trust.
+            contentTrust: file != nil ? .trustedFile : .agentControlled,
+            minimumSeverity: nil
+        ).reportableMatches
 
         // Apply baseline filtering
         if let bl = baselineFile {
@@ -161,7 +192,8 @@ struct Scan: ParsableCommand {
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
         if shouldFail(matches: matches) {
-            throw ExitCode(rawValue: 6)
+            // WO-580@v3: preserve the externally consumed findings exit contract.
+            throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
     }
 
@@ -176,7 +208,8 @@ struct Scan: ParsableCommand {
         FileManager.default.createFile(atPath: outputPath, contents: nil)
         guard let handle = FileHandle(forWritingAtPath: outputPath) else {
             FileHandle.standardError.write(Data("error: could not write to \(outputPath)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: output failures use the stable operational exit.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
         dup2(handle.fileDescriptor, STDOUT_FILENO)
         handle.closeFile()
@@ -189,7 +222,8 @@ struct Scan: ParsableCommand {
         if let allowlistPath = allowlist {
             guard FileManager.default.fileExists(atPath: allowlistPath) else {
                 FileHandle.standardError.write(Data("error: allowlist file not found: \(allowlistPath)\n".utf8))
-                throw ExitCode(rawValue: 2)
+                // WO-580@v3: scan configuration failures use the stable operational exit.
+                throw ExitCode(rawValue: ScanExitContract.operationalFailure)
             }
             merged = merged.merged(with: try Allowlist.load(from: allowlistPath))
         }
@@ -204,7 +238,8 @@ struct Scan: ParsableCommand {
         if let rulesPath = rules {
             guard FileManager.default.fileExists(atPath: rulesPath) else {
                 FileHandle.standardError.write(Data("error: rules file not found: \(rulesPath)\n".utf8))
-                throw ExitCode(rawValue: 2)
+                // WO-580@v3: scan configuration failures use the stable operational exit.
+                throw ExitCode(rawValue: ScanExitContract.operationalFailure)
             }
             list.append(contentsOf: try CustomRule.load(from: rulesPath))
         }
@@ -215,7 +250,8 @@ struct Scan: ParsableCommand {
         guard let baselinePath = baseline else { return nil }
         guard FileManager.default.fileExists(atPath: baselinePath) else {
             FileHandle.standardError.write(Data("error: baseline file not found: \(baselinePath)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: scan configuration failures use the stable operational exit.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
         return try BaselineFile.load(from: baselinePath)
     }
@@ -224,7 +260,8 @@ struct Scan: ParsableCommand {
         if let filePath = file {
             guard FileManager.default.fileExists(atPath: filePath) else {
                 FileHandle.standardError.write(Data("error: file not found: \(filePath)\n".utf8))
-                throw ExitCode(rawValue: 2)
+                // WO-580@v3: missing scan input uses the stable operational exit.
+                throw ExitCode(rawValue: ScanExitContract.operationalFailure)
             }
             return try String(contentsOfFile: filePath, encoding: .utf8)
         }
@@ -291,7 +328,8 @@ struct Scan: ParsableCommand {
         } catch let error as SharedSecretPatternLoadError {
             // WO-128: git history scans fail closed when shared-pattern coverage is unavailable.
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 
         // Apply allowlist and custom rules to each file's matches
@@ -304,9 +342,21 @@ struct Scan: ParsableCommand {
                 allMatches = allowlist.filter(allMatches)
             }
 
+            // WO-577@v3: directory diagnostics use the same trusted-file policy as MCP.
+            allMatches = GuardDecision.evaluate(
+                matches: allMatches,
+                content: fr.content,
+                config: config,
+                contentTrust: .trustedFile,
+                minimumSeverity: nil
+            ).reportableMatches
+
             if !allMatches.isEmpty {
                 filteredResults.append(FileScanResult(
-                    filePath: fr.filePath, matches: allMatches, content: fr.content
+                    filePath: fr.filePath,
+                    matches: allMatches,
+                    content: fr.content,
+                    gitignored: fr.gitignored
                 ))
             }
         }
@@ -334,7 +384,8 @@ struct Scan: ParsableCommand {
             : filteredResults.filter { !$0.gitignored }
         let allMatches = exitResults.flatMap { $0.matches }
         if shouldFail(matches: allMatches) {
-            throw ExitCode(rawValue: 6)
+            // WO-580@v3: preserve the externally consumed findings exit contract.
+            throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
     }
 
@@ -354,10 +405,12 @@ struct Scan: ParsableCommand {
             )
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: git scan failures use the stable operational exit.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         } catch let error as SharedSecretPatternLoadError {
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 
         // Apply allowlist filtering
@@ -367,9 +420,21 @@ struct Scan: ParsableCommand {
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
                 allMatches = allowlist.filter(allMatches)
             }
+            // WO-577@v3: git-diff diagnostics use the same trusted-file policy as files.
+            allMatches = GuardDecision.evaluate(
+                matches: allMatches,
+                content: fr.content,
+                config: config,
+                contentTrust: .trustedFile,
+                minimumSeverity: nil
+            ).reportableMatches
+
             if !allMatches.isEmpty {
                 filteredResults.append(FileScanResult(
-                    filePath: fr.filePath, matches: allMatches, content: fr.content
+                    filePath: fr.filePath,
+                    matches: allMatches,
+                    content: fr.content,
+                    gitignored: fr.gitignored
                 ))
             }
         }
@@ -390,7 +455,8 @@ struct Scan: ParsableCommand {
         }
         let allMatches = filteredResults.flatMap { $0.matches }
         if shouldFail(matches: allMatches) {
-            throw ExitCode(rawValue: 6)
+            // WO-580@v3: preserve the externally consumed findings exit contract.
+            throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
     }
 
@@ -410,10 +476,12 @@ struct Scan: ParsableCommand {
             )
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: git scan failures use the stable operational exit.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         } catch let error as SharedSecretPatternLoadError {
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
-            throw ExitCode(rawValue: 2)
+            // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 
         // Apply allowlist filtering
@@ -423,6 +491,15 @@ struct Scan: ParsableCommand {
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
                 allMatches = allowlist.filter(allMatches)
             }
+            // WO-577@v3: history scanners already apply trusted inline allow; this
+            // decision adds test-credential parity without reclassifying content.
+            allMatches = GuardDecision.evaluate(
+                matches: allMatches,
+                content: "",
+                config: config,
+                contentTrust: .agentControlled,
+                minimumSeverity: nil
+            ).reportableMatches
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(
                     commitHash: cf.commitHash, author: cf.author,
@@ -454,7 +531,8 @@ struct Scan: ParsableCommand {
         }
         let allMatches = filteredFindings.flatMap { $0.matches }
         if shouldFail(matches: allMatches) {
-            throw ExitCode(rawValue: 6)
+            // WO-580@v3: preserve the externally consumed findings exit contract.
+            throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
     }
 

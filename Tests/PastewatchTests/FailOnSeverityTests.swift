@@ -40,4 +40,12 @@ final class FailOnSeverityTests: XCTestCase {
         XCTAssertTrue(awsSeverity >= Severity.high)
         XCTAssertTrue(awsSeverity >= Severity.critical)
     }
+
+    // WO-580@v3: external scripts depend on these distinct stable outcomes.
+    func testScanExitContractPreservesNumericBehavior() {
+        XCTAssertEqual(ScanExitContract.clean, 0)
+        XCTAssertEqual(ScanExitContract.operationalFailure, 2)
+        XCTAssertEqual(ScanExitContract.findingsDetected, 6)
+        XCTAssertEqual(GuardExitContract.blocked, 2)
+    }
 }

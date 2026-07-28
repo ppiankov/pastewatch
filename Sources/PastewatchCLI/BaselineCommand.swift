@@ -23,7 +23,8 @@ extension BaselineGroup {
         var output: String = ".pastewatch-baseline.json"
 
         func run() throws {
-            let config = PastewatchConfig.resolve()
+            // WO-574@v4: baseline evidence is invalid when active detector policy cannot load.
+            let config = try requireValidatedConfig()
 
             guard FileManager.default.fileExists(atPath: dir) else {
                 FileHandle.standardError.write(Data("error: directory not found: \(dir)\n".utf8))

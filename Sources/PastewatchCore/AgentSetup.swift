@@ -463,7 +463,8 @@ public enum AgentSetup {
         pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
         scan_exit=$?
 
-        if [ "$scan_exit" -eq 6 ]; then
+        # WO-580@v3: generated guards consume the named scan findings contract.
+        if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
           echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
           echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
           exit \(GuardExitContract.blocked)
@@ -528,7 +529,8 @@ public enum AgentSetup {
             [ ! -f "$file_path" ] && exit 0
 
             pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
-            if [ $? -eq 6 ]; then
+            # WO-580@v3: generated guards consume the named scan findings contract.
+            if [ $? -eq \(ScanExitContract.findingsDetected) ]; then
               echo "BLOCKED: $file_path contains secrets. Use pastewatch_read_file or pastewatch_write_file MCP tool instead." >&2
               exit \(GuardExitContract.blocked)
             fi
@@ -614,7 +616,8 @@ public enum AgentSetup {
         pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
         scan_exit=$?
 
-        if [ "$scan_exit" -eq 6 ]; then
+        # WO-580@v3: generated guards consume the named scan findings contract.
+        if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
           case "$tool" in
             Read)
               deny "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use cat or any workaround."
@@ -774,7 +777,8 @@ public enum AgentSetup {
         pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
         scan_exit=$?
 
-        if [ "$scan_exit" -eq 6 ]; then
+        # WO-580@v3: generated guards consume the named scan findings contract.
+        if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
           case "$tool" in
             Read)
               echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround."
@@ -866,7 +870,8 @@ public enum AgentSetup {
                 if [ -f "$pw_path" ] && command -v pastewatch-cli &>/dev/null; then
                   if ! echo "$pw_path" | grep -qF '/.git/'; then
                     pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$pw_path" >/dev/null 2>&1
-                    if [ $? -eq 6 ]; then
+                    # WO-580@v3: generated guards consume the named scan findings contract.
+                    if [ $? -eq \(ScanExitContract.findingsDetected) ]; then
                       case "$tool_name" in
                         read_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround." ;;
                         write_to_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_write_file instead. Do NOT delete the file or use any workaround." ;;

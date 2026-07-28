@@ -93,6 +93,72 @@ final class StartupSweepTests: XCTestCase {
 
         XCTAssertEqual(firstReport.warnedFiles.count, 1)
         XCTAssertTrue(secondReport.warnedFiles.isEmpty)
+        // WO-590@v2: repeated findings are suppressed, never reclassified as clean.
+        XCTAssertEqual(secondReport.suppressedFiles.count, 1)
+        XCTAssertTrue(secondReport.cleanFiles.isEmpty)
+    }
+
+    // WO-590@v2: equal count/severity findings with different identities warn independently.
+    func testCacheRewarnsWhenPolicyChangesWhichFindingIsReportable() throws {
+        let home = try makeTempDirectory()
+        let path = home.appendingPathComponent(".zshrc")
+        let cacheURL = home.appendingPathComponent(".cache/startup-sweep.json")
+        let firstValue = "PW-CACHE-ALPHA"
+        let secondValue = "PW-CACHE-BRAVO"
+        try write("\(firstValue)\n\(secondValue)\n", to: path)
+
+        var firstConfig = PastewatchConfig.defaultConfig
+        firstConfig.customRules = [
+            CustomRuleConfig(name: "cache fixture", pattern: "PW-CACHE-[A-Z]+")
+        ]
+        firstConfig.allowedValues = [secondValue]
+        let firstReport = StartupSweep(
+            homeDirectory: home,
+            currentDirectory: home,
+            config: firstConfig
+        ).run(cache: StartupSweepCache(url: cacheURL))
+
+        var secondConfig = firstConfig
+        secondConfig.allowedValues = [firstValue]
+        let secondReport = StartupSweep(
+            homeDirectory: home,
+            currentDirectory: home,
+            config: secondConfig
+        ).run(cache: StartupSweepCache(url: cacheURL))
+
+        XCTAssertEqual(firstReport.warnedFiles.first?.findingCount, 1)
+        XCTAssertEqual(secondReport.warnedFiles.first?.findingCount, 1)
+        let cacheText = try String(contentsOf: cacheURL, encoding: .utf8)
+        XCTAssertFalse(cacheText.contains(firstValue))
+        XCTAssertFalse(cacheText.contains(secondValue))
+    }
+
+    // WO-590@v2: old cache entries cannot suppress findings after identity is introduced.
+    func testLegacyCacheSchemaIsInvalidated() throws {
+        let home = try makeTempDirectory()
+        let path = home.appendingPathComponent(".zshrc")
+        let cacheURL = home.appendingPathComponent(".cache/startup-sweep.json")
+        try write("DATABASE_URL=\(firstDatabaseURL)\n", to: path)
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let legacy: [String: Any] = [
+            "schemaVersion": 1,
+            "entries": [
+                path.path: [
+                    "contentHash": "legacy",
+                    "findingCount": 1,
+                    "severitySummary": ["critical": 1]
+                ]
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: legacy).write(to: cacheURL)
+
+        let report = StartupSweep(homeDirectory: home, currentDirectory: home)
+            .run(cache: StartupSweepCache(url: cacheURL))
+
+        XCTAssertEqual(report.warnedFiles.count, 1)
     }
 
     func testCacheRewarnsOnContentHashChange() throws {
@@ -165,6 +231,91 @@ final class StartupSweepTests: XCTestCase {
         ).run()
 
         XCTAssertTrue(report.warnedFiles.isEmpty)
+    }
+
+    // WO-578@v2: .envrc values are parsed as dotenv content before custom-rule scanning.
+    func testQuotedEnvrcValueUsesFormatAwareScanning() throws {
+        let home = try makeTempDirectory()
+        let value = "STARTUP-CUSTOM-12345"
+        try write("CUSTOM_TOKEN=\"\(value)\"\n", to: home.appendingPathComponent(".envrc"))
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "startup fixture", pattern: "^\(value)$", severity: "high"),
+        ]
+
+        let report = StartupSweep(
+            homeDirectory: home,
+            currentDirectory: home,
+            config: config
+        ).run()
+
+        XCTAssertEqual(report.warnedFiles.count, 1)
+        XCTAssertEqual(report.warnedFiles.first?.findingCount, 1)
+    }
+
+    // WO-578@v2: trusted startup files honor explicit inline allow directives.
+    func testInlineAllowSuppressesStartupFinding() throws {
+        let home = try makeTempDirectory()
+        let value = firstDatabaseURL
+        try write(
+            "DATABASE_URL=\(value) # pastewatch:allow\n",
+            to: home.appendingPathComponent(".envrc")
+        )
+
+        let report = StartupSweep(homeDirectory: home, currentDirectory: home).run()
+
+        XCTAssertTrue(report.warnedFiles.isEmpty)
+        XCTAssertEqual(report.cleanFiles.count, 1)
+    }
+
+    // WO-578@v2: known test credentials follow the trusted-file guard policy.
+    func testKnownTestCredentialIsNotReported() throws {
+        let home = try makeTempDirectory()
+        let testCredential = "AKIA" + "IOSFODNN7EXAMPLE"
+        try write(
+            "AWS_ACCESS_KEY_ID=\(testCredential)\n",
+            to: home.appendingPathComponent(".envrc")
+        )
+
+        let report = StartupSweep(homeDirectory: home, currentDirectory: home).run()
+
+        XCTAssertTrue(report.warnedFiles.isEmpty)
+        XCTAssertEqual(report.cleanFiles.count, 1)
+    }
+
+    // WO-578@v2: malformed dotenv-shaped content falls back to raw fail-closed scanning.
+    func testMalformedEnvrcStillScansRawContent() throws {
+        let home = try makeTempDirectory()
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        try write("broken \(credential)\n", to: home.appendingPathComponent(".envrc"))
+
+        let report = StartupSweep(homeDirectory: home, currentDirectory: home).run()
+
+        XCTAssertEqual(report.warnedFiles.count, 1)
+        XCTAssertEqual(report.warnedFiles.first?.findingCount, 1)
+    }
+
+    // WO-578@v2: shared-pattern failures are reported and never persisted as clean scans.
+    func testSharedPatternFailureDoesNotPopulateCleanCache() throws {
+        let home = try makeTempDirectory()
+        let cacheURL = home.appendingPathComponent(".cache/startup-sweep.json")
+        let credential = firstDatabaseURL
+        try write("DATABASE_URL=\(credential)\n", to: home.appendingPathComponent(".zshrc"))
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [home.appendingPathComponent("missing-patterns.json").path]
+
+        let report = StartupSweep(
+            homeDirectory: home,
+            currentDirectory: home,
+            config: config
+        ).run(cache: StartupSweepCache(url: cacheURL))
+
+        XCTAssertTrue(report.warnedFiles.isEmpty)
+        XCTAssertTrue(report.cleanFiles.isEmpty)
+        XCTAssertEqual(report.sharedPatternErrors.count, 1)
+        XCTAssertFalse(StartupSweepWarningRenderer.render(report)?.contains(credential) ?? true)
+        let cache = try JSONDecoder().decode(StartupSweepCacheState.self, from: Data(contentsOf: cacheURL))
+        XCTAssertTrue(cache.entries.isEmpty)
     }
 
     private func makeTempDirectory() throws -> URL {
