@@ -214,6 +214,9 @@ final class StdinFilenameTests: XCTestCase {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
         let value = ["postgres", "://user:pass@host/database"].joined()
+        // dbConnectionString is an ambiguous class (default-OFF); enable it explicitly
+        // in a project config so the assertion does not depend on ambient operator config.
+        try writeProjectConfig(enabledTypes: ["DB Connection"], in: tempDir)
 
         let result = try runScanCLI(
             input: "DATABASE_URL=\(value) # pastewatch:allow\n",
@@ -304,9 +307,17 @@ final class StdinFilenameTests: XCTestCase {
         return artifactURL
     }
 
-    private func writeProjectConfig(sharedPatternFiles: [String], in directory: URL) throws {
+    // WO-577@v3: test-isolation helper — pin config so scans are CI-deterministic.
+    private func writeProjectConfig(
+        sharedPatternFiles: [String] = [],
+        enabledTypes: [String]? = nil,
+        in directory: URL
+    ) throws {
         var scanConfig = config
         scanConfig.sharedPatternFiles = sharedPatternFiles
+        // WO-577@v3 test isolation: pin enabled types in the project config so the scan is
+        // deterministic in CI and never depends on an operator's ~/.config/pastewatch.
+        if let enabledTypes { scanConfig.enabledTypes = enabledTypes }
         let configURL = directory.appendingPathComponent(".pastewatch.json")
         try JSONEncoder().encode(scanConfig).write(to: configURL)
     }
