@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-07-28
+
+### Fixed
+
+- Security surfaces now fail closed when an active configuration file is present but
+  invalid (malformed JSON, an invalid custom-rule regex, or an unrecognized severity):
+  guard, guard-read/write, the MCP server, the proxy, and scan report the error and exit
+  nonzero instead of silently falling back to defaults and scanning with no rules.
+- File guards fail closed on an existing file that cannot be decoded as UTF-8 (binary or
+  mis-encoded content) instead of allowing it as if it were clean. A non-existent file
+  still passes.
+- Posture reports distinguish repositories whose scan failed or was skipped from
+  repositories that scanned clean, so an incomplete run is never presented as clean.
+- MCP diagnostic scan responses (`pastewatch_scan`, `pastewatch_scan_file`,
+  `pastewatch_scan_dir`, `pastewatch_check_output`) apply the same allowlist and
+  test-credential policy as the file guards and never serialize the raw matched secret
+  value — only privacy-safe type, severity, location, and counts.
+- Stdin scanning stays agent-controlled even when `--stdin-filename` supplies parsing
+  metadata, so inline input can no longer self-authorize suppression via a filename hint.
+- The startup sweep applies the same format-aware trusted-file policy as other file
+  scans, and its change-detection cache now keys on a privacy-safe finding identity so a
+  changed finding set with the same count and severity is no longer treated as unchanged.
+- Secret externalization (`fix`) associates each remediation with the exact source range
+  of the detected value, so a repeated value is rewritten only at the authorized
+  occurrence.
+
+### Changed
+
+- Proxy scan paths load the configured and shared secret patterns once at startup from a
+  single owner, so every buffered and streamed scan path uses the same rule set.
+- Stream parsers share one strict RFC 3629 UTF-8 lead-byte classifier, replacing
+  duplicated inline logic.
+- The CLI scan exit contract (clean `0`, operational failure `2`, findings detected `6`)
+  is now a named constant shared by the CLI and generated hooks; the exit codes are
+  unchanged.
+- Dashboard and inventory top-N views expose truncation explicitly, and runtime severity
+  defaults derive from a single source.
+
 ## [0.35.1] - 2026-07-27
 
 ### Fixed
