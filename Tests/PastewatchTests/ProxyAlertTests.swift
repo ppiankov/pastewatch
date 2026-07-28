@@ -610,11 +610,12 @@ final class ProxyAlertTests: XCTestCase {
         #endif
     }
 
+    // WO-573@v4: the buffer warning describes deferred scanning rather than no scanning.
     func testBufferModeWarningIgnoresQuietFlag() {
         var config = PastewatchConfig.defaultConfig
         config.responseStreamingRedactionMode = .buffer
 
-        let warning = "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+        let warning = "WARNING: responseStreamingRedactionMode=buffer scans only after buffering the full response\n"
 
         XCTAssertEqual(ProxyServer.bufferModeWarning(config: config, quiet: false), warning)
         XCTAssertEqual(ProxyServer.bufferModeWarning(config: config, quiet: true), warning)

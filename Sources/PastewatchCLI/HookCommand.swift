@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import PastewatchCore
 
 struct HookGroup: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -33,11 +34,13 @@ extension HookGroup {
             # BEGIN PASTEWATCH
             git diff --cached --diff-filter=d --no-color | pastewatch-cli scan --check
             PASTEWATCH_RESULT=$?
-            if [ "$PASTEWATCH_RESULT" -eq 6 ]; then
+            # WO-580@v3: generated hooks consume the named scan findings contract.
+            if [ "$PASTEWATCH_RESULT" -eq \(ScanExitContract.findingsDetected) ]; then
                 echo "pastewatch: sensitive data detected in staged changes" >&2
                 exit 1
             fi
-            if [ "$PASTEWATCH_RESULT" -ne 0 ]; then
+            # WO-580@v3: only the named clean outcome permits the commit.
+            if [ "$PASTEWATCH_RESULT" -ne \(ScanExitContract.clean) ]; then
                 echo "pastewatch: scan failed with exit code $PASTEWATCH_RESULT" >&2
                 exit 1
             fi

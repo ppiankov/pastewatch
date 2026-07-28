@@ -4,6 +4,38 @@ import XCTest
 /// WO-146: Verifies incremental SSE relay, chunked upstream, and non-streaming path preservation.
 final class ProxyStreamingTests: XCTestCase {
 
+    // WO-576@v3: pin every strict UTF-8 lead-byte boundary in the shared classifier.
+    func testUTF8ScalarWidthUsesStrictLeadByteRanges() {
+        let valid: [(UInt8, Int)] = [
+            (0x00, 1), (0x7F, 1),
+            (0xC2, 2), (0xDF, 2),
+            (0xE0, 3), (0xEF, 3),
+            (0xF0, 4), (0xF4, 4)
+        ]
+        for (byte, width) in valid {
+            XCTAssertEqual(UTF8ScalarWidth.forLeadByte(byte), width)
+        }
+        for byte in [UInt8(0x80), 0xBF, 0xC0, 0xC1, 0xF5, 0xFF] {
+            XCTAssertNil(UTF8ScalarWidth.forLeadByte(byte))
+        }
+    }
+
+    // WO-576@v3: malformed/truncated scalar leads do not advance curl's trim boundary.
+    func testUTF8AlignedTrimRejectsMalformedAndTruncatedScalars() {
+        XCTAssertEqual(
+            CurlHTTPClient.utf8AlignedTrimOffset(in: Data([0xC0, 0x80]), minimumOffset: 1),
+            1
+        )
+        XCTAssertEqual(
+            CurlHTTPClient.utf8AlignedTrimOffset(in: Data([0xF5, 0x80]), minimumOffset: 1),
+            1
+        )
+        XCTAssertEqual(
+            CurlHTTPClient.utf8AlignedTrimOffset(in: Data([0xF0, 0x80]), minimumOffset: 1),
+            2
+        )
+    }
+
     // MARK: - isStreamingRequest
 
     func testIsStreamingRequestTrueWhenStreamTrue() {
@@ -97,7 +129,7 @@ final class ProxyStreamingTests: XCTestCase {
 
         XCTAssertEqual(
             warning,
-            "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+            "WARNING: responseStreamingRedactionMode=buffer scans only after buffering the full response\n"
         )
     }
 

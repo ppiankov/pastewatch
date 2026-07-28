@@ -52,6 +52,7 @@ public struct StartupSweep {
     public func run(cache: StartupSweepCache? = nil) -> StartupSweepReport {
         let candidates = candidatePaths()
         var warnedFiles: [StartupSweepFileSummary] = []
+        var suppressedFiles: [StartupSweepFileSummary] = []
         var cleanFiles: [StartupSweepFileSummary] = []
         var skippedFiles: [StartupSweepSkippedFile] = []
         var readErrors: [StartupSweepReadError] = []
@@ -71,33 +72,52 @@ public struct StartupSweep {
                 }
 
                 let content = try String(contentsOfFile: normalizedPath, encoding: .utf8)
-                let result = DetectionRules.scanFileIOResult(content, config: config)
-                // WO-551@v2: startup reporting honors the same operator allowlist as
-                // directory and git scans.
-                let matches = Allowlist.fromConfig(config).filter(result.matches)
+                // WO-578@v2: startup files use the same format-aware scanner and trusted-file
+                // policy as other operator-controlled file surfaces.
+                let scannedMatches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: content,
+                    ext: Self.scanExtension(for: candidate),
+                    relativePath: normalizedPath,
+                    config: config
+                )
+                let matches = GuardDecision.evaluate(
+                    matches: scannedMatches,
+                    content: content,
+                    config: config,
+                    contentTrust: .trustedFile,
+                    minimumSeverity: nil
+                ).reportableMatches
                 let summary = StartupSweepFileSummary(
                     path: normalizedPath,
                     contentHash: Self.contentHash(for: content),
                     findingCount: matches.count,
                     severityCounts: Self.severityCounts(for: matches),
-                    lineNumbers: Self.lineNumbers(for: matches)
+                    lineNumbers: Self.lineNumbers(for: matches),
+                    findingIdentityHash: Self.findingIdentityHash(
+                        for: matches,
+                        in: content
+                    )
                 )
 
-                if result.sharedPatternErrors.isEmpty == false {
-                    sharedPatternErrors.append(
-                        StartupSweepSharedPatternWarning(
-                            path: normalizedPath,
-                            messages: result.sharedPatternErrors.map(\.localizedDescription)
-                        )
-                    )
-                }
-
-                if cache?.shouldWarnAndRecord(summary) ?? (summary.findingCount > 0) {
+                if !summary.hasFindings {
+                    _ = cache?.shouldWarnAndRecord(summary)
+                    cleanFiles.append(summary)
+                } else if cache?.shouldWarnAndRecord(summary) ?? true {
                     warnedFiles.append(summary)
                 } else {
-                    cleanFiles.append(summary)
+                    // WO-590@v2: warn-once suppression is not evidence that a file is clean.
+                    suppressedFiles.append(summary)
                 }
+            } catch let error as SharedSecretPatternLoadError {
+                // WO-578@v2: configuration errors are reported without creating a clean cache entry.
+                sharedPatternErrors.append(
+                    StartupSweepSharedPatternWarning(
+                        path: normalizedPath,
+                        messages: [Self.sanitizedErrorMessage(error)]
+                    )
+                )
             } catch {
+                // WO-578@v2: read and structured-scan failures stay out of the clean cache.
                 readErrors.append(
                     StartupSweepReadError(path: normalizedPath, message: Self.sanitizedErrorMessage(error))
                 )
@@ -108,6 +128,7 @@ public struct StartupSweep {
 
         return StartupSweepReport(
             warnedFiles: warnedFiles,
+            suppressedFiles: suppressedFiles,
             cleanFiles: cleanFiles,
             skippedFiles: skippedFiles,
             readErrors: readErrors,
@@ -154,6 +175,15 @@ public struct StartupSweep {
         return 0
     }
 
+    // WO-578@v2: .envrc is dotenv-shaped even though Foundation reports no extension.
+    private static func scanExtension(for url: URL) -> String {
+        let fileName = url.lastPathComponent
+        if fileName == ".envrc" || DotenvClassifier.isDotenvFile(fileName) {
+            return "env"
+        }
+        return url.pathExtension.lowercased()
+    }
+
     public static func normalizedPath(for url: URL) -> String {
         url.standardizedFileURL.path
     }
@@ -179,6 +209,25 @@ public struct StartupSweep {
         Array(Set(matches.map(\.line))).sorted()
     }
 
+    // WO-590@v2: hash only non-secret evidence needed to distinguish finding sets.
+    private static func findingIdentityHash(
+        for matches: [DetectedMatch],
+        in content: String
+    ) -> String {
+        let metadata = matches.map { match -> String in
+            let range = NSRange(match.range, in: content)
+            return [
+                match.type.rawValue,
+                match.effectiveSeverity.rawValue,
+                String(match.line),
+                String(range.location),
+                String(range.length),
+                match.customRuleName ?? ""
+            ].joined(separator: "\u{1F}")
+        }.sorted().joined(separator: "\u{1E}")
+        return contentHash(for: metadata)
+    }
+
     private static func sanitizedErrorMessage(_ error: Error) -> String {
         String(describing: type(of: error))
     }
@@ -187,6 +236,7 @@ public struct StartupSweep {
 /// WO-121: sanitized startup sweep result for launch warning rendering.
 public struct StartupSweepReport {
     public let warnedFiles: [StartupSweepFileSummary]
+    public let suppressedFiles: [StartupSweepFileSummary] // WO-590@v2: findings already warned.
     public let cleanFiles: [StartupSweepFileSummary]
     public let skippedFiles: [StartupSweepSkippedFile]
     public let readErrors: [StartupSweepReadError]
@@ -204,6 +254,7 @@ public struct StartupSweepFileSummary: Equatable {
     public let findingCount: Int
     public let severityCounts: [Severity: Int]
     public let lineNumbers: [Int]
+    public let findingIdentityHash: String // WO-590@v2: value-free cache identity.
 
     public var hasFindings: Bool {
         findingCount > 0
@@ -217,7 +268,7 @@ public struct StartupSweepSkippedFile: Equatable {
     public let reason: String
 }
 
-/// WO-121: non-secret read error summary.
+/// WO-121, WO-578@v2: non-secret read or scan error summary.
 public struct StartupSweepReadError: Equatable {
     public let path: String
     public let message: String
@@ -249,7 +300,8 @@ public enum StartupSweepWarningRenderer {
         }
 
         for readError in report.readErrors {
-            lines.append("- \(readError.path): skipped (read error: \(readError.message))")
+            // WO-578@v2: this bucket also contains fail-closed structured-scan errors.
+            lines.append("- \(readError.path): skipped (scan error: \(readError.message))")
         }
 
         for warning in report.sharedPatternErrors {

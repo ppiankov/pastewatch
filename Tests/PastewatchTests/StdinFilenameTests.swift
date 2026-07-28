@@ -147,8 +147,9 @@ final class StdinFilenameTests: XCTestCase {
         )
 
         XCTAssertEqual(result.status, 2)
-        XCTAssertTrue(result.stderr.contains("shared pattern load failed"))
-        XCTAssertTrue(result.stderr.contains("could not read"))
+        // WO-574@v4: active config validation blocks before the scan path starts.
+        XCTAssertTrue(result.stderr.contains(".pastewatch.json"))
+        XCTAssertTrue(result.stderr.contains("is invalid"))
     }
 
     // WO-131: empty plain stdin must still validate configured shared pattern files.
@@ -165,8 +166,9 @@ final class StdinFilenameTests: XCTestCase {
         )
 
         XCTAssertEqual(result.status, 2)
-        XCTAssertTrue(result.stderr.contains("shared pattern load failed"))
-        XCTAssertTrue(result.stderr.contains("could not read"))
+        // WO-574@v4: empty input cannot bypass the same startup config gate.
+        XCTAssertTrue(result.stderr.contains(".pastewatch.json"))
+        XCTAssertTrue(result.stderr.contains("is invalid"))
     }
 
     // WO-131: empty plain stdin remains clean when shared pattern config is valid.
@@ -189,6 +191,101 @@ final class StdinFilenameTests: XCTestCase {
         XCTAssertEqual(result.status, 0)
         XCTAssertEqual(result.stdout, "")
         XCTAssertEqual(result.stderr, "")
+    }
+
+    // WO-577@v3: CLI diagnostics must use the same test-credential policy as guards and MCP.
+    func testPlainStdinScanSuppressesKnownTestCredential() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let knownTestKey = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+
+        let result = try runScanCLI(
+            input: "fixture \(knownTestKey)\n",
+            currentDirectory: tempDir
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr, "")
+    }
+
+    // WO-577@v3: stdin cannot self-authorize inline suppression through filename metadata.
+    func testStdinFilenameDoesNotUpgradeAgentControlledInputTrust() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let value = ["postgres", "://user:pass@host/database"].joined()
+
+        let result = try runScanCLI(
+            input: "DATABASE_URL=\(value) # pastewatch:allow\n",
+            currentDirectory: tempDir,
+            arguments: ["scan", "--check", "--stdin-filename", "fixture.env"]
+        )
+
+        XCTAssertEqual(result.status, ScanExitContract.findingsDetected)
+        XCTAssertTrue(result.stderr.contains("findings:"))
+    }
+
+    // WO-580@v3: input decoding failures use the stable operational exit contract.
+    func testInvalidUTF8FileReturnsOperationalFailure() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let fileURL = tempDir.appendingPathComponent("invalid.bin")
+        try Data([0xF5, 0x80]).write(to: fileURL)
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir,
+            arguments: ["scan", "--check", "--file", fileURL.path]
+        )
+
+        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertTrue(result.stderr.contains("could not be read as UTF-8"))
+    }
+
+    // WO-580@v3: every auxiliary scan policy decode failure uses exit 2.
+    func testMalformedScanPolicyFilesReturnOperationalFailure() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let allowlist = tempDir.appendingPathComponent("allowlist.txt")
+        let rules = tempDir.appendingPathComponent("rules.json")
+        let baseline = tempDir.appendingPathComponent("baseline.json")
+        try Data([0xF5, 0x80]).write(to: allowlist)
+        try Data("not-json".utf8).write(to: rules)
+        try Data("not-json".utf8).write(to: baseline)
+
+        for arguments in [
+            ["scan", "--check", "--allowlist", allowlist.path],
+            ["scan", "--check", "--rules", rules.path],
+            ["scan", "--check", "--baseline", baseline.path]
+        ] {
+            let result = try runScanCLI(
+                input: "",
+                currentDirectory: tempDir,
+                arguments: arguments
+            )
+
+            XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+            XCTAssertEqual(result.stdout, "")
+            XCTAssertTrue(result.stderr.contains("scan configuration could not be loaded"))
+        }
+    }
+
+    // WO-580@v3: a missing file keeps its precise diagnostic without a false UTF-8 error.
+    func testMissingFileReportsOneOperationalCause() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let missing = tempDir.appendingPathComponent("missing.txt")
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir,
+            arguments: ["scan", "--check", "--file", missing.path]
+        )
+
+        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        XCTAssertTrue(result.stderr.contains("file not found"))
+        XCTAssertFalse(result.stderr.contains("could not be read as UTF-8"))
     }
 
     private func writeSharedPatternArtifact(regex: String) throws -> URL {
@@ -227,10 +324,15 @@ final class StdinFilenameTests: XCTestCase {
         let stderr: String
     }
 
-    private func runScanCLI(input: String, currentDirectory: URL) throws -> CLIResult {
+    // WO-580@v3: subprocess coverage pins parse, configuration, and findings exit codes.
+    private func runScanCLI(
+        input: String,
+        currentDirectory: URL,
+        arguments: [String] = ["scan", "--check"]
+    ) throws -> CLIResult {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
-        process.arguments = ["scan", "--check"]
+        process.arguments = arguments
         process.currentDirectoryURL = currentDirectory
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "PW_GUARD")

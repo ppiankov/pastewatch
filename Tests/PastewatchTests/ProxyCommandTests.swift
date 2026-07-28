@@ -31,6 +31,105 @@ final class ProxyCommandTests: XCTestCase {
         }
     }
 
+    // WO-573@v4: configured shared artifacts are part of the proxy startup contract.
+    func testProxyStartupGateRejectsMissingSharedPatternFile() {
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [
+            NSTemporaryDirectory() + "pastewatch-missing-\(UUID().uuidString).json"
+        ]
+
+        XCTAssertThrowsError(try compileProxyCustomRules(config))
+        XCTAssertThrowsError(try ProxyServer(port: 0, config: config).start())
+    }
+
+    // WO-573@v4: injected rules cannot bypass unavailable configured coverage.
+    func testInjectedProxyRulesCannotBypassMissingSharedPatternFile() {
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [
+            NSTemporaryDirectory() + "pastewatch-missing-\(UUID().uuidString).json"
+        ]
+
+        XCTAssertThrowsError(
+            try ProxyServer(
+                port: 0,
+                config: config,
+                compiledCustomRules: []
+            ).start()
+        )
+    }
+
+    // WO-573@v4: one immutable rule set feeds every scan path without duplicates.
+    func testProxyRuleSetIncludesSharedPatternsAndDeduplicatesIdentity() throws {
+        let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pastewatch-proxy-shared-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: artifactURL) }
+
+        let pattern = #"PW-SHARED-[A-F0-9]{12}"#
+        let shared = [
+            SharedSecretPatternConfig(name: "shared-fixture", regex: pattern)
+        ]
+        try JSONEncoder().encode(shared).write(to: artifactURL)
+
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "shared-fixture", pattern: pattern)
+        ]
+        config.sharedPatternFiles = [artifactURL.path]
+
+        let rules = try compileProxyCustomRules(config)
+        let matches = scanStreamText(
+            "payload PW-SHARED-A1B2C3D4E5F6",
+            config: config,
+            customRules: rules
+        )
+
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(matches.filter { $0.customRuleName == "shared-fixture" }.count, 1)
+
+        let server = ProxyServer(
+            port: 0,
+            config: config,
+            compiledCustomRules: rules
+        )
+        let request = """
+        {"messages":[{"role":"user","content":"PW-SHARED-A1B2C3D4E5F6"}]}
+        """
+        let requestResult = server.scanAndRedactBody(request)
+        XCTAssertEqual(requestResult.redacted, 1)
+        XCTAssertFalse(requestResult.body.contains("PW-SHARED-A1B2C3D4E5F6"))
+
+        let buffered = server.redactDarwinBufferedResponseBodyIfNeeded(
+            Data([0xFF] + Array("PW-SHARED-A1B2C3D4E5F6".utf8))
+        )
+        XCTAssertEqual(buffered.count, 1)
+        let utf8Buffered = server.redactDarwinBufferedResponseBodyIfNeeded(
+            Data(#"{"content":"PW-SHARED-A1B2C3D4E5F6"}"#.utf8)
+        )
+        XCTAssertEqual(utf8Buffered.count, 1)
+        let utf8Text = try XCTUnwrap(String(data: utf8Buffered.data, encoding: .utf8))
+        XCTAssertFalse(utf8Text.contains("PW-SHARED-A1B2C3D4E5F6"))
+
+        // WO-573@v4: Linux uses this same helper for ordinary buffered response bodies.
+        let linuxBuffered = CurlHTTPClient.redactBufferedResponseBody(
+            Data(#"{"content":"PW-SHARED-A1B2C3D4E5F6"}"#.utf8),
+            config: config,
+            severity: .high,
+            customRules: rules
+        )
+        XCTAssertEqual(linuxBuffered.count, 1)
+
+        var parser = SSEFrameParser()
+        let payload = #"{"type":"content_block_delta","delta":{"type":"text_delta","text":"PW-SHARED-A1B2C3D4E5F6"}}"#
+        let parsed = parser.feed(Data("data: \(payload)\n\n".utf8))
+        let streamed = redactSSEFrame(
+            try XCTUnwrap(parsed.frames.first),
+            config: config,
+            severity: .high,
+            customRules: rules
+        )
+        XCTAssertEqual(streamed.count, 1)
+    }
+
     // WO-275: quiet launch and normal peer disconnects are silent; unexpected
     // socket failures remain visible in explicit non-quiet proxy mode.
     func testSocketDeliveryFailureLoggingPolicy() {

@@ -1206,6 +1206,69 @@ final class ProxyStreamRedactionTests: XCTestCase {
         XCTAssertEqual(transformToolCallFixture(fixture).data, fixture)
     }
 
+    // WO-576@v3: invalid UTF-8 never enters JSON offset mapping or changes relay bytes.
+    func testMalformedUTF8ToolFrameIsByteIdentical() {
+        var fixture = Data("data: ".utf8)
+        fixture.append(contentsOf: [0xC0, 0x80])
+        fixture.append(Data("\n\n".utf8))
+
+        XCTAssertEqual(transformToolCallFixture(fixture).data, fixture)
+    }
+
+    // WO-576@v3: a recognized tool fragment with malformed raw bytes fails closed at the mapper.
+    func testMalformedUTF8InsideRecognizedToolFragmentFailsClosed() {
+        let credential = "AIza" + String(repeating: "M", count: 35)
+        let partialJSON = #"{"token":"\#(credential)"}"#
+        let payload = #"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":\#(jsonStringLiteral(partialJSON))}}"#
+        var malformedRaw = Data("data: \(payload)\n\n".utf8)
+        let tokenRange = try? XCTUnwrap(malformedRaw.range(of: Data("token".utf8)))
+        XCTAssertNotNil(tokenRange)
+        if let tokenRange {
+            malformedRaw[tokenRange.lowerBound] = 0xC0
+        }
+        let fragment = SSEFrameParser.Frame(raw: malformedRaw, eventType: nil, data: payload)
+        let stopPayload = #"{"type":"content_block_stop","index":0}"#
+        let stop = SSEFrameParser.Frame(
+            raw: sseFrame(eventType: "content_block_stop", data: stopPayload),
+            eventType: "content_block_stop",
+            data: stopPayload
+        )
+        var transformer = ToolCallStreamRedactor(
+            config: PastewatchConfig.defaultConfig,
+            customRules: [],
+            severity: .high
+        )
+
+        XCTAssertFalse(transformer.process(fragment).terminateStream)
+        let result = transformer.process(stop)
+
+        XCTAssertTrue(result.terminateStream)
+        XCTAssertEqual(
+            result.frames.first?.data,
+            Data(
+                "event: pastewatch_error\ndata: {\"error\":\"stream redaction could not preserve valid JSON\"}\n\n"
+                    .appending("data: [DONE]\n\n").utf8
+            )
+        )
+    }
+
+    // WO-576@v3: valid multibyte scalars preserve byte mapping before tool-secret mutation.
+    func testMultibyteUTF8InsideRecognizedToolFragmentRedacts() throws {
+        let credential = "AIza" + String(repeating: "U", count: 35)
+        let fixture = anthropicToolCallFixture(
+            fragments: [#"{"label":"café","token":"\#(credential)"}"#]
+        )
+
+        let transformed = transformToolCallFixture(fixture)
+        let output = String(data: transformed.data, encoding: .utf8)
+        let object = try reassembleAnthropicToolJSON(from: transformed.data)
+
+        XCTAssertEqual(transformed.toolCallRedactionCount, 1)
+        XCTAssertEqual(object["label"] as? String, "café")
+        XCTAssertTrue(output?.contains("<GOOGLE_API_KEY_1>") == true)
+        XCTAssertFalse(output?.contains(credential) == true)
+    }
+
     // WO-509: clean OpenAI-compatible arguments retain their exact wire spelling.
     func testCleanOpenAIToolCallStreamIsByteIdentical() {
         let fixture = openAIToolCallFixture(fragments: [#"{"query":"hello\/world"}"#])

@@ -29,12 +29,18 @@ struct Inventory: ParsableCommand {
     var ignore: [String] = []
 
     func run() throws {
+        // WO-574@v4: inventory completeness depends on the configured detector set.
+        let config = try requireValidatedConfig()
+        try run(config: config)
+    }
+
+    // WO-575@v2: the command contract is testable at the fail-closed scan boundary.
+    func run(config: PastewatchConfig) throws {
         guard FileManager.default.fileExists(atPath: dir) else {
             FileHandle.standardError.write(Data("error: directory not found: \(dir)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
 
-        let config = PastewatchConfig.resolve()
         let mergedAllowlist = try loadAllowlist(config: config)
         let customRulesList = try loadCustomRules(config: config)
 

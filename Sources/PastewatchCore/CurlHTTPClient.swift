@@ -225,16 +225,16 @@ struct CurlHTTPClient {
         // WO-313: parse the curl status trailer at the byte level so a binary
         // upstream body is forwarded unchanged instead of failing the whole request.
         guard let parsedOutput = parseNonStreamingOutput(rawOutput) else { throw ExecuteError.failure }
-        var responseBody = parsedOutput.body
-        var responseRedaction = SSEFrameRedactionResult(data: responseBody, count: 0, types: [])
-        if requiresBytePreservingResponseScan(parsedOutput.body) {
-            responseRedaction = redactNonUTF8ResponseBody(
-                parsedOutput.body,
-                config: proxyConfig,
-                severity: proxySeverity,
-                customRules: customRules
-            )
-            responseBody = responseRedaction.data
+        let bytePreserving = requiresBytePreservingResponseScan(parsedOutput.body)
+        // WO-573@v4: Linux scans ordinary and byte-preserving buffered bodies with one rule set.
+        let responseRedaction = redactBufferedResponseBody(
+            parsedOutput.body,
+            config: proxyConfig,
+            severity: proxySeverity,
+            customRules: customRules
+        )
+        let responseBody = responseRedaction.data
+        if bytePreserving {
             FileHandle.standardError.write(Data(
                 "[pastewatch-proxy] binary response body, redacted \(responseRedaction.count) match(es)\n".utf8
             ))
@@ -515,25 +515,13 @@ struct CurlHTTPClient {
 
         let lead = data[data.index(data.startIndex, offsetBy: leadOffset)]
         guard !isUTF8ContinuationByte(lead),
-              let scalarLength = utf8ScalarLength(forLeadByte: lead),
+              // WO-576@v3: align malformed lead-byte handling with tool-call JSON mapping.
+              let scalarLength = UTF8ScalarWidth.forLeadByte(lead),
               offset > leadOffset,
               offset < leadOffset + scalarLength else {
             return nil
         }
         return min(leadOffset + scalarLength, data.count)
-    }
-
-    private static func utf8ScalarLength(forLeadByte byte: UInt8) -> Int? {
-        switch byte {
-        case 0xC2...0xDF:
-            return 2
-        case 0xE0...0xEF:
-            return 3
-        case 0xF0...0xF4:
-            return 4
-        default:
-            return nil
-        }
     }
 
     static func cancelActiveProcesses() {
@@ -1397,6 +1385,29 @@ struct CurlHTTPClient {
             (byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D) ||
                 byte == 0x7F
         }
+    }
+
+    // WO-573@v4: all buffered responses use the startup-compiled immutable rule set.
+    static func redactBufferedResponseBody(
+        _ body: Data,
+        config: PastewatchConfig,
+        severity: Severity,
+        customRules: [CustomRule]? = nil
+    ) -> SSEFrameRedactionResult {
+        if requiresBytePreservingResponseScan(body) {
+            return redactNonUTF8ResponseBody(
+                body,
+                config: config,
+                severity: severity,
+                customRules: customRules
+            )
+        }
+        return redactRawStreamBytes(
+            body,
+            config: config,
+            severity: severity,
+            customRules: customRules
+        )
     }
 
     /// WO-359/WO-563@v3: mutate exact ASCII secret ranges without lossy

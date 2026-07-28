@@ -1,6 +1,13 @@
 import XCTest
 @testable import PastewatchCore
 
+// WO-587@v3: named fixtures keep exact-range format expectations reviewable.
+private struct StructuredAssignmentFixture {
+    let path: String
+    let content: String
+    let expected: String
+}
+
 final class RemediationTests: XCTestCase {
     let config = PastewatchConfig.defaultConfig
 
@@ -47,6 +54,140 @@ final class RemediationTests: XCTestCase {
         let name = Remediation.suggestEnvVarName(match: match, fileContent: content)
         // Credential type — falls back to type default if no key found
         XCTAssertFalse(name.isEmpty)
+    }
+
+    // WO-587@v3: repeated values bind to the assignment containing the exact source range.
+    func testSuggestEnvVarUsesSecondRepeatedJSONValueRange() {
+        let content = #"{"primary_token":"same","backup_token":"same"}"#
+        let first = content.range(of: "same")!
+        let second = content.range(of: "same", range: first.upperBound..<content.endIndex)!
+        let match = DetectedMatch(
+            type: .genericApiKey, value: "same", range: second, line: 1, filePath: "config.json"
+        )
+
+        XCTAssertEqual(Remediation.suggestEnvVarName(match: match, fileContent: content), "BACKUP_TOKEN")
+    }
+
+    // WO-587@v3: a short substring in a later value cannot bind to the first key.
+    func testSuggestEnvVarDoesNotCrossAssociateShortValue() {
+        let content = "first = none; second = prefixabcdsuffix"
+        let range = content.range(of: "abcd")!
+        let match = DetectedMatch(
+            type: .genericApiKey, value: "abcd", range: range, line: 1, filePath: "config.env"
+        )
+
+        XCTAssertEqual(Remediation.suggestEnvVarName(match: match, fileContent: content), "SECOND")
+    }
+
+    // WO-587@v3: URI and quoted assignment-like text remain part of their owning values.
+    func testSuggestEnvVarIgnoresAssignmentSyntaxInsideValues() {
+        let uriValue = ["postgres://user:", "pass@host/db"].joined()
+        let uri = "primary_dsn: \(uriValue)"
+        let uriMatch = DetectedMatch(
+            type: .dbConnectionString,
+            value: uriValue,
+            range: uri.range(of: uriValue)!,
+            line: 1,
+            filePath: "config.yaml"
+        )
+        XCTAssertEqual(
+            Remediation.suggestEnvVarName(match: uriMatch, fileContent: uri),
+            "PRIMARY_DSN"
+        )
+
+        let quoted = #"description = "token=abcd"; actual_token = abcd"#
+        let valueRange = quoted.range(of: "abcd", options: .backwards)!
+        let quotedMatch = DetectedMatch(
+            type: .genericApiKey,
+            value: "abcd",
+            range: valueRange,
+            line: 1,
+            filePath: "config.env"
+        )
+        XCTAssertEqual(
+            Remediation.suggestEnvVarName(match: quotedMatch, fileContent: quoted),
+            "ACTUAL_TOKEN"
+        )
+    }
+
+    // WO-587@v3: assignment ownership works for dotenv quoting and YAML line ranges.
+    func testSuggestEnvVarUsesExactDotenvAndYAMLValueRanges() {
+        let dotenv = #"serviceToken = "alpha""#
+        let dotenvRange = dotenv.range(of: "alpha")!
+        let dotenvMatch = DetectedMatch(
+            type: .genericApiKey, value: "alpha", range: dotenvRange, line: 1, filePath: ".env"
+        )
+        XCTAssertEqual(
+            Remediation.suggestEnvVarName(match: dotenvMatch, fileContent: dotenv),
+            "SERVICE_TOKEN"
+        )
+
+        let yaml = "first: alpha\nservice_token: alpha"
+        let first = yaml.range(of: "alpha")!
+        let second = yaml.range(of: "alpha", range: first.upperBound..<yaml.endIndex)!
+        let yamlMatch = DetectedMatch(
+            type: .genericApiKey, value: "alpha", range: second, line: 2, filePath: "config.yaml"
+        )
+        XCTAssertEqual(
+            Remediation.suggestEnvVarName(match: yamlMatch, fileContent: yaml),
+            "SERVICE_TOKEN"
+        )
+    }
+
+    // WO-587@v3: stale source ranges fall back rather than guessing from matching text.
+    func testSuggestEnvVarFallsBackWhenRangeDoesNotMatchValue() {
+        let content = "wrong_key = prefixabcdsuffix"
+        let range = content.range(of: "prefix")!
+        let match = DetectedMatch(
+            type: .genericApiKey, value: "abcd", range: range, line: 1, filePath: "config.env"
+        )
+
+        XCTAssertEqual(Remediation.suggestEnvVarName(match: match, fileContent: content), "API_KEY")
+    }
+
+    // WO-587@v3: member and keyword assignments retain their local key ownership.
+    func testSuggestEnvVarSupportsMemberAndKeywordAssignments() {
+        let value = ["postgres://user:", "pass@host/db"].joined()
+        let member = #"settings.serviceDsn = "\#(value)""#
+        let keyword = #"connect(serviceDsn = "\#(value)")"#
+
+        for content in [member, keyword] {
+            let match = DetectedMatch(
+                type: .dbConnectionString,
+                value: value,
+                range: content.range(of: value)!,
+                line: 1,
+                filePath: "config.py"
+            )
+            XCTAssertEqual(
+                Remediation.suggestEnvVarName(match: match, fileContent: content),
+                "SERVICE_DSN"
+            )
+        }
+    }
+
+    // WO-587@v3: trailing code and comments are outside the preceding assignment value.
+    func testSuggestEnvVarDoesNotAssociateTrailingCodeOrComment() {
+        let fixtures = [
+            #"label = "safe"; print("abcd")"#,
+            "label = safe # abcd"
+        ]
+
+        for content in fixtures {
+            let range = content.range(of: "abcd")!
+            let match = DetectedMatch(
+                type: .genericApiKey,
+                value: "abcd",
+                range: range,
+                line: 1,
+                filePath: "config.py"
+            )
+
+            XCTAssertEqual(
+                Remediation.suggestEnvVarName(match: match, fileContent: content),
+                "API_KEY"
+            )
+        }
     }
 
     func testEnvVarDeduplication() {
@@ -148,6 +289,98 @@ final class RemediationTests: XCTestCase {
     }
 
     // MARK: - Apply plan
+
+    // WO-587@v3: applying a plan mutates only the detected repeated occurrence.
+    func testApplyBuiltPlanReplacesOnlyAuthorizedRepeatedValue() throws {
+        let testDir = NSTemporaryDirectory() + "pastewatch-fix-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        let content = #"primary_token = "same"; backup_token = "same""#
+        let first = content.range(of: "same")!
+        let second = content.range(of: "same", range: first.upperBound..<content.endIndex)!
+        let match = DetectedMatch(
+            type: .genericApiKey,
+            value: "same",
+            range: second,
+            line: 1,
+            filePath: "config.py"
+        )
+        let plan = Remediation.buildPlan(
+            results: [FileScanResult(
+                filePath: "config.py",
+                matches: [match],
+                content: content
+            )],
+            minSeverity: .low
+        )
+        try content.write(
+            toFile: testDir + "/config.py",
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try Remediation.patchFiles(plan: plan, dirPath: testDir)
+
+        let patched = try String(contentsOfFile: testDir + "/config.py", encoding: .utf8)
+        XCTAssertTrue(patched.contains(#"primary_token = "same""#), patched)
+        XCTAssertTrue(patched.contains(#"backup_token = os.environ["BACKUP_TOKEN"]"#), patched)
+    }
+
+    // WO-587@v3: exact built-plan ranges preserve dotenv, JSON, and YAML neighbors.
+    func testApplyBuiltPlanAcrossStructuredAssignmentFormats() throws {
+        let testDir = NSTemporaryDirectory() + "pastewatch-fix-formats-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        let fixtures = [
+            StructuredAssignmentFixture(
+                path: ".env",
+                content: "SAFE=keep\nservice_token=\"abcd\"\n",
+                expected: "SAFE=keep\nservice_token=\n"
+            ),
+            StructuredAssignmentFixture(
+                path: "config.json",
+                content: #"{"safe":"keep","service_token":"abcd"}"#,
+                expected: #"{"safe":"keep","service_token":${SERVICE_TOKEN_2}}"#
+            ),
+            StructuredAssignmentFixture(
+                path: "config.yaml",
+                content: "safe: keep\nservice_token: abcd\n",
+                expected: "safe: keep\nservice_token: ${SERVICE_TOKEN_3}\n"
+            )
+        ]
+        var results: [FileScanResult] = []
+        for fixture in fixtures {
+            try fixture.content.write(
+                toFile: testDir + "/" + fixture.path,
+                atomically: true,
+                encoding: .utf8
+            )
+            let range = fixture.content.range(of: "abcd")!
+            results.append(FileScanResult(
+                filePath: fixture.path,
+                matches: [DetectedMatch(
+                    type: .genericApiKey,
+                    value: "abcd",
+                    range: range,
+                    line: fixture.path == ".env" ? 2 : 1,
+                    filePath: fixture.path
+                )],
+                content: fixture.content
+            ))
+        }
+
+        let plan = Remediation.buildPlan(results: results, minSeverity: .low)
+        try Remediation.patchFiles(plan: plan, dirPath: testDir)
+
+        for fixture in fixtures {
+            XCTAssertEqual(
+                try String(contentsOfFile: testDir + "/" + fixture.path, encoding: .utf8),
+                fixture.expected
+            )
+        }
+    }
 
     func testApplyPlanPatchesFile() throws {
         let testDir = NSTemporaryDirectory() + "pastewatch-fix-\(UUID().uuidString)"

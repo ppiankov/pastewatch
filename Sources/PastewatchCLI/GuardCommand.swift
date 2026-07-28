@@ -24,7 +24,8 @@ struct Guard: ParsableCommand {
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
-        let config = PastewatchConfig.resolve()
+        // WO-574@v4: command guards cannot fall back from a corrupt active config.
+        let config = try requireValidatedConfig()
         let paths = CommandParser.extractFilePaths(from: command)
 
         var allFileResults: [FileResult] = []

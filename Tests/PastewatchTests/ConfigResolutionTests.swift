@@ -115,6 +115,161 @@ final class ConfigResolutionTests: XCTestCase {
                        "New types should be auto-enabled from project config")
     }
 
+    // WO-574@v4: absent files are the only condition that permits default fallback.
+    func testResolveValidatedUsesDefaultsOnlyWhenEveryConfigIsAbsent() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-absent")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let resolved = try ConfigValidator.resolveValidated(
+            currentDirectory: root.path,
+            systemConfigPath: root.appendingPathComponent("system.json").path,
+            userConfigPath: root.appendingPathComponent("user.json").path
+        )
+
+        XCTAssertEqual(resolved.source, .defaults)
+        XCTAssertNil(resolved.path)
+        XCTAssertEqual(resolved.config.enabledTypes, PastewatchConfig.defaultConfig.enabledTypes)
+    }
+
+    // WO-574@v4: a corrupt higher-precedence file cannot silently select a lower one.
+    func testResolveValidatedRejectsMalformedProjectInsteadOfUsingValidUserConfig() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-project")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try "{".write(
+            to: root.appendingPathComponent(".pastewatch.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let userURL = root.appendingPathComponent("user.json")
+        try JSONEncoder().encode(PastewatchConfig.defaultConfig).write(to: userURL)
+
+        XCTAssertThrowsError(
+            try ConfigValidator.resolveValidated(
+                currentDirectory: root.path,
+                systemConfigPath: root.appendingPathComponent("system.json").path,
+                userConfigPath: userURL.path
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PastewatchConfigResolutionError,
+                PastewatchConfigResolutionError(
+                    path: root.appendingPathComponent(".pastewatch.json").path,
+                    kind: .invalid
+                )
+            )
+        }
+    }
+
+    // WO-574@v4: unreadable active paths fail before any enforcement work begins.
+    func testResolveValidatedRejectsUnreadableActivePath() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-unreadable")
+        let systemURL = root.appendingPathComponent("system.json")
+        try FileManager.default.createDirectory(
+            at: systemURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(
+            try ConfigValidator.resolveValidated(
+                currentDirectory: root.path,
+                systemConfigPath: systemURL.path,
+                userConfigPath: root.appendingPathComponent("user.json").path
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PastewatchConfigResolutionError,
+                PastewatchConfigResolutionError(path: systemURL.path, kind: .unreadable)
+            )
+        }
+    }
+
+    // WO-574@v4: dangling active-config links are unreadable policy, not absence.
+    func testResolveValidatedRejectsDanglingProjectConfigSymlink() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-dangling")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectURL = root.appendingPathComponent(".pastewatch.json")
+        try FileManager.default.createSymbolicLink(
+            at: projectURL,
+            withDestinationURL: root.appendingPathComponent("missing-config.json")
+        )
+
+        XCTAssertThrowsError(
+            try ConfigValidator.resolveValidated(
+                currentDirectory: root.path,
+                systemConfigPath: root.appendingPathComponent("system.json").path,
+                userConfigPath: root.appendingPathComponent("user.json").path
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PastewatchConfigResolutionError,
+                PastewatchConfigResolutionError(path: projectURL.path, kind: .unreadable)
+            )
+        }
+    }
+
+    // WO-574@v4: validation includes configured shared pattern artifacts atomically.
+    func testResolveValidatedRejectsBrokenSharedPatterns() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-shared")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [root.appendingPathComponent("missing-patterns.json").path]
+        let projectURL = root.appendingPathComponent(".pastewatch.json")
+        try JSONEncoder().encode(config).write(to: projectURL)
+
+        XCTAssertThrowsError(
+            try ConfigValidator.resolveValidated(
+                currentDirectory: root.path,
+                systemConfigPath: root.appendingPathComponent("system.json").path,
+                userConfigPath: root.appendingPathComponent("user.json").path
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PastewatchConfigResolutionError,
+                PastewatchConfigResolutionError(path: projectURL.path, kind: .invalid)
+            )
+        }
+    }
+
+    // WO-574@v4: soft decoder fallbacks cannot make invalid policy appear valid.
+    func testResolveValidatedRejectsUnknownStreamingModeWithoutEchoingValue() throws {
+        let root = temporaryDirectoryURL(prefix: "pastewatch-resolve-mode")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(PastewatchConfig.defaultConfig)
+            ) as? [String: Any]
+        )
+        object["responseStreamingRedactionMode"] = "fixture-value-must-stay-private"
+        try JSONSerialization.data(withJSONObject: object).write(
+            to: root.appendingPathComponent(".pastewatch.json")
+        )
+
+        XCTAssertThrowsError(
+            try ConfigValidator.resolveValidated(
+                currentDirectory: root.path,
+                systemConfigPath: root.appendingPathComponent("system.json").path,
+                userConfigPath: root.appendingPathComponent("user.json").path
+            )
+        ) { error in
+            guard let resolutionError = error as? PastewatchConfigResolutionError else {
+                return XCTFail("Expected PastewatchConfigResolutionError")
+            }
+            XCTAssertEqual(resolutionError.kind, .invalid)
+            XCTAssertFalse(
+                resolutionError.localizedDescription.contains("fixture-value-must-stay-private")
+            )
+        }
+    }
+
     func testIsTypeEnabled() {
         let config = PastewatchConfig(
             enabled: true,
@@ -301,5 +456,11 @@ final class ConfigResolutionTests: XCTestCase {
     private func temporaryJSONURL(prefix: String) -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("\(prefix)-\(UUID().uuidString).json")
+    }
+
+    // WO-574@v4: dangling-symlink tests require isolated active-config directories.
+    private func temporaryDirectoryURL(prefix: String) -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
     }
 }

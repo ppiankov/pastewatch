@@ -2,7 +2,7 @@ import Foundation
 
 /// WO-121: JSON cache for warn-once startup sweep behavior.
 public final class StartupSweepCache {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2 // WO-590@v2: invalidate signatures without finding identity.
 
     private let url: URL
     private let fileManager: FileManager
@@ -69,10 +69,12 @@ struct StartupSweepCacheEntry: Codable, Equatable {
     let contentHash: String
     let findingCount: Int
     let severitySummary: [String: Int]
+    let findingIdentityHash: String // WO-590@v2: privacy-safe finding-set identity.
 
     init(summary: StartupSweepFileSummary) {
         self.contentHash = summary.contentHash
         self.findingCount = summary.findingCount
+        self.findingIdentityHash = summary.findingIdentityHash
         self.severitySummary = summary.severityCounts.reduce(into: [:]) { result, pair in
             result[pair.key.rawValue] = pair.value
         }

@@ -199,7 +199,8 @@ public extension InventoryReport {
         var typeGroups = byType.map { (type, matches) in
             TypeGroup(
                 type: type,
-                severity: matches.first?.1.effectiveSeverity.rawValue ?? "low",
+                // WO-584@v2: the fallback remains owned by the Severity wire contract.
+                severity: matches.first?.1.effectiveSeverity.rawValue ?? Severity.low.rawValue,
                 count: matches.count,
                 files: Array(Set(matches.map { $0.0 })).sorted()
             )

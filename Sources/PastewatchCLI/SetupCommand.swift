@@ -11,7 +11,8 @@ struct Setup: ParsableCommand {
     var agent: String
 
     @Option(name: .long, help: "Severity threshold for hook blocking and MCP redaction (default: high)")
-    var severity: String = "high"
+    // WO-584@v2: setup follows the canonical guard default without string drift.
+    var severity: String = Severity.defaultGuardThreshold.rawValue
 
     @Flag(name: .long, help: "Write to project config instead of global (claude-code only)")
     var project = false

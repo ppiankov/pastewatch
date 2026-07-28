@@ -3,6 +3,9 @@ import Foundation
 import PastewatchCore
 
 struct DashboardCommand: ParsableCommand {
+    // WO-583@v2: one render limit governs text and Markdown completeness labels.
+    private static let topTypesDisplayLimit = 10
+
     static let configuration = CommandConfiguration(
         commandName: "dashboard",
         abstract: "Aggregate view across multiple audit log sessions"
@@ -72,9 +75,10 @@ struct DashboardCommand: ParsableCommand {
         print("Scans:                \(d.summary.scans)")
         print("Scan findings:        \(d.summary.scanFindings)")
 
+        // WO-583@v2: text output states when the complete type list is truncated.
         if !d.topTypes.isEmpty {
-            print("\nTop secret types:")
-            for tc in d.topTypes.prefix(10) {
+            print("\nTop secret types\(Self.topTypesTruncationSuffix(for: d)):")
+            for tc in d.topTypes.prefix(Self.topTypesDisplayLimit) {
                 print("  \(tc.type): \(tc.count) (\(tc.severity))")
             }
         }
@@ -124,11 +128,12 @@ struct DashboardCommand: ParsableCommand {
         print("| Scans | \(d.summary.scans) |")
         print("| Scan findings | \(d.summary.scanFindings) |")
 
+        // WO-583@v2: Markdown states when the complete type list is truncated.
         if !d.topTypes.isEmpty {
-            print("\n## Top Secret Types\n")
+            print("\n## Top Secret Types\(Self.topTypesTruncationSuffix(for: d))\n")
             print("| Type | Count | Severity |")
             print("|------|-------|----------|")
-            for tc in d.topTypes.prefix(10) {
+            for tc in d.topTypes.prefix(Self.topTypesDisplayLimit) {
                 print("| \(tc.type) | \(tc.count) | \(tc.severity) |")
             }
         }
@@ -148,6 +153,13 @@ struct DashboardCommand: ParsableCommand {
 
         print("\n## Verdict\n")
         print("**\(d.verdict)**")
+    }
+
+    // WO-583@v2: rendered lists disclose every omitted type.
+    static func topTypesTruncationSuffix(for dashboard: Dashboard) -> String {
+        let displayedCount = min(topTypesDisplayLimit, dashboard.topTypes.count)
+        guard dashboard.topTypesTotal > displayedCount else { return "" }
+        return " (showing \(displayedCount) of \(dashboard.topTypesTotal))"
     }
 }
 

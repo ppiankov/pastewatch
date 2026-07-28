@@ -21,7 +21,8 @@ enum FileGuard {
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
-        let config = PastewatchConfig.resolve()
+        // WO-574@v4: guard decisions cannot use fallback defaults after config corruption.
+        let config = try requireValidatedConfig()
         if config.isPathProtected(filePath) {
             let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
             FileHandle.standardError.write(Data(msg.utf8))
@@ -31,10 +32,25 @@ enum FileGuard {
 
         guard FileManager.default.fileExists(atPath: filePath) else { return }
 
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8),
-              !content.isEmpty else {
-            return
+        // WO-588@v2: existing unscannable files must not bypass read/write guards.
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+        } catch {
+            try blockUnscannableFile(
+                filePath: filePath,
+                operation: operation,
+                reason: "could not be read"
+            )
         }
+        guard let content = String(data: data, encoding: .utf8) else {
+            try blockUnscannableFile(
+                filePath: filePath,
+                operation: operation,
+                reason: "is not valid UTF-8"
+            )
+        }
+        guard !content.isEmpty else { return }
 
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
         let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
@@ -70,6 +86,18 @@ enum FileGuard {
 
         print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files containing secrets.")
 
+        throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-588@v2: diagnostics identify the failed file without echoing its bytes.
+    private static func blockUnscannableFile(
+        filePath: String,
+        operation: Operation,
+        reason: String
+    ) throws -> Never {
+        let message = "BLOCKED: \(filePath) \(reason)\n"
+        FileHandle.standardError.write(Data(message.utf8))
+        print("Use pastewatch_\(operation == .read ? "read" : "write")_file only after the file is readable UTF-8.")
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }

@@ -72,8 +72,8 @@ public final class ProxyServer {
     private let upstream: URL
     private let forwardProxy: URL?
     private let config: PastewatchConfig
-    private let customRules: [CustomRule] // WO-473: one precompiled set for every proxy scan path.
-    private let customRuleStartupError: Error? // WO-473: direct server users fail before socket creation.
+    private let customRules: [CustomRule] // WO-573@v4: one config-plus-shared set for every proxy scan path.
+    private let customRuleStartupError: Error? // WO-573@v4: direct server users fail before socket creation.
     private let severity: Severity
     private let auditLogPath: String?
     public private(set) var injectAlert: Bool
@@ -289,7 +289,7 @@ public final class ProxyServer {
         port: UInt16 = 8443,
         upstream: URL = URL(string: "https://api.anthropic.com")!,
         forwardProxy: URL? = nil,
-        config: PastewatchConfig = PastewatchConfig.resolve(),
+        config: PastewatchConfig? = nil,
         compiledCustomRules: [CustomRule]? = nil,
         severity: Severity = .defaultGuardThreshold,
         auditLogPath: String? = nil,
@@ -302,13 +302,31 @@ public final class ProxyServer {
         self.port = port
         self.upstream = upstream
         self.forwardProxy = forwardProxy
-        self.config = config
-        if let compiledCustomRules {
-            self.customRules = compiledCustomRules
-            self.customRuleStartupError = nil
+        let resolvedConfig: PastewatchConfig
+        let configResolutionError: Error?
+        if let config {
+            resolvedConfig = config
+            configResolutionError = nil
         } else {
             do {
-                self.customRules = try CustomRule.compileForProxyStartup(config.customRules)
+                // WO-573@v4, WO-574@v4: omitted config still uses the strict boundary.
+                resolvedConfig = try ConfigValidator.resolveValidated().config
+                configResolutionError = nil
+            } catch {
+                resolvedConfig = .defaultConfig
+                configResolutionError = error
+            }
+        }
+        self.config = resolvedConfig
+        if let configResolutionError {
+            self.customRules = []
+            self.customRuleStartupError = configResolutionError
+        } else {
+            do {
+                self.customRules = try SharedSecretPatternSource.proxyRuleSet(
+                    for: resolvedConfig,
+                    additionalRules: compiledCustomRules ?? []
+                )
                 self.customRuleStartupError = nil
             } catch {
                 self.customRules = []
@@ -334,11 +352,11 @@ public final class ProxyServer {
     }
 
     public static func bufferModeWarning(config: PastewatchConfig, quiet _: Bool) -> String? {
-        // WO-316: buffer mode is a compatibility path; response-body redaction is
-        // not yet implemented there, so surface the limitation at startup.
+        // WO-316: buffer mode remains a compatibility path with a visible startup warning.
+        // WO-573@v4: buffered responses scan only after the full response is retained.
         // WO-365: this is security-relevant and must remain visible under --quiet.
         guard config.responseStreamingRedactionMode == .buffer else { return nil }
-        return "WARNING: responseStreamingRedactionMode=buffer does not scan buffered response bodies\n"
+        return "WARNING: responseStreamingRedactionMode=buffer scans only after buffering the full response\n"
     }
 
     static func makeSessionConfiguration(forwardProxy: URL?) -> URLSessionConfiguration {
@@ -944,13 +962,9 @@ public final class ProxyServer {
         #endif
     }
 
-    /// WO-563@v3: Darwin buffered responses use the same byte-preserving binary
-    /// redaction policy as the Linux curl path.
+    /// WO-563@v3, WO-573@v4: Darwin buffered responses share Linux scan coverage.
     func redactDarwinBufferedResponseBodyIfNeeded(_ body: Data) -> SSEFrameRedactionResult {
-        guard CurlHTTPClient.requiresBytePreservingResponseScan(body) else {
-            return SSEFrameRedactionResult(data: body, count: 0, types: [])
-        }
-        return CurlHTTPClient.redactNonUTF8ResponseBody(
+        CurlHTTPClient.redactBufferedResponseBody(
             body,
             config: config,
             severity: severity,

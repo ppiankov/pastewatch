@@ -207,7 +207,7 @@ pastewatch-cli launch --audit-log /tmp/pw-audit.log -- claude
 
 When an alert is injected, it tells the model that `<TYPE_n>` markers are expected one-way redactions, while malformed markers or mangled surrounding bytes may indicate real corruption. Proxy placeholders are not restored.
 
-**Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode for full-response buffering. It does not scan buffered response bodies for secrets; use the default `per_sse_event` mode when response redaction is required. The event-aware relay reassembles Anthropic `input_json_delta.partial_json` and OpenAI-compatible/LiteLLM `tool_calls[].function.arguments` fragments before scanning, then preserves all frame bytes outside authorized replacements. This response support does not change request admission: OpenAI-shaped request bodies are still refused.
+**Streaming response mode.** `responseStreamingRedactionMode=buffer` is a compatibility mode that scans only after retaining the complete response, increasing latency and memory use. Use the default `per_sse_event` mode for incremental response redaction. The event-aware relay reassembles Anthropic `input_json_delta.partial_json` and OpenAI-compatible/LiteLLM `tool_calls[].function.arguments` fragments before scanning, then preserves all frame bytes outside authorized replacements. This response support does not change request admission: OpenAI-shaped request bodies are still refused.
 
 Response streaming has no authoritative catalog of exact local secret values. It mutates intrinsically identifiable formats and operator-approved custom rules; adding exact-value response matching requires a separately designed local secret source and lifecycle.
 

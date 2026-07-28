@@ -15,10 +15,9 @@ private let proxyStartupSignalGraceMilliseconds = 100
 // WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
 let proxyInterruptedExitCode: Int32 = 130
 
-// WO-473: proxy and launch share one strict startup gate; runtime scan paths
-// must never silently reduce configured coverage to the valid subset.
+// WO-573@v4: proxy and launch share one strict startup gate for config and shared rules.
 func compileProxyCustomRules(_ config: PastewatchConfig) throws -> [CustomRule] {
-    try CustomRule.compileForProxyStartup(config.customRules)
+    try SharedSecretPatternSource.proxyRuleSet(for: config)
 }
 
 func writeProxyCustomRuleError(_ error: Error) {
@@ -101,7 +100,8 @@ struct Proxy: ParsableCommand {
             forwardProxyURL = url
         }
 
-        let config = PastewatchConfig.resolve()
+        // WO-574@v4: refuse to listen when the active config cannot be trusted.
+        let config = try requireValidatedConfig()
         let compiledCustomRules = try requireValidProxyCustomRules(config)
         let streamDebugSink = try debugStreamDump.map { try StreamDebugSink(path: $0) }
         let server = ProxyServer(

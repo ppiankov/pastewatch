@@ -218,8 +218,8 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertEqual(result.stderr, "", "--quiet should suppress non-routed advisory stderr")
     }
 
-    // WO-491: non-routed launches do not consume proxy custom rules.
-    func testNonRoutedLaunchIgnoresInvalidProxyCustomRule() throws {
+    // WO-491, WO-574@v4: invalid active policy now blocks every launch before routing.
+    func testNonRoutedLaunchRejectsInvalidActiveConfig() throws {
         let fixture = try makeLaunchFixture()
         let agent = try writeEnvEchoAgent(named: "codex", in: fixture.cwd)
         let invalidPattern = "[" + "unclosed"
@@ -236,14 +236,15 @@ final class LaunchCommandTests: XCTestCase {
             environment: fixture.environment
         )
 
-        XCTAssertEqual(result.status, 0, result.stderr)
-        XCTAssertTrue(result.stdout.contains("ANTHROPIC_BASE_URL=UNSET"), result.stdout)
+        XCTAssertEqual(result.status, 2, result.stderr)
+        XCTAssertEqual(result.stdout, "", "non-routed agent ran despite invalid active config")
         XCTAssertFalse(result.stderr.contains("Broken rule"), result.stderr)
         XCTAssertFalse(result.stderr.contains(invalidPattern), "diagnostic disclosed configured pattern")
+        XCTAssertTrue(result.stderr.contains("is invalid"), result.stderr)
         XCTAssertFalse(result.stderr.contains("proxy listening"), result.stderr)
     }
 
-    // WO-473/WO-491: routed launches still fail before proxy startup when a rule is invalid.
+    // WO-473/WO-491, WO-574@v4: routed launches fail at the same value-free config gate.
     func testRoutedLaunchRejectsInvalidCustomRuleBeforeProxyStart() throws {
         let fixture = try makeLaunchFixture()
         let agent = try writeEnvEchoAgent(named: "claude", in: fixture.cwd)
@@ -263,8 +264,9 @@ final class LaunchCommandTests: XCTestCase {
 
         XCTAssertEqual(result.status, 2, result.stderr)
         XCTAssertEqual(result.stdout, "", "routed agent ran despite invalid custom rule")
-        XCTAssertTrue(result.stderr.contains("Broken rule"), result.stderr)
+        XCTAssertFalse(result.stderr.contains("Broken rule"), result.stderr)
         XCTAssertFalse(result.stderr.contains(invalidPattern), "diagnostic disclosed configured pattern")
+        XCTAssertTrue(result.stderr.contains("is invalid"), result.stderr)
         XCTAssertFalse(result.stderr.contains("proxy listening"), result.stderr)
     }
 

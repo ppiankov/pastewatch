@@ -1,4 +1,5 @@
 import XCTest
+@testable import PastewatchCLI
 @testable import PastewatchCore
 
 final class InventoryReportTests: XCTestCase {
@@ -95,6 +96,34 @@ final class InventoryReportTests: XCTestCase {
         XCTAssertTrue(report.entries.isEmpty)
         XCTAssertTrue(report.hotSpots.isEmpty)
         XCTAssertTrue(report.typeGroups.isEmpty)
+    }
+
+    // WO-575@v2: the inventory command emits no artifact after shared-pattern failure.
+    func testSharedPatternFailurePreventsInventoryCommandOutput() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-inventory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "TOKEN=ordinary-value\n".write(
+            to: directory.appendingPathComponent("config.env"),
+            atomically: true,
+            encoding: .utf8
+        )
+        var config = PastewatchConfig.defaultConfig
+        config.sharedPatternFiles = [directory.appendingPathComponent("missing-patterns.json").path]
+        let artifact = directory.appendingPathComponent("inventory.json")
+        let command = try Inventory.parse([
+            "--dir", directory.path,
+            "--format", "json",
+            "--output", artifact.path
+        ])
+
+        XCTAssertThrowsError(
+            try command.run(config: config)
+        ) { error in
+            XCTAssertTrue(error is SharedSecretPatternLoadError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifact.path))
     }
 
     func testJSONRoundTrip() throws {
