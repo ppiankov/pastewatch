@@ -26,8 +26,95 @@ struct MCP: ParsableCommand {
     }
 }
 
+// WO-603@v2: transport framing is bounded before JSON decoding allocates a request.
+private enum MCPInputRecord {
+    case line(Data)
+    case oversized
+}
+
+// WO-597@v2: payload selection resolves before any target-file mutation.
+private enum MCPWritePayload {
+    case content(String)
+    case error(String)
+}
+
+// WO-603@v2: retain at most one configured line plus a fixed read chunk.
+private struct MCPLineReader {
+    private static let readChunkBytes = 64 * 1_024
+
+    private let handle: FileHandle
+    private let maximumLineBytes: Int
+    private var buffer = Data()
+    private var reachedEOF = false
+    private var discardingOversizedLine = false
+
+    init(handle: FileHandle, maximumLineBytes: Int) {
+        self.handle = handle
+        self.maximumLineBytes = maximumLineBytes
+    }
+
+    mutating func next() throws -> MCPInputRecord? {
+        while true {
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[..<newlineIndex])
+                buffer.removeSubrange(buffer.startIndex...newlineIndex)
+                return record(for: line)
+            }
+
+            if reachedEOF {
+                if discardingOversizedLine {
+                    discardingOversizedLine = false
+                    return .oversized
+                }
+                guard !buffer.isEmpty else { return nil }
+                let line = buffer
+                buffer.removeAll(keepingCapacity: true)
+                return record(for: line)
+            }
+
+            let chunk = try handle.read(upToCount: Self.readChunkBytes) ?? Data()
+            if chunk.isEmpty {
+                reachedEOF = true
+                continue
+            }
+
+            if discardingOversizedLine {
+                guard let newlineIndex = chunk.firstIndex(of: 0x0A) else { continue }
+                discardingOversizedLine = false
+                let remainderStart = chunk.index(after: newlineIndex)
+                if remainderStart < chunk.endIndex {
+                    buffer.append(chunk[remainderStart...])
+                }
+                return .oversized
+            }
+
+            buffer.append(chunk)
+            let probeLimit = maximumLineBytes == Int.max
+                ? Int.max
+                : maximumLineBytes + 1
+            if buffer.firstIndex(of: 0x0A) == nil, buffer.count > probeLimit {
+                buffer.removeAll(keepingCapacity: true)
+                discardingOversizedLine = true
+            }
+        }
+    }
+
+    private func record(for rawLine: Data) -> MCPInputRecord {
+        var line = rawLine
+        if line.last == 0x0D {
+            line.removeLast()
+        }
+        guard line.count <= maximumLineBytes else { return .oversized }
+        return .line(line)
+    }
+}
+
 /// Stateful MCP server that holds redaction mappings for the session.
 final class MCPServer {
+    // WO-597@v2: reject the unsupported transport marker that caused a destructive overwrite.
+    private static let fileReferenceSentinelRegex = try? NSRegularExpression(
+        pattern: #"^\s*@@FILE:[^\r\n]+@@\s*$"#
+    )
     private let store: RedactionStore
     private let auditLogger: MCPAuditLogger?
     private let defaultMinSeverity: String?
@@ -54,15 +141,39 @@ final class MCPServer {
     func start() {
         FileHandle.standardError.write(Data("pastewatch-cli: MCP server started\n".utf8))
 
-        while let line = readLine(strippingNewline: true) {
-            guard !line.isEmpty else { continue }
-            guard let data = line.data(using: .utf8) else { continue }
+        // WO-603@v2: avoid Swift readLine materializing an unbounded agent request.
+        var reader = MCPLineReader(
+            handle: .standardInput,
+            maximumLineBytes: ScanInputLimits.current().maximumLineBytes
+        )
+        while true {
+            let record: MCPInputRecord
+            do {
+                guard let nextRecord = try reader.next() else { break }
+                record = nextRecord
+            } catch {
+                // WO-603@v2: a transport read failure is terminal, not a parse-error loop.
+                FileHandle.standardError.write(
+                    Data("pastewatch-cli: MCP transport read failed\n".utf8)
+                )
+                break
+            }
 
             let response: JSONRPCResponse?
-            do {
-                let request = try JSONDecoder().decode(JSONRPCRequest.self, from: data)
-                response = handleRequest(request)
-            } catch {
+            switch record {
+            case .line(let data):
+                guard !data.isEmpty else { continue }
+                do {
+                    let request = try JSONDecoder().decode(JSONRPCRequest.self, from: data)
+                    response = handleRequest(request)
+                } catch {
+                    response = JSONRPCResponse(
+                        jsonrpc: "2.0", id: nil,
+                        result: nil,
+                        error: JSONRPCError(code: -32700, message: "Parse error")
+                    )
+                }
+            case .oversized:
                 response = JSONRPCResponse(
                     jsonrpc: "2.0", id: nil,
                     result: nil,
@@ -205,9 +316,19 @@ final class MCPServer {
                             "content": .object([
                                 "type": .string("string"),
                                 "description": .string("File content (may contain placeholders from pastewatch_read_file)")
+                            ]),
+                            "contentPath": .object([
+                                "type": .string("string"),
+                                "description": .string(
+                                    "Local UTF-8 payload file; mutually exclusive with content"
+                                )
                             ])
                         ]),
-                        "required": .array([.string("path"), .string("content")])
+                        "required": .array([.string("path")]),
+                        "oneOf": .array([
+                            .object(["required": .array([.string("content")])]),
+                            .object(["required": .array([.string("contentPath")])])
+                        ])
                     ])
                 ]),
                 .object([
@@ -292,6 +413,7 @@ final class MCPServer {
         return successResult(id: id, matches: matches)
     }
 
+    // WO-595@v2: file scans surface bounded-input failures instead of skipping evidence.
     private func handleScanFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
@@ -301,8 +423,18 @@ final class MCPServer {
             return errorResult(id: id, text: "File not found: \(path)")
         }
 
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return errorResult(id: id, text: "Could not read file: \(path)")
+        let content: String
+        do {
+            // WO-595@v2: refuse before allocating an oversized MCP scan payload.
+            let data = try DetectionRules.readBoundedFileData(atPath: path)
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                return errorResult(id: id, text: "Could not read file: \(path)")
+            }
+            content = decoded
+        } catch let error as ScanInputLimitError {
+            return errorResult(id: id, text: "Scan limit exceeded: \(error.localizedDescription)")
+        } catch {
+            return errorResult(id: id, text: "Could not inspect file: \(path)")
         }
 
         let ext: String
@@ -321,6 +453,9 @@ final class MCPServer {
                 relativePath: path,
                 config: config
             )
+        } catch let error as ScanInputLimitError {
+            auditLogger?.log("SCAN  \(path)  input-limit")
+            return errorResult(id: id, text: "Scan limit exceeded: \(error.localizedDescription)")
         } catch let error as SharedSecretPatternLoadError {
             auditLogger?.log("SCAN  \(path)  shared-pattern-error")
             return errorResult(id: id, text: "Shared pattern load failed: \(error.localizedDescription)")
@@ -403,6 +538,9 @@ final class MCPServer {
                 result: .object(["content": content]),
                 error: nil
             )
+        } catch let error as ScanInputLimitError {
+            auditLogger?.log("SCAN  \(path)  input-limit")
+            return errorResult(id: id, text: "Scan limit exceeded: \(error.localizedDescription)")
         } catch let error as SharedSecretPatternLoadError {
             auditLogger?.log("SCAN  \(path)  shared-pattern-error")
             return errorResult(id: id, text: "Shared pattern load failed: \(error.localizedDescription)")
@@ -423,8 +561,18 @@ final class MCPServer {
             return errorResult(id: id, text: "File not found: \(path)")
         }
 
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return errorResult(id: id, text: "Could not read file: \(path)")
+        let content: String
+        do {
+            // WO-595@v2: MCP redacted reads share the same pre-allocation file cap.
+            let data = try DetectionRules.readBoundedFileData(atPath: path)
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                return errorResult(id: id, text: "Could not read file: \(path)")
+            }
+            content = decoded
+        } catch let error as ScanInputLimitError {
+            return errorResult(id: id, text: "Read limit exceeded: \(error.localizedDescription)")
+        } catch {
+            return errorResult(id: id, text: "Could not inspect file: \(path)")
         }
 
         // Precedence: per-request > CLI flag > config > default (high)
@@ -449,6 +597,9 @@ final class MCPServer {
                 relativePath: path,
                 config: config
             )
+        } catch let error as ScanInputLimitError {
+            auditLogger?.log("READ  \(path)  input-limit")
+            return errorResult(id: id, text: "Read limit exceeded: \(error.localizedDescription)")
         } catch let error as SharedSecretPatternLoadError {
             auditLogger?.log("READ  \(path)  shared-pattern-error")
             return errorResult(id: id, text: "Shared pattern load failed: \(error.localizedDescription)")
@@ -547,8 +698,12 @@ final class MCPServer {
             return errorResult(id: id, text: "Missing required parameter: path")
         }
 
-        guard case .string(let content) = arguments["content"] else {
-            return errorResult(id: id, text: "Missing required parameter: content")
+        let content: String
+        switch resolveWritePayload(arguments: arguments, targetPath: path) {
+        case .content(let resolvedContent):
+            content = resolvedContent
+        case .error(let message):
+            return errorResult(id: id, text: message)
         }
 
         let ext = DotenvClassifier.isDotenvFile(URL(fileURLWithPath: path).lastPathComponent)
@@ -628,6 +783,61 @@ final class MCPServer {
         ])
 
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+    }
+
+    // WO-597@v2: one resolver owns mutually exclusive inline and local-file payloads.
+    private func resolveWritePayload(
+        arguments: [String: JSONValue],
+        targetPath: String
+    ) -> MCPWritePayload {
+        let inlineContent: String?
+        if case .string(let value) = arguments["content"] {
+            inlineContent = value
+        } else {
+            inlineContent = nil
+        }
+        let contentPath: String?
+        if case .string(let value) = arguments["contentPath"] {
+            contentPath = value
+        } else {
+            contentPath = nil
+        }
+        guard (inlineContent == nil) != (contentPath == nil) else {
+            return .error("Provide exactly one payload source: content or contentPath")
+        }
+
+        if let inlineContent {
+            guard !Self.isFileReferenceSentinel(inlineContent) else {
+                auditLogger?.log("WRITE \(targetPath)  rejected-file-reference-sentinel")
+                return .error("Unsupported file-reference marker; use contentPath")
+            }
+            return .content(inlineContent)
+        }
+
+        guard let contentPath else {
+            return .error("Missing payload source")
+        }
+        let payloadURL = URL(fileURLWithPath: contentPath)
+        guard let values = try? payloadURL.resourceValues(forKeys: [.isRegularFileKey]),
+              values.isRegularFile == true else {
+            return .error("contentPath must name a regular file")
+        }
+        do {
+            let data = try DetectionRules.readBoundedFileData(atPath: contentPath)
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            return .content(decoded)
+        } catch {
+            return .error("Could not read contentPath: \(error.localizedDescription)")
+        }
+    }
+
+    // WO-597@v2: recognize only the unsupported marker shape from the data-loss incident.
+    private static func isFileReferenceSentinel(_ content: String) -> Bool {
+        guard let regex = fileReferenceSentinelRegex else { return false }
+        let range = NSRange(content.startIndex..., in: content)
+        return regex.firstMatch(in: content, options: [], range: range)?.range == range
     }
 
     // WO-550@v2: MCP output checks fail closed on invalid shared detector configuration.

@@ -68,28 +68,21 @@ public struct DirectoryScanner {
         config: PastewatchConfig,
         ignoreFile: IgnoreFile? = nil,
         extraIgnorePatterns: [String] = [],
-        bail: Bool = false
+        bail: Bool = false,
+        limits: ScanInputLimits = .current()
     ) throws -> [FileScanResult] {
         let dirURL = URL(fileURLWithPath: directory).standardizedFileURL
         let dirPath = dirURL.path
         var results: [FileScanResult] = []
 
-        let mergedIgnore: IgnoreFile?
-        if let ig = ignoreFile {
-            if extraIgnorePatterns.isEmpty {
-                mergedIgnore = ig
-            } else {
-                mergedIgnore = IgnoreFile(patterns: ig.patterns + extraIgnorePatterns)
-            }
-        } else if !extraIgnorePatterns.isEmpty {
-            mergedIgnore = IgnoreFile(patterns: extraIgnorePatterns)
-        } else {
-            mergedIgnore = nil
-        }
+        let mergedIgnore = mergedIgnoreFile(
+            ignoreFile,
+            extraPatterns: extraIgnorePatterns
+        )
 
         guard let enumerator = FileManager.default.enumerator(
             at: dirURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
             options: []
         ) else {
             return results
@@ -105,7 +98,9 @@ public struct DirectoryScanner {
             }
 
             // Check if it's a regular file
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+            guard let resourceValues = try? fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey]
+            ),
                   resourceValues.isRegularFile == true else {
                 continue
             }
@@ -117,6 +112,8 @@ public struct DirectoryScanner {
             guard isEnvFile || allowedExtensions.contains(ext) else {
                 continue
             }
+
+            try validateFileSize(resourceValues.fileSize, limits: limits)
 
             // Compute relative path from the directory root
             let filePath = fileURL.standardizedFileURL.path
@@ -135,16 +132,29 @@ public struct DirectoryScanner {
             }
 
             // Read and scan
-            guard let content = try? String(contentsOf: fileURL, encoding: .utf8),
-                  !content.isEmpty else {
+            let data: Data
+            do {
+                data = try DetectionRules.readBoundedFileData(
+                    atPath: fileURL.path,
+                    limits: limits
+                )
+            } catch let error as ScanInputLimitError {
+                throw error
+            } catch {
                 continue
             }
+            // WO-602@v2: a supported text file cannot disappear from aggregate evidence.
+            guard let content = String(data: data, encoding: .utf8) else {
+                throw ScanInputTextError.invalidUTF8
+            }
+            guard !content.isEmpty else { continue }
 
             // Format-aware scanning
             let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
             var fileMatches = try scanFileContentOrThrow(
                 content: content, ext: parsedExt,
-                relativePath: relativePath, config: config
+                relativePath: relativePath, config: config,
+                limits: limits
             )
 
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
@@ -163,7 +173,11 @@ public struct DirectoryScanner {
         let sorted = results.sorted { $0.filePath < $1.filePath }
 
         // Tag gitignored files
-        let ignoredSet = gitIgnoredFiles(in: directory, paths: sorted.map { $0.filePath })
+        let ignoredSet = gitIgnoredFiles(
+            in: directory,
+            paths: sorted.map { $0.filePath },
+            limits: limits
+        )
         if ignoredSet.isEmpty {
             return sorted
         }
@@ -180,9 +194,38 @@ public struct DirectoryScanner {
         }
     }
 
+    // WO-595@v2: reject a directory member before decode without growing traversal complexity.
+    private static func validateFileSize(
+        _ fileSize: Int?,
+        limits: ScanInputLimits
+    ) throws {
+        guard let fileSize, fileSize > limits.maximumFileBytes else { return }
+        throw ScanInputLimitError.fileBytes(
+            actual: fileSize,
+            maximum: limits.maximumFileBytes
+        )
+    }
+
+    // WO-595@v2: keep limit-aware traversal below the scanner complexity gate.
+    private static func mergedIgnoreFile(
+        _ ignoreFile: IgnoreFile?,
+        extraPatterns: [String]
+    ) -> IgnoreFile? {
+        guard let ignoreFile else {
+            return extraPatterns.isEmpty ? nil : IgnoreFile(patterns: extraPatterns)
+        }
+        guard !extraPatterns.isEmpty else { return ignoreFile }
+        return IgnoreFile(patterns: ignoreFile.patterns + extraPatterns)
+    }
+
+    // WO-600@v2: drain git output while paths are written so neither pipe can block the other.
     /// Check which paths are gitignored using `git check-ignore`.
     /// Returns empty set if not in a git repo or git is not available.
-    public static func gitIgnoredFiles(in directory: String, paths: [String]) -> Set<String> {
+    public static func gitIgnoredFiles(
+        in directory: String,
+        paths: [String],
+        limits: ScanInputLimits = .current()
+    ) -> Set<String> {
         guard !paths.isEmpty else { return [] }
 
         let process = Process()
@@ -202,13 +245,41 @@ public struct DirectoryScanner {
             return []
         }
 
-        let input = paths.joined(separator: "\n") + "\n"
-        inputPipe.fileHandleForWriting.write(Data(input.utf8))
-        inputPipe.fileHandleForWriting.closeFile()
+        let inputHandle = inputPipe.fileHandleForWriting
+        let writerGroup = DispatchGroup()
+        writerGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer {
+                try? inputHandle.close()
+                writerGroup.leave()
+            }
+            // WO-600@v2: stream paths so the deadlock fix does not duplicate the full input.
+            for path in paths {
+                do {
+                    try inputHandle.write(contentsOf: Data((path + "\n").utf8))
+                } catch {
+                    break
+                }
+            }
+        }
 
+        let data: Data
+        do {
+            data = try DetectionRules.readBoundedInputData(
+                from: outputPipe.fileHandleForReading,
+                limits: limits
+            )
+        } catch {
+            if process.isRunning {
+                process.terminate()
+            }
+            writerGroup.wait()
+            process.waitUntilExit()
+            return []
+        }
+
+        writerGroup.wait()
         process.waitUntilExit()
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
         return Set(
@@ -237,13 +308,17 @@ public struct DirectoryScanner {
         ext: String,
         relativePath: String,
         config: PastewatchConfig,
-        customRules: [CustomRule] = []
+        customRules: [CustomRule] = [],
+        limits: ScanInputLimits = .current()
     ) throws -> [DetectedMatch] {
+        // WO-595@v2: structured parsing must not bypass whole-file and line limits.
+        try DetectionRules.validateFileInput(content, limits: limits)
         guard let parser = parserForExtension(ext, config: config) else {
             return try DetectionRules.scanFileIOOrThrow(
                 content,
                 config: config,
-                customRules: customRules
+                customRules: customRules,
+                limits: limits
             ).map { match in
                 sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
             }
@@ -260,7 +335,8 @@ public struct DirectoryScanner {
             return try DetectionRules.scanFileIOOrThrow(
                 content,
                 config: config,
-                customRules: customRules
+                customRules: customRules,
+                limits: limits
             ).map { match in
                 sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
             }
@@ -273,7 +349,8 @@ public struct DirectoryScanner {
             for vm in try DetectionRules.scanFileIOOrThrow(
                 pv.value,
                 config: config,
-                customRules: customRules
+                customRules: customRules,
+                limits: limits
             ) {
                 guard let sourceRange = sourceRange(
                     of: vm.value,
@@ -330,7 +407,8 @@ public struct DirectoryScanner {
             let rawMatches = try DetectionRules.scanFileIOOrThrow(
                 content,
                 config: config,
-                customRules: customRules
+                customRules: customRules,
+                limits: limits
             )
             for rm in rawMatches {
                 // Only add XML-specific types not already found

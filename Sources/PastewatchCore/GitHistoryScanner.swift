@@ -50,6 +50,7 @@ public struct GitHistoryScanner {
     /// Marker prefix used in git log --format to delimit commits.
     static let commitMarker = "PWCOMMIT "
 
+    // WO-599@v2: history scans enforce the shared Git output boundary.
     /// Scan git history for secrets.
     ///
     /// - Parameters:
@@ -64,9 +65,15 @@ public struct GitHistoryScanner {
         since: String? = nil,
         branch: String? = nil,
         config: PastewatchConfig,
-        bail: Bool = false
+        bail: Bool = false,
+        limits: ScanInputLimits = .current()
     ) throws -> GitLogScanResult {
-        let output = try runGitLog(range: range, since: since, branch: branch)
+        let output = try runGitLog(
+            range: range,
+            since: since,
+            branch: branch,
+            limits: limits
+        )
         let chunks = parseCommitChunks(output)
 
         var findings: [CommitFinding] = []
@@ -81,9 +88,22 @@ public struct GitHistoryScanner {
                 guard GitScanHelpers.shouldScanFile(df.path) else { continue }
                 filesScanned += 1
 
-                guard let content = try? GitDiffScanner.runGit(
-                    ["show", "\(chunk.hash):\(df.path)"]
-                ), !content.isEmpty else { continue }
+                let content: String
+                do {
+                    content = try GitDiffScanner.runGit(
+                        ["show", "\(chunk.hash):\(df.path)"],
+                        limits: limits
+                    )
+                } catch let error as ScanInputLimitError {
+                    // WO-599@v2: bounded history blobs fail the scan instead of disappearing.
+                    throw error
+                } catch let error as ScanInputTextError {
+                    // WO-602@v2: malformed historical text cannot be skipped as absent.
+                    throw error
+                } catch {
+                    continue
+                }
+                guard !content.isEmpty else { continue }
 
                 // WO-562@v3: share classification only; trust-policy filtering remains
                 // explicit at this caller.
@@ -91,7 +111,8 @@ public struct GitHistoryScanner {
                     content: content,
                     ext: GitScanHelpers.scanExtension(for: df.path),
                     relativePath: df.path,
-                    config: config
+                    config: config,
+                    limits: limits
                 )
                 fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
                 fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
@@ -138,7 +159,8 @@ public struct GitHistoryScanner {
     static func runGitLog(
         range: String?,
         since: String?,
-        branch: String?
+        branch: String?,
+        limits: ScanInputLimits = .current()
     ) throws -> String {
         var args = [
             "log", "--reverse", "-p", "--no-color",
@@ -155,7 +177,7 @@ public struct GitHistoryScanner {
         } else {
             args.append("--all")
         }
-        return try GitDiffScanner.runGit(args)
+        return try GitDiffScanner.runGit(args, limits: limits)
     }
 
     // MARK: - Parsing

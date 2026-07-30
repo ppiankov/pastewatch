@@ -291,6 +291,51 @@ final class StdinFilenameTests: XCTestCase {
         XCTAssertFalse(result.stderr.contains("could not be read as UTF-8"))
     }
 
+    // WO-598@v2: git-diff limit failures preserve the operational exit contract.
+    func testGitDiffInputLimitReturnsOperationalFailure() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try initializeGitRepository(at: tempDir)
+        let fileURL = tempDir.appendingPathComponent("fixture.txt")
+        try "short\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        try runGit(["add", "fixture.txt"], at: tempDir)
+        try runGit(["commit", "--no-verify", "-m", "initial"], at: tempDir)
+        try "line-exceeds-limit\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir,
+            arguments: ["scan", "--check", "--git-diff", "--unstaged"],
+            environmentOverrides: [ScanInputLimits.lineBytesEnvironmentKey: "8"]
+        )
+
+        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        XCTAssertTrue(result.stderr.contains("exceeds scan limit 8 bytes"))
+        XCTAssertFalse(result.stderr.contains("line-exceeds-limit"))
+    }
+
+    // WO-598@v2: history limit failures preserve the operational exit contract.
+    func testGitHistoryInputLimitReturnsOperationalFailure() throws {
+        let tempDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try initializeGitRepository(at: tempDir)
+        let fileURL = tempDir.appendingPathComponent("fixture.txt")
+        try "line-exceeds-limit\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        try runGit(["add", "fixture.txt"], at: tempDir)
+        try runGit(["commit", "--no-verify", "-m", "initial"], at: tempDir)
+
+        let result = try runScanCLI(
+            input: "",
+            currentDirectory: tempDir,
+            arguments: ["scan", "--check", "--git-log"],
+            environmentOverrides: [ScanInputLimits.lineBytesEnvironmentKey: "8"]
+        )
+
+        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        XCTAssertTrue(result.stderr.contains("exceeds scan limit 8 bytes"))
+        XCTAssertFalse(result.stderr.contains("line-exceeds-limit"))
+    }
+
     private func writeSharedPatternArtifact(regex: String) throws -> URL {
         let artifactURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pastewatch-stdin-shared-\(UUID().uuidString).json")
@@ -329,6 +374,25 @@ final class StdinFilenameTests: XCTestCase {
         return url
     }
 
+    // WO-598@v2: deterministic local repositories exercise CLI git error mapping.
+    private func initializeGitRepository(at directory: URL) throws {
+        try runGit(["init"], at: directory)
+        try runGit(["config", "user.email", "test@example.invalid"], at: directory)
+        try runGit(["config", "user.name", "Pastewatch Test"], at: directory)
+    }
+
+    // WO-598@v2: construct local Git fixtures for operational error propagation.
+    private func runGit(_ arguments: [String], at directory: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory.path] + arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "git command failed: \(arguments)")
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
@@ -339,7 +403,8 @@ final class StdinFilenameTests: XCTestCase {
     private func runScanCLI(
         input: String,
         currentDirectory: URL,
-        arguments: [String] = ["scan", "--check"]
+        arguments: [String] = ["scan", "--check"],
+        environmentOverrides: [String: String] = [:]
     ) throws -> CLIResult {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
@@ -347,7 +412,7 @@ final class StdinFilenameTests: XCTestCase {
         process.currentDirectoryURL = currentDirectory
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "PW_GUARD")
-        process.environment = environment
+        process.environment = environment.merging(environmentOverrides) { _, new in new }
 
         let stdin = Pipe()
         let stdout = Pipe()

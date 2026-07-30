@@ -72,27 +72,12 @@ struct Guard: ParsableCommand {
 
         // Scan referenced files
         for path in paths {
-            guard FileManager.default.fileExists(atPath: path),
-                  let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-                continue
-            }
+            guard FileManager.default.fileExists(atPath: path) else { continue }
 
             // WO-550@v2: use format-aware scanning for referenced files, matching guard-read behavior.
-            let refExt = (path as NSString).pathExtension.lowercased()
-            let matches: [DetectedMatch]
-            do {
-                matches = try DirectoryScanner.scanFileContentOrThrow(
-                    content: content, ext: refExt,
-                    relativePath: path, config: config
-                )
-            } catch let error as SharedSecretPatternLoadError {
-                if !quiet {
-                    let message = "BLOCKED: configured shared patterns could not be loaded " +
-                        "for \(path): \(error.localizedDescription)\n"
-                    FileHandle.standardError.write(Data(message.utf8))
-                }
-                throw ExitCode(rawValue: GuardExitContract.blocked)
-            }
+            let scan = try scanReferencedFile(path: path, config: config)
+            let content = scan.content
+            let matches = scan.matches
             // WO-502: files REFERENCED by an agent-controlled command are themselves
             // agent-controllable — the agent can write `# pastewatch:allow` into a file it
             // then `cat`s. Treat the referenced content as .agentControlled so inline allow
@@ -152,6 +137,55 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-601@v2: one fail-closed boundary owns referenced-file decoding and scanning.
+    private func scanReferencedFile(
+        path: String,
+        config: PastewatchConfig
+    ) throws -> ReferencedFileScan {
+        do {
+            // WO-598@v2: reject bounded referenced files before allocating their contents.
+            let data = try DetectionRules.readBoundedFileData(atPath: path)
+            guard let content = String(data: data, encoding: .utf8) else {
+                try blockUnscannableFile(path)
+            }
+            let refExt = (path as NSString).pathExtension.lowercased()
+            let matches = try DirectoryScanner.scanFileContentOrThrow(
+                content: content,
+                ext: refExt,
+                relativePath: path,
+                config: config
+            )
+            return ReferencedFileScan(content: content, matches: matches)
+        } catch let error as SharedSecretPatternLoadError {
+            if !quiet {
+                let message = "BLOCKED: configured shared patterns could not be loaded " +
+                    "for \(path): \(error.localizedDescription)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+            throw ExitCode(rawValue: GuardExitContract.blocked)
+        } catch let error as ScanInputLimitError {
+            if !quiet {
+                let message = "BLOCKED: \(path) \(error.localizedDescription)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+            throw ExitCode(rawValue: GuardExitContract.blocked)
+        } catch let exitCode as ExitCode {
+            throw exitCode
+        } catch {
+            try blockUnscannableFile(path)
+        }
+    }
+
+    // WO-601@v2: diagnostics identify the evidence boundary without file bytes.
+    private func blockUnscannableFile(_ path: String) throws -> Never {
+        if !quiet {
+            FileHandle.standardError.write(
+                Data("BLOCKED: \(path) cannot be scanned safely\n".utf8)
+            )
+        }
+        throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
     private func printJSON(_ result: GuardResult) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -175,6 +209,12 @@ private struct InlineResult {
     let findings: Int
     let severityCounts: String
     let types: [String]
+}
+
+// WO-601@v2: keep decoded content paired with the matches derived from it.
+private struct ReferencedFileScan {
+    let content: String
+    let matches: [DetectedMatch]
 }
 
 private struct GuardResult: Codable {

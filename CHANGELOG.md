@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP `pastewatch_write_file` accepts a local `contentPath` payload as an alternative
+  to inline content, with the same scan and placeholder-restoration policy.
+
+### Fixed
+
+- File scans reject oversized files and pathological long lines with operator-adjustable
+  byte limits instead of hanging on unbounded input.
+- Detector-dense scans use interval claims and one line index, removing superlinear
+  overlap and line-number work.
+- MCP writes reject unsupported file-reference marker content before changing the target.
+
 ## [0.35.2] - 2026-07-28
 
 ### Fixed

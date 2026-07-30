@@ -193,6 +193,98 @@ final class DirectoryScannerTests: XCTestCase {
         }
     }
 
+    // WO-595@v2: directory scans reject oversized members before reading them.
+    func testDirectoryScanRejectsFileSizeOverLimit() throws {
+        let content = String(repeating: "a", count: 32)
+        try content.write(toFile: testDir + "/large.txt", atomically: true, encoding: .utf8)
+        let limits = ScanInputLimits(maximumFileBytes: 16, maximumLineBytes: 64)
+
+        XCTAssertThrowsError(
+            try DirectoryScanner.scan(directory: testDir, config: config, limits: limits)
+        ) { error in
+            XCTAssertEqual(
+                error as? ScanInputLimitError,
+                .fileBytes(actual: 32, maximum: 16)
+            )
+        }
+    }
+
+    // WO-595@v2: directory scans reject pathological lines even below the file cap.
+    func testDirectoryScanRejectsLineLengthOverLimit() throws {
+        try "123456".write(toFile: testDir + "/long-line.txt", atomically: true, encoding: .utf8)
+        let limits = ScanInputLimits(maximumFileBytes: 64, maximumLineBytes: 5)
+
+        XCTAssertThrowsError(
+            try DirectoryScanner.scan(directory: testDir, config: config, limits: limits)
+        ) { error in
+            XCTAssertEqual(
+                error as? ScanInputLimitError,
+                .lineBytes(line: 1, actual: 6, maximum: 5)
+            )
+        }
+    }
+
+    // WO-602@v2: supported malformed text cannot be omitted from directory evidence.
+    func testDirectoryScanRejectsInvalidTextEncoding() throws {
+        try Data([0x61, 0xFF, 0x62]).write(
+            to: URL(fileURLWithPath: testDir + "/invalid.txt")
+        )
+
+        XCTAssertThrowsError(
+            try DirectoryScanner.scan(directory: testDir, config: config)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputTextError, .invalidUTF8)
+        }
+    }
+
+    // WO-600@v2: output larger than a pipe buffer must be drained before waiting for git.
+    func testGitIgnoredFilesDrainsLargeOutput() throws {
+        try runGit(["init", "-q"])
+        try "ignored-*\n".write(
+            toFile: testDir + "/.gitignore",
+            atomically: true,
+            encoding: .utf8
+        )
+        let paths = (0..<10_000).map { "ignored-\($0)-\(String(repeating: "x", count: 12))" }
+
+        let startedAt = Date()
+        let ignored = DirectoryScanner.gitIgnoredFiles(in: testDir, paths: paths)
+
+        XCTAssertEqual(ignored.count, paths.count)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 5)
+    }
+
+    // WO-600@v2: ignore classification falls back to scanning when output exceeds the cap.
+    func testGitIgnoredFilesReturnsEmptyWhenOutputExceedsLimit() throws {
+        try runGit(["init", "-q"])
+        try "ignored-*\n".write(
+            toFile: testDir + "/.gitignore",
+            atomically: true,
+            encoding: .utf8
+        )
+        let limits = ScanInputLimits(maximumFileBytes: 32, maximumLineBytes: 64)
+
+        let ignored = DirectoryScanner.gitIgnoredFiles(
+            in: testDir,
+            paths: ["ignored-\(String(repeating: "x", count: 64))"],
+            limits: limits
+        )
+
+        XCTAssertTrue(ignored.isEmpty)
+    }
+
+    // WO-600@v2: build the large check-ignore fixture without shell buffering.
+    private func runGit(_ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", testDir] + arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
     // MARK: - Bail (early exit)
 
     func testBailReturnsOneResult() throws {

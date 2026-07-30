@@ -67,6 +67,17 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
+File-oriented scans reject inputs larger than 64 MiB or containing a line longer
+than 1,000,000 bytes. A rejected input is an operational error, never a clean scan,
+and diagnostics report only the tripped limit. Override the bounds for a known
+workload with positive integer byte counts:
+
+```bash
+PASTEWATCH_MAX_FILE_BYTES=134217728 \
+PASTEWATCH_MAX_LINE_BYTES=2000000 \
+pastewatch-cli scan --file large.jsonl --check
+```
+
 ## API Proxy — Last Line of Defense
 
 Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
@@ -252,6 +263,12 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 | `pastewatch_scan` | Scan text for sensitive data |
 | `pastewatch_scan_file` | Scan a file for sensitive data |
 | `pastewatch_scan_dir` | Scan a directory recursively |
+
+`pastewatch_write_file` accepts either inline `content` or a local UTF-8
+`contentPath`, never both. Use `contentPath` for a large locally prepared payload;
+it passes through the same plaintext-secret scan and placeholder restoration as
+inline content. File-reference marker strings are not a transport protocol and are
+rejected before the target changes.
 
 The server holds mappings in memory for the session. Same file re-read returns the same placeholders. Mappings die when the server stops. A redacted read includes a short model-facing note: well-formed `__PW_TYPE_n__` markers, or markers using the configured `placeholderPrefix`, are two-way placeholders restored locally by `pastewatch_write_file`; malformed markers or mangled nearby bytes may indicate real corruption. Set `operatorRedactionNotices` to `true` for a metadata-only notice on every MCP substitution. Notices go to the configured audit log, or to stderr when no audit log is configured.
 

@@ -175,6 +175,26 @@ final class GuardReadWriteTests: XCTestCase {
         }
     }
 
+    // WO-598@v2: both guard operations reject bounded files before reading them.
+    func testFileGuardBlocksInputLimitForReadAndWrite() throws {
+        let path = testDir + "/bounded.txt"
+        try "123456".write(toFile: path, atomically: true, encoding: .utf8)
+        let key = ScanInputLimits.fileBytesEnvironmentKey
+        let original = ProcessInfo.processInfo.environment[key]
+        setenv(key, "5", 1)
+        defer {
+            if let original {
+                setenv(key, original, 1)
+            } else {
+                unsetenv(key)
+            }
+        }
+
+        for operation in [FileGuard.Operation.read, .write] {
+            assertFileGuardBlocks(path: path, operation: operation)
+        }
+    }
+
     func testInlineAllowSuppressesFinding() throws {
         let path = testDir + "/config.env"
         let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()

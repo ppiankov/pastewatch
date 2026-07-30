@@ -137,6 +137,54 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(request.id, .string("req-1"))
     }
 
+    // WO-603@v2: oversized transport records are discarded and framing recovers.
+    func testMCPRejectsOversizedLineAndProcessesNextRequest() throws {
+        let request = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(7),
+            method: "initialize",
+            params: nil
+        )
+        var input = Data(repeating: 0x78, count: 128)
+        input.append(0x0A)
+        input.append(try JSONEncoder().encode(request))
+        input.append(0x0A)
+
+        let result = try runRawMCP(input: input, maximumLineBytes: 64)
+
+        XCTAssertEqual(result.responses.count, 2)
+        XCTAssertEqual(result.responses[0].error?.code, -32700)
+        XCTAssertNil(result.responses[0].id)
+        XCTAssertEqual(result.responses[1].id, .int(7))
+        XCTAssertNil(result.responses[1].error)
+        XCTAssertFalse(result.stderr.contains(String(repeating: "x", count: 16)))
+    }
+
+    // WO-603@v2: empty, CRLF, and final unterminated records preserve MCP framing.
+    func testMCPBoundedReaderPreservesValidFramingVariants() throws {
+        let first = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(8),
+            method: "initialize",
+            params: nil
+        )
+        let second = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(9),
+            method: "initialize",
+            params: nil
+        )
+        var input = Data("\n".utf8)
+        input.append(try JSONEncoder().encode(first))
+        input.append(Data("\r\n".utf8))
+        input.append(try JSONEncoder().encode(second))
+
+        let result = try runRawMCP(input: input, maximumLineBytes: 1_024)
+
+        XCTAssertEqual(result.responses.map(\.id), [.int(8), .int(9)])
+        XCTAssertTrue(result.responses.allSatisfy { $0.error == nil })
+    }
+
     // WO-584@v2: MCP schema values and documentation derive from Severity ownership.
     func testToolsListSeveritySchemaUsesCanonicalCasesAndDefault() throws {
         let request = JSONRPCRequest(
@@ -170,6 +218,37 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertTrue(description.contains(
             "default: \(Severity.defaultGuardThreshold.rawValue)"
         ))
+    }
+
+    // WO-597@v2: write schema exposes one mutually exclusive local payload-file input.
+    func testWriteFileSchemaOffersContentPathAsExclusivePayloadSource() throws {
+        let request = JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(1),
+            method: "tools/list",
+            params: nil
+        )
+        let response = try callMCPRequest(
+            request,
+            currentDirectory: FileManager.default.temporaryDirectory
+        )
+
+        guard case .object(let result) = response.result,
+              case .array(let tools) = result["tools"],
+              let writeTool = tools.first(where: {
+                  guard case .object(let tool) = $0 else { return false }
+                  return tool["name"] == .string("pastewatch_write_file")
+              }),
+              case .object(let writeToolObject) = writeTool,
+              case .object(let schema) = writeToolObject["inputSchema"],
+              case .object(let properties) = schema["properties"],
+              case .object = properties["contentPath"],
+              case .array(let alternatives) = schema["oneOf"] else {
+            XCTFail("Expected pastewatch_write_file contentPath schema")
+            return
+        }
+
+        XCTAssertEqual(alternatives.count, 2)
     }
 
     // WO-129: MCP scan_file must consume configured sharedPatternFiles.
@@ -378,6 +457,220 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
     }
 
+    // WO-597@v2: the incident marker must never replace an existing target.
+    func testWriteFileRejectsFileReferenceSentinelWithoutChangingTarget() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-sentinel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let target = tempDir.appendingPathComponent("target.txt")
+        let original = String(repeating: "preserved\n", count: 256)
+        try original.write(to: target, atomically: true, encoding: .utf8)
+        let payload = tempDir.appendingPathComponent("payload.txt")
+        try "replacement".write(to: payload, atomically: true, encoding: .utf8)
+        let marker = "@@FILE:" + payload.path + "@@"
+
+        let response = try callMCPTool(
+            name: "pastewatch_write_file",
+            arguments: ["path": .string(target.path), "content": .string(marker)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+
+        XCTAssertTrue(text.contains("Unsupported file-reference marker"), text)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), original)
+    }
+
+    // WO-597@v2: local payload files use the normal write pipeline.
+    func testWriteFileAcceptsCleanContentPath() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-content-path-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let payload = tempDir.appendingPathComponent("payload.txt")
+        let target = tempDir.appendingPathComponent("target.txt")
+        try "clean replacement\n".write(to: payload, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_write_file",
+            arguments: ["path": .string(target.path), "contentPath": .string(payload.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+
+        XCTAssertTrue(text.contains("\"written\" : true"), text)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "clean replacement\n")
+    }
+
+    // WO-597@v2: contentPath preserves the two-way placeholder contract in one MCP session.
+    func testWriteFileContentPathResolvesReadPlaceholder() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-content-roundtrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let target = tempDir.appendingPathComponent("target.txt")
+        let payload = tempDir.appendingPathComponent("payload.txt")
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        try credential.write(to: target, atomically: true, encoding: .utf8)
+        try "__PW_GOOGLE_API_KEY_1__".write(to: payload, atomically: true, encoding: .utf8)
+
+        let responses = try callMCPRequests([
+            toolRequest(
+                id: 1,
+                name: "pastewatch_read_file",
+                arguments: ["path": .string(target.path)]
+            ),
+            toolRequest(
+                id: 2,
+                name: "pastewatch_write_file",
+                arguments: ["path": .string(target.path), "contentPath": .string(payload.path)]
+            ),
+        ], currentDirectory: tempDir)
+
+        XCTAssertEqual(responses.count, 2)
+        XCTAssertTrue(try joinedMCPContentText(responses[0]).contains("__PW_GOOGLE_API_KEY_1__"))
+        XCTAssertTrue(try joinedMCPContentText(responses[1]).contains("\"resolved\" : 1"))
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), credential)
+    }
+
+    // WO-597@v2: ambiguous payload selection fails before any target mutation.
+    func testWriteFileRequiresExactlyOnePayloadSource() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-payload-choice-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let payload = tempDir.appendingPathComponent("payload.txt")
+        let target = tempDir.appendingPathComponent("target.txt")
+        try "payload".write(to: payload, atomically: true, encoding: .utf8)
+        try "original".write(to: target, atomically: true, encoding: .utf8)
+
+        let payloadCases: [[String: JSONValue]] = [
+            ["path": .string(target.path)],
+            [
+                "path": .string(target.path),
+                "content": .string("inline"),
+                "contentPath": .string(payload.path),
+            ],
+        ]
+        for arguments in payloadCases {
+            let response = try callMCPTool(
+                name: "pastewatch_write_file",
+                arguments: arguments,
+                currentDirectory: tempDir
+            )
+            let text = try joinedMCPContentText(response)
+            XCTAssertTrue(text.contains("exactly one payload source"), text)
+            XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "original")
+        }
+    }
+
+    // WO-597@v2: invalid local payload files fail before the existing target changes.
+    func testWriteFileRejectsInvalidContentPathsWithoutChangingTarget() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-invalid-content-path-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let target = tempDir.appendingPathComponent("target.txt")
+        try "original".write(to: target, atomically: true, encoding: .utf8)
+        let nonUTF8 = tempDir.appendingPathComponent("binary.txt")
+        try Data([0xFF, 0xFE, 0xFD]).write(to: nonUTF8)
+        let longLine = tempDir.appendingPathComponent("long-line.txt")
+        try String(repeating: "x", count: ScanInputLimits.defaultMaximumLineBytes + 1)
+            .write(to: longLine, atomically: true, encoding: .utf8)
+        let invalidPaths = [
+            tempDir.appendingPathComponent("missing.txt").path,
+            tempDir.path,
+            nonUTF8.path,
+            longLine.path,
+        ]
+
+        for contentPath in invalidPaths {
+            let response = try callMCPTool(
+                name: "pastewatch_write_file",
+                arguments: ["path": .string(target.path), "contentPath": .string(contentPath)],
+                currentDirectory: tempDir
+            )
+            let text = try joinedMCPContentText(response)
+            XCTAssertFalse(text.contains("\"written\" : true"), text)
+            XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "original")
+        }
+    }
+
+    // WO-597@v2: local payload mode cannot bypass plaintext-secret blocking.
+    func testWriteFileContentPathBlocksPlaintextSecret() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-content-secret-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let payload = tempDir.appendingPathComponent("payload.txt")
+        let target = tempDir.appendingPathComponent("target.txt")
+        let credential = "AIza" + String(repeating: "R", count: 35)
+        try credential.write(to: payload, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_write_file",
+            arguments: ["path": .string(target.path), "contentPath": .string(payload.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+
+        XCTAssertTrue(text.contains("Write blocked"), text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        XCTAssertFalse(text.contains(credential), text)
+    }
+
+    // WO-595@v2: MCP scan_file returns a bounded error for a pathological line.
+    func testScanFileRejectsLineOverDefaultLimit() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-line-limit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("long.txt")
+        let content = String(repeating: "x", count: ScanInputLimits.defaultMaximumLineBytes + 1)
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_scan_file",
+            arguments: ["path": .string(file.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+
+        XCTAssertTrue(text.contains("Scan limit exceeded"), text)
+        XCTAssertTrue(text.contains(ScanInputLimits.lineBytesEnvironmentKey), text)
+        XCTAssertFalse(text.contains(String(repeating: "x", count: 64)), text)
+    }
+
+    // WO-595@v2: MCP scan_dir propagates member limits instead of reporting a partial clean scan.
+    func testScanDirectoryRejectsMemberOverDefaultLineLimit() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-mcp-dir-limit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("long.txt")
+        let content = String(repeating: "x", count: ScanInputLimits.defaultMaximumLineBytes + 1)
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let response = try callMCPTool(
+            name: "pastewatch_scan_dir",
+            arguments: ["path": .string(tempDir.path)],
+            currentDirectory: tempDir
+        )
+        let text = try joinedMCPContentText(response)
+
+        XCTAssertTrue(text.contains("Scan limit exceeded"), text)
+        XCTAssertTrue(text.contains(ScanInputLimits.lineBytesEnvironmentKey), text)
+        XCTAssertFalse(text.contains(String(repeating: "x", count: 64)), text)
+    }
+
     // WO-549@v2: source-range rebasing must retain configured mutation authorization.
     func testReadFileRedactsConfiguredStructuredMatch() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -447,6 +740,104 @@ final class MCPProtocolTests: XCTestCase {
     private struct MCPCallResult {
         let response: JSONRPCResponse
         let stderr: String
+    }
+
+    // WO-603@v2: subprocess results keep transport diagnostics separate from protocol output.
+    private struct MCPProcessResult {
+        let responses: [JSONRPCResponse]
+        let stderr: String
+    }
+
+    // WO-603@v2: feed raw framed input to the bounded MCP transport.
+    private func runRawMCP(
+        input: Data,
+        maximumLineBytes: Int
+    ) throws -> MCPProcessResult {
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = ["mcp"]
+        process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        var environment = ProcessInfo.processInfo.environment
+        environment[ScanInputLimits.lineBytesEnvironmentKey] = String(maximumLineBytes)
+        process.environment = environment
+
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        stdin.fileHandleForWriting.write(input)
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let errorOutput = String(
+            data: stderr.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let outputText = try XCTUnwrap(String(bytes: output, encoding: .utf8))
+        let responses = try outputText
+            .split(separator: "\n")
+            .map { try JSONDecoder().decode(JSONRPCResponse.self, from: Data($0.utf8)) }
+        return MCPProcessResult(responses: responses, stderr: errorOutput)
+    }
+
+    // WO-597@v2: construct write requests for content-path and sentinel coverage.
+    private func toolRequest(
+        id: Int,
+        name: String,
+        arguments: [String: JSONValue]
+    ) -> JSONRPCRequest {
+        JSONRPCRequest(
+            jsonrpc: "2.0",
+            id: .int(id),
+            method: "tools/call",
+            params: .object([
+                "name": .string(name),
+                "arguments": .object(arguments),
+            ])
+        )
+    }
+
+    // WO-603@v2: exercise multiple framed requests in one transport session.
+    private func callMCPRequests(
+        _ requests: [JSONRPCRequest],
+        currentDirectory: URL
+    ) throws -> [JSONRPCResponse] {
+        let process = Process()
+        process.executableURL = pastewatchCLIURL()
+        process.arguments = ["mcp"]
+        process.currentDirectoryURL = currentDirectory
+
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        for request in requests {
+            stdin.fileHandleForWriting.write(try JSONEncoder().encode(request))
+            stdin.fileHandleForWriting.write(Data("\n".utf8))
+        }
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let errorOutput = String(
+            data: stderr.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let outputText = try XCTUnwrap(String(bytes: output, encoding: .utf8))
+        return try outputText
+            .split(separator: "\n")
+            .map { try JSONDecoder().decode(JSONRPCResponse.self, from: Data($0.utf8)) }
     }
 
     // WO-521: retain the response-only helper for existing protocol tests.

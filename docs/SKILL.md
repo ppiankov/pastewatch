@@ -407,8 +407,16 @@ Write file contents, resolving `__PW_TYPE_N__` placeholders back to original val
 
 Input:
 ```json
-{"path": "string (required) — file path to write", "content": "string (required) — file content with placeholders"}
+{
+  "path": "string (required) — file path to write",
+  "content": "string — inline file content with placeholders",
+  "contentPath": "string — local UTF-8 payload file"
+}
 ```
+
+Provide exactly one of `content` or `contentPath`. Both payload modes use the same
+plaintext-secret scan and placeholder restoration. Unsupported `@@FILE:...@@`
+marker content is rejected before the target changes.
 
 Response: JSON object with `written`, `path`, `resolved` (count), `unresolved` (count), and `unresolvedPlaceholders` (if any).
 

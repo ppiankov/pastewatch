@@ -136,28 +136,15 @@ struct Scan: ParsableCommand {
         }
 
         // Single file or stdin mode
-        let input: String
-        do {
-            input = try readInput()
-        } catch let exitCode as ExitCode {
-            throw exitCode
-        } catch {
-            // WO-580@v3: unreadable or invalid UTF-8 input is an operational failure.
-            FileHandle.standardError.write(Data("error: input could not be read as UTF-8\n".utf8))
-            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
-        }
+        let input = try readValidatedInput()
 
         // WO-131: empty stdin still needs sharedPatternFiles validation before clean success.
-        var matches: [DetectedMatch]
-        do {
-            matches = try scanInput(input, config: config,
-                                    allowlist: mergedAllowlist, customRules: customRulesList)
-        } catch let error as SharedSecretPatternLoadError {
-            // WO-130: single-file and stdin scans fail closed when shared-pattern coverage is unavailable.
-            FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
-            // WO-580@v3: unavailable scan coverage is an operational failure.
-            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
-        }
+        var matches = try scanValidatedInput(
+            input,
+            config: config,
+            allowlist: mergedAllowlist,
+            customRules: customRulesList
+        )
         // WO-577@v3: diagnostics share test/config/inline policy with file guards.
         matches = GuardDecision.evaluate(
             matches: matches,
@@ -256,6 +243,22 @@ struct Scan: ParsableCommand {
         return try BaselineFile.load(from: baselinePath)
     }
 
+    // WO-595@v2: one boundary maps allocation and decoding failures to the CLI contract.
+    private func readValidatedInput() throws -> String {
+        do {
+            return try readInput()
+        } catch let exitCode as ExitCode {
+            throw exitCode
+        } catch let error as ScanInputLimitError {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch {
+            // WO-580@v3: unreadable or invalid UTF-8 input is an operational failure.
+            FileHandle.standardError.write(Data("error: input could not be read as UTF-8\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        }
+    }
+
     private func readInput() throws -> String {
         if let filePath = file {
             guard FileManager.default.fileExists(atPath: filePath) else {
@@ -263,13 +266,46 @@ struct Scan: ParsableCommand {
                 // WO-580@v3: missing scan input uses the stable operational exit.
                 throw ExitCode(rawValue: ScanExitContract.operationalFailure)
             }
-            return try String(contentsOfFile: filePath, encoding: .utf8)
+            // WO-595@v2: check metadata before allocating the complete file string.
+            let data = try DetectionRules.readBoundedFileData(atPath: filePath)
+            guard let input = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            return input
         }
-        var lines: [String] = []
-        while let line = readLine(strippingNewline: false) {
-            lines.append(line)
+        // WO-595@v2: stdin is bounded while reading, before String allocation.
+        let data = try DetectionRules.readBoundedInputData(from: .standardInput)
+        guard let input = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
         }
-        return lines.joined()
+        return input
+    }
+
+    // WO-595@v2: detector-limit failures use the same stable operational exit.
+    private func scanValidatedInput(
+        _ input: String,
+        config: PastewatchConfig,
+        allowlist: Allowlist,
+        customRules: [CustomRule]
+    ) throws -> [DetectedMatch] {
+        do {
+            return try scanInput(
+                input,
+                config: config,
+                allowlist: allowlist,
+                customRules: customRules
+            )
+        } catch let error as ScanInputLimitError {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as SharedSecretPatternLoadError {
+            // WO-130: single-file and stdin scans fail closed when shared-pattern coverage is unavailable.
+            FileHandle.standardError.write(
+                Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8)
+            )
+            // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        }
     }
 
     private func scanInput(
@@ -325,6 +361,14 @@ struct Scan: ParsableCommand {
                 ignoreFile: ignoreFile, extraIgnorePatterns: ignore,
                 bail: bail
             )
+        } catch let error as ScanInputLimitError {
+            // WO-595@v2: one pathological member cannot hang a directory scan.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as ScanInputTextError {
+            // WO-602@v2: partial directory evidence is an operational failure.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         } catch let error as SharedSecretPatternLoadError {
             // WO-128: git history scans fail closed when shared-pattern coverage is unavailable.
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
@@ -411,6 +455,14 @@ struct Scan: ParsableCommand {
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
             // WO-580@v3: unavailable scan coverage is an operational failure.
             throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as ScanInputLimitError {
+            // WO-598@v2: git-diff input limits use the stable operational exit contract.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as ScanInputTextError {
+            // WO-602@v2: malformed Git text uses the stable operational exit.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 
         // Apply allowlist filtering
@@ -481,6 +533,14 @@ struct Scan: ParsableCommand {
         } catch let error as SharedSecretPatternLoadError {
             FileHandle.standardError.write(Data("error: shared pattern load failed: \(error.localizedDescription)\n".utf8))
             // WO-580@v3: unavailable scan coverage is an operational failure.
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as ScanInputLimitError {
+            // WO-598@v2: history input limits use the stable operational exit contract.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+        } catch let error as ScanInputTextError {
+            // WO-602@v2: malformed history text uses the stable operational exit.
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
             throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 

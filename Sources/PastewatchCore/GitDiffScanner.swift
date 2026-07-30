@@ -61,36 +61,20 @@ public struct GitDiffScanner {
         }
     }
 
+    // WO-599@v2: Git diff scans enforce bounded subprocess and file inputs.
     /// Scan staged and/or unstaged git changes for secrets.
     public static func scan(
         staged: Bool = true,
         unstaged: Bool = false,
         config: PastewatchConfig,
-        bail: Bool = false
+        bail: Bool = false,
+        limits: ScanInputLimits = .current()
     ) throws -> [FileScanResult] {
-        var diffFiles: [DiffFile] = []
-
-        if staged {
-            let diff = try runGit(["diff", "--cached", "--no-color", "--diff-filter=d"])
-            diffFiles.append(contentsOf: parseDiff(diff))
-        }
-
-        if unstaged {
-            let diff = try runGit(["diff", "--no-color", "--diff-filter=d"])
-            let unstagedFiles = parseDiff(diff)
-            // Merge unstaged into existing: union addedLines for same path
-            for uf in unstagedFiles {
-                if let idx = diffFiles.firstIndex(where: { $0.path == uf.path }) {
-                    let merged = DiffFile(
-                        path: uf.path,
-                        addedLines: diffFiles[idx].addedLines.union(uf.addedLines)
-                    )
-                    diffFiles[idx] = merged
-                } else {
-                    diffFiles.append(uf)
-                }
-            }
-        }
+        let diffFiles = try collectDiffFiles(
+            staged: staged,
+            unstaged: unstaged,
+            limits: limits
+        )
 
         guard !diffFiles.isEmpty else { return [] }
 
@@ -106,12 +90,34 @@ public struct GitDiffScanner {
             let content: String
             if staged && !unstaged {
                 // Staged only: get from git index
-                guard let staged = try? runGit(["show", ":\(df.path)"]) else { continue }
-                content = staged
+                do {
+                    content = try runGit(["show", ":\(df.path)"], limits: limits)
+                } catch let error as ScanInputLimitError {
+                    // WO-599@v2: a bounded staged blob is an operational failure, not a skipped file.
+                    throw error
+                } catch let error as ScanInputTextError {
+                    // WO-602@v2: malformed staged text cannot be reported as absent.
+                    throw error
+                } catch {
+                    continue
+                }
             } else {
                 // Unstaged or both: read from disk
-                guard let disk = try? String(contentsOfFile: df.path, encoding: .utf8) else {
+                let data: Data
+                do {
+                    data = try DetectionRules.readBoundedFileData(
+                        atPath: df.path,
+                        limits: limits
+                    )
+                } catch let error as ScanInputLimitError {
+                    // WO-599@v2: working-tree races cannot turn limit failures into clean scans.
+                    throw error
+                } catch {
                     continue
+                }
+                // WO-602@v2: malformed supported working-tree text fails the scan.
+                guard let disk = String(data: data, encoding: .utf8) else {
+                    throw ScanInputTextError.invalidUTF8
                 }
                 content = disk
             }
@@ -124,7 +130,8 @@ public struct GitDiffScanner {
                 content: content,
                 ext: GitScanHelpers.scanExtension(for: df.path),
                 relativePath: df.path,
-                config: config
+                config: config,
+                limits: limits
             )
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
             fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
@@ -143,6 +150,39 @@ public struct GitDiffScanner {
         }
 
         return results.sorted { $0.filePath < $1.filePath }
+    }
+
+    // WO-599@v2: collect bounded Git output without inflating scan control flow.
+    private static func collectDiffFiles(
+        staged: Bool,
+        unstaged: Bool,
+        limits: ScanInputLimits
+    ) throws -> [DiffFile] {
+        var diffFiles: [DiffFile] = []
+        if staged {
+            let diff = try runGit(
+                ["diff", "--cached", "--no-color", "--diff-filter=d"],
+                limits: limits
+            )
+            diffFiles.append(contentsOf: parseDiff(diff))
+        }
+        guard unstaged else { return diffFiles }
+
+        let diff = try runGit(
+            ["diff", "--no-color", "--diff-filter=d"],
+            limits: limits
+        )
+        for unstagedFile in parseDiff(diff) {
+            if let index = diffFiles.firstIndex(where: { $0.path == unstagedFile.path }) {
+                diffFiles[index] = DiffFile(
+                    path: unstagedFile.path,
+                    addedLines: diffFiles[index].addedLines.union(unstagedFile.addedLines)
+                )
+            } else {
+                diffFiles.append(unstagedFile)
+            }
+        }
+        return diffFiles
     }
 
     // MARK: - Diff parsing
@@ -225,7 +265,10 @@ public struct GitDiffScanner {
     // MARK: - Git subprocess
 
     /// Run a git command and return stdout. Throws on non-zero exit.
-    static func runGit(_ arguments: [String]) throws -> String {
+    static func runGit(
+        _ arguments: [String],
+        limits: ScanInputLimits = .current()
+    ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
@@ -235,14 +278,32 @@ public struct GitDiffScanner {
         process.standardError = FileHandle.nullDevice
 
         try process.run()
+
+        let data: Data
+        do {
+            // WO-599@v2: drain while git runs and cap stdout before it can fill the pipe.
+            data = try DetectionRules.readBoundedInputData(
+                from: pipe.fileHandleForReading,
+                limits: limits
+            )
+        } catch {
+            if process.isRunning {
+                process.terminate()
+            }
+            process.waitUntilExit()
+            throw error
+        }
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             throw GitDiffError.gitCommandFailed(arguments.joined(separator: " "))
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        // WO-602@v2: malformed Git output must not collapse into a clean empty scan.
+        guard let output = String(data: data, encoding: .utf8) else {
+            throw ScanInputTextError.invalidUTF8
+        }
+        return output
     }
 }
 

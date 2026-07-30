@@ -96,10 +96,28 @@ public final class FileWatcher {
         }
     }
 
+    // WO-598@v2: watcher scans report bounded-input failures as operational errors.
     private func scanFile(relativePath: String) {
         let fullPath = (directory as NSString).appendingPathComponent(relativePath)
-        guard let content = try? String(contentsOfFile: fullPath, encoding: .utf8),
-              !content.isEmpty else { return }
+        let content: String
+        do {
+            // WO-598@v2: reject bounded watcher inputs before allocating their contents.
+            let data = try DetectionRules.readBoundedFileData(atPath: fullPath)
+            // WO-602@v2: malformed supported text is a visible watcher error.
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                outputInvalidTextError(relativePath: relativePath, timestamp: timestamp)
+                return
+            }
+            content = decoded
+        } catch let error as ScanInputLimitError {
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            outputScanLimitError(relativePath: relativePath, error: error, timestamp: timestamp)
+            return
+        } catch {
+            return
+        }
+        guard !content.isEmpty else { return }
 
         let ext = (relativePath as NSString).pathExtension.lowercased()
         let name = (relativePath as NSString).lastPathComponent
@@ -115,6 +133,11 @@ public final class FileWatcher {
             // WO-128: watch mode must surface broken shared-pattern coverage instead of reporting clean.
             let timestamp = ISO8601DateFormatter().string(from: Date())
             outputSharedPatternError(relativePath: relativePath, error: error, timestamp: timestamp)
+            return
+        } catch let error as ScanInputLimitError {
+            // WO-598@v2: scanner limits are visible watcher errors, never silent clean results.
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            outputScanLimitError(relativePath: relativePath, error: error, timestamp: timestamp)
             return
         } catch {
             return
@@ -186,5 +209,61 @@ public final class FileWatcher {
 
         let line = "[\(timestamp)] ERROR \(relativePath): shared pattern load failed: \(error.localizedDescription)"
         FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    // WO-598@v2: watcher diagnostics expose bounded metadata without scanned content.
+    private func outputScanLimitError(
+        relativePath: String,
+        error: ScanInputLimitError,
+        timestamp: String
+    ) {
+        if jsonOutput {
+            let obj: [String: Any] = [
+                "timestamp": timestamp,
+                "file": relativePath,
+                "error": "scan_input_limit_exceeded",
+                "message": error.localizedDescription
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
+               let str = String(data: data, encoding: .utf8) {
+                print(str)
+            }
+            return
+        }
+
+        let line = "[\(timestamp)] ERROR \(relativePath): \(error.localizedDescription)"
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    // WO-602@v2: watcher diagnostics identify the failed evidence without its bytes.
+    private func outputInvalidTextError(relativePath: String, timestamp: String) {
+        if jsonOutput {
+            if let line = Self.invalidTextJSON(relativePath: relativePath, timestamp: timestamp) {
+                print(line)
+            }
+            return
+        }
+
+        let line = Self.invalidTextMessage(relativePath: relativePath, timestamp: timestamp)
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    // WO-602@v2: pure formatters make value-free watcher diagnostics testable.
+    static func invalidTextMessage(relativePath: String, timestamp: String) -> String {
+        "[\(timestamp)] ERROR \(relativePath): input is not valid UTF-8"
+    }
+
+    // WO-602@v2: malformed text diagnostics stay stable and value-free in JSON mode.
+    static func invalidTextJSON(relativePath: String, timestamp: String) -> String? {
+        let obj: [String: Any] = [
+            "timestamp": timestamp,
+            "file": relativePath,
+            "error": "scan_input_invalid_text",
+            "message": "input is not valid UTF-8"
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 }
