@@ -1,6 +1,6 @@
 # Pastewatch
 [![Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/ppiankov/pastewatch/releases)
-[![Version](https://img.shields.io/badge/version-0.35.2-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.35.2)
+[![Version](https://img.shields.io/badge/version-0.36.0-blue)](https://github.com/ppiankov/pastewatch/releases/tag/v0.36.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![CI](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/pastewatch/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
@@ -486,6 +486,6 @@ Do not pretend it guarantees compliance or safety.
 
 ## Project Status
 
-**Status: Stable, feature-complete** · **v0.35.2** · Accepting compatibility and bug fixes only
+**Status: Stable, feature-complete** · **v0.36.0** · Accepting compatibility and bug fixes only
 
 Pastewatch is stable and in maintenance mode. See [docs/status.md](docs/status.md) for the full feature-milestone breakdown.

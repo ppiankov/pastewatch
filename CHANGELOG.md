@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-07-31
+
+### Changed
+
+- Ambiguous detector classes (email, hostname, IP, file path, phone, database and JDBC
+  URLs, generic API keys, generic credentials, UUIDs, XML user/host tags, high-entropy
+  strings) no longer produce guard-blocking findings at their default configuration:
+  they are opt-in via configuration and are advisory-at-most until enabled. Intrinsic
+  secrets (AWS/JWT/SSH keys, provider tokens) and any class an operator opts in still
+  detect and block exactly as before. This closes a class of false positives where
+  ordinary source code (method chains, algorithm names, digit runs) blocked file access.
+
 ### Added
 
 - MCP `pastewatch_write_file` accepts a local `contentPath` payload as an alternative
@@ -19,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detector-dense scans use interval claims and one line index, removing superlinear
   overlap and line-number work.
 - MCP writes reject unsupported file-reference marker content before changing the target.
+- The hostname detector no longer flags Go method and field access chains
+  (`node.Host.IsZero`, `resp.Body.Close`) as hostnames; real fully-qualified hostnames
+  still detect.
+
+### Docs
+
+- Platform Support documents the Windows stance: no native Windows build; run the CLI
+  under WSL2 using the Linux binary.
 
 ## [0.35.2] - 2026-07-28
 
