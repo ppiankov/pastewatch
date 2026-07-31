@@ -45,6 +45,145 @@ final class DetectionRulesTests: XCTestCase {
         return config
     }()
 
+    // WO-596: default-off must suppress every ambiguous class before guard policy.
+    func testDefaultConfigSuppressesEveryAmbiguousClassAtGuardPath() {
+        let entropyValue = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p", "Q1rS0tU"].joined()
+        let cases: [(SensitiveDataType, String)] = [
+            (.email, ["operator", "@", "private.example"].joined()),
+            (.hostname, "db-primary.prod.private.example"),
+            (.ipAddress, "10.23.45.67"),
+            (.filePath, ["/home/", "operator/.ssh/config"].joined()),
+            (.phone, "+44 20 7946 0958"),
+            (.dbConnectionString, ["postgres", "://user:pass@db.private/app"].joined()),
+            (.jdbcUrl, ["jdbc:postgresql", "://db.private/app"].joined()),
+            (.genericApiKey, ["token_", entropyValue].joined()),
+            (.credential, ["password=", entropyValue].joined()),
+            (.uuid, "550e8400-e29b-41d4-a716-446655440000"),
+            (.xmlUsername, "<user>deployadmin</user>"),
+            (.xmlHostname, "<host>node.private</host>"),
+            (.highEntropyString, entropyValue),
+        ]
+
+        for (type, input) in cases {
+            let defaultMatches = DetectionRules.scan(input, config: .defaultConfig)
+            XCTAssertFalse(
+                defaultMatches.contains { $0.type == type },
+                "\(type.rawValue) must be absent at default config"
+            )
+            let defaultDecision = GuardDecision.evaluate(
+                matches: defaultMatches,
+                content: input,
+                config: .defaultConfig,
+                contentTrust: .trustedFile,
+                minimumSeverity: .high
+            )
+            XCTAssertFalse(
+                defaultDecision.actionableMatches.contains { $0.type == type },
+                "\(type.rawValue) must not block the guard at default config"
+            )
+
+            var enabledConfig = PastewatchConfig.defaultConfig
+            enabledConfig.enabledTypes.append(type.rawValue)
+            if type == .email {
+                enabledConfig.obfuscate = [ObfuscateEntry(type: "email", pattern: input)]
+            } else if type == .hostname {
+                enabledConfig.obfuscate = [ObfuscateEntry(type: "host", pattern: input)]
+            }
+            XCTAssertTrue(
+                DetectionRules.scan(input, config: enabledConfig).contains { $0.type == type },
+                "\(type.rawValue) fixture must prove the opt-in detector still fires"
+            )
+        }
+    }
+
+    // WO-595@v2: environment overrides are positive integers with bounded defaults.
+    func testScanInputLimitsUseValidatedEnvironmentOverrides() {
+        let limits = ScanInputLimits.current(environment: [
+            ScanInputLimits.fileBytesEnvironmentKey: "4096",
+            ScanInputLimits.lineBytesEnvironmentKey: "512",
+        ])
+        XCTAssertEqual(limits, ScanInputLimits(maximumFileBytes: 4096, maximumLineBytes: 512))
+
+        let fallback = ScanInputLimits.current(environment: [
+            ScanInputLimits.fileBytesEnvironmentKey: "0",
+            ScanInputLimits.lineBytesEnvironmentKey: "invalid",
+        ])
+        XCTAssertEqual(
+            fallback,
+            ScanInputLimits(
+                maximumFileBytes: ScanInputLimits.defaultMaximumFileBytes,
+                maximumLineBytes: ScanInputLimits.defaultMaximumLineBytes
+            )
+        )
+    }
+
+    // WO-595@v2: file and line bounds fail closed without exposing content.
+    func testScanInputLimitsRejectFileAndLineOverruns() {
+        let limits = ScanInputLimits(maximumFileBytes: 12, maximumLineBytes: 5)
+        XCTAssertThrowsError(
+            try DetectionRules.validateFileInput("123456\n", limits: limits)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputLimitError, .lineBytes(line: 1, actual: 6, maximum: 5))
+        }
+        XCTAssertNoThrow(
+            try DetectionRules.validateFileInput("12345\n12345\n", limits: limits)
+        )
+        XCTAssertThrowsError(
+            try DetectionRules.validateFileInput("12345\n1234567", limits: limits)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputLimitError, .fileBytes(actual: 13, maximum: 12))
+        }
+        XCTAssertNoThrow(
+            try DetectionRules.validateFileInput(
+                "12345\r\n12345\r12345",
+                limits: ScanInputLimits(maximumFileBytes: 32, maximumLineBytes: 5)
+            )
+        )
+    }
+
+    // WO-595@v2: detector-dense files retain correct lines without quadratic prefix walks.
+    func testDenseMatchScanRemainsBoundedAndLineCorrect() {
+        let value = "AIza" + String(repeating: "R", count: 35)
+        let lineCount = 5_000
+        let content = Array(repeating: #"{"key":"\#(value)"}"#, count: lineCount)
+            .joined(separator: "\n")
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let matches = DetectionRules.scan(content, config: .defaultConfig)
+            .filter { $0.type == .googleApiKey }
+        let elapsed = start.duration(to: clock.now)
+
+        XCTAssertEqual(matches.count, lineCount)
+        XCTAssertEqual(matches.first?.line, 1)
+        XCTAssertEqual(matches.last?.line, lineCount)
+        XCTAssertLessThan(elapsed, .seconds(10))
+    }
+
+    // WO-595@v2: line assignment follows the same LF, CRLF, and CR boundaries as limits.
+    func testLineNumbersSupportCommonLineEndings() {
+        let value = "AIza" + String(repeating: "R", count: 35)
+        let content = [value, value, value].joined(separator: "\r\n") + "\r" + value
+
+        let matches = DetectionRules.scan(content, config: .defaultConfig)
+            .filter { $0.type == .googleApiKey }
+
+        XCTAssertEqual(matches.map(\.line), [1, 2, 3, 4])
+    }
+
+    // WO-595@v2: newline-dense input uses bounded match-sized state, not one index per line.
+    func testLineAssignmentHandlesNewlineDenseInput() {
+        let lineCount = 100_000
+        let value = "AIza" + String(repeating: "R", count: 35)
+        let content = String(repeating: "\n", count: lineCount) + value
+
+        let matches = DetectionRules.scan(content, config: .defaultConfig)
+            .filter { $0.type == .googleApiKey }
+
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.line, lineCount + 1)
+    }
+
     // MARK: - Email Detection
 
     func testDetectsEmail() {
@@ -332,13 +471,18 @@ final class DetectionRulesTests: XCTestCase {
     }
 
     func testIgnoresGoMethodChainsAsHostnames() {
-        // WO-390: Go field/method chains are dotted code identifiers, not FQDNs.
+        // WO-592: pin the exact recurrence corpus in addition to WO-390's originals.
         let methodChains = [
             "node.HostStartedAt.IsZero",
             "envelope.Topology.Band",
             "r.Wo.ID",
             "ask.Envelope.Delivery",
             "p.CreatedAt.Format",
+            "req.Candidate.Status",
+            "req.RequestedFields.Has",
+            "req.MutationSurface.valid",
+            "check.LeaseExpiresAt.UTC",
+            "req.Base.WorkKind",
         ]
 
         for content in methodChains {
@@ -349,13 +493,33 @@ final class DetectionRulesTests: XCTestCase {
     }
 
     func testStillDetectsServiceHostnames() {
-        let content = "Connect to api.internal.corp and myservice.default.svc.cluster.local"
+        // WO-592: precision must retain every real multi-label FQDN from the spec.
+        let content = [
+            "api.internal.corp",
+            "myservice.default.svc.cluster.local",
+            "internal.corp.example.net",
+            "db-primary.prod.svc.cluster.local",
+            "foo.bar.mycompany.com",
+        ].joined(separator: " ")
+        var hostConfig = config
+        hostConfig.obfuscate += [
+            ObfuscateEntry(type: "host", pattern: "internal.corp.example.net"),
+            ObfuscateEntry(type: "host", pattern: "db-primary.prod.svc.cluster.local"),
+            ObfuscateEntry(type: "host", pattern: "foo.bar.mycompany.com"),
+        ]
         // WO-542: preserve detector fixture intent under opt-in defaults.
-        let matches = DetectionRules.scan(content, config: config)
+        let matches = DetectionRules.scan(content, config: hostConfig)
 
         let values = Set(matches.filter { $0.type == .hostname }.map(\.value))
-        XCTAssertTrue(values.contains("api.internal.corp"))
-        XCTAssertTrue(values.contains("myservice.default.svc.cluster.local"))
+        for expected in [
+            "api.internal.corp",
+            "myservice.default.svc.cluster.local",
+            "internal.corp.example.net",
+            "db-primary.prod.svc.cluster.local",
+            "foo.bar.mycompany.com",
+        ] {
+            XCTAssertTrue(values.contains(expected), "Expected hostname: \(expected)")
+        }
     }
 
     // MARK: - Credential Detection
@@ -475,7 +639,7 @@ final class DetectionRulesTests: XCTestCase {
     }
 
     func testIgnoresGoStructFieldReferencesAsCredentials() {
-        // WO-390: exported Go struct fields with code-reference RHS values are not literals.
+        // WO-390@v2: exported Go struct fields with code-reference RHS values are not literals.
         let goFields = [
             "Token: makeToken(),",
             "Secret: computeSecret(),",

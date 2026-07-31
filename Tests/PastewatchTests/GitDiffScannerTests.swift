@@ -266,6 +266,68 @@ final class GitDiffScannerTests: XCTestCase {
         }
     }
 
+    // WO-599@v2: git stdout is drained above pipe capacity and capped during collection.
+    func testRunGitDrainsLargeOutputAndEnforcesCap() throws {
+        let tempDir = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+        let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent("large.txt")
+        let byteCount = 256 * 1_024
+        try Data(repeating: 0x78, count: byteCount).write(to: fileURL)
+        try runShell("git", args: ["-C", tempDir, "add", "large.txt"])
+        try runShell("git", args: ["-C", tempDir, "commit", "--no-verify", "-m", "large"])
+
+        let start = Date()
+        let output = try GitDiffScanner.runGit(
+            ["-C", tempDir, "show", "HEAD:large.txt"],
+            limits: ScanInputLimits(
+                maximumFileBytes: 512 * 1_024,
+                maximumLineBytes: ScanInputLimits.defaultMaximumLineBytes
+            )
+        )
+
+        XCTAssertEqual(output.utf8.count, byteCount)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+
+        XCTAssertThrowsError(try GitDiffScanner.runGit(
+            ["-C", tempDir, "show", "HEAD:large.txt"],
+            limits: ScanInputLimits(maximumFileBytes: 32, maximumLineBytes: 32)
+        )) { error in
+            XCTAssertEqual(
+                error as? ScanInputLimitError,
+                .fileBytes(actual: 33, maximum: 32)
+            )
+            XCTAssertFalse(error.localizedDescription.contains(output))
+        }
+    }
+
+    // WO-602@v2: malformed working-tree and staged text fail the Git scan.
+    func testScanRejectsInvalidTextInUnstagedAndStagedFiles() throws {
+        let tempDir = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+        let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent("config.txt")
+        try Data("clean=true\n".utf8).write(to: fileURL)
+        try runShell("git", args: ["-C", tempDir, "add", "config.txt"])
+        try runShell("git", args: ["-C", tempDir, "commit", "--no-verify", "-m", "initial"])
+        try Data([0x61, 0xFF, 0x62]).write(to: fileURL)
+
+        let originalDir = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(tempDir)
+        defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
+
+        XCTAssertThrowsError(
+            try GitDiffScanner.scan(unstaged: true, config: .defaultConfig)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputTextError, .invalidUTF8)
+        }
+
+        try runShell("git", args: ["-C", tempDir, "add", "config.txt"])
+        XCTAssertThrowsError(
+            try GitDiffScanner.scan(staged: true, unstaged: false, config: .defaultConfig)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputTextError, .invalidUTF8)
+        }
+    }
+
     private func createTempGitRepo() throws -> String {
         let tempDir = NSTemporaryDirectory() + "pw-diff-test-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)

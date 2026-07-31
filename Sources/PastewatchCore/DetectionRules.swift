@@ -1,5 +1,67 @@
 import Foundation
 
+/// WO-595@v2: bounded file-input policy shared by CLI, directory, and MCP scans.
+public struct ScanInputLimits: Equatable {
+    public static let defaultMaximumFileBytes = 64 * 1_024 * 1_024
+    public static let defaultMaximumLineBytes = 1_000_000
+    public static let fileBytesEnvironmentKey = "PASTEWATCH_MAX_FILE_BYTES"
+    public static let lineBytesEnvironmentKey = "PASTEWATCH_MAX_LINE_BYTES"
+
+    public let maximumFileBytes: Int
+    public let maximumLineBytes: Int
+
+    public init(maximumFileBytes: Int, maximumLineBytes: Int) {
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumLineBytes = maximumLineBytes
+    }
+
+    public static func current(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ScanInputLimits {
+        ScanInputLimits(
+            maximumFileBytes: positiveInteger(
+                environment[fileBytesEnvironmentKey],
+                fallback: defaultMaximumFileBytes
+            ),
+            maximumLineBytes: positiveInteger(
+                environment[lineBytesEnvironmentKey],
+                fallback: defaultMaximumLineBytes
+            )
+        )
+    }
+
+    private static func positiveInteger(_ value: String?, fallback: Int) -> Int {
+        guard let value, let parsed = Int(value), parsed > 0 else { return fallback }
+        return parsed
+    }
+}
+
+/// WO-595@v2: privacy-safe refusal when scanning would exceed an operator limit.
+public enum ScanInputLimitError: LocalizedError, Equatable {
+    case fileBytes(actual: Int, maximum: Int)
+    case lineBytes(line: Int, actual: Int, maximum: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .fileBytes(let actual, let maximum):
+            return "file size \(actual) bytes exceeds scan limit \(maximum) bytes " +
+                "(\(ScanInputLimits.fileBytesEnvironmentKey))"
+        case .lineBytes(let line, let actual, let maximum):
+            return "line \(line) size \(actual) bytes exceeds scan limit \(maximum) bytes " +
+                "(\(ScanInputLimits.lineBytesEnvironmentKey))"
+        }
+    }
+}
+
+/// WO-602@v2: supported text that cannot be decoded is unscanned evidence.
+public enum ScanInputTextError: LocalizedError, Equatable {
+    case invalidUTF8
+
+    public var errorDescription: String? {
+        "input is not valid UTF-8"
+    }
+}
+
 /// Deterministic detection rules for sensitive data.
 /// No ML. No confidence scores. No guessing.
 ///
@@ -7,6 +69,41 @@ import Foundation
 /// separately attached only when a grammar proves provider-specific evidence.
 public struct DetectionRules {
     private static let maximumPrivateKeyBlockCharacters = 262_144 // WO-478: bound malformed PEM scans.
+    private static let inputReadChunkBytes = 64 * 1_024
+
+    /// WO-595@v2: compact interval claims prevent per-match linear overlap walks.
+    private struct ClaimedRanges {
+        private var indexes = IndexSet()
+        private var ranges: [Range<Int>] = []
+
+        func overlaps(_ range: Range<String.Index>, in content: String) -> Bool {
+            let offsets = integerRange(for: range, in: content)
+            return indexes.intersects(integersIn: offsets)
+        }
+
+        mutating func insert(_ range: Range<String.Index>, in content: String) {
+            let integerRange = integerRange(for: range, in: content)
+            indexes.insert(integersIn: integerRange)
+            ranges.append(integerRange)
+        }
+
+        mutating func remove(_ range: Range<String.Index>, in content: String) {
+            let target = integerRange(for: range, in: content)
+            let overlapping = ranges.filter { $0.overlaps(target) }
+            ranges.removeAll { $0.overlaps(target) }
+            for claimedRange in overlapping {
+                indexes.remove(integersIn: claimedRange)
+            }
+        }
+
+        private func integerRange(
+            for range: Range<String.Index>,
+            in content: String
+        ) -> Range<Int> {
+            let nsRange = NSRange(range, in: content)
+            return nsRange.location..<(nsRange.location + nsRange.length)
+        }
+    }
     // WO-487: these sourced grammars authorize mutation independently of the
     // advisory-only genericApiKey type.
     private static let githubClassicTokenRegex = try? NSRegularExpression(
@@ -484,7 +581,7 @@ public struct DetectionRules {
         // Matches fully qualified domain names
         // Ported from chainwatch internal/redact/scanner.go
         if let regex = try? NSRegularExpression(
-            // WO-390: allow multi-label service names while validation rejects
+            // WO-390@v2: allow multi-label service names while validation rejects
             // mixed-case dotted code identifiers.
             pattern: #"\b[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[-a-zA-Z0-9]+)+\.[a-zA-Z]{2,}\b"#,
             options: []
@@ -607,7 +704,7 @@ public struct DetectionRules {
     /// Returns all matches found.
     public static func scan(_ content: String, config: PastewatchConfig) -> [DetectedMatch] {
         var matches: [DetectedMatch] = []
-        var matchedRanges: [Range<String.Index>] = []
+        var matchedRanges = ClaimedRanges()
 
         // WO-478/WO-479: payload-bearing formats must authorize complete secret
         // ranges before ordinary regex rules can claim marker-only success.
@@ -629,7 +726,10 @@ public struct DetectionRules {
         }
 
         // WO-529@v3: Filter ambiguous class matches based on obfuscate config.
-        return filterAmbiguousMatches(matches, config: config)
+        return assigningLineNumbers(
+            filterAmbiguousMatches(matches, config: config),
+            in: content
+        )
     }
 
     /// Scan content with regex rules.
@@ -637,7 +737,7 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         for (type, regex) in rules {
             guard config.isTypeEnabled(type) else { continue }
@@ -647,21 +747,20 @@ public struct DetectionRules {
 
             for match in regexMatches {
                 guard let range = Range(match.range, in: content) else { continue }
-                guard !matchedRanges.contains(where: { range.overlaps($0) }) else { continue }
+                guard !matchedRanges.overlaps(range, in: content) else { continue }
 
                 let value = String(content[range])
                 guard !shouldExclude(value) else { continue }
                 guard isValidMatch(value, type: type, config: config) else { continue }
 
-                let line = lineNumber(of: range.lowerBound, in: content)
                 matches.append(DetectedMatch(
                     type: type,
                     value: value,
                     range: range,
-                    line: line,
+                    line: 1,
                     mutationAuthorizationSources: mutationAuthorizationSources(for: type, value: value)
                 ))
-                matchedRanges.append(range)
+                matchedRanges.insert(range, in: content)
             }
         }
     }
@@ -671,21 +770,20 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         guard config.isTypeEnabled(.highEntropyString) else { return }
 
         let tokens = tokenizeForEntropy(content)
         for (token, range) in tokens {
             guard token.count >= minimumEntropyLength else { continue }
-            guard !matchedRanges.contains(where: { range.overlaps($0) }) else { continue }
+            guard !matchedRanges.overlaps(range, in: content) else { continue }
             guard hasCharacterMix(token) else { continue }
             guard !isLikelyGitSHA(token) else { continue }
             guard shannonEntropy(token) >= entropyThreshold else { continue }
 
-            let line = lineNumber(of: range.lowerBound, in: content)
-            matches.append(DetectedMatch(type: .highEntropyString, value: token, range: range, line: line))
-            matchedRanges.append(range)
+            matches.append(DetectedMatch(type: .highEntropyString, value: token, range: range, line: 1))
+            matchedRanges.insert(range, in: content)
         }
     }
 
@@ -693,7 +791,7 @@ public struct DetectionRules {
     private static func scanSourcedGenericProviderTokens(
         _ content: String,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         let regexes = [
             githubClassicTokenRegex,
@@ -704,7 +802,7 @@ public struct DetectionRules {
         for regex in regexes {
             for match in regex.matches(in: content, options: [], range: nsRange) {
                 guard let range = Range(match.range, in: content),
-                      !matchedRanges.contains(where: { range.overlaps($0) }) else {
+                      !matchedRanges.overlaps(range, in: content) else {
                     continue
                 }
                 let value = String(content[range])
@@ -713,10 +811,10 @@ public struct DetectionRules {
                     type: .genericApiKey,
                     value: value,
                     range: range,
-                    line: lineNumber(of: range.lowerBound, in: content),
+                    line: 1,
                     mutationAuthorizationSources: [.intrinsicFormat]
                 ))
-                matchedRanges.append(range)
+                matchedRanges.insert(range, in: content)
             }
         }
     }
@@ -844,7 +942,7 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         let labelPattern = "RSA PRIVATE KEY|DSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY|PRIVATE KEY"
         guard config.isTypeEnabled(.sshPrivateKey),
@@ -891,29 +989,29 @@ public struct DetectionRules {
                 let malformedRange = beginRange.lowerBound..<max(beginRange.upperBound, malformedEnd)
                 malformedSuppressionEnd = max(malformedSuppressionEnd ?? beginRange.upperBound, malformedEnd)
                 matches.removeAll { $0.range.overlaps(malformedRange) }
-                matchedRanges.removeAll { $0.overlaps(malformedRange) }
+                matchedRanges.remove(malformedRange, in: content)
                 matches.append(DetectedMatch(
                     type: .sshPrivateKey,
                     value: String(content[beginRange]),
                     range: malformedRange,
-                    line: lineNumber(of: beginRange.lowerBound, in: content),
+                    line: 1,
                     advisory: .malformedPrivateKey
                 ))
-                matchedRanges.append(malformedRange)
+                matchedRanges.insert(malformedRange, in: content)
                 continue
             }
 
             let blockRange = beginRange.lowerBound..<endRange.upperBound
-            guard !matchedRanges.contains(where: { $0.overlaps(blockRange) }) else { continue }
+            guard !matchedRanges.overlaps(blockRange, in: content) else { continue }
 
             let value = String(content[blockRange])
             matches.append(DetectedMatch(
                 type: .sshPrivateKey,
                 value: value,
                 range: blockRange,
-                line: lineNumber(of: blockRange.lowerBound, in: content)
+                line: 1
             ))
-            matchedRanges.append(blockRange)
+            matchedRanges.insert(blockRange, in: content)
         }
     }
 
@@ -923,7 +1021,7 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         guard config.isTypeEnabled(.gcpServiceAccount),
               (try? JSONSerialization.jsonObject(with: Data(content.utf8))) != nil else { return }
@@ -932,15 +1030,15 @@ public struct DetectionRules {
         var authorizedRanges: [Range<String.Index>] = []
         collectGCPServiceAccountRanges(root, into: &authorizedRanges)
 
-        for valueRange in authorizedRanges where !matchedRanges.contains(where: { $0.overlaps(valueRange) }) {
+        for valueRange in authorizedRanges where !matchedRanges.overlaps(valueRange, in: content) {
             let encoded = String(content[valueRange])
             matches.append(DetectedMatch(
                 type: .gcpServiceAccount,
                 value: encoded,
                 range: valueRange,
-                line: lineNumber(of: valueRange.lowerBound, in: content)
+                line: 1
             ))
-            matchedRanges.append(valueRange)
+            matchedRanges.insert(valueRange, in: content)
         }
     }
 
@@ -1117,6 +1215,105 @@ public struct DetectionRules {
         scanFileIOResult(content, config: config).matches
     }
 
+    /// WO-595@v2: reject oversized files before callers allocate and decode their contents.
+    public static func validateFileSize(
+        atPath path: String,
+        limits: ScanInputLimits = .current()
+    ) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        guard let size = (attributes[.size] as? NSNumber)?.intValue else { return }
+        guard size <= limits.maximumFileBytes else {
+            throw ScanInputLimitError.fileBytes(
+                actual: size,
+                maximum: limits.maximumFileBytes
+            )
+        }
+    }
+
+    /// WO-595@v2: cap bytes during reads so metadata races cannot bypass the file limit.
+    public static func readBoundedInputData(
+        from handle: FileHandle,
+        limits: ScanInputLimits = .current()
+    ) throws -> Data {
+        let probeLimit = limits.maximumFileBytes == Int.max
+            ? Int.max
+            : limits.maximumFileBytes + 1
+        var data = Data()
+        data.reserveCapacity(min(limits.maximumFileBytes, inputReadChunkBytes))
+
+        while data.count < probeLimit {
+            let readCount = min(inputReadChunkBytes, probeLimit - data.count)
+            guard let chunk = try handle.read(upToCount: readCount),
+                  !chunk.isEmpty else {
+                break
+            }
+            data.append(chunk)
+        }
+
+        guard data.count <= limits.maximumFileBytes else {
+            throw ScanInputLimitError.fileBytes(
+                actual: data.count,
+                maximum: limits.maximumFileBytes
+            )
+        }
+        return data
+    }
+
+    /// WO-595@v2: file reads combine an early metadata refusal with a bounded stream.
+    public static func readBoundedFileData(
+        atPath path: String,
+        limits: ScanInputLimits = .current()
+    ) throws -> Data {
+        try validateFileSize(atPath: path, limits: limits)
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        return try readBoundedInputData(from: handle, limits: limits)
+    }
+
+    /// WO-595@v2: bound decoded input and individual lines before detector regexes run.
+    public static func validateFileInput(
+        _ content: String,
+        limits: ScanInputLimits = .current()
+    ) throws {
+        let byteCount = content.utf8.count
+        guard byteCount <= limits.maximumFileBytes else {
+            throw ScanInputLimitError.fileBytes(
+                actual: byteCount,
+                maximum: limits.maximumFileBytes
+            )
+        }
+
+        var line = 1
+        var lineBytes = 0
+        var previousWasCarriageReturn = false
+        for byte in content.utf8 {
+            if byte == 0x0A {
+                if previousWasCarriageReturn {
+                    previousWasCarriageReturn = false
+                    continue
+                }
+                line += 1
+                lineBytes = 0
+                continue
+            }
+            if byte == 0x0D {
+                line += 1
+                lineBytes = 0
+                previousWasCarriageReturn = true
+                continue
+            }
+            previousWasCarriageReturn = false
+            lineBytes += 1
+            guard lineBytes <= limits.maximumLineBytes else {
+                throw ScanInputLimitError.lineBytes(
+                    line: line,
+                    actual: lineBytes,
+                    maximum: limits.maximumLineBytes
+                )
+            }
+        }
+    }
+
     /// WO-126: scan file IO while preserving configured shared-pattern load diagnostics.
     public static func scanFileIOResult(
         _ content: String,
@@ -1151,8 +1348,10 @@ public struct DetectionRules {
     public static func scanFileIOOrThrow(
         _ content: String,
         config: PastewatchConfig,
-        customRules: [CustomRule] = []
+        customRules: [CustomRule] = [],
+        limits: ScanInputLimits = .current()
     ) throws -> [DetectedMatch] {
+        try validateFileInput(content, limits: limits)
         let result = scanFileIOResult(content, config: config, customRules: customRules)
         guard !result.hasSharedPatternErrors else {
             throw sharedPatternLoadError(from: result.sharedPatternErrors)
@@ -1185,7 +1384,7 @@ public struct DetectionRules {
         knownSecretValues: Set<String> = []
     ) -> [DetectedMatch] {
         var matches: [DetectedMatch] = []
-        var matchedRanges: [Range<String.Index>] = []
+        var matchedRanges = ClaimedRanges()
 
         // WO-538: exact evidence is independent of detector enablement and claims
         // its complete literal range before broader pattern families run.
@@ -1211,7 +1410,7 @@ public struct DetectionRules {
                         type: rule.type,
                         value: value,
                         range: range,
-                        line: lineNumber(of: range.lowerBound, in: content),
+                        line: 1,
                         customRuleName: rule.name,
                         customSeverity: rule.severity
                     )
@@ -1220,20 +1419,18 @@ public struct DetectionRules {
                     )
                     continue
                 }
-                let overlaps = matchedRanges.contains { $0.overlaps(range) }
-                if overlaps { continue }
+                if matchedRanges.overlaps(range, in: content) { continue }
 
                 let value = String(content[range])
-                let line = lineNumber(of: range.lowerBound, in: content)
                 matches.append(DetectedMatch(
                     type: rule.type,
                     value: value,
                     range: range,
-                    line: line,
+                    line: 1,
                     customRuleName: rule.name,
                     customSeverity: rule.severity
                 ))
-                matchedRanges.append(range)
+                matchedRanges.insert(range, in: content)
             }
         }
 
@@ -1242,7 +1439,7 @@ public struct DetectionRules {
             // matches so malformed input cannot be reported as successful mutation.
             if match.advisory != nil {
                 matches.removeAll { $0.range.overlaps(match.range) }
-                matchedRanges.removeAll { $0.overlaps(match.range) }
+                matchedRanges.remove(match.range, in: content)
             } else if let index = matches.firstIndex(where: { $0.range == match.range }) {
                 // WO-454: an exact built-in/custom overlap retains evidence from both
                 // detectors instead of allowing deduplication to weaken authorization.
@@ -1250,11 +1447,11 @@ public struct DetectionRules {
                     match.mutationAuthorizationSources
                 )
                 continue
-            } else if matchedRanges.contains(where: { $0.overlaps(match.range) }) {
+            } else if matchedRanges.overlaps(match.range, in: content) {
                 continue
             }
             matches.append(match)
-            matchedRanges.append(match.range)
+            matchedRanges.insert(match.range, in: content)
         }
 
         // Apply allowlist filtering
@@ -1262,7 +1459,7 @@ public struct DetectionRules {
             matches = allowlist.filter(matches)
         }
 
-        return matches
+        return assigningLineNumbers(matches, in: content)
     }
 
     /// WO-538: longest-first matching protects complete known values when entries overlap.
@@ -1270,7 +1467,7 @@ public struct DetectionRules {
         _ content: String,
         knownSecretValues: Set<String>,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         let orderedValues = knownSecretValues
             .filter { !$0.isEmpty }
@@ -1285,15 +1482,15 @@ public struct DetectionRules {
                     of: value,
                     range: searchStart..<content.endIndex
                   ) {
-                if !matchedRanges.contains(where: { $0.overlaps(range) }) {
+                if !matchedRanges.overlaps(range, in: content) {
                     matches.append(DetectedMatch(
                         type: .credential,
                         value: value,
                         range: range,
-                        line: lineNumber(of: range.lowerBound, in: content),
+                        line: 1,
                         mutationAuthorizationSources: [.exactKnownSecret]
                     ))
-                    matchedRanges.append(range)
+                    matchedRanges.insert(range, in: content)
                 }
                 searchStart = range.upperBound
             }
@@ -1675,7 +1872,7 @@ public struct DetectionRules {
         // Built-in safe hosts (exact only) + user safe hosts (exact + suffix)
         if safeHosts.contains(hostLower) || hostMatches(hostLower, in: config.safeHosts) { return false }
         if value.allSatisfy({ $0 == "." || $0.isNumber }) { return false }
-        // WO-390: Go method chains such as node.HostStartedAt.IsZero match the
+        // WO-390@v2: Go method chains such as node.HostStartedAt.IsZero match the
         // FQDN regex shape but include mixed-case code identifiers.
         if isLikelyDottedCodeIdentifier(value) { return false }
         return true
@@ -1703,23 +1900,21 @@ public struct DetectionRules {
         _ content: String,
         config: PastewatchConfig,
         matches: inout [DetectedMatch],
-        matchedRanges: inout [Range<String.Index>]
+        matchedRanges: inout ClaimedRanges
     ) {
         let nsRange = NSRange(content.startIndex..., in: content)
         let regexMatches = twoSegmentHostRegex.matches(in: content, options: [], range: nsRange)
 
         for match in regexMatches {
             guard let range = Range(match.range, in: content) else { continue }
-            let overlaps = matchedRanges.contains { $0.overlaps(range) }
-            if overlaps { continue }
+            if matchedRanges.overlaps(range, in: content) { continue }
 
             let value = String(content[range])
             // Only flag if it matches a sensitiveHosts entry
             guard hostMatches(value.lowercased(), in: config.sensitiveHosts) else { continue }
 
-            let line = lineNumber(of: range.lowerBound, in: content)
-            matches.append(DetectedMatch(type: .hostname, value: value, range: range, line: line))
-            matchedRanges.append(range)
+            matches.append(DetectedMatch(type: .hostname, value: value, range: range, line: 1))
+            matchedRanges.insert(range, in: content)
         }
     }
 
@@ -1773,6 +1968,46 @@ public struct DetectionRules {
             current = content.index(after: current)
         }
         return line
+    }
+
+    /// WO-595@v2: one ordered sweep replaces per-match prefix walks without storing every newline.
+    private static func assigningLineNumbers(
+        _ matches: [DetectedMatch],
+        in content: String
+    ) -> [DetectedMatch] {
+        guard !matches.isEmpty else { return [] }
+
+        let orderedMatchIndices = matches.indices.sorted {
+            matches[$0].range.lowerBound < matches[$1].range.lowerBound
+        }
+        var lineNumbers = Array(repeating: 1, count: matches.count)
+        var contentIndex = content.startIndex
+        var line = 1
+        for matchIndex in orderedMatchIndices {
+            let matchStart = matches[matchIndex].range.lowerBound
+            while contentIndex < matchStart {
+                if content[contentIndex].isNewline {
+                    line += 1
+                }
+                contentIndex = content.index(after: contentIndex)
+            }
+            lineNumbers[matchIndex] = line
+        }
+
+        return matches.enumerated().map { matchIndex, match in
+            return DetectedMatch(
+                type: match.type,
+                value: match.value,
+                range: match.range,
+                line: lineNumbers[matchIndex],
+                filePath: match.filePath,
+                customRuleName: match.customRuleName,
+                customSeverity: match.customSeverity,
+                advisory: match.advisory,
+                mutationAuthorizationSources: match.mutationAuthorizationSources,
+                obfuscateRuleIdentifier: match.obfuscateRuleIdentifier
+            )
+        }
     }
 
     // MARK: - Entropy detection

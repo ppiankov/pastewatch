@@ -35,7 +35,14 @@ enum FileGuard {
         // WO-588@v2: existing unscannable files must not bypass read/write guards.
         let data: Data
         do {
-            data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+            // WO-598@v2: enforce the file cap before guard-read/write allocates bytes.
+            data = try DetectionRules.readBoundedFileData(atPath: filePath)
+        } catch let error as ScanInputLimitError {
+            try blockUnscannableFile(
+                filePath: filePath,
+                operation: operation,
+                reason: error.localizedDescription
+            )
         } catch {
             try blockUnscannableFile(
                 filePath: filePath,
@@ -67,6 +74,13 @@ enum FileGuard {
             FileHandle.standardError.write(Data(msg.utf8))
             print("Fix shared pattern configuration before using \(operation.toolName).")
             throw ExitCode(rawValue: GuardExitContract.blocked)
+        } catch let error as ScanInputLimitError {
+            // WO-598@v2: overlong decoded input is a guard block, not a generic parse exit.
+            try blockUnscannableFile(
+                filePath: filePath,
+                operation: operation,
+                reason: error.localizedDescription
+            )
         }
         // WO-502: read/write/command/watch use one post-scan decision pipeline.
         let filtered = GuardDecision.evaluate(

@@ -73,9 +73,15 @@ struct GuardMutation: ParsableCommand {
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
+        let limits = ScanInputLimits.current()
         let input: GuardMutationInput
         do {
-            input = try GuardMutationInput.parse(FileHandle.standardInput.readDataToEndOfFile())
+            // WO-598@v2: bound the structured transport before parsing attacker-controlled JSON.
+            let data = try DetectionRules.readBoundedInputData(
+                from: FileHandle.standardInput,
+                limits: limits
+            )
+            input = try GuardMutationInput.parse(data)
         } catch {
             try deny("invalid structured mutation input")
             return
@@ -96,7 +102,16 @@ struct GuardMutation: ParsableCommand {
         let currentContent: String
         if FileManager.default.fileExists(atPath: input.filePath) {
             do {
-                currentContent = try String(contentsOfFile: input.filePath, encoding: .utf8)
+                // WO-598@v2: bound existing mutation targets before reading their bytes.
+                let data = try DetectionRules.readBoundedFileData(
+                    atPath: input.filePath,
+                    limits: limits
+                )
+                guard let decoded = String(data: data, encoding: .utf8) else {
+                    try deny("target cannot be scanned safely")
+                    return
+                }
+                currentContent = decoded
             } catch {
                 try deny("target cannot be scanned safely")
                 return

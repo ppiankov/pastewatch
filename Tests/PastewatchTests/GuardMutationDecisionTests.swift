@@ -391,10 +391,64 @@ final class GuardMutationDecisionTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("configuration is invalid"))
     }
 
+    // WO-598@v2: existing mutation targets are bounded before their bytes are read.
+    func testGuardMutationCommandBlocksTargetOverInputLimit() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-guard-limit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+        let fileURL = testDirectory.appendingPathComponent("fixture.swift")
+        let fileContent = String(repeating: "1", count: 1_024)
+        try fileContent.write(to: fileURL, atomically: true, encoding: .utf8)
+        let result = try runGuardMutation(
+            [
+                "tool_name": "Edit",
+                "tool_input": [
+                    "file_path": fileURL.path,
+                    "old_string": "111",
+                    "new_string": "abc",
+                ],
+            ],
+            home: testDirectory,
+            environmentOverrides: [ScanInputLimits.fileBytesEnvironmentKey: "512"]
+        )
+
+        XCTAssertEqual(result.status, GuardExitContract.blocked)
+        XCTAssertTrue(result.stderr.contains("target cannot be scanned safely"))
+        XCTAssertFalse((result.stdout + result.stderr).contains(fileContent))
+    }
+
+    // WO-598@v2: structured mutation input is bounded before JSON decoding.
+    func testGuardMutationCommandBlocksInputOverLimit() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-guard-stdin-limit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+        let oversizedContent = String(repeating: "x", count: 1_024)
+        let result = try runGuardMutation(
+            [
+                "tool_name": "Write",
+                "tool_input": [
+                    "file_path": testDirectory.appendingPathComponent("fixture.swift").path,
+                    "content": oversizedContent,
+                ],
+            ],
+            home: testDirectory,
+            environmentOverrides: [ScanInputLimits.fileBytesEnvironmentKey: "128"]
+        )
+
+        XCTAssertEqual(result.status, GuardExitContract.blocked)
+        XCTAssertTrue(result.stderr.contains("invalid structured mutation input"))
+        XCTAssertFalse((result.stdout + result.stderr).contains(oversizedContent))
+    }
+
     // WO-526@v3: exercise the executable boundary with structured stdin.
     private func runGuardMutation(
         _ payload: [String: Any],
-        home: URL
+        home: URL,
+        environmentOverrides: [String: String] = [:]
     ) throws -> CommandResult {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
@@ -402,7 +456,7 @@ final class GuardMutationDecisionTests: XCTestCase {
         process.environment = [
             "HOME": home.path,
             "PATH": "/usr/bin:/bin",
-        ]
+        ].merging(environmentOverrides) { _, new in new }
         process.currentDirectoryURL = home
 
         let input = Pipe()

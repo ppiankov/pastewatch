@@ -244,6 +244,26 @@ final class GitHistoryScannerTests: XCTestCase {
         }
     }
 
+    // WO-602@v2: malformed historical text cannot be counted as scanned-and-clean.
+    func testScanRejectsInvalidTextInHistory() throws {
+        let tempDir = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+        let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent("config.txt")
+        try Data([0x61, 0xFF, 0x62]).write(to: fileURL)
+        try runShell("git", args: ["-C", tempDir, "add", "config.txt"])
+        try runShell("git", args: ["-C", tempDir, "commit", "--no-verify", "-m", "invalid"])
+
+        let originalDir = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(tempDir)
+        defer { FileManager.default.changeCurrentDirectoryPath(originalDir) }
+
+        XCTAssertThrowsError(
+            try GitHistoryScanner.scan(config: .defaultConfig)
+        ) { error in
+            XCTAssertEqual(error as? ScanInputTextError, .invalidUTF8)
+        }
+    }
+
     // MARK: - Helpers
 
     private func createTempGitRepo() throws -> String {

@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Stable, feature-complete - v0.35.2**
+**Stable, feature-complete - v0.36.0**
 
 Accepting compatibility, safety, and bug fixes only. No major new features planned.
 
@@ -222,7 +222,7 @@ Core and CLI functionality complete:
 | Cloud sync | Violates local-only constraint |
 | ML detection | Violates deterministic constraint |
 | Clipboard history | Violates memory-only constraint |
-| Cross-platform GUI | macOS-native by design (CLI is cross-platform) |
+| Cross-platform GUI | macOS-native by design (CLI runs on macOS + Linux) |
 | Browser extension | Different tool, different boundary |
 | Compliance certification | Not a compliance product |
 | Enterprise features | Not an enterprise tool |

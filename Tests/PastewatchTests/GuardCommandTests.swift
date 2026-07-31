@@ -304,18 +304,81 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    // WO-598@v2: referenced-file limits use the guard blocked contract.
+    func testGuardBlocksReferencedFileOverInputLimit() throws {
+        let testFile = testDir + "/bounded.txt"
+        try "123456".write(toFile: testFile, atomically: true, encoding: .utf8)
+
+        let result = try runGuardCLI(
+            arguments: ["guard", "cat \(testFile)"],
+            environmentOverrides: [ScanInputLimits.fileBytesEnvironmentKey: "5"]
+        )
+
+        XCTAssertEqual(result.status, GuardExitContract.blocked)
+        XCTAssertTrue(result.stderr.contains("file size 6 bytes exceeds scan limit 5 bytes"))
+        XCTAssertFalse(result.stderr.contains("123456"))
+    }
+
+    // WO-601@v2: malformed referenced files cannot bypass the command guard.
+    func testGuardBlocksReferencedFileWithInvalidLeadingByte() throws {
+        let testFile = testDir + "/invalid-leading.txt"
+        try Data([0xFF, 0x61]).write(to: URL(fileURLWithPath: testFile))
+
+        let result = try runGuardCLI(arguments: ["guard", "cat \(testFile)"])
+
+        XCTAssertEqual(result.status, GuardExitContract.blocked)
+        XCTAssertTrue(result.stderr.contains("cannot be scanned safely"))
+        XCTAssertFalse(result.stderr.contains("secret"))
+    }
+
+    // WO-601@v2: valid prefixes do not hide malformed bytes later in a referenced file.
+    func testGuardBlocksReferencedFileWithEmbeddedInvalidSequence() throws {
+        let testFile = testDir + "/invalid-embedded.txt"
+        try Data([0x61, 0x62, 0xC3, 0x28]).write(to: URL(fileURLWithPath: testFile))
+
+        let result = try runGuardCLI(arguments: ["guard", "cat \(testFile)"])
+
+        XCTAssertEqual(result.status, GuardExitContract.blocked)
+        XCTAssertTrue(result.stderr.contains("cannot be scanned safely"))
+    }
+
+    // WO-601@v2: empty text is fully scannable and remains allowed.
+    func testGuardAllowsReferencedEmptyFile() throws {
+        let testFile = testDir + "/empty.txt"
+        try Data().write(to: URL(fileURLWithPath: testFile))
+
+        let result = try runGuardCLI(arguments: ["guard", "--quiet", "cat \(testFile)"])
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    // WO-601@v2: absent path tokens remain outside referenced-file enforcement.
+    func testGuardIgnoresMissingReferencedFile() throws {
+        let testFile = testDir + "/missing.txt"
+
+        let result = try runGuardCLI(arguments: ["guard", "--quiet", "cat \(testFile)"])
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: String
         let stderr: String
     }
 
-    private func runGuardCLI(arguments: [String]) throws -> CLIResult {
+    // WO-601@v2: invoke the real guard process for referenced-file failure coverage.
+    private func runGuardCLI(
+        arguments: [String],
+        environmentOverrides: [String: String] = [:]
+    ) throws -> CLIResult {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: testDir)
-        process.environment = testEnvironment()
+        process.environment = testEnvironment().merging(environmentOverrides) { _, new in new }
 
         let stdout = Pipe()
         let stderr = Pipe()
