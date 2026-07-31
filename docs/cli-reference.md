@@ -475,9 +475,58 @@ pastewatch-cli hook install
 # Append to existing hook
 pastewatch-cli hook install --append
 
+# Upgrade an existing Pastewatch section in place
+pastewatch-cli hook install --upgrade
+
 # Remove hook
 pastewatch-cli hook uninstall
 ```
+
+`--upgrade` is explicit and replaces only one well-formed section between the
+`BEGIN PASTEWATCH` and `END PASTEWATCH` markers. Content outside that section is
+preserved. Review or back up a customized hook before upgrading; malformed,
+duplicate, or unmatched markers are rejected without modifying the file.
+Symlink-managed hooks are rejected for both `--append` and `--upgrade` so the
+repository is not detached from its shared hook; update the symlink target through
+the system that owns it. Multiply linked regular hooks are rejected for the same
+reason. Existing single-link regular-file permissions are preserved.
+
+### Positive test fixtures
+
+The generated hook can authorize an exact detector-positive test fixture without
+weakening scanning for other staged content. Authorization is bound to the
+repository-relative file path, one-based line number, and SHA-256 fingerprint of
+the complete source line.
+
+```bash
+pastewatch-cli hook fixture-fingerprint Tests/ExampleTests.swift --line 42
+```
+
+The command prints a JSON entry containing only `path`, `line`, and `fingerprint`.
+Add that entry to a root `.pastewatch-hook-fixtures.json` manifest:
+
+```json
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "path": "Tests/ExampleTests.swift",
+      "line": 42,
+      "fingerprint": "<sha256>"
+    }
+  ]
+}
+```
+
+Commit and review the manifest change before staging the fixture. The hook reads
+authorization only from the manifest already committed in `HEAD`; a staged
+manifest edit, source comment, moved line, changed value, malformed entry, or
+directory-wide convention cannot authorize the current commit. Renew an entry by
+generating and committing its new fingerprint separately. A commit that consumes
+an authorization must leave the manifest unchanged, so remove or revise entries
+in a later standalone commit. File moves are scanned as additions at the destination
+path and require a separately committed destination authorization. The manifest and
+hook diagnostics never contain the fixture value.
 
 ## Baseline Diff
 
