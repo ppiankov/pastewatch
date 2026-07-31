@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-07-31
+
+### Added
+
+- The generated pre-commit hook can authorize specific test fixtures that intentionally
+  contain secret-shaped values, so a project's own detector fixtures can be committed
+  without disabling the hook. Authorization is a committed, value-free manifest of exact
+  per-file, per-line fingerprints; run `pastewatch-cli hook fixture-fingerprint <file>`
+  to produce an entry without printing the fixture contents. Any unapproved secret, a
+  moved or edited fixture, a stale fingerprint, an inline self-authorization comment, or
+  a malformed manifest still blocks the commit.
+
+### Fixed
+
+- Hardened the generated hook and its staged-diff scanning against bypass: hook edits
+  refuse symlinked, dangling-symlinked, and hard-linked hook files and pin file identity
+  (device/inode) across the write to close TOCTOU races; hook upgrades replace only the
+  exact marker-bounded generated section and preserve existing permissions; the staged
+  scan disables external diff drivers, textconv, and rename detection so a fixture cannot
+  spoof its authorized path; and the manifest parser rejects duplicate keys, fractional
+  or overflowing numbers, and manifest changes made in the same commit that consumes its
+  authority — all failing closed.
+
 ## [0.36.0] - 2026-07-31
 
 ### Changed

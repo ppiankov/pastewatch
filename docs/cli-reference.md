@@ -585,7 +585,7 @@ Works with any comment style (`#`, `//`, `/* */`).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.36.0
+    rev: v0.36.1
     hooks:
       - id: pastewatch
 ```
