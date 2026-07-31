@@ -910,8 +910,12 @@ final class HookTests: XCTestCase {
     }
 
     // WO-594: synthetic value is assembled at runtime so the repository hook is never bypassed.
+    // WO-596 made ambiguous classes (credential/email/etc.) default-OFF, so a
+    // password= fixture is no longer guard-blocking at default config. The hook tests
+    // must stage a value that ALWAYS blocks regardless of config -- use an intrinsic
+    // (AWS-key-shaped) secret so unapproved fixtures are genuinely detected.
     private func syntheticFixtureLine() -> String {
-        ["password=", "V4ult", "-Fixture-", "Only-2026!"].joined()
+        ["aws_key = ", "AKIA", "Z9Q7K2M4N8P1R3T5"].joined()
     }
 
     // WO-594: manifest commits are separate from fixture staging by construction.
