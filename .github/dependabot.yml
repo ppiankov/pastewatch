@@ -18,6 +18,13 @@ updates:
       # feature-complete project. Allow 5.x compatibility bumps; defer majors.
       - dependency-name: "typescript"
         versions: [">=6"]
+      # @types/vscode must track engines.vscode (^1.125.0), not the latest VS
+      # Code release: vsce rejects any build where types > engines minimum
+      # ("@types/vscode ^1.134.0 greater than engines.vscode ^1.125.0"). The
+      # extension uses only long-stable APIs, so raising the engines floor to
+      # match a bumped type would drop older-VS-Code users for no benefit.
+      # Bump both deliberately together when the floor actually moves.
+      - dependency-name: "@types/vscode"
 
   - package-ecosystem: "github-actions"
     directory: "/"
