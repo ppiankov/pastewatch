@@ -17,8 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests respond immediately over a persistent connection. The message-size limit and
   framing are unchanged. (WO-603)
 
-TBD - fill in before tagging
-
 ## [0.36.1] - 2026-07-31
 
 ### Added
