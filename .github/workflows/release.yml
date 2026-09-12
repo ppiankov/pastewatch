@@ -69,6 +69,16 @@ jobs:
             exit 1
           fi
 
+      # WO-623@v2: keep refusal and extraction regressions enforced by the release gate itself.
+      - name: Test CHANGELOG validation
+        run: bash scripts/changelog-guard_test.sh
+
+      # WO-623@v2: reject incomplete notes before any downstream build or publication job.
+      - name: Check CHANGELOG section is filled in
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: bash scripts/changelog-guard.sh "$RELEASE_TAG" CHANGELOG.md > /dev/null
+
   test:
     name: Test
     runs-on: macos-14
@@ -240,26 +250,12 @@ jobs:
           name: linux-arm64-release
           path: release/
 
+      # WO-623@v2: publish only the exact section accepted by the shared validator.
       - name: Extract release notes from CHANGELOG
         id: notes
-        run: |
-          TAG="${{ needs.resolve.outputs.tag }}"
-          VERSION="${TAG#v}"
-          # Extract the [VERSION] section from CHANGELOG.md
-          # Matches "## [0.19.0]" and captures until the next "## [" header
-          NOTES=$(awk -v ver="## [${VERSION}]" '
-            BEGIN { found=0 }
-            index($0, ver) == 1 { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md | sed '/^$/N;/^\n$/d')
-
-          if [ -z "$NOTES" ]; then
-            NOTES="Release ${TAG}"
-          fi
-
-          # Write to file to avoid quoting issues
-          echo "$NOTES" > /tmp/release-notes.md
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: bash scripts/changelog-guard.sh "$RELEASE_TAG" CHANGELOG.md > /tmp/release-notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v3

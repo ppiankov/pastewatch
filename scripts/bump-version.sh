@@ -92,7 +92,9 @@ printf '%s\n' "${CHANGED[@]}" | sort -u | while read -r f; do echo "  $f"; done
 
 echo ""
 echo "Next steps:"
-echo "  1. Fill in CHANGELOG.md entry for [${VERSION}]"
+# WO-623@v2: the sentinel is intentional, but leaving it behind now blocks release publication.
+echo "  1. Replace the TBD line in CHANGELOG.md [${VERSION}] with real release notes"
+echo "     Release validation rejects empty sections and leftover TBD placeholders"
 echo "  2. git add -A && git commit -m 'chore: bump version to ${VERSION}'"
 # WO-546: Releases must pass through branch CI before automation tags them.
 echo "  3. Push the release branch and open a PR; do not push directly to main"
