@@ -1,6 +1,13 @@
 import XCTest
 @testable import PastewatchCore
 
+// WO-603@v3: live-pipe tests use bounded POSIX readiness waits on both supported platforms.
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
 final class MCPProtocolTests: XCTestCase {
 
     // MARK: - JSONValue encoding/decoding
@@ -135,6 +142,72 @@ final class MCPProtocolTests: XCTestCase {
         """.utf8)
         let request = try JSONDecoder().decode(JSONRPCRequest.self, from: json)
         XCTAssertEqual(request.id, .string("req-1"))
+    }
+
+    // WO-603@v3: neither initialize nor subsequent tools/list may depend on stdin closing.
+    func testMCPLivePipeInitializesAndListsToolsBeforeEOF() throws {
+        let session = try LiveMCPSession(executableURL: pastewatchCLIURL())
+        defer { session.close() }
+
+        try session.send(Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#.utf8) + Data([0x0A]))
+        let initialized = try XCTUnwrap(
+            session.response(), "initialize did not respond while stdin remained open"
+        )
+        XCTAssertEqual(initialized.id, .int(1))
+        XCTAssertNil(initialized.error)
+        guard case .object(let result) = initialized.result else {
+            return XCTFail("Missing initialize result")
+        }
+        XCTAssertEqual(result["protocolVersion"], .string("2024-11-05"))
+
+        try session.send(Data("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n".utf8))
+        try session.send(Data("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n".utf8))
+        let listed = try XCTUnwrap(session.response(), "tools/list did not respond on the same open pipe")
+        XCTAssertEqual(listed.id, .int(2))
+        XCTAssertNil(listed.error)
+        guard case .object(let listing) = listed.result,
+              case .array(let tools) = listing["tools"] else {
+            return XCTFail("Missing tools list")
+        }
+        XCTAssertFalse(tools.isEmpty)
+        XCTAssertNil(try session.response(timeout: 0.1), "Notifications must not produce responses")
+    }
+
+    // WO-603@v3: a complete JSON object must still wait for its newline, not EOF or another request.
+    func testMCPLivePipeWaitsForSplitFrameNewline() throws {
+        let session = try LiveMCPSession(executableURL: pastewatchCLIURL())
+        defer { session.close() }
+
+        try session.send(Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n".utf8))
+        XCTAssertEqual(try XCTUnwrap(session.response()).id, .int(1))
+        try session.send(Data("{\"jsonrpc\":\"2.0\",\"id\":2,".utf8))
+        XCTAssertNil(try session.response(timeout: 0.1))
+        try session.send(Data("\"method\":\"tools/list\"}".utf8))
+        XCTAssertNil(try session.response(timeout: 0.1))
+        try session.send(Data([0x0A]))
+        let response = try XCTUnwrap(session.response(), "Newline did not release the split frame")
+        XCTAssertEqual(response.id, .int(2))
+        XCTAssertNil(response.error)
+    }
+
+    // WO-603@v3: discarding across multiple read chunks must recover without EOF or extra parse errors.
+    func testMCPLivePipeRecoversAfterOversizedLine() throws {
+        let session = try LiveMCPSession(executableURL: pastewatchCLIURL(), maximumLineBytes: 256)
+        defer { session.close() }
+
+        let oversizedBytes = 2 * 64 * 1_024 + 1
+        try session.send(Data(repeating: 0x78, count: oversizedBytes))
+        XCTAssertNil(try session.response(timeout: 0.1), "An unterminated oversized line is still being discarded")
+        try session.send(Data("\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"initialize\"}\n".utf8))
+        let rejected = try XCTUnwrap(session.response())
+        XCTAssertNil(rejected.id)
+        XCTAssertEqual(rejected.error?.code, -32700)
+        XCTAssertEqual(rejected.error?.message, "Parse error")
+        XCTAssertNil(rejected.result)
+        let recovered = try XCTUnwrap(session.response(), "Valid request after oversized input did not respond")
+        XCTAssertEqual(recovered.id, .int(3))
+        XCTAssertNil(recovered.error)
+        XCTAssertNil(try session.response(timeout: 0.1), "Expected exactly one parse error")
     }
 
     // WO-603@v2: oversized transport records are discarded and framing recovers.
@@ -735,6 +808,111 @@ final class MCPProtocolTests: XCTestCase {
         let text = try joinedMCPContentText(response)
         XCTAssertTrue(text.contains("Write blocked"), text)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    // WO-603@v3: keep stdin open through assertions; all waits and writes have a deadline and cleanup kills a stuck child.
+    private final class LiveMCPSession {
+        private let process = Process()
+        private let stdin = Pipe()
+        private let stdout = Pipe()
+        private let directory: URL
+        private var output = Data()
+        private var started = false
+        private static let deadlineSeconds: TimeInterval = 10
+
+        init(executableURL: URL, maximumLineBytes: Int = 256) throws {
+            directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pastewatch-mcp-live-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            process.executableURL = executableURL
+            process.arguments = ["mcp"]
+            process.currentDirectoryURL = directory
+            process.environment = [
+                "HOME": directory.path,
+                "CFFIXED_USER_HOME": directory.path,
+                ScanInputLimits.lineBytesEnvironmentKey: String(maximumLineBytes),
+            ]
+            process.standardInput = stdin
+            process.standardOutput = stdout
+            process.standardError = FileHandle.nullDevice
+            do {
+                let descriptor = stdin.fileHandleForWriting.fileDescriptor
+                let flags = fcntl(descriptor, F_GETFL)
+                guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                    throw POSIXError(.EIO)
+                }
+                try process.run()
+                started = true
+            } catch {
+                close()
+                throw error
+            }
+        }
+
+        // WO-603@v3: a stalled reader must fail a test deadline rather than block the test writer.
+        func send(_ data: Data) throws {
+            let descriptor = stdin.fileHandleForWriting.fileDescriptor
+            let deadline = ProcessInfo.processInfo.systemUptime + Self.deadlineSeconds
+            var offset = 0
+            while offset < data.count {
+                guard try ready(descriptor, events: Int16(POLLOUT), deadline: deadline) else {
+                    throw POSIXError(.ETIMEDOUT)
+                }
+                let count = data.withUnsafeBytes { bytes in
+                    write(descriptor, bytes.baseAddress!.advanced(by: offset), data.count - offset)
+                }
+                if count > 0 {
+                    offset += count
+                } else if count < 0, errno == EINTR || errno == EAGAIN {
+                    continue
+                } else {
+                    throw POSIXError(.EIO)
+                }
+            }
+        }
+
+        // WO-603@v3: await one framed response without closing or padding the request pipe.
+        func response(timeout: TimeInterval = deadlineSeconds) throws -> JSONRPCResponse? {
+            let deadline = ProcessInfo.processInfo.systemUptime + timeout
+            while true {
+                if let newline = output.firstIndex(of: 0x0A) {
+                    let line = Data(output[..<newline])
+                    output.removeSubrange(output.startIndex...newline)
+                    return try JSONDecoder().decode(JSONRPCResponse.self, from: line)
+                }
+                guard try ready(stdout.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), deadline: deadline) else {
+                    return nil
+                }
+                let chunk = stdout.fileHandleForReading.availableData
+                guard !chunk.isEmpty else { throw POSIXError(.EPIPE) }
+                output.append(chunk)
+            }
+        }
+
+        // WO-603@v3: interrupted readiness waits share the original monotonic deadline.
+        private func ready(_ descriptor: Int32, events: Int16, deadline: TimeInterval) throws -> Bool {
+            while true {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { return false }
+                var descriptor = pollfd(fd: descriptor, events: events, revents: 0)
+                let result = poll(&descriptor, 1, Int32((remaining * 1_000).rounded(.up)))
+                if result >= 0 { return result > 0 }
+                guard errno == EINTR else { throw POSIXError(.EIO) }
+            }
+        }
+
+        // WO-603@v3: even the unfixed reader must leave no child or open descriptors after a failed assertion.
+        func close() {
+            stdin.fileHandleForWriting.closeFile()
+            if started {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                process.waitUntilExit()
+            }
+            stdin.fileHandleForReading.closeFile()
+            stdout.fileHandleForReading.closeFile()
+            stdout.fileHandleForWriting.closeFile()
+            try? FileManager.default.removeItem(at: directory)
+        }
     }
 
     private struct MCPCallResult {
