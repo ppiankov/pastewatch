@@ -2,6 +2,13 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
+// WO-603@v3: POSIX reads return available pipe bytes without waiting to fill the buffer.
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
 struct MCP: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run as MCP server (stdio transport)"
@@ -38,7 +45,7 @@ private enum MCPWritePayload {
     case error(String)
 }
 
-// WO-603@v2: retain at most one configured line plus a fixed read chunk.
+// WO-603@v3: retain bounded framing while allowing live request/response exchanges.
 private struct MCPLineReader {
     private static let readChunkBytes = 64 * 1_024
 
@@ -53,6 +60,7 @@ private struct MCPLineReader {
         self.maximumLineBytes = maximumLineBytes
     }
 
+    // WO-603@v3: dispatch complete lines before waiting for additional transport bytes.
     mutating func next() throws -> MCPInputRecord? {
         while true {
             if let newlineIndex = buffer.firstIndex(of: 0x0A) {
@@ -72,7 +80,8 @@ private struct MCPLineReader {
                 return record(for: line)
             }
 
-            let chunk = try handle.read(upToCount: Self.readChunkBytes) ?? Data()
+            // WO-603@v3: a short pipe read must not wait for the next request or EOF.
+            let chunk = try readAvailableChunk()
             if chunk.isEmpty {
                 reachedEOF = true
                 continue
@@ -95,6 +104,24 @@ private struct MCPLineReader {
             if buffer.firstIndex(of: 0x0A) == nil, buffer.count > probeLimit {
                 buffer.removeAll(keepingCapacity: true)
                 discardingOversizedLine = true
+            }
+        }
+    }
+
+    // WO-603@v3: preserve the fixed allocation cap and retry interrupted reads, not successful short reads.
+    private func readAvailableChunk() throws -> Data {
+        var chunk = Data(count: Self.readChunkBytes)
+        while true {
+            let count = chunk.withUnsafeMutableBytes { bytes in
+                read(handle.fileDescriptor, bytes.baseAddress, bytes.count)
+            }
+            if count >= 0 {
+                chunk.count = count
+                return chunk
+            }
+            let readError = errno
+            guard readError == EINTR else {
+                throw POSIXError(POSIXErrorCode(rawValue: readError) ?? .EIO)
             }
         }
     }

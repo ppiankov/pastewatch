@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-09-12
+
+### Fixed
+
+- MCP server no longer stalls when a client keeps its input stream open waiting for a
+  reply. The stdio reader now delivers each complete message as soon as it arrives instead
+  of waiting to fill its read buffer, so `initialize`, `tools/list`, and all subsequent
+  requests respond immediately over a persistent connection. The message-size limit and
+  framing are unchanged. (WO-603)
+
+TBD - fill in before tagging
+
 ## [0.36.1] - 2026-07-31
 
 ### Added
