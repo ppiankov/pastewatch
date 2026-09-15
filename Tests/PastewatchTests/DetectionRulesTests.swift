@@ -1820,6 +1820,83 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-626: all legacy receivers must reject calls and nil checks without weakening token syntax.
+    func testLegacyVaultReceiverReferencesAreNotTokens() {
+        let member = ["refresh", "Pending", "Cache", "State"].joined()
+        XCTAssertEqual(member.count, 24)
+        for receiver in ["s", "b", "r"] {
+            for name in [member, "R" + member.dropFirst()] {
+                let reference = receiver + "." + name
+                let expressions = [
+                    "if \(reference) == nil { }",
+                    "if \(reference) != nil { }",
+                    "\(reference)()",
+                    "return \(reference)(context.Background(), value)",
+                    "return \(reference) (value, other)",
+                ]
+                for expression in expressions {
+                    let matches = DetectionRules.scan(expression, config: config)
+                    XCTAssertEqual(matches.filter { $0.type == .vaultToken }.count, 0)
+                }
+            }
+        }
+    }
+
+    // WO-626: source files do not authorize skipping quoted or standalone legacy secrets.
+    func testLegacyVaultTokensRemainDetectedInGoLiterals() {
+        let suffixes = [String(repeating: "A1", count: 12), ["refresh", "Pending", "Cache", "State"].joined()]
+        for prefix in ["s", "b", "r"] {
+            for suffix in suffixes {
+                let token = prefix + "." + suffix
+                let contexts = [
+                    token,
+                    "package fixture\nvar value = \"\(token)\"\n",
+                    "package fixture\nvar value = `\(token)`\n",
+                    "package fixture\nvar value = \"\(token)()\"\n",
+                    "package fixture\nvar value = `before\n\(token) == nil`\n",
+                ]
+                for content in contexts {
+                    let matches = DetectionRules.scan(content, config: config).filter { $0.type == .vaultToken }
+                    XCTAssertEqual(matches.count, 1)
+                    XCTAssertTrue(matches.allSatisfy { $0.value == token && $0.mutationSafe })
+                }
+            }
+        }
+    }
+
+    // WO-626: syntax-like data stays detectable and cannot leave later code in the wrong lexical state.
+    func testLegacyVaultContextTransitionsPreserveDetection() {
+        let token = "s." + ["refresh", "Pending", "Cache", "State"].joined()
+        let fixtures: [(String, Int)] = [
+            ("var text = \"escaped \\\" \(token)()\"\n\(token)()", 1),
+            ("// comment with quote \" \(token)()\n\(token)()", 1),
+            ("/* comment with quote \" \(token)() */\n\(token)()", 1),
+            ("var text = `before\n\(token) == nil`\n\(token)()", 1),
+            ("var symbol = '\"'\n\(token)()", 0),
+            ("var divided = a / b\n\(token)()", 0),
+            ("var text = \"unfinished \(token)()", 1),
+            ("if \(token) == nilValue { }", 1),
+            ("if \(token) == nil_value { }", 1),
+        ]
+        for (content, expectedCount) in fixtures {
+            let matches = DetectionRules.scan(content, config: config).filter { $0.type == .vaultToken }
+            XCTAssertEqual(matches.count, expectedCount)
+        }
+    }
+
+    // WO-626: the discriminator applies only to the legacy single-letter token family.
+    func testModernVaultTokensAreUnaffectedByReceiverDiscrimination() {
+        let suffix = ["refresh", "Pending", "Cache", "State"].joined()
+        for prefix in ["hvs", "hvb", "hvr"] {
+            let token = prefix + "." + suffix
+            for content in [token, "\(token)()", "if \(token) == nil { }"] {
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .vaultToken }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertTrue(matches.allSatisfy { $0.value == token && $0.mutationSafe })
+            }
+        }
+    }
+
     // WO-478: the match must contain the full private payload, not only its marker.
     func testSSHPrivateKeyMatchesCompleteBoundedPEMBlocks() {
         let first = pemFixture(label: "OPENSSH PRIVATE KEY", payload: String(repeating: "QUJD", count: 12), newline: "\n")

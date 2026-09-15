@@ -732,6 +732,7 @@ public struct DetectionRules {
         )
     }
 
+    // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
     /// Scan content with regex rules.
     private static func scanWithRegexRules(
         _ content: String,
@@ -744,6 +745,8 @@ public struct DetectionRules {
 
             let nsRange = NSRange(content.startIndex..., in: content)
             let regexMatches = regex.matches(in: content, options: [], range: nsRange)
+            // WO-626: advance lexical context once per rule, not once over the whole prefix per match.
+            var vaultContext = VaultCodeContext(start: content.startIndex)
 
             for match in regexMatches {
                 guard let range = Range(match.range, in: content) else { continue }
@@ -752,6 +755,13 @@ public struct DetectionRules {
                 let value = String(content[range])
                 guard !shouldExclude(value) else { continue }
                 guard isValidMatch(value, type: type, config: config) else { continue }
+
+                // WO-626: only unquoted legacy identifier expressions are excluded; modern tokens stay intrinsic.
+                if type == .vaultToken,
+                   isLegacyVaultCodeReference(value, after: range.upperBound, in: content),
+                   vaultContext.isCode(at: range.lowerBound, in: content) {
+                    continue
+                }
 
                 matches.append(DetectedMatch(
                     type: type,
@@ -762,6 +772,79 @@ public struct DetectionRules {
                 ))
                 matchedRanges.insert(range, in: content)
             }
+        }
+    }
+
+    // WO-626: local call/nil-comparison syntax distinguishes receivers without changing token grammar.
+    private static func isLegacyVaultCodeReference(
+        _ value: String, after end: String.Index, in content: String
+    ) -> Bool {
+        let parts = value.split(separator: ".", maxSplits: 1)
+        guard parts.count == 2, ["s", "b", "r"].contains(parts[0]),
+              parts[1].first?.isLetter == true else { return false }
+        let tail = content[end...].drop { $0.isWhitespace && !$0.isNewline }
+        if tail.hasPrefix("(") { return true }
+        guard tail.hasPrefix("==") || tail.hasPrefix("!=") else { return false }
+        let rhs = tail.dropFirst(2).drop { $0.isWhitespace && !$0.isNewline }
+        guard rhs.hasPrefix("nil") else { return false }
+        let next = rhs.dropFirst(3).first
+        return next.map { !$0.isLetter && !$0.isNumber && $0 != "_" } ?? true
+    }
+
+    // WO-626: keep lexical state constant-size while visiting candidate ranges in source order.
+    private enum VaultCodeState {
+        case code, quoted(Character), escaped(Character), lineComment, blockComment
+    }
+
+    // WO-626: quoted and commented data retains detection even when its contents look callable.
+    private struct VaultCodeContext {
+        // WO-626: never rescan earlier source for a later regex match.
+        private var index: String.Index
+        // WO-626: an incomplete string/comment conservatively preserves token detection.
+        private var state = VaultCodeState.code
+
+        // WO-626: every regex pass starts from the same unclassified text boundary.
+        init(start: String.Index) {
+            index = start
+        }
+
+        // WO-626: inspect syntax at the match, not the filename or the file's overall appearance.
+        mutating func isCode(at boundary: String.Index, in content: String) -> Bool {
+            while index < boundary {
+                let character = content[index]
+                index = content.index(after: index)
+                switch state {
+                case .code:
+                    if character == "\"" || character == "'" || character == "`" {
+                        state = .quoted(character)
+                    } else if character == "/", index < boundary {
+                        if content[index] == "/" {
+                            state = .lineComment
+                            index = content.index(after: index)
+                        } else if content[index] == "*" {
+                            state = .blockComment
+                            index = content.index(after: index)
+                        }
+                    }
+                case .quoted(let delimiter):
+                    if character == delimiter {
+                        state = .code
+                    } else if character == "\\", delimiter != "`" {
+                        state = .escaped(delimiter)
+                    }
+                case .escaped(let delimiter):
+                    state = .quoted(delimiter)
+                case .lineComment:
+                    if character.isNewline { state = .code }
+                case .blockComment:
+                    if character == "*", index < boundary, content[index] == "/" {
+                        state = .code
+                        index = content.index(after: index)
+                    }
+                }
+            }
+            if case .code = state { return true }
+            return false
         }
     }
 
