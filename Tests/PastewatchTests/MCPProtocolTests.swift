@@ -811,19 +811,30 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     // WO-603@v3: keep stdin open through assertions; all waits and writes have a deadline and cleanup kills a stuck child.
-    private final class LiveMCPSession {
+    // WO-627@v2: range tests reuse the same persistent-pipe transport and isolated fixture directory.
+    final class LiveMCPSession {
         private let process = Process()
         private let stdin = Pipe()
         private let stdout = Pipe()
-        private let directory: URL
+        let directory: URL // WO-627@v2: fixtures belong to the session's isolated filesystem.
         private var output = Data()
         private var started = false
         private static let deadlineSeconds: TimeInterval = 10
 
-        init(executableURL: URL, maximumLineBytes: Int = 256) throws {
+        // WO-627@v2: configure read caps and explicit rules before the subprocess loads policy.
+        init(
+            executableURL: URL,
+            maximumLineBytes: Int = 256,
+            maximumFileBytes: Int = ScanInputLimits.defaultMaximumFileBytes,
+            config: PastewatchConfig? = nil
+        ) throws {
             directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("pastewatch-mcp-live-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // WO-627@v2: use only test-owned policy, never the operator's config.
+            if let config {
+                try JSONEncoder().encode(config).write(to: directory.appendingPathComponent(".pastewatch.json"))
+            }
             process.executableURL = executableURL
             process.arguments = ["mcp"]
             process.currentDirectoryURL = directory
@@ -831,6 +842,8 @@ final class MCPProtocolTests: XCTestCase {
                 "HOME": directory.path,
                 "CFFIXED_USER_HOME": directory.path,
                 ScanInputLimits.lineBytesEnvironmentKey: String(maximumLineBytes),
+                // WO-627@v2: a small cap proves oversized range lengths are clamped.
+                ScanInputLimits.fileBytesEnvironmentKey: String(maximumFileBytes),
             ]
             process.standardInput = stdin
             process.standardOutput = stdout

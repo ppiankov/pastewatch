@@ -45,6 +45,42 @@ private enum MCPWritePayload {
     case error(String)
 }
 
+// WO-627@v2: validate optional ranges without changing ordinary full-file reads.
+private struct MCPReadRange {
+    // WO-627@v2: defer conversion until clamping to EOF so large offsets cannot overflow.
+    let offset: Double
+    // WO-627@v2: lengths are bounded by the existing file-read cap before allocation.
+    let length: Int
+
+    // WO-627@v2: only explicitly requested ranges change the response encoding.
+    init?(arguments: [String: JSONValue]) throws {
+        guard arguments["byte_offset"] != nil || arguments["byte_length"] != nil else { return nil }
+        if let value = arguments["byte_offset"] {
+            guard case .number(let number) = value,
+                  number.isFinite, number >= 0, number.rounded(.towardZero) == number else {
+                throw NSError(domain: "MCPReadRange", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "Invalid byte_offset: expected a non-negative integer"
+                ])
+            }
+            offset = number
+        } else {
+            offset = 0
+        }
+        let cap = ScanInputLimits.current().maximumFileBytes
+        if let value = arguments["byte_length"] {
+            guard case .number(let number) = value,
+                  number.isFinite, number > 0, number.rounded(.towardZero) == number else {
+                throw NSError(domain: "MCPReadRange", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "Invalid byte_length: expected a positive integer"
+                ])
+            }
+            length = number >= Double(cap) ? cap : Int(number)
+        } else {
+            length = cap
+        }
+    }
+}
+
 // WO-603@v3: retain bounded framing while allowing live request/response exchanges.
 private struct MCPLineReader {
     private static let readChunkBytes = 64 * 1_024
@@ -314,6 +350,17 @@ final class MCPServer {
                                 "type": .string("string"),
                                 "description": .string("File path to read")
                             ]),
+                            // WO-627@v2: callers can reconstruct redacted bytes without Unicode realignment.
+                            "byte_offset": .object([
+                                "type": .string("integer"),
+                                "minimum": .number(0),
+                                "description": .string("Zero-based offset in redacted output bytes (default 0). With either byte range argument, content is Base64 with encoding=base64, total_bytes, byte_offset, byte_length and has_more. Decode and concatenate windows before UTF-8 decoding; continue at byte_offset + byte_length.")
+                            ]),
+                            "byte_length": .object([
+                                "type": .string("integer"),
+                                "minimum": .number(1),
+                                "description": .string("Maximum redacted bytes to return, capped at the existing file-read limit (also the default). Omit both byte arguments for the unchanged plain-text response.")
+                            ]),
                             "min_severity": .object([
                                 "type": .string("string"),
                                 // WO-584@v2: schema text and enum derive from Severity ownership.
@@ -579,9 +626,18 @@ final class MCPServer {
     // MARK: - Redacted read/write tools
 
     // WO-549@v2: MCP reads use the same format-aware guard decision as protected file reads.
+    // WO-627@v2: validate range inputs before work; apply them only to the final redacted payload.
     private func handleReadFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
+        }
+
+        // WO-627@v2: invalid range arguments must not silently fall back to an unbounded response.
+        let readRange: MCPReadRange?
+        do {
+            readRange = try MCPReadRange(arguments: arguments)
+        } catch {
+            return errorResult(id: id, text: error.localizedDescription)
         }
 
         guard FileManager.default.fileExists(atPath: path) else {
@@ -666,12 +722,12 @@ final class MCPServer {
             let result: JSONValue = .array([
                 .object([
                     "type": .string("text"),
-                    "text": .string(encodeJSON(.object([
-                        "content": .string(content),
+                    // WO-627@v2: even clean content uses the shared post-scan byte-window encoder.
+                    "text": .string(encodeReadPayload(content: content, range: readRange, metadata: [
                         "redactions": .array([]),
                         "advisories": .array(advisories),
                         "clean": .bool(partition.advisory.isEmpty)
-                    ])))
+                    ]))
                 ])
             ])
             return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
@@ -705,18 +761,37 @@ final class MCPServer {
         let result: JSONValue = .array([
             .object([
                 "type": .string("text"),
-                "text": .string(encodeJSON(.object([
-                    "content": .string(redacted),
+                // WO-627@v2: the encoder receives only fully redacted content, never a raw-file slice.
+                "text": .string(encodeReadPayload(content: redacted, range: readRange, metadata: [
                     "redactions": .array(redactionsArray),
                     "advisories": .array(advisories),
                     "clean": .bool(false),
                     // WO-522@v3: explain the session-specific, locally restorable marker.
                     "pastewatch_note": .string(modelRedactionNotice)
-                ])))
+                ]))
             ])
         ])
 
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+    }
+
+    // WO-627@v2: preserve unranged fields exactly; Base64 losslessly carries partial UTF-8 bytes.
+    private func encodeReadPayload(content: String, range: MCPReadRange?, metadata: [String: JSONValue]) -> String {
+        var payload = metadata
+        if let range {
+            let bytes = Data(content.utf8)
+            let start = range.offset >= Double(bytes.count) ? bytes.count : Int(range.offset)
+            let length = min(range.length, bytes.count - start)
+            payload["content"] = .string(bytes.subdata(in: start..<(start + length)).base64EncodedString())
+            payload["encoding"] = .string("base64")
+            payload["total_bytes"] = .number(Double(bytes.count))
+            payload["byte_offset"] = .number(range.offset)
+            payload["byte_length"] = .number(Double(length))
+            payload["has_more"] = .bool(start + length < bytes.count)
+        } else {
+            payload["content"] = .string(content)
+        }
+        return encodeJSON(.object(payload))
     }
 
     // WO-549@v2: MCP writes reject agent-authored plaintext before restoring placeholders.
