@@ -50,10 +50,26 @@ jobs:
       - name: Run SwiftLint
         run: swiftlint lint --strict
 
+  # WO-628: attribute dependency-audit failures independently of Swift builds.
+  audit-extension:
+    name: Audit Extension Dependencies
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # WO-628: high/critical advisories fail CI; moderate/low remain advisory.
+      - name: Audit extension dependencies
+        run: cd vscode-pastewatch && npm ci && npm audit --audit-level=high
+
   auto-tag:
     name: Auto-tag version bumps
     runs-on: ubuntu-22.04
-    needs: [build, build-linux, lint]
+    # WO-628: block automatic tagging and release dispatch when the audit fails.
+    needs: [build, build-linux, lint, audit-extension]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write

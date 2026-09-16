@@ -12,6 +12,14 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # WO-628: batch development dependencies separately for version and security updates.
+    groups:
+      dev-version-updates:
+        applies-to: version-updates
+        dependency-type: development
+      dev-security-updates:
+        applies-to: security-updates
+        dependency-type: development
     ignore:
       # TypeScript 6+ removes moduleResolution=node10; migrating the extension's
       # tsconfig off moduleResolution:"node" is out of scope for this
