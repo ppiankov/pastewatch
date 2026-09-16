@@ -28,6 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # WO-628: high/critical advisories fail CI; moderate/low remain advisory.
+      - name: Audit extension dependencies
+        run: cd vscode-pastewatch && npm ci && npm audit --audit-level=high
+
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "5.9"
