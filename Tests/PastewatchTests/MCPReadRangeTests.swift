@@ -77,7 +77,12 @@ final class MCPReadRangeTests: XCTestCase {
         ])
         let fragment = try decodedWindow(middle)
         XCTAssertEqual(fragment.count, 1)
-        XCTAssertNil(String(data: fragment, encoding: .utf8))
+        // WO-627: a one-byte window inside a multi-byte character is a raw UTF-8
+        // continuation byte (0x80–0xBF). Assert that directly rather than probing
+        // String(data:encoding:) on a lone continuation byte — Foundation's
+        // handling of that is platform-dependent (nil on macOS, U+FFFD on Linux CI),
+        // which is not what this test is proving. The contract is byte-exactness.
+        XCTAssertEqual(fragment.first.map { $0 & 0xC0 }, 0x80)
         XCTAssertTrue(fragment == bytes.subdata(in: 2..<3))
         XCTAssertTrue(try collectWindows(session, path: path, expected: bytes, length: 1) == bytes)
     }
