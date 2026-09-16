@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-16
+
+### Added
+
+- The `pastewatch_read_file` MCP tool now accepts optional `byte_offset` and
+  `byte_length` arguments to read a bounded window of a file. Ranged responses are
+  Base64-encoded with range metadata (`total_bytes`, `byte_offset`, `byte_length`,
+  `has_more`) so a file with very long lines can be retrieved in consumable pieces;
+  redaction is applied before slicing and unranged reads are unchanged. (WO-627)
+
+### Fixed
+
+- The Vault legacy-token detector no longer flags ordinary Go receiver method calls
+  (a single-letter receiver with a long method name) as secrets. Genuine tokens,
+  including those in string literals or comments, are still detected. (WO-626)
+
+### Changed
+
+- The release workflow now fails closed if a tagged version's changelog section is
+  missing, empty, duplicated, or still contains the placeholder text left by the
+  version-bump script. (WO-623)
+
+### Security
+
+- Updated development-only build dependencies of the VS Code extension to clear
+  high-severity advisories: fast-uri to 3.1.7, js-yaml to 4.3.2, and brace-expansion
+  to 5.0.12. These are transitive build-toolchain dependencies, not part of the
+  shipped extension. (WO-624, WO-625)
+
 ## [0.36.2] - 2026-09-12
 
 ### Fixed
