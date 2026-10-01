@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-10-01
+
+### Fixed
+
+- With the DB Connection or Credential detectors enabled, documentation text no longer
+  reports false critical secrets: a bare database URL scheme with no host or credentials is
+  not treated as a connection string, and a credential-style key set to a boolean or null
+  literal (including quoted values and ones followed by a backtick or quote) is not treated
+  as a credential. Real connection strings and credential values are still detected at the
+  same severity, and defaults are unchanged. (WO-633)
+
 ## [0.37.1] - 2026-10-01
 
 ### Fixed
