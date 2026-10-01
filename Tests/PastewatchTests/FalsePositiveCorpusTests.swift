@@ -76,19 +76,44 @@ final class FalsePositiveCorpusTests: XCTestCase {
             "timeout: 3600", "retries: 3", "enabled: true", "level: debug",
             "port: 8443", "workers: 4", "mode: strict",
         ],
+        // WO-633: assemble documentation shapes without embedding scanner-triggering literals in source.
+        "bare-dsn-prose": [
+            ["- Detects connection strings (`", "post", "gres", "://", "`, `", "mongo", "db", "://", "`)."].joined(),
+            ["- ClickHouse connection string detection (`", "click", "house", "://", "`)."].joined(),
+            "- Plain prose about databases and credentials, no examples.",
+        ],
+        // WO-633: markdown closing delimiters must not turn boolean/null literals into credentials.
+        "credential-literal-prose": ["true", "false", "null", "\"true\""].map {
+            "- Credential regex: exclude literal values (`" + ["pass", "word", "="].joined() + $0 + "`)."
+        },
     ]
 
     // WO-569: benign corpus must not produce guard-blocking findings.
     func testBenignCorpusProducesNoGuardBlockingFindings() {
         for (klass, lines) in Self.benignCorpus {
-            for line in lines {
+            // WO-633: failure diagnostics identify corpus rows, never matched values.
+            for (index, line) in lines.enumerated() {
                 let matches = DetectionRules.scan(line, config: config)
                 let blocking = matches.filter { $0.effectiveSeverity >= .high }
                 XCTAssertTrue(
                     blocking.isEmpty,
-                    "[\(klass)] benign line must not produce a guard-blocking (>= high) finding: "
-                        + "\(line) -> \(blocking.map { "\($0.type)/\($0.effectiveSeverity)" })"
+                    // WO-633: retain type/severity evidence without exposing fixture content.
+                    "[\(klass)] line \(index + 1): \(blocking.count) guard-blocking findings "
+                        + "\(blocking.map { "\($0.type)/\($0.effectiveSeverity)" })"
                 )
+            }
+        }
+    }
+
+    // WO-633: default-off alone must not mask precision regressions when these detectors are enabled.
+    func testDocumentationCorpusWithEnabledDetectors() throws {
+        var enabledConfig = config
+        enabledConfig.enabledTypes += [SensitiveDataType.dbConnectionString.rawValue, SensitiveDataType.credential.rawValue]
+        for klass in ["bare-dsn-prose", "credential-literal-prose"] {
+            let lines = try XCTUnwrap(Self.benignCorpus[klass])
+            for (index, line) in lines.enumerated() {
+                let blocking = DetectionRules.scan(line, config: enabledConfig).filter { $0.effectiveSeverity >= .high }
+                XCTAssertTrue(blocking.isEmpty, "[\(klass)] line \(index + 1): \(blocking.count) blocking findings")
             }
         }
     }
