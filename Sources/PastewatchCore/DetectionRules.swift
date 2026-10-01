@@ -233,8 +233,9 @@ public struct DetectionRules {
 
         // Database Connection String - high confidence
         // PostgreSQL, MySQL, MongoDB connection strings
+        // WO-633: require an authority byte, not closing prose punctuation or a path/query/fragment.
         if let regex = try? NSRegularExpression(
-            pattern: #"(postgres|postgresql|mysql|mongodb|redis|clickhouse)://[^\s]+"#,
+            pattern: #"(postgres|postgresql|mysql|mongodb|redis|clickhouse)://[^\s`\"'),/?#][^\s]*"#,
             options: [.caseInsensitive]
         ) {
             result.append((.dbConnectionString, regex))
@@ -533,8 +534,9 @@ public struct DetectionRules {
         // Ported from chainwatch internal/redact/scanner.go
         // Excludes: boolean/trivial values (true, false, nil, etc.),
         //   env-lookup patterns (os.Getenv, process.env, ENV[), Go := declarations
+        // WO-633: extend the existing literal gate to paired quotes and Markdown/prose boundaries.
         if let regex = try? NSRegularExpression(
-            pattern: #"(?i)(?:password|passwd|secret|token|api_key|apikey|auth|credentials?)[ \t]*(?::=|[=:])[ \t]*(?!(?:true|false|yes|no|none|null|nil|0|1)(?:\s|$|[,;)\]}]))(?!os\.(?:Getenv|environ)|process\.env|ENV\[|ProcessInfo)\S{3,}"#,
+            pattern: #"(?i)(?:password|passwd|secret|token|api_key|apikey|auth|credentials?)[ \t]*(?::=|[=:])[ \t]*(?!([\"']?)(?:true|false|yes|no|on|off|none|null|nil|0|1)\1(?:\s|$|[`\"',;)\]}]))(?!os\.(?:Getenv|environ)|process\.env|ENV\[|ProcessInfo)\S{3,}"#,
             options: []
         ) {
             result.append((.credential, regex))

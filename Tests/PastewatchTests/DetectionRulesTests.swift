@@ -603,6 +603,60 @@ final class DetectionRulesTests: XCTestCase {
 
     // MARK: - False Positive Exclusions
 
+    // WO-633: a delimiter cannot supply the missing authority of a documented database scheme.
+    func testBareDatabaseSchemesAreNotConnectionStrings() {
+        let schemes = ["post" + "gres", "post" + "gresql", "my" + "sql", "mongo" + "db", "re" + "dis", "click" + "house"]
+        let tails = ["", "`", "\"", "'", ")", ",", " ", "\t", "\n", "/catalog", "?option=1", "#fragment"]
+        for scheme in schemes {
+            for tail in tails {
+                let content = "- Supported scheme: " + scheme.uppercased() + "://" + tail
+                for testConfig in [PastewatchConfig.defaultConfig, config] {
+                    let matches = DetectionRules.scan(content, config: testConfig)
+                    XCTAssertEqual(matches.filter { $0.type == .dbConnectionString }.count, 0)
+                }
+            }
+        }
+    }
+
+    // WO-633: fix the existing literal exclusion for quoting, case and surrounding prose delimiters.
+    func testBooleanAndNullCredentialLiteralsAreNotSecrets() {
+        let literals = ["true", "false", "yes", "no", "on", "off", "null", "none", "nil", "0", "1"]
+        let key = ["pass", "word", "="].joined()
+        for literal in literals {
+            for value in [literal, literal.uppercased(), literal.capitalized] {
+                for quote in ["", "\"", "'"] {
+                    for suffix in ["", "`)", ",", ";", "\n"] {
+                        let content = "- Literal (`" + key + quote + value + quote + suffix
+                        let matches = DetectionRules.scan(content, config: config)
+                        XCTAssertEqual(matches.filter { $0.type == .credential }.count, 0)
+                    }
+                }
+            }
+        }
+    }
+
+    // WO-633: real authorities and credential values retain their existing critical severity when enabled.
+    func testDatabaseAndCredentialPrecisionRetainsTruePositives() {
+        let opaqueValue = ["Q7xR", "9mV2", "nK8z", "_B5a"].joined()
+        let host = "db." + "private"
+        for scheme in ["post" + "gres", "post" + "gresql", "my" + "sql", "mongo" + "db", "re" + "dis", "click" + "house"] {
+            for authority in [host, ["user", ":", opaqueValue, "@", host].joined(), "[::1]"] {
+                let content = scheme + "://" + authority + "/catalog"
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .dbConnectionString }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertTrue(matches.allSatisfy { $0.effectiveSeverity == .critical })
+            }
+        }
+        for value in [opaqueValue, "true" + opaqueValue, "false" + opaqueValue, "null" + opaqueValue] {
+            for quote in ["", "\"", "'"] {
+                let content = ["pass", "word", "="].joined() + quote + value + quote
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertTrue(matches.allSatisfy { $0.effectiveSeverity == .critical })
+            }
+        }
+    }
+
     func testIgnoresAuthBooleanValues() {
         let booleans = ["auth=true", "AUTH=false", "auth=1", "auth=0",
                         "auth=yes", "auth=no", "auth=none", "auth=null", "auth=nil"]
