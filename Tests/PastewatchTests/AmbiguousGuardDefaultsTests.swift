@@ -33,6 +33,8 @@ final class AmbiguousGuardDefaultsTests: XCTestCase {
             .appendingPathComponent("pastewatch-ambiguous-home-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
+        // WO-634: HOME is not a config override; defaults come from an explicit project fixture.
+        try TestConfigHelper.ensureProjectConfig(in: home)
 
         let process = Process()
         process.executableURL = pastewatchCLIURL()
@@ -44,8 +46,7 @@ final class AmbiguousGuardDefaultsTests: XCTestCase {
         ]
         process.currentDirectoryURL = home
         var environment = ProcessInfo.processInfo.environment
-        environment["HOME"] = home.path
-        environment["CFFIXED_USER_HOME"] = home.path
+        // WO-634: retain the ordinary process environment, not Foundation home redirection.
         environment["PW_GUARD"] = "1"
         process.environment = environment
 

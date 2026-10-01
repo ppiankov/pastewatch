@@ -82,37 +82,31 @@ final class ConfigResolutionTests: XCTestCase {
         XCTAssertFalse(config.operatorRedactionNotices)
     }
 
-    func testResolveReturnsDefaultWhenNoConfigFiles() {
-        // In test environment, CWD typically won't have .pastewatch.json
-        // and ~/.config/pastewatch/config.json may or may not exist
-        let config = PastewatchConfig.resolve()
-        XCTAssertTrue(config.enabled)
-        XCTAssertFalse(config.enabledTypes.isEmpty)
+    // WO-634: default assertions must never consume ambient project or operator config.
+    func testResolveReturnsDefaultWhenNoConfigFiles() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = PastewatchConfig.resolve()
+            XCTAssertTrue(config.enabled)
+            XCTAssertEqual(config.enabledTypes, PastewatchConfig.defaultConfig.enabledTypes)
+            XCTAssertFalse(config.isTypeEnabled(.dbConnectionString))
+        }
     }
 
+    // WO-634: project precedence is tested in a private directory with isolated fallback.
     func testResolveFindsProjectConfig() throws {
-        let cwd = FileManager.default.currentDirectoryPath
-        let projectPath = cwd + "/.pastewatch.json"
-
-        // Create a project config with only Email enabled
-        let config = PastewatchConfig(
-            enabled: true,
-            enabledTypes: ["Email"],
-            showNotifications: false,
-            soundEnabled: false
-        )
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(config)
-        try data.write(to: URL(fileURLWithPath: projectPath))
-
-        defer {
-            try? FileManager.default.removeItem(atPath: projectPath)
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let config = PastewatchConfig(
+                enabled: true,
+                enabledTypes: ["Email"],
+                showNotifications: false,
+                soundEnabled: false
+            )
+            try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
+            let resolved = PastewatchConfig.resolve()
+            XCTAssertTrue(resolved.enabledTypes.contains("Email"), "Original type must be present")
+            XCTAssertTrue(resolved.enabledTypes.contains("Workledger Key"),
+                           "New types should be auto-enabled from project config")
         }
-
-        let resolved = PastewatchConfig.resolve()
-        XCTAssertTrue(resolved.enabledTypes.contains("Email"), "Original type must be present")
-        XCTAssertTrue(resolved.enabledTypes.contains("Workledger Key"),
-                       "New types should be auto-enabled from project config")
     }
 
     // WO-574@v4: absent files are the only condition that permits default fallback.

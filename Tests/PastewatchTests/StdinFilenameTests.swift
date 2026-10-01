@@ -406,6 +406,8 @@ final class StdinFilenameTests: XCTestCase {
         arguments: [String] = ["scan", "--check"],
         environmentOverrides: [String: String] = [:]
     ) throws -> CLIResult {
+        // WO-634: preserve invalid/custom fixtures while pinning otherwise ambient defaults.
+        try TestConfigHelper.ensureProjectConfig(in: currentDirectory)
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = arguments

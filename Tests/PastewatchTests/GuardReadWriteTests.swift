@@ -131,21 +131,24 @@ final class GuardReadWriteTests: XCTestCase {
         let emptyPath = testDir + "/empty.txt"
         try Data().write(to: URL(fileURLWithPath: emptyPath))
 
-        for operation in [FileGuard.Operation.read, .write] {
-            XCTAssertNoThrow(
-                try FileGuard.check(
-                    filePath: missingPath,
-                    failOnSeverity: .high,
-                    operation: operation
+        // WO-634: this direct entry-point test also needs isolated policy before any file check.
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            for operation in [FileGuard.Operation.read, .write] {
+                XCTAssertNoThrow(
+                    try FileGuard.check(
+                        filePath: missingPath,
+                        failOnSeverity: .high,
+                        operation: operation
+                    )
                 )
-            )
-            XCTAssertNoThrow(
-                try FileGuard.check(
-                    filePath: emptyPath,
-                    failOnSeverity: .high,
-                    operation: operation
+                XCTAssertNoThrow(
+                    try FileGuard.check(
+                        filePath: emptyPath,
+                        failOnSeverity: .high,
+                        operation: operation
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -270,13 +273,16 @@ final class GuardReadWriteTests: XCTestCase {
     }
 
     // WO-588@v2: both file guard operations must use the same blocked exit contract.
+    // WO-634: in-process guard entry points must resolve only fixture policy.
     private func assertFileGuardBlocks(path: String, operation: FileGuard.Operation) {
         XCTAssertThrowsError(
-            try FileGuard.check(
-                filePath: path,
-                failOnSeverity: .high,
-                operation: operation
-            )
+            try TestConfigHelper.withIsolatedGlobalConfig { _ in
+                try FileGuard.check(
+                    filePath: path,
+                    failOnSeverity: .high,
+                    operation: operation
+                )
+            }
         ) { error in
             XCTAssertEqual((error as? ExitCode)?.rawValue, GuardExitContract.blocked)
         }

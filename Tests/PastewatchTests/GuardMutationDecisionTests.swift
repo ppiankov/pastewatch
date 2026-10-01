@@ -450,6 +450,8 @@ final class GuardMutationDecisionTests: XCTestCase {
         home: URL,
         environmentOverrides: [String: String] = [:]
     ) throws -> CommandResult {
+        // WO-634: a subprocess cannot inherit the in-process config seam.
+        try TestConfigHelper.ensureProjectConfig(in: home)
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["guard-mutation", "--fail-on-severity", "high"]
