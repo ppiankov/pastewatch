@@ -6,11 +6,14 @@ import XCTest
 final class HookTests: XCTestCase {
     var testDir: String!
 
-    override func setUp() {
+    // WO-634: fixture config must be written successfully before any hook can invoke scan.
+    override func setUpWithError() throws {
         // WO-594: hook tests isolate repository and configuration state per case.
-        super.setUp()
+        try super.setUpWithError()
         testDir = NSTemporaryDirectory() + "pastewatch-hook-test-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        // WO-634: HOME remains git isolation only; pastewatch uses the project fixture.
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
         // Initialize a git repo
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")

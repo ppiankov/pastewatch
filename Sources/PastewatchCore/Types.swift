@@ -661,7 +661,36 @@ public struct PastewatchConfig: Codable {
         soundEnabled: false
     )
 
-    public static let configPath: URL = {
+    #if DEBUG
+    // WO-634: scoped test state is serialized and never compiled into release builds.
+    private static let configTestLock = NSRecursiveLock()
+    private static var configTestPath: URL?
+
+    // WO-634: in-process injection only; no environment, argument, or file can enable it.
+    static func withTestGlobalConfigPath<T>(_ path: URL, body: () throws -> T) rethrows -> T {
+        configTestLock.lock()
+        let previous = configTestPath
+        configTestPath = path
+        defer {
+            configTestPath = previous
+            configTestLock.unlock()
+        }
+        return try body()
+    }
+    #endif
+
+    // WO-634: all global config readers/writers share the debug-only fixture boundary.
+    public static var configPath: URL {
+        #if DEBUG
+        configTestLock.lock()
+        defer { configTestLock.unlock() }
+        if let path = configTestPath { return path }
+        #endif
+        return globalConfigPath
+    }
+
+    // WO-634: preserve the production home lookup, independent of agent-controlled env vars.
+    private static let globalConfigPath: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".config/pastewatch/config.json")
     }()

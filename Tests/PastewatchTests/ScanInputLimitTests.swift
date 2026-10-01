@@ -85,7 +85,11 @@ final class ScanInputLimitTests: XCTestCase {
         input: Data = Data(),
         environment overrides: [String: String]
     ) throws -> (status: Int32, stderr: String) {
+        // WO-634: limit tests need deterministic defaults without operator config access.
+        let directory = try TestConfigHelper.makeProjectDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let process = Process()
+        process.currentDirectoryURL = directory
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["scan", "--check"] + (file.map { ["--file", $0.path] } ?? [])
         var environment = ProcessInfo.processInfo.environment

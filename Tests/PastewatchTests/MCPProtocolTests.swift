@@ -260,6 +260,9 @@ final class MCPProtocolTests: XCTestCase {
 
     // WO-584@v2: MCP schema values and documentation derive from Severity ownership.
     func testToolsListSeveritySchemaUsesCanonicalCasesAndDefault() throws {
+        // WO-634: schema probes also load policy; do not use shared /tmp as CWD.
+        let directory = try TestConfigHelper.makeProjectDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let request = JSONRPCRequest(
             jsonrpc: "2.0",
             id: .int(1),
@@ -268,7 +271,8 @@ final class MCPProtocolTests: XCTestCase {
         )
         let response = try callMCPRequest(
             request,
-            currentDirectory: FileManager.default.temporaryDirectory
+            // WO-634: resolve only the fixture-owned project policy.
+            currentDirectory: directory
         )
 
         guard case .object(let result) = response.result,
@@ -295,6 +299,9 @@ final class MCPProtocolTests: XCTestCase {
 
     // WO-597@v2: write schema exposes one mutually exclusive local payload-file input.
     func testWriteFileSchemaOffersContentPathAsExclusivePayloadSource() throws {
+        // WO-634: isolate config before starting the MCP subprocess.
+        let directory = try TestConfigHelper.makeProjectDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let request = JSONRPCRequest(
             jsonrpc: "2.0",
             id: .int(1),
@@ -303,7 +310,8 @@ final class MCPProtocolTests: XCTestCase {
         )
         let response = try callMCPRequest(
             request,
-            currentDirectory: FileManager.default.temporaryDirectory
+            // WO-634: resolve only the fixture-owned project policy.
+            currentDirectory: directory
         )
 
         guard case .object(let result) = response.result,
@@ -832,15 +840,14 @@ final class MCPProtocolTests: XCTestCase {
                 .appendingPathComponent("pastewatch-mcp-live-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // WO-627@v2: use only test-owned policy, never the operator's config.
-            if let config {
-                try JSONEncoder().encode(config).write(to: directory.appendingPathComponent(".pastewatch.json"))
-            }
+            // WO-634: nil means explicit defaults, not a fallback to the operator's global file.
+            try JSONEncoder().encode(config ?? .defaultConfig)
+                .write(to: directory.appendingPathComponent(".pastewatch.json"))
             process.executableURL = executableURL
             process.arguments = ["mcp"]
             process.currentDirectoryURL = directory
+            // WO-634: no HOME or CFFIXED_USER_HOME channel is needed for config isolation.
             process.environment = [
-                "HOME": directory.path,
-                "CFFIXED_USER_HOME": directory.path,
                 ScanInputLimits.lineBytesEnvironmentKey: String(maximumLineBytes),
                 // WO-627@v2: a small cap proves oversized range lengths are clamped.
                 ScanInputLimits.fileBytesEnvironmentKey: String(maximumFileBytes),
@@ -944,10 +951,14 @@ final class MCPProtocolTests: XCTestCase {
         input: Data,
         maximumLineBytes: Int
     ) throws -> MCPProcessResult {
+        // WO-634: framing tests still load config; pin it in a private project directory.
+        let directory = try TestConfigHelper.makeProjectDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["mcp"]
-        process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        // WO-634: never fall through to ambient user policy during protocol probes.
+        process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment[ScanInputLimits.lineBytesEnvironmentKey] = String(maximumLineBytes)
         process.environment = environment
@@ -999,6 +1010,8 @@ final class MCPProtocolTests: XCTestCase {
         _ requests: [JSONRPCRequest],
         currentDirectory: URL
     ) throws -> [JSONRPCResponse] {
+        // WO-634: retain custom policy but make defaults explicit before launching a child.
+        try TestConfigHelper.ensureProjectConfig(in: currentDirectory)
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["mcp"]
@@ -1078,6 +1091,8 @@ final class MCPProtocolTests: XCTestCase {
         _ request: JSONRPCRequest,
         currentDirectory: URL
     ) throws -> MCPCallResult {
+        // WO-634: every MCP tool subprocess must have fixture-owned policy.
+        try TestConfigHelper.ensureProjectConfig(in: currentDirectory)
         let requestData = try JSONEncoder().encode(request)
 
         let process = Process()

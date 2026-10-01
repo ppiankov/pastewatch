@@ -4,6 +4,50 @@ import Foundation
 /// WO-529@v3: Test helper for creating configs with obfuscate entries.
 /// Ambiguous classes (email, host, IP, etc.) are opt-in via the obfuscate config.
 enum TestConfigHelper {
+    // WO-634: fail before config I/O if a fixture could reach operator policy.
+    enum IsolationError: Error {
+        case globalConfigNotIsolated
+        case cannotChangeDirectory
+    }
+
+    // WO-634: use a scoped fixture, not HOME, and restore CWD even on thrown errors.
+    static func withIsolatedGlobalConfig<T>(_ body: (URL) throws -> T) throws -> T {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-config-isolation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("global.json")
+        // WO-634: the lock spans the fixture scope, including CWD restoration on throws.
+        return try PastewatchConfig.withTestGlobalConfigPath(path) {
+            guard PastewatchConfig.configPath == path else {
+                throw IsolationError.globalConfigNotIsolated
+            }
+            let cwd = FileManager.default.currentDirectoryPath
+            guard FileManager.default.changeCurrentDirectoryPath(root.path) else {
+                throw IsolationError.cannotChangeDirectory
+            }
+            defer { _ = FileManager.default.changeCurrentDirectoryPath(cwd) }
+            return try body(root)
+        }
+    }
+
+    // WO-634: subprocesses must select fixture policy before user-config fallback.
+    static func ensureProjectConfig(in directory: URL) throws {
+        let path = directory.appendingPathComponent(".pastewatch.json")
+        if !FileManager.default.fileExists(atPath: path.path) {
+            try JSONEncoder().encode(PastewatchConfig.defaultConfig).write(to: path)
+        }
+    }
+
+    // WO-634: subprocess-only fixtures get their own CWD, never a shared /tmp config.
+    static func makeProjectDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastewatch-project-config-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try ensureProjectConfig(in: root)
+        return root
+    }
+
     /// WO-542: legacy advisory fixtures must opt ambiguous detectors in without authorizing mutation.
     static func configWithAmbiguousAdvisories(
         _ types: [SensitiveDataType]

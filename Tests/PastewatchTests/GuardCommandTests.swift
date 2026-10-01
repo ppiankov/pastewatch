@@ -374,6 +374,8 @@ final class GuardCommandTests: XCTestCase {
         arguments: [String],
         environmentOverrides: [String: String] = [:]
     ) throws -> CLIResult {
+        // WO-634: preserve explicit test configs and isolate every default subprocess case.
+        try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = arguments
@@ -413,8 +415,7 @@ final class GuardCommandTests: XCTestCase {
 
     private func testEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
-        environment["HOME"] = testDir
-        environment["XDG_CONFIG_HOME"] = testDir + "/.config"
+        // WO-634: project fixtures isolate policy; HOME/XDG overrides never did.
         environment["PW_GUARD"] = "1"
         return environment
     }

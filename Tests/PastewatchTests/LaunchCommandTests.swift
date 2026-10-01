@@ -507,6 +507,8 @@ final class LaunchCommandTests: XCTestCase {
         let cwd = root.appendingPathComponent("work", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        // WO-634: HOME below isolates the debug startup sweep, not config resolution.
+        try TestConfigHelper.ensureProjectConfig(in: cwd)
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment.removeValue(forKey: "PW_GUARD")
