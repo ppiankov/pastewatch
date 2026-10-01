@@ -1799,6 +1799,50 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(proxy.stats.refusedRequests, 1)
     }
 
+    // WO-631: pin actual upstream bytes for both mutated and unchanged UTF-8 requests.
+    func testRequestBytesSurviveHTTPForwarding() throws {
+        let requestLock = NSLock()
+        var forwardedBodies: [Data] = []
+        let upstream = try StubHTTPServer { request in
+            if let separator = request.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
+                requestLock.lock()
+                forwardedBodies.append(Data(request[separator.upperBound...]))
+                requestLock.unlock()
+            }
+            return StubHTTPResponse(status: 200, headers: [:], body: Data(#"{"ok":true}"#.utf8))
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+        let proxy = ProxyServer(
+            port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!, quietLog: true
+        )
+        let runningProxy = RunningProxy(server: proxy)
+        try runningProxy.start()
+        defer { runningProxy.stop() }
+
+        let credential = "AI" + "za" + String(repeating: "J", count: 35)
+        let prefix = "\u{FEFF}\r\n" + #"{ "model":"claude-3", "messages":[{"role":"user", "content":""#
+        let suffix = #""}], "metadata":{"z":1.00,"a":"keep\/\u0061"} }"# + "\r\n"
+        for value in [credential, "ordinary text"] {
+            let response = try TCPTestSocket.roundTrip(
+                port: proxyPort,
+                request: TCPTestSocket.postRequest(path: "/v1/messages", body: prefix + value + suffix),
+                timeoutSeconds: 10
+            )
+            XCTAssertTrue(response.contains("HTTP/1.1 200 OK"))
+        }
+
+        requestLock.lock()
+        let bodies = forwardedBodies
+        requestLock.unlock()
+        XCTAssertEqual(bodies.count, 2)
+        let expected = ["<GOOGLE_API_KEY_1>", "ordinary text"].map { Data((prefix + $0 + suffix).utf8) }
+        XCTAssertTrue(bodies == expected, "HTTP forwarding changed bytes outside replaced string tokens")
+        XCTAssertEqual(proxy.stats.secretsRedacted, 1)
+    }
+
     func testSerializationFailureBlocksForwardingAndPreservesAdvisoryEvidence() throws {
         // WO-452/WO-458: serializer failure is observable and cannot discard scan evidence.
         let upstream = try StubHTTPServer { _ in
@@ -1821,7 +1865,9 @@ final class ProxyRealServerTests: XCTestCase {
             auditLogPath: auditPath.path,
             quietLog: true
         )
-        proxy.requestBodySerializer = { _ in throw CocoaError(.fileWriteUnknown) }
+        // WO-631: F5 force the real splicer to fail before any bytes reach upstream.
+        let splice = proxy.requestBodySerializer
+        proxy.requestBodySerializer = { _, object in try splice(Data("{".utf8), object) }
         let runningProxy = RunningProxy(server: proxy)
         try runningProxy.start()
         defer { runningProxy.stop() }
@@ -1875,7 +1921,8 @@ final class ProxyRealServerTests: XCTestCase {
             auditLogPath: auditPath.path,
             quietLog: true
         )
-        proxy.requestBodySerializer = { _ in throw CocoaError(.fileWriteUnknown) }
+        // WO-631: batch requests retain the injectable fail-closed output boundary.
+        proxy.requestBodySerializer = { _, _ in throw CocoaError(.fileWriteUnknown) }
         let runningProxy = RunningProxy(server: proxy)
         try runningProxy.start()
         defer { runningProxy.stop() }

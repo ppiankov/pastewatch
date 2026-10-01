@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-01
+
+### Fixed
+
+- Proxied requests that contain a redacted secret now keep their original bytes: only the
+  redacted string values change, and key order, whitespace and formatting are preserved.
+  Previously the whole request was re-encoded with an unstable key order, so once a secret
+  appeared in a conversation every following request missed the upstream prompt cache and
+  was billed at full input price. (WO-631)
+
+### Security
+
+- Updated the development-only `undici` dependency of the VS Code extension build toolchain
+  to 7.30.0 to clear high-severity advisories. It is not part of the shipped extension.
+  (WO-632)
+
 ## [0.37.0] - 2026-09-16
 
 ### Added

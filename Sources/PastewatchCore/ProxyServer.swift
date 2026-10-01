@@ -128,9 +128,10 @@ public final class ProxyServer {
     private let tlsTrustDelegate: TLSTrustDelegate?
     #endif
     private let urlSession: URLSession
-    /// WO-452: injectable serializer makes the fail-closed branch deterministic in tests.
-    var requestBodySerializer: ([String: Any]) throws -> Data = {
-        try JSONSerialization.data(withJSONObject: $0, options: [])
+    // WO-452: injectable serializer makes the fail-closed branch deterministic in tests.
+    // WO-631: splice into original bytes while retaining WO-452's injectable failure boundary.
+    var requestBodySerializer: (Data, [String: Any]) throws -> Data = {
+        try ProxyRequestJSONSplicer.splice($0, replacingWith: $1)
     }
 
     public struct RedactionStats {
@@ -810,7 +811,8 @@ public final class ProxyServer {
         if isCanonicalScannablePostMethod(parsed.method) && isSupportedAnthropicPostPath(parsed.path) {
             // WO-429: malformed/non-UTF-8 supported-path bodies are already refused by
             // upstreamBodyShapeVerdict, so the scanner only receives valid UTF-8 JSON.
-            if let body = parsed.body {
+            // WO-631: retain the UTF-8 validation but scan original bytes, including any leading BOM.
+            if let body = ProxyRequestJSONSplicer.stringPreservingBytes(parsed.bodyData) {
                 let result = scanAndRedactBody(body)
                 // WO-478: malformed recognized private-key material cannot be
                 // contained reliably, so refuse before resolving the upstream URL.
@@ -1227,8 +1229,9 @@ public final class ProxyServer {
                 )
             )
         }
-        guard let resultData = try? requestBodySerializer(processed),
-              let resultString = String(data: resultData, encoding: .utf8) else {
+        // WO-631: only changed string tokens may be encoded; all other request bytes stay verbatim.
+        guard let resultData = try? requestBodySerializer(data, processed),
+              let resultString = ProxyRequestJSONSplicer.stringPreservingBytes(resultData) else {
             return ScanResult(
                 body: body, redacted: redacted, redactedTypes: types,
                 advisoryCount: advisoryCount, advisoryTypes: advisoryTypes,
@@ -2930,6 +2933,151 @@ public final class ProxyServer {
     func drainAuditLogForTesting() {
         // WO-331: tests need deterministic visibility into async audit writes.
         logQueue.sync {}
+    }
+}
+
+// WO-631: walk the processed tree in original token order, never serializing its dictionaries.
+private struct ProxyRequestJSONSplicer {
+    private let bytes: [UInt8] // WO-631: immutable source for every token offset.
+    private var offset = 0 // WO-631: byte cursor, independent of Unicode grapheme boundaries.
+    private var replacements: [(range: Range<Int>, value: Data)] = [] // WO-631: source-ordered edits.
+    private static let whitespace: [UInt8] = [0x20, 0x09, 0x0A, 0x0D] // WO-631: JSON whitespace only.
+    private static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF] // WO-631: preserve accepted UTF-8 framing.
+
+    // WO-631: ambiguous mappings must fail closed rather than leave a detected secret behind.
+    private enum SpliceError: Error {
+        case inconsistentJSON
+    }
+
+    // WO-631: retain a BOM explicitly so Foundation cannot discard it while validating UTF-8.
+    static func stringPreservingBytes(_ data: Data) -> String? {
+        let hasBOM = data.starts(with: utf8BOM)
+        guard let value = String(bytes: data.dropFirst(hasBOM ? utf8BOM.count : 0), encoding: .utf8) else {
+            return nil
+        }
+        return hasBOM ? "\u{FEFF}" + value : value
+    }
+
+    // WO-631: append original spans once to avoid both offset drift and quadratic in-place edits.
+    static func splice(_ original: Data, replacingWith object: [String: Any]) throws -> Data {
+        var splicer = Self(bytes: Array(original))
+        // WO-631: Foundation accepts a UTF-8 BOM; preserve it like any other untouched prefix.
+        if splicer.bytes.starts(with: utf8BOM) { splicer.offset = utf8BOM.count }
+        try splicer.visit(object)
+        splicer.skipWhitespace()
+        guard splicer.offset == splicer.bytes.count else { throw SpliceError.inconsistentJSON }
+
+        var output = Data()
+        output.reserveCapacity(original.count)
+        var copiedThrough = 0
+        for replacement in splicer.replacements {
+            output.append(contentsOf: splicer.bytes[copiedThrough..<replacement.range.lowerBound])
+            output.append(replacement.value)
+            copiedThrough = replacement.range.upperBound
+        }
+        output.append(contentsOf: splicer.bytes[copiedThrough...])
+        return output
+    }
+
+    // WO-631: resolve each raw token against the same path in the existing redaction walk's result.
+    private mutating func visit(_ value: Any) throws {
+        skipWhitespace()
+        guard offset < bytes.count else { throw SpliceError.inconsistentJSON }
+        switch bytes[offset] {
+        case UInt8(ascii: "{"):
+            guard let object = value as? [String: Any] else { throw SpliceError.inconsistentJSON }
+            try visitObject(object)
+        case UInt8(ascii: "["):
+            guard let array = value as? [Any] else { throw SpliceError.inconsistentJSON }
+            try visitArray(array)
+        case UInt8(ascii: "\""):
+            guard let replacement = value as? String else { throw SpliceError.inconsistentJSON }
+            let token = try readString()
+            if !token.value.utf8.elementsEqual(replacement.utf8) {
+                let encoded = try JSONSerialization.data(
+                    withJSONObject: replacement, options: [.fragmentsAllowed, .withoutEscapingSlashes]
+                )
+                replacements.append((token.range, encoded))
+            }
+        default:
+            try visitScalar(value)
+        }
+    }
+
+    // WO-631: decoded keys locate values but their spelling and order always remain original.
+    private mutating func visitObject(_ object: [String: Any]) throws {
+        offset += 1
+        var keys = Set<String>()
+        if !consume(UInt8(ascii: "}")) {
+            while true {
+                let key = try readString().value
+                guard keys.insert(key).inserted, let value = object[key], consume(UInt8(ascii: ":")) else {
+                    throw SpliceError.inconsistentJSON
+                }
+                try visit(value)
+                if consume(UInt8(ascii: "}")) { break }
+                guard consume(UInt8(ascii: ",")) else { throw SpliceError.inconsistentJSON }
+            }
+        }
+        guard keys.count == object.count else { throw SpliceError.inconsistentJSON }
+    }
+
+    // WO-631: arrays use position, including nested tool results, examples and batch params.
+    private mutating func visitArray(_ array: [Any]) throws {
+        offset += 1
+        for (index, value) in array.enumerated() {
+            if index > 0, !consume(UInt8(ascii: ",")) { throw SpliceError.inconsistentJSON }
+            try visit(value)
+        }
+        guard consume(UInt8(ascii: "]")) else { throw SpliceError.inconsistentJSON }
+    }
+
+    // WO-631: Foundation owns string unescaping; this lexer only locates the exact quoted byte range.
+    private mutating func readString() throws -> (range: Range<Int>, value: String) {
+        skipWhitespace()
+        let start = offset
+        guard consume(UInt8(ascii: "\"")) else { throw SpliceError.inconsistentJSON }
+        while offset < bytes.count {
+            let byte = bytes[offset]
+            offset += 1
+            if byte == UInt8(ascii: "\\") {
+                guard offset < bytes.count else { throw SpliceError.inconsistentJSON }
+                offset += 1
+            } else if byte == UInt8(ascii: "\"") {
+                let range = start..<offset
+                guard let value = try JSONSerialization.jsonObject(
+                    with: Data(bytes[range]), options: [.fragmentsAllowed]
+                ) as? String else { throw SpliceError.inconsistentJSON }
+                return (range, value)
+            }
+        }
+        throw SpliceError.inconsistentJSON
+    }
+
+    // WO-631: preserve numeric spelling, booleans and null; reject non-string mutations.
+    private mutating func visitScalar(_ value: Any) throws {
+        let start = offset
+        let delimiters = Self.whitespace + [UInt8(ascii: ","), UInt8(ascii: "]"), UInt8(ascii: "}")]
+        while offset < bytes.count, !delimiters.contains(bytes[offset]) { offset += 1 }
+        guard start < offset,
+              let original = try JSONSerialization.jsonObject(
+                with: Data(bytes[start..<offset]), options: [.fragmentsAllowed]
+              ) as? NSObject,
+              let processed = value as? NSObject,
+              original.isEqual(processed) else { throw SpliceError.inconsistentJSON }
+    }
+
+    // WO-631: delimiters consume only JSON whitespace, preserving its bytes in the output spans.
+    private mutating func consume(_ byte: UInt8) -> Bool {
+        skipWhitespace()
+        guard offset < bytes.count, bytes[offset] == byte else { return false }
+        offset += 1
+        return true
+    }
+
+    // WO-631: keep token offsets in the original UTF-8 buffer throughout traversal.
+    private mutating func skipWhitespace() {
+        while offset < bytes.count, Self.whitespace.contains(bytes[offset]) { offset += 1 }
     }
 }
 
