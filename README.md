@@ -301,6 +301,58 @@ pastewatch-cli mcp                        # redacted read/write MCP server
 
 **Full command reference:** [docs/cli-reference.md](docs/cli-reference.md) — every subcommand (`scan`, `proxy`, `launch`, `mcp`, `guard`, `fix`, `inventory`, `report`, `canary`, `watch`, `dashboard`, config, and CI integration) with flags and examples.
 
+### Explain active configuration
+
+```bash
+pastewatch-cli doctor --explain
+pastewatch-cli doctor --explain --json
+```
+
+Configuration is **first-wins, no merge**: system administrator, current directory's
+`.pastewatch.json`, user config, then defaults. A project config therefore shadows
+the entire user config, including its custom rules. The walkthrough shows each
+candidate, lost rule counts, and where to move those rules (or which project config
+to remove/rename). It never changes policy.
+
+The report includes enabled detectors, compiled custom rules and their effective
+severity, shared pattern loading, allowlist counts, `documentationPolicy`, and
+guard/scan/MCP/proxy outcomes. Rule outcomes assume a match that is not allowlisted;
+the guard threshold is high. MCP's advisory threshold does not disable authorized
+placeholder replacement. Invalid active configuration fails enforcement closed.
+Patterns and allowlisted values are represented only by byte lengths and sorted
+character-class sets, never their literal contents, positional shapes or hashes.
+Plain `doctor` is unchanged.
+
+### Check a value across surfaces
+
+```bash
+pbpaste | pastewatch-cli check
+pastewatch-cli check --file CHANGELOG.md
+pastewatch-cli check --json < input.txt
+pastewatch-cli check  # interactive input is not echoed
+```
+
+`check` uses the same configuration explanation and production decisions as the
+scanners. It reports the active config, loaded custom-rule count, detection type,
+severity, mutation evidence, allowlist suppression, and guard/scan/MCP/proxy
+outcomes. No match is explicit, not a claim of universal coverage. Values appear
+only as byte lengths and sorted character-class sets (`letters`, `digits`,
+`whitespace`, `symbols`), without positional shapes or hashes. Rule patterns and
+allowlist entries are never printed.
+
+Guard verdicts use the high threshold; scan verdicts use the default scan policy.
+`--file` passes its real path to the documentation policy. MCP verdicts model a
+trusted file read at `mcpMinSeverity`: placeholders are restored locally on write
+(two-way). Proxy verdicts model the input as an outbound user-text field:
+redaction is one-way, never restored. The report preserves differences between
+the surfaces, including their allowlist and inline-comment handling. It makes no
+network requests and does not validate whether credentials are live.
+
+Pass input through stdin or `--file`, never as a positional value: arguments are
+visible in shell history and `ps`. Positional values are refused with exit 64
+without being echoed. A completed diagnostic exits 0 and reports the scan exit
+code separately; unreadable input or invalid configuration exits 2.
+
 ## Agent Integration
 
 ### Agent Safety Matrix

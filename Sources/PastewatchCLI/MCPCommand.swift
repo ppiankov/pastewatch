@@ -631,6 +631,7 @@ final class MCPServer {
 
     // MARK: - Redacted read/write tools
 
+    // WO-637: share the read decision without changing ranges, payloads or audit output.
     // WO-549@v2: MCP reads use the same format-aware guard decision as protected file reads.
     // WO-627@v2: validate range inputs before work; apply them only to the final redacted payload.
     private func handleReadFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
@@ -696,28 +697,16 @@ final class MCPServer {
             return errorResult(id: id, text: "Scan error: \(error.localizedDescription)")
         }
 
-        // WO-549@v2: route MCP reads through GuardDecision so test-credential filtering,
-        // inline-allow, and config allowlist apply identically to guard-read.
-        let decision = GuardDecision.evaluate(
+        // WO-637: the extracted decision preserves WO-549 filtering and WO-635 doc advisories.
+        let decision = MCPReadDecision.evaluate(
             matches: fileMatches,
             content: content,
             config: config,
-            contentTrust: .trustedFile,
             minimumSeverity: minSeverity,
-            // WO-635: read advisories use the same real path as native file guards.
             filePath: path
         )
-
-        let partition = partitionMutationMatches(
-            decision.reportableMatches,
-            site: .mcpRead,
-            minAdvisorySeverity: minSeverity
-        )
-        let matches = partition.authorized
-        // WO-635: policy warnings remain visible even when the mutation advisory threshold is high.
-        let reportedAdvisories = partition.advisory + partition.advisoryBelowThreshold.filter {
-            $0.advisory == .documentationPolicy
-        }
+        let matches = decision.authorized
+        let reportedAdvisories = decision.reportedAdvisories
         let advisories: [JSONValue] = reportedAdvisories.map { match in
             .object([
                 "type": .string(match.displayName),

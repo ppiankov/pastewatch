@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `doctor --explain` and `doctor --explain --json` show first-wins configuration
+  resolution, shadowed rule counts, compilation and per-surface outcomes without
+  exposing rule patterns or allowlisted values. (WO-636)
+- `check` reads stdin or a file and explains guard, scan, MCP and proxy outcomes
+  using their production decisions, with byte lengths and character-class sets
+  instead of values, positional shapes or hashes.
+  Interactive input is hidden; positional values are refused. (WO-637)
+
 ### Changed
 
 - Opt-in ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc`

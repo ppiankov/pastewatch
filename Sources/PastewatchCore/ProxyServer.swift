@@ -1645,6 +1645,17 @@ public final class ProxyServer {
         return result
     }
 
+    // WO-637: expose the production outbound text decision without serializing or forwarding a request.
+    public func outboundTextDecision(_ value: String, site: MutationSite) -> MutationOutcome {
+        applyAuthorizedMutations(
+            to: value,
+            matches: scanProxyText(value),
+            site: site,
+            minAdvisorySeverity: severity
+        )
+    }
+
+    // WO-637: share the decision while preserving existing counters and request splicing.
     // WO-444/WO-447: keep certainty-gated mutation and advisory accounting identical
     // across string and block-array system representations.
     // swiftlint:disable:next function_parameter_count
@@ -1656,13 +1667,8 @@ public final class ProxyServer {
         advisoryCount: inout Int,
         advisoryTypes: inout [String]
     ) -> String {
-        let matches = scanProxyText(value)
-        let outcome = applyAuthorizedMutations(
-            to: value,
-            matches: matches,
-            site: site,
-            minAdvisorySeverity: severity
-        )
+        // WO-637: diagnostics and outbound request fields consume the same mutation outcome.
+        let outcome = outboundTextDecision(value, site: site)
         advisoryCount += outcome.advisory.count
         advisoryTypes.append(contentsOf: outcome.advisory.map { $0.displayName })
         redacted += outcome.mutated.count

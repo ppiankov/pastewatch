@@ -49,6 +49,7 @@ public enum ConfigValidator {
         return ConfigValidationResult(errors: decoded.errors)
     }
 
+    // WO-636@v2: diagnostics and enforcement share the same first-wins candidate order.
     // WO-574@v4: present invalid config is an enforcement failure, not a fallback signal.
     public static func resolveValidated(
         fileManager: FileManager = .default,
@@ -56,11 +57,10 @@ public enum ConfigValidator {
         systemConfigPath: String = PastewatchConfig.systemConfigPath,
         userConfigPath: String = PastewatchConfig.configPath.path
     ) throws -> ResolvedPastewatchConfig {
-        let candidates: [(PastewatchConfigSource, String)] = [
-            (.system, systemConfigPath),
-            (.project, currentDirectory + "/.pastewatch.json"),
-            (.user, userConfigPath)
-        ]
+        // WO-636@v2: reuse candidate discovery without changing strict resolution semantics.
+        let candidates = configurationCandidates(
+            currentDirectory: currentDirectory, systemConfigPath: systemConfigPath, userConfigPath: userConfigPath
+        )
 
         guard let (source, path) = candidates.first(where: {
             pathExistsIncludingDanglingSymlink($0.1, fileManager: fileManager)
@@ -86,8 +86,16 @@ public enum ConfigValidator {
         return ResolvedPastewatchConfig(config: config, source: source, path: path)
     }
 
+    // WO-636@v2: the read-only walkthrough uses the enforcement resolver's exact order.
+    static func configurationCandidates(
+        currentDirectory: String, systemConfigPath: String, userConfigPath: String
+    ) -> [(PastewatchConfigSource, String)] {
+        [(.system, systemConfigPath), (.project, currentDirectory + "/.pastewatch.json"), (.user, userConfigPath)]
+    }
+
+    // WO-636@v2: diagnostic presence checks must recognize the same dangling policy symlinks.
     // WO-574@v4: a dangling active-config symlink is present policy, not absence.
-    private static func pathExistsIncludingDanglingSymlink(
+    static func pathExistsIncludingDanglingSymlink(
         _ path: String,
         fileManager: FileManager
     ) -> Bool {
@@ -97,7 +105,8 @@ public enum ConfigValidator {
         return (try? fileManager.destinationOfSymbolicLink(atPath: path)) != nil
     }
 
-    private static func decodeAndValidate(
+    // WO-636@v2: shadowed-config diagnostics share decoding and validation, not a second parser.
+    static func decodeAndValidate(
         data: Data,
         configPath: String
     ) -> (config: PastewatchConfig?, errors: [String]) {
