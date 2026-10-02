@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `doctor --explain` and `doctor --explain --json` show first-wins configuration
+  resolution, shadowed rule counts, compilation and per-surface outcomes without
+  exposing rule patterns or allowlisted values. (WO-636)
+
 ### Changed
 
 - Opt-in ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc`

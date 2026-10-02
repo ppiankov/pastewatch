@@ -8,6 +8,7 @@ private struct CheckResult {
     let detail: String
 }
 
+// WO-636@v2: the walkthrough is opt-in; the existing health report remains unchanged.
 struct Doctor: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Check installation health and show active configuration"
@@ -16,7 +17,16 @@ struct Doctor: ParsableCommand {
     @Flag(name: .long, help: "Output results as JSON")
     var json = false
 
+    // WO-636@v2: explain effective policy without changing the default doctor path.
+    @Flag(name: .long, help: "Explain config resolution, rule coverage, and surface outcomes")
+    var explain = false
+
+    // WO-636@v2: return before legacy checks only when the walkthrough was requested.
     func run() throws {
+        if explain {
+            try printExplanation(ConfigExplanation())
+            return
+        }
         var checks: [CheckResult] = []
 
         // 1. CLI version and binary path
@@ -54,6 +64,16 @@ struct Doctor: ParsableCommand {
             printJSON(checks)
         } else {
             printText(checks)
+        }
+    }
+
+    // WO-636@v2: CLI and tests render the same metadata-only representation.
+    func printExplanation(_ explanation: ConfigExplanation) throws {
+        if json {
+            FileHandle.standardOutput.write(try explanation.jsonData())
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        } else {
+            print(explanation.text())
         }
     }
 

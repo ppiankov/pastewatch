@@ -301,6 +301,27 @@ pastewatch-cli mcp                        # redacted read/write MCP server
 
 **Full command reference:** [docs/cli-reference.md](docs/cli-reference.md) — every subcommand (`scan`, `proxy`, `launch`, `mcp`, `guard`, `fix`, `inventory`, `report`, `canary`, `watch`, `dashboard`, config, and CI integration) with flags and examples.
 
+### Explain active configuration
+
+```bash
+pastewatch-cli doctor --explain
+pastewatch-cli doctor --explain --json
+```
+
+Configuration is **first-wins, no merge**: system administrator, current directory's
+`.pastewatch.json`, user config, then defaults. A project config therefore shadows
+the entire user config, including its custom rules. The walkthrough shows each
+candidate, lost rule counts, and where to move those rules (or which project config
+to remove/rename). It never changes policy.
+
+The report includes enabled detectors, compiled custom rules and their effective
+severity, shared pattern loading, allowlist counts, `documentationPolicy`, and
+guard/scan/MCP/proxy outcomes. Rule outcomes assume a match that is not allowlisted;
+the guard threshold is high. MCP's advisory threshold does not disable authorized
+placeholder replacement. Invalid active configuration fails enforcement closed.
+Patterns and allowlisted values are represented only by bounded masked metadata
+and fingerprints, never their literal contents. Plain `doctor` is unchanged.
+
 ## Agent Integration
 
 ### Agent Safety Matrix
