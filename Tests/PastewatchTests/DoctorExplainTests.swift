@@ -37,6 +37,54 @@ final class DoctorExplainTests: XCTestCase {
         }
     }
 
+    // WO-636@v2: opt-in coverage can disappear even when the user has no custom rules.
+    func testShadowedCredentialOptInProducesWarning() throws {
+        let user = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+        try withFixture(project: .defaultConfig, user: user) { report, _ in
+            XCTAssertTrue(report.customRules.isEmpty)
+            XCTAssertTrue(report.warnings.contains {
+                $0.contains("Credential") && $0.contains("1 detector types") && $0.contains("Fix:")
+            })
+        }
+    }
+
+    // WO-636@v2: warn on policy missing from the winner, without ever naming allowed values.
+    func testShadowedAllowlistAndSharedFilesProduceCountOnlyWarning() throws {
+        var project = PastewatchConfig.defaultConfig
+        let privateValue = ["private", "-fixture-", "7139"].joined()
+        project.allowedValues = ["retained"]
+        var user = project
+        user.allowedValues.append(privateValue)
+        user.allowedPatterns = [privateValue]
+        user.sharedPatternFiles = ["nonexistent-" + "shared-fixture.json"]
+        try withFixture(project: project, user: user) { report, _ in
+            XCTAssertTrue(report.warnings.contains {
+                $0.contains("2 allowlist entries") && $0.contains("1 sharedPatternFiles")
+            })
+            XCTAssertFalse(report.text().contains(privateValue))
+            XCTAssertFalse(String(data: try report.jsonData(), encoding: .utf8)?.contains(privateValue) == true)
+        }
+    }
+
+    // WO-636@v2: equivalent non-rule policy is not lost just because its source is shadowed.
+    func testIdenticalDetectorAndAllowlistPolicyDoesNotWarn() throws {
+        var config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+        config.allowedValues = ["retained"]
+        config.allowedPatterns = ["retained" + "-pattern"]
+        try withFixture(project: config, user: config) { report, _ in
+            XCTAssertTrue(report.warnings.isEmpty)
+        }
+    }
+
+    // WO-636@v2: obfuscate entries activate detectors even when enabledTypes omits them.
+    func testShadowedObfuscateEntryCountsEffectiveDetector() throws {
+        var config = PastewatchConfig.defaultConfig
+        config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@fixture.example")]
+        try withFixture(project: .defaultConfig, user: config) { report, _ in
+            XCTAssertTrue(report.warnings.contains { $0.contains("1 detector types [Email]") })
+        }
+    }
+
     // WO-636@v2: resolve and explain must agree on admin precedence without touching real admin policy.
     func testAdminWinnerAndDefaultsUseSharedResolution() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in

@@ -138,7 +138,8 @@ public struct ConfigExplanation: Encodable {
                 sharedPatternFiles: contribution?.sharedPatternFiles.count ?? 0
             )
         }
-        warnings = Self.shadowWarnings(resolution, winner: winner, valid: valid)
+        // WO-636@v2: compare private contributions without exposing allowlist or manifest contents.
+        warnings = Self.shadowWarnings(resolution, inspections: inspections, winner: winner, valid: valid)
         detectors = SensitiveDataType.allCases.map {
             Detector(type: $0.rawValue, classification: $0.isAmbiguousClass ? "ambiguous opt-in" : "intrinsic",
                      enabled: config.isTypeEnabled($0), enabledByDefault: PastewatchConfig.defaultConfig.isTypeEnabled($0))
@@ -228,13 +229,26 @@ public struct ConfigExplanation: Encodable {
     }
 
     // WO-636@v2: warn about concrete lost counts and provide a source-specific remedy.
-    private static func shadowWarnings(_ candidates: [Candidate], winner: Int?, valid: Bool) -> [String] {
+    private static func shadowWarnings(
+        _ candidates: [Candidate], inspections: [Inspection], winner: Int?, valid: Bool
+    ) -> [String] {
         var result = valid ? [] : ["Active configuration is invalid; enforcement fails closed."]
         guard let winner else { return result }
         let selected = candidates[winner]
-        for candidate in candidates where candidate.disposition == "SHADOWED" && candidate.customRules > 0 {
+        // WO-636@v2: first-wins can discard opt-ins and policy even without custom rules.
+        let selectedConfig = inspections[winner].config
+        for (index, candidate) in candidates.enumerated() where candidate.disposition == "SHADOWED" {
+            guard let shadowed = inspections[index].config else { continue }
+            let lostTypes = SensitiveDataType.allCases.filter {
+                shadowed.isTypeEnabled($0) && selectedConfig?.isTypeEnabled($0) != true
+            }.map(\.rawValue).sorted()
+            let lostAllowlist = shadowed.allowedValues.filter { selectedConfig?.allowedValues.contains($0) != true }.count +
+                shadowed.allowedPatterns.filter { selectedConfig?.allowedPatterns.contains($0) != true }.count
+            let lostShared = shadowed.sharedPatternFiles.filter { selectedConfig?.sharedPatternFiles.contains($0) != true }.count
+            guard candidate.customRules > 0 || !lostTypes.isEmpty || lostAllowlist > 0 || lostShared > 0 else { continue }
             result.append("\(selected.source) WINS; \(candidate.source) SHADOWED, losing \(candidate.customRules) customRules " +
-                          "and \(candidate.allowlistEntries) allowlist entries. Fix: move the rules into \(selected.path)" +
+                          "and \(lostTypes.count) detector types [\(lostTypes.joined(separator: ", "))], " +
+                          "\(lostAllowlist) allowlist entries, \(lostShared) sharedPatternFiles. Fix: move the rules into \(selected.path)" +
                           (selected.source == "project" ? " or remove/rename that project config." : " with the configuration owner's approval."))
         }
         return result
