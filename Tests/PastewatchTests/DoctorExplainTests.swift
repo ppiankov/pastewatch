@@ -182,6 +182,7 @@ final class DoctorExplainTests: XCTestCase {
         }
     }
 
+    // WO-637: policy summaries retain byte lengths, but never a digest of literal patterns.
     // WO-636@v2: literal patterns and allowlist values must be absent from all CLI output channels.
     func testLiteralSecretsNeverAppearInTextStderrOrJSON() throws {
         let secret = ["AK", "IA", "7K9M2P4R6T8V3X5Z"].joined()
@@ -202,19 +203,67 @@ final class DoctorExplainTests: XCTestCase {
                     XCTAssertNoThrow(try JSONSerialization.jsonObject(with: Data(output.stdout.utf8)))
                 }
             }
-            XCTAssertEqual(report.customRules.first?.pattern.sha256Prefix.count, 8)
+            // WO-637: the only non-length metadata is an unordered character-class set.
+            XCTAssertEqual(report.customRules.first?.pattern.characterClasses, ["digits", "letters"])
             XCTAssertEqual(report.allowedValues.first?.lengthBytes, allowed.utf8.count)
         }
     }
 
-    // WO-636@v2: diagnostic shape metadata is bounded and never preserves alphanumeric contents.
+    // WO-637: literal policy values must not become shape or digest oracles in either renderer.
+    func testLiteralPolicyMetadataHasNoShapeOrFingerprint() throws {
+        let secret = ["har", "bor", "29"].joined()
+        var config = PastewatchConfig.defaultConfig
+        config.customRules = [
+            CustomRuleConfig(name: "literal-rule", pattern: secret),
+            CustomRuleConfig(name: secret, pattern: secret)
+        ]
+        config.allowedValues = [secret]
+        config.allowedPatterns = [secret]
+        try withFixture(project: config) { report, root in
+            for args in [["--explain"], ["--explain", "--json"]] {
+                let command = try Doctor.parse(args)
+                let output = try capture { try command.printExplanation(report) }
+                let normalized: String
+                if args.contains("--json") {
+                    let object = try JSONSerialization.jsonObject(with: Data(output.stdout.utf8))
+                    let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+                    normalized = try XCTUnwrap(String(data: data, encoding: .utf8))
+                } else {
+                    normalized = output.stdout
+                }
+                let printable = normalized.replacingOccurrences(of: root.path, with: "[fixture]")
+                XCTAssertFalse(printable.contains(secret))
+                XCTAssertFalse(output.stderr.contains(secret))
+                XCTAssertFalse(printable.contains("shape="))
+                XCTAssertFalse(printable.contains("maskedShape"))
+                XCTAssertFalse(printable.contains("sha256"))
+                XCTAssertTrue(printable.range(of: #"(?i)\b[0-9a-f]{8,}\b"#, options: .regularExpression) == nil)
+                XCTAssertTrue(output.stderr.isEmpty)
+            }
+            let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: report.jsonData()) as? [String: Any])
+            let rules = try XCTUnwrap(json["customRules"] as? [[String: Any]])
+            let patterns = try rules.map { try XCTUnwrap($0["pattern"] as? [String: Any]) }
+            let allowedValues = try XCTUnwrap(json["allowedValues"] as? [[String: Any]])
+            let allowedPatterns = try XCTUnwrap(json["allowedPatterns"] as? [[String: Any]])
+            for metadata in patterns + allowedValues + allowedPatterns {
+                XCTAssertEqual(Set(metadata.keys), Set(["lengthBytes", "characterClasses"]))
+                XCTAssertEqual(metadata["lengthBytes"] as? Int, secret.utf8.count)
+                XCTAssertEqual(metadata["characterClasses"] as? [String], ["digits", "letters"])
+            }
+        }
+    }
+
+    // WO-637: metadata is bounded to four class names regardless of position or repetitions.
     func testMaskedMetadataIsBounded() {
         let value = String(repeating: "A9", count: 80)
         let summary = DiagnosticValueSummary(value)
         XCTAssertEqual(summary.lengthBytes, 160)
-        XCTAssertEqual(summary.maskedShape.count, 64)
-        XCTAssertEqual(summary.maskedShape, String(repeating: "x9", count: 32))
-        XCTAssertEqual(summary.sha256Prefix, DiagnosticValueSummary(value).sha256Prefix)
+        XCTAssertEqual(summary.characterClasses, ["digits", "letters"])
+        XCTAssertEqual(summary.characterClasses, DiagnosticValueSummary(String(value.reversed())).characterClasses)
+        XCTAssertEqual(summary.characterClasses, DiagnosticValueSummary("9AA9").characterClasses)
+        XCTAssertEqual(DiagnosticValueSummary("").characterClasses, [])
+        XCTAssertEqual(DiagnosticValueSummary("\u{00E9}9 \t\n!\u{1F512}").characterClasses,
+                       ["digits", "letters", "symbols", "whitespace"])
     }
 
     // WO-636@v2: a support-sized policy must render with correct cardinality in under a second.

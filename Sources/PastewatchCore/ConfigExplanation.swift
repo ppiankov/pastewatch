@@ -1,27 +1,26 @@
-#if canImport(CryptoKit)
-import CryptoKit
-#else
-import Crypto
-#endif
 import Foundation
 
-// WO-636@v2: diagnostic fingerprints never retain the value they describe.
+// WO-637: coarse metadata must not expose a positional template or a value-verification oracle.
 public struct DiagnosticValueSummary: Encodable {
     public let lengthBytes: Int
-    public let maskedShape: String
-    public let sha256Prefix: String
+    public let characterClasses: [String]
 
-    // WO-636@v2: cap printable metadata and use the same digest on both platforms.
+    // WO-637: disclose only the sorted set of classes, never their order, frequency or a digest.
     public init(_ value: String) {
         lengthBytes = value.utf8.count
-        maskedShape = String(value.unicodeScalars.prefix(64).map { scalar -> Character in
-            if CharacterSet.letters.contains(scalar) { return "x" }
-            if CharacterSet.decimalDigits.contains(scalar) { return "9" }
-            if CharacterSet.controlCharacters.contains(scalar) { return "?" }
-            return Character(String(scalar))
-        })
-        sha256Prefix = SHA256.hash(data: Data(value.utf8)).prefix(4)
-            .map { String(format: "%02x", $0) }.joined()
+        var classes: Set<String> = []
+        for scalar in value.unicodeScalars {
+            if CharacterSet.letters.contains(scalar) {
+                classes.insert("letters")
+            } else if CharacterSet.decimalDigits.contains(scalar) {
+                classes.insert("digits")
+            } else if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                classes.insert("whitespace")
+            } else {
+                classes.insert("symbols")
+            }
+        }
+        characterClasses = classes.sorted()
     }
 }
 
@@ -171,6 +170,7 @@ public struct ConfigExplanation: Encodable {
         return try encoder.encode(self)
     }
 
+    // WO-637: render coarse policy metadata without shapes or fingerprints.
     // WO-636@v2: render only the report, never compiler diagnostics or raw policy values.
     public func text() -> String {
         var lines = ["Resolution (first-wins, no merge):"]
@@ -184,10 +184,11 @@ public struct ConfigExplanation: Encodable {
                   "documentationPolicy: \(documentationPolicy); mcpMinSeverity: \(mcpMinSeverity)", "Detectors:"]
         lines += detectors.map { "  \($0.type): \($0.classification), enabled=\($0.enabled), default=\($0.enabledByDefault)" }
         lines += ["Custom rules (when matched and not allowlisted):"]
+        // WO-637: exact-value patterns are secrets too; names remain their identifiers.
         lines += customRules.map {
             "  \($0.name): \($0.compileStatus), \($0.severityDefaulted ? "default -> " : "")\($0.severity); " +
                 "guard=\($0.guardHook), scan=\($0.scan), MCP=\($0.mcp), proxy=\($0.proxy); " +
-                "pattern length=\($0.pattern.lengthBytes) shape=\($0.pattern.maskedShape) sha256=\($0.pattern.sha256Prefix)" +
+                "pattern lengthBytes=\($0.pattern.lengthBytes) characterClasses=[\($0.pattern.characterClasses.joined(separator: ", "))]" +
                 ($0.duplicateName ? " [WARN duplicate name]" : "")
         }
         lines += ["Shared pattern files:"] + sharedPatterns.map { "  \($0.path): \($0.status), \($0.patternCount) patterns" }
@@ -219,11 +220,12 @@ public struct ConfigExplanation: Encodable {
         }
     }
 
+    // WO-637: masking a secret-bearing label must not replace the secret with its hash.
     // WO-636@v2: metadata labels must not echo an exact secret embedded in another config field.
     private static func safeLabel(_ value: String, config: PastewatchConfig) -> String {
         let secrets = config.customRules.map(\.pattern) + config.allowedValues + config.allowedPatterns
         if secrets.contains(where: { !$0.isEmpty && value.contains($0) }) {
-            return "[redacted label sha256=\(DiagnosticValueSummary(value).sha256Prefix)]"
+            return "[redacted label]"
         }
         return value
     }

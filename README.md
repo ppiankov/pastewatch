@@ -319,8 +319,9 @@ severity, shared pattern loading, allowlist counts, `documentationPolicy`, and
 guard/scan/MCP/proxy outcomes. Rule outcomes assume a match that is not allowlisted;
 the guard threshold is high. MCP's advisory threshold does not disable authorized
 placeholder replacement. Invalid active configuration fails enforcement closed.
-Patterns and allowlisted values are represented only by bounded masked metadata
-and fingerprints, never their literal contents. Plain `doctor` is unchanged.
+Patterns and allowlisted values are represented only by byte lengths and sorted
+character-class sets, never their literal contents, positional shapes or hashes.
+Plain `doctor` is unchanged.
 
 ### Check a value across surfaces
 
@@ -335,8 +336,9 @@ pastewatch-cli check  # interactive input is not echoed
 scanners. It reports the active config, loaded custom-rule count, detection type,
 severity, mutation evidence, allowlist suppression, and guard/scan/MCP/proxy
 outcomes. No match is explicit, not a claim of universal coverage. Values appear
-only as byte lengths, masked shapes (at most 64 characters), and 8-hex SHA-256
-prefixes. Rule patterns and allowlist entries are never printed.
+only as byte lengths and sorted character-class sets (`letters`, `digits`,
+`whitespace`, `symbols`), without positional shapes or hashes. Rule patterns and
+allowlist entries are never printed.
 
 Guard verdicts use the high threshold; scan verdicts use the default scan policy.
 `--file` passes its real path to the documentation policy. MCP verdicts model a

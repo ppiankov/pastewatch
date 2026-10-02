@@ -231,6 +231,47 @@ final class CheckCommandTests: XCTestCase {
         }
     }
 
+    // WO-637: low-entropy stdin must expose neither positional structure nor a brute-force hash oracle.
+    func testLowEntropyStdinHasNoShapeOrFingerprint() throws {
+        let secret = ["har", "bor", "29"].joined()
+        let input = ["pass", "word", "=", secret].joined()
+        try withFixture { root, explanation in
+            for json in [false, true] {
+                let command = try Check.parse(json ? ["--json"] : [])
+                let result = try capture(root: root, input: Data((input + "\n").utf8)) {
+                    try command.run(explanation: explanation)
+                }
+                XCTAssertEqual(result.exitCode, 0)
+                let normalized: String
+                if json {
+                    let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
+                    let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+                    normalized = try XCTUnwrap(String(data: data, encoding: .utf8))
+                } else {
+                    normalized = result.stdout
+                }
+                let printable = normalized.replacingOccurrences(of: root.path, with: "[fixture]")
+                XCTAssertFalse(printable.contains(secret))
+                XCTAssertFalse(result.stderr.contains(secret))
+                XCTAssertFalse(printable.contains("shape="))
+                XCTAssertFalse(printable.contains("maskedShape"))
+                XCTAssertFalse(printable.contains("sha256"))
+                XCTAssertTrue(printable.range(of: #"(?i)\b[0-9a-f]{8,}\b"#, options: .regularExpression) == nil)
+                XCTAssertTrue(result.stderr.isEmpty)
+                if json {
+                    let report = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any])
+                    let findings = try XCTUnwrap(report["findings"] as? [[String: Any]])
+                    XCTAssertEqual(findings.count, 1)
+                    XCTAssertEqual(findings.first?["type"] as? String, SensitiveDataType.credential.rawValue)
+                    let metadata = try XCTUnwrap(findings.first?["value"] as? [String: Any])
+                    XCTAssertEqual(Set(metadata.keys), Set(["lengthBytes", "characterClasses"]))
+                    XCTAssertEqual(metadata["lengthBytes"] as? Int, input.utf8.count)
+                    XCTAssertEqual(metadata["characterClasses"] as? [String], ["digits", "letters", "symbols"])
+                }
+            }
+        }
+    }
+
     // WO-637: user-controlled names cannot smuggle the literal pattern back into diagnostics.
     func testSecretBearingRuleNameIsMasked() throws {
         var config = fixtureConfig()

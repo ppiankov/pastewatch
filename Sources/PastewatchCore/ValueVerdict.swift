@@ -79,7 +79,7 @@ public struct ValueVerdict: Encodable {
         return try encoder.encode(self)
     }
 
-    // WO-637: diagnostics are useful even when no rule matched and never echo checked content.
+    // WO-637: findings expose coarse character classes, never a value shape or hash.
     public func text() -> String {
         var lines = ["Config in use: \(configPath ?? configSource); \(customRulesLoaded) custom rules loaded",
                      "documentationPolicy=\(documentationPolicy); MCP minimum severity=\(mcpMinSeverity)",
@@ -88,7 +88,8 @@ public struct ValueVerdict: Encodable {
         for finding in findings {
             lines.append("\(finding.type) line=\(finding.line) class=\(finding.classification) severity=\(finding.severity)" +
                          (finding.ruleName.map { " rule=\($0)" } ?? ""))
-            lines.append("  length=\(finding.value.lengthBytes) shape=\(finding.value.maskedShape) sha256=\(finding.value.sha256Prefix)")
+            // WO-637: type and rule name identify the finding without a brute-force oracle.
+            lines.append("  lengthBytes=\(finding.value.lengthBytes) characterClasses=[\(finding.value.characterClasses.joined(separator: ", "))]")
             lines.append("  mutation=\(finding.mutationAuthorized ? "authorized" : "advisory-only")" +
                          " reason=\(finding.mutationReasons.joined(separator: ", "))")
             lines.append("  guard=\(finding.guardVerdict)" + (finding.guardSeverity.map { " (\($0))" } ?? "") +
