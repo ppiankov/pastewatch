@@ -322,6 +322,35 @@ placeholder replacement. Invalid active configuration fails enforcement closed.
 Patterns and allowlisted values are represented only by bounded masked metadata
 and fingerprints, never their literal contents. Plain `doctor` is unchanged.
 
+### Check a value across surfaces
+
+```bash
+pbpaste | pastewatch-cli check
+pastewatch-cli check --file CHANGELOG.md
+pastewatch-cli check --json < input.txt
+pastewatch-cli check  # interactive input is not echoed
+```
+
+`check` uses the same configuration explanation and production decisions as the
+scanners. It reports the active config, loaded custom-rule count, detection type,
+severity, mutation evidence, allowlist suppression, and guard/scan/MCP/proxy
+outcomes. No match is explicit, not a claim of universal coverage. Values appear
+only as byte lengths, masked shapes (at most 64 characters), and 8-hex SHA-256
+prefixes. Rule patterns and allowlist entries are never printed.
+
+Guard verdicts use the high threshold; scan verdicts use the default scan policy.
+`--file` passes its real path to the documentation policy. MCP verdicts model a
+trusted file read at `mcpMinSeverity`: placeholders are restored locally on write
+(two-way). Proxy verdicts model the input as an outbound user-text field:
+redaction is one-way, never restored. The report preserves differences between
+the surfaces, including their allowlist and inline-comment handling. It makes no
+network requests and does not validate whether credentials are live.
+
+Pass input through stdin or `--file`, never as a positional value: arguments are
+visible in shell history and `ps`. Positional values are refused with exit 64
+without being echoed. A completed diagnostic exits 0 and reports the scan exit
+code separately; unreadable input or invalid configuration exits 2.
+
 ## Agent Integration
 
 ### Agent Safety Matrix
