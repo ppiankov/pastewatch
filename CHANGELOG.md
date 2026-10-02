@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Opt-in ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc`
+  files are advisory rather than blocking. Findings remain visible as warnings;
+  intrinsic-format secrets, exact known secrets, and custom rules retain their
+  existing protection. Set `documentationPolicy` to `enforce` to restore blocking;
+  the system administrator's configuration takes precedence. Non-document files
+  and pathless input retain existing enforcement. (WO-635)
+
 ## [0.37.2] - 2026-10-01
 
 ### Fixed

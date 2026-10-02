@@ -152,7 +152,9 @@ struct Scan: ParsableCommand {
             config: config,
             // WO-577@v3: a filename selects parsing metadata, not caller trust.
             contentTrust: file != nil ? .trustedFile : .agentControlled,
-            minimumSeverity: nil
+            minimumSeverity: nil,
+            // WO-635: stdin-filename is parser metadata, not a real file path.
+            filePath: file
         ).reportableMatches
 
         // Apply baseline filtering
@@ -184,10 +186,13 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // WO-635: retained policy advisories must not contribute to any scan exit threshold.
     private func shouldFail(matches: [DetectedMatch]) -> Bool {
-        guard !matches.isEmpty else { return false }
+        // WO-635: consume the shared policy classification, never reclassify documentation here.
+        let actionable = matches.filter { $0.advisory != .documentationPolicy }
+        guard !actionable.isEmpty else { return false }
         guard let threshold = failOnSeverity else { return true }
-        return matches.contains { $0.effectiveSeverity >= threshold }
+        return actionable.contains { $0.effectiveSeverity >= threshold }
     }
 
     private func redirectStdoutIfNeeded() throws {
@@ -392,7 +397,9 @@ struct Scan: ParsableCommand {
                 content: fr.content,
                 config: config,
                 contentTrust: .trustedFile,
-                minimumSeverity: nil
+                minimumSeverity: nil,
+                // WO-635: directory findings retain their file-level policy context.
+                filePath: fr.filePath
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -478,7 +485,9 @@ struct Scan: ParsableCommand {
                 content: fr.content,
                 config: config,
                 contentTrust: .trustedFile,
-                minimumSeverity: nil
+                minimumSeverity: nil,
+                // WO-635: diff findings are classified by the changed file's path.
+                filePath: fr.filePath
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -558,7 +567,9 @@ struct Scan: ParsableCommand {
                 content: "",
                 config: config,
                 contentTrust: .agentControlled,
-                minimumSeverity: nil
+                minimumSeverity: nil,
+                // WO-635: history findings carry a path even without current working-tree content.
+                filePath: cf.filePath
             ).reportableMatches
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(

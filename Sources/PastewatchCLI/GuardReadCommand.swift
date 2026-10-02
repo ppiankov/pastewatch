@@ -83,13 +83,22 @@ enum FileGuard {
             )
         }
         // WO-502: read/write/command/watch use one post-scan decision pipeline.
-        let filtered = GuardDecision.evaluate(
+        // WO-635: retain reportable advisories while only actionable matches block file access.
+        let decision = GuardDecision.evaluate(
             matches: matches,
             content: content,
             config: config,
             contentTrust: .trustedFile,
-            minimumSeverity: failOnSeverity
-        ).actionableMatches
+            minimumSeverity: failOnSeverity,
+            // WO-635: path-based documentation policy is shared by read and write guards.
+            filePath: filePath
+        )
+        // WO-635: advisory diagnostics expose type and line, never matched values.
+        for match in decision.reportableMatches where match.advisory == .documentationPolicy {
+            let message = "ADVISORY: \(match.displayName) line \(match.line) count=1\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+        let filtered = decision.actionableMatches
         guard !filtered.isEmpty else { return }
 
         let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })

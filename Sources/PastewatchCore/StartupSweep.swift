@@ -85,7 +85,9 @@ public struct StartupSweep {
                     content: content,
                     config: config,
                     contentTrust: .trustedFile,
-                    minimumSeverity: nil
+                    minimumSeverity: nil,
+                    // WO-635: startup files retain their actual non-document paths.
+                    filePath: normalizedPath
                 ).reportableMatches
                 let summary = StartupSweepFileSummary(
                     path: normalizedPath,

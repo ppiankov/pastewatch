@@ -131,7 +131,9 @@ public enum GuardMutationEvaluator {
             content: content,
             config: config,
             contentTrust: .agentControlled,
-            minimumSeverity: minimumSeverity
+            minimumSeverity: minimumSeverity,
+            // WO-635: both mutation snapshots share the target file's documentation policy.
+            filePath: filePath
         ).actionableMatches
     }
 
