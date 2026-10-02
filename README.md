@@ -483,6 +483,15 @@ authorizes them.
 
 ---
 
+### Known limitations
+
+The command guard scans recognized copy, move, install and redirection sources using
+the source file's policy, not the destination extension. Documentation classification
+is path-based: renaming through scripts, obfuscated shell commands, unsupported
+options or recursive directory operations can bypass this source-file check.
+This is not a shell sandbox or adversarial-agent containment. Intrinsic secrets,
+exact known values and custom rules remain actionable in documentation files.
+
 ## Design Constraints
 
 - Local-only operation

@@ -3,6 +3,71 @@ import XCTest
 
 final class CommandParserTests: XCTestCase {
 
+    // WO-638: copy-like commands read sources, never their destination operand.
+    func testCopyCommandsReturnOnlySources() {
+        for command in ["cp", "mv", "install", "rsync", "ditto"] {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: "\(command) src dst", workingDirectory: "/app"),
+                           ["/app/src"], command)
+        }
+    }
+
+    // WO-638: supported options must not shift source and destination positions.
+    func testCopySourceOptionsAndMultipleOperands() {
+        let cases: [(String, [String])] = [
+            ("cp -p src dst", ["src"]), ("mv -f src dst", ["src"]),
+            ("install -m 600 -o owner -g group src dst", ["src"]),
+            ("rsync -av src dst", ["src"]), ("ditto -v src dst", ["src"]),
+            ("cp a b dir/", ["a", "b"]), ("mv a b dir/", ["a", "b"]),
+            ("cp -- -src -dst", ["-src"]), ("cp -t dir src", ["src"]),
+            ("cp -- - dst", ["-"]),
+            ("cp -tdir a b", ["a", "b"]), ("cp --target-directory=dir src", ["src"]),
+            ("mv --target-directory dir a b", ["a", "b"]),
+            ("install -m600 -t dir src", ["src"])
+        ]
+        for (command, sources) in cases {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"),
+                           sources.map { "/app/" + $0 }, command)
+        }
+    }
+
+    // WO-638: reuse quote handling and chain parsing rather than interpreting shell text twice.
+    func testQuotedCopySourcesAndChains() {
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp 'source file' \"target file\"", workingDirectory: "/app"),
+                       ["/app/source file"])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "/bin/cp src dst && mv next target", workingDirectory: "/app"),
+                       ["/app/src", "/app/next"])
+    }
+
+    // WO-638: input redirects and cat-fed pipelines retain only their existing read side.
+    func testCopyRedirectSourcesExcludeDestinations() {
+        for command in ["cat src > dst", "cat src >> dst", "cat src | tee dst", "tee dst < src", "tee -a dst<src"] {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), ["/app/src"], command)
+        }
+    }
+
+    // WO-638: remote rsync operands are not local read targets; explicit input files remain covered.
+    func testRsyncSourcesAndInputFlags() {
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "rsync remote:src dst", workingDirectory: "/app"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "rsync --password-file passfile src remote:dst", workingDirectory: "/app"),
+                       ["/app/passfile", "/app/src"])
+    }
+
+    // WO-638: unsupported, incomplete and obfuscated copy commands must not acquire false read targets.
+    func testUnparseableCopyCommandsKeepAllowBehavior() {
+        for command in ["cp --unknown value src dst", "cp -t", "cp src", "cp 'src dst", "cp $SOURCE dst", "install -d dir"] {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), [], command)
+        }
+    }
+
+    // WO-638: directory copies must not be blocked as unreadable regular files.
+    func testCopyDirectoryOperandsDoNotBecomeFileReads() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pw-copy-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp -R '\(root.path)' destination"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "ditto '\(root.path)' destination"), [])
+    }
+
     // MARK: - File readers
 
     func testCatExtractsFile() {

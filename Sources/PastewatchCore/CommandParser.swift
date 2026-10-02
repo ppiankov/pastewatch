@@ -4,6 +4,9 @@ import Foundation
 /// Used by the `guard` subcommand to determine which files a Bash command would access.
 public struct CommandParser {
 
+    // WO-638: source reads are guarded before a copy can change the destination's policy context.
+    private static let copyCommands: Set<String> = ["cp", "mv", "install", "rsync", "ditto"]
+
     /// Commands that read file contents (output goes to stdout → cloud API).
     private static let fileReaders: Set<String> = [
         "cat", "head", "tail", "less", "more", "bat", "tac", "nl",
@@ -119,6 +122,7 @@ public struct CommandParser {
         return allPaths
     }
 
+    // WO-638: extend the shared dispatch so source policy never depends on the destination suffix.
     /// Extract file paths from a single command (no pipes or chaining).
     private static func extractFilePathsSingle(
         from command: String,
@@ -141,6 +145,18 @@ public struct CommandParser {
             cmd = (rawCmd as NSString).lastPathComponent
         } else {
             cmd = rawCmd
+        }
+
+        // WO-638: unknown copy syntax keeps its old behavior; known sources reuse existing path resolution.
+        let literalTokens = copyCommands.contains(cmd) ? tokenize(command, requiringLiteralArguments: true) : []
+        if copyCommands.contains(cmd),
+           !literalTokens.isEmpty,
+           let sources = extractCopySourceArgs(cmd, args: Array(literalTokens.dropFirst())) {
+            return sources.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }.filter { path in
+                // WO-638: recursive directory traversal is not a file read and is outside this bounded parser.
+                var isDirectory: ObjCBool = false
+                return !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) || !isDirectory.boolValue
+            }
         }
 
         let rawPaths: [String]
@@ -470,8 +486,9 @@ public struct CommandParser {
 
     // MARK: - Tokenizer
 
+    // WO-638: new copy classification rejects incomplete quotes and unevaluated shell expansions.
     /// Split a command string into tokens, respecting single and double quotes.
-    static func tokenize(_ command: String) -> [String] {
+    static func tokenize(_ command: String, requiringLiteralArguments: Bool = false) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inSingle = false
@@ -500,7 +517,9 @@ public struct CommandParser {
                 continue
             }
 
-            if char == " " && !inSingle && !inDouble {
+            // WO-638: do not turn unresolved variables or substitutions into new file reads.
+            if requiringLiteralArguments && !inSingle && (char == "$" || char == "`") { return [] }
+            if (char == " " || (requiringLiteralArguments && char.isWhitespace)) && !inSingle && !inDouble {
                 if !current.isEmpty {
                     tokens.append(current)
                     current = ""
@@ -511,6 +530,8 @@ public struct CommandParser {
             current.append(char)
         }
 
+        // WO-638: unmatched syntax keeps the pre-existing allow behavior for unsupported commands.
+        if requiringLiteralArguments && (inSingle || inDouble || escaped) { return [] }
         if !current.isEmpty {
             tokens.append(current)
         }
@@ -519,6 +540,92 @@ public struct CommandParser {
     }
 
     // MARK: - Argument extractors
+
+    // WO-638: option arity distinguishes metadata, source files and target directories.
+    private enum CopyOption {
+        case flag, value, targetDirectory, inputFile, directoryOnly
+    }
+
+    // WO-638: classify only known option forms, leaving unknown shell syntax to existing behavior.
+    private static func copyOption(_ name: String, command: String) -> CopyOption? {
+        if ["cp", "mv", "install"].contains(command) {
+            if ["t", "target-directory"].contains(name) { return .targetDirectory }
+            if ["S", "suffix"].contains(name) { return .value }
+        }
+        if command == "install" {
+            if ["m", "mode", "o", "owner", "g", "group"].contains(name) { return .value }
+            if ["d", "directory"].contains(name) { return .directoryOnly }
+        }
+        if command == "rsync" {
+            if ["password-file", "include-from", "exclude-from", "files-from"].contains(name) { return .inputFile }
+            if ["e", "rsh", "f", "filter", "B", "block-size", "T", "temp-dir"].contains(name) { return .value }
+        }
+        let shortFlags: [String: String] = [
+            "cp": "aRrpfivnHLPlsduxXTc", "mv": "finvT", "install": "bCcDpsv",
+            "rsync": "avzrtplogDHRWcnuqIhSxKLOJ", "ditto": "vVXckxz"
+        ]
+        let longFlags: [String: Set<String>] = [
+            "cp": ["force", "interactive", "no-clobber", "verbose", "recursive", "archive", "no-target-directory"],
+            "mv": ["force", "interactive", "no-clobber", "verbose", "no-target-directory"],
+            "install": ["verbose", "no-target-directory", "preserve-timestamps", "strip"],
+            "rsync": ["verbose", "recursive", "archive", "dry-run", "delete", "progress"],
+            "ditto": ["rsrc", "norsrc", "extattr", "noextattr", "acl", "noacl"]
+        ]
+        if name.count == 1 && (shortFlags[command] ?? "").contains(name) { return .flag }
+        return longFlags[command]?.contains(name) == true ? .flag : nil
+    }
+
+    // WO-638: combined short options consume an attached value only at the option that owns it.
+    private static func parseCopyOption(_ argument: String, command: String) -> (kind: CopyOption, value: String?)? {
+        if argument.hasPrefix("--") {
+            let parts = argument.dropFirst(2).split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let name = parts.first, let kind = copyOption(String(name), command: command) else { return nil }
+            if kind == .flag && parts.count > 1 { return nil }
+            return (kind, parts.count > 1 ? String(parts[1]) : nil)
+        }
+        let flags = argument.dropFirst()
+        for index in flags.indices {
+            guard let kind = copyOption(String(flags[index]), command: command) else { return nil }
+            if kind != .flag {
+                let rest = flags[flags.index(after: index)...]
+                return (kind, rest.isEmpty ? nil : String(rest))
+            }
+        }
+        return (.flag, nil)
+    }
+
+    // WO-638: only positional sources and explicit input-file options become read targets.
+    private static func extractCopySourceArgs(_ command: String, args: [String]) -> [String]? {
+        var sources: [String] = []
+        var inputFiles: [String] = []
+        var targetDirectory = false
+        var endOfOptions = false
+        var index = 0
+        while index < args.count {
+            let argument = args[index]
+            index += 1
+            if !endOfOptions && argument == "--" { endOfOptions = true; continue }
+            if endOfOptions || !argument.hasPrefix("-") || argument == "-" {
+                sources.append(argument)
+                continue
+            }
+            guard let option = parseCopyOption(argument, command: command) else { return nil }
+            if option.kind == .directoryOnly { return [] }
+            if option.kind == .flag { continue }
+            let value: String
+            if let attached = option.value { value = attached } else {
+                guard index < args.count else { return nil }
+                value = args[index]
+                index += 1
+            }
+            guard !value.isEmpty else { return nil }
+            if option.kind == .targetDirectory { targetDirectory = true }
+            if option.kind == .inputFile { inputFiles.append(value) }
+        }
+        guard sources.count >= (targetDirectory ? 1 : 2) else { return nil }
+        if !targetDirectory { sources.removeLast() }
+        return inputFiles + sources.filter { command != "rsync" || !$0.contains(":") }
+    }
 
     /// Extract positional (non-flag) arguments — used for cat, head, tail, etc.
     /// Skips flags (tokens starting with `-`) and their values for known flag patterns.

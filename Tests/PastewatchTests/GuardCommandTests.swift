@@ -3,6 +3,49 @@ import XCTest
 
 final class GuardCommandTests: XCTestCase {
 
+    // WO-638: destination suffixes cannot downgrade a non-documentation source's guard decision.
+    func testCopySourceSecretsBlockRegardlessOfDestination() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try content.write(toFile: testDir + "/doc.env", atomically: true, encoding: .utf8)
+        for command in ["cp", "mv", "install", "rsync", "ditto"] {
+            for destination in ["notes.md", "notes.txt"] {
+                let result = try runGuardCLI(arguments: ["guard", "--quiet", "\(command) doc.env \(destination)"])
+                XCTAssertEqual(result.status, 2, "source must block for \(command)")
+                XCTAssertTrue(result.stdout.isEmpty)
+                XCTAssertTrue(result.stderr.isEmpty)
+            }
+        }
+    }
+
+    // WO-638: clean sources and documentation-only advisory sources remain allowed.
+    func testCopyCleanAndAdvisorySourcesRemainAllowed() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try "clean text".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
+        try content.write(toFile: testDir + "/source.md", atomically: true, encoding: .utf8)
+        try content.write(toFile: testDir + "/destination.env", atomically: true, encoding: .utf8)
+        for command in ["cp clean.txt notes.md", "cp source.md notes.md", "cp clean.txt destination.env",
+                        "mv -f clean.txt destination.env", "install -m 600 clean.txt destination.env",
+                        "ditto clean.txt destination.env", "rsync clean.txt destination.env"] {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 0, "destination must not become a new read target")
+            XCTAssertTrue(result.stderr.isEmpty)
+        }
+    }
+
+    // WO-638: cat and input-redirection sources keep their own path when writing documentation.
+    func testRedirectSourceSecretsBlockDocumentationWrites() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try content.write(toFile: testDir + "/doc.env", atomically: true, encoding: .utf8)
+        for command in ["cat doc.env > notes.md", "cat doc.env >> notes.md", "cat doc.env | tee notes.md", "tee notes.md < doc.env"] {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.stderr.isEmpty)
+        }
+    }
+
     private var testDir: String!
     // WO-529@v3: Default config only enables intrinsic detectors.
     private let config = PastewatchConfig.defaultConfig

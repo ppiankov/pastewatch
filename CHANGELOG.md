@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Guard recognized copy, move and install source files before their contents can
+  reach a differently classified destination; keep destination-only operands out
+  of source scans. (WO-638)
+
 ## [0.38.0] - 2026-10-03
 
 ### Added
