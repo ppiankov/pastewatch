@@ -481,7 +481,9 @@ final class MCPServer {
             content: text,
             config: config,
             contentTrust: .agentControlled,
-            minimumSeverity: nil
+            minimumSeverity: nil,
+            // WO-635: inline MCP text has no file-based policy exception.
+            filePath: nil
         ).reportableMatches
         auditLogger?.log("SCAN  (inline)  findings=\(matches.count)")
         return successResult(id: id, matches: matches)
@@ -543,7 +545,9 @@ final class MCPServer {
             content: content,
             config: config,
             contentTrust: .trustedFile,
-            minimumSeverity: nil
+            minimumSeverity: nil,
+            // WO-635: file diagnostics retain the requested path.
+            filePath: path
         ).reportableMatches
         auditLogger?.log("SCAN  \(path)  findings=\(reportable.count)")
         return successResult(id: id, matches: reportable, filePath: path)
@@ -567,7 +571,9 @@ final class MCPServer {
                     content: result.content,
                     config: config,
                     contentTrust: .trustedFile,
-                    minimumSeverity: nil
+                    minimumSeverity: nil,
+                    // WO-635: apply the same path-based policy per directory result.
+                    filePath: result.filePath
                 ).reportableMatches
                 guard !matches.isEmpty else { return nil }
                 return FileScanResult(
@@ -697,7 +703,9 @@ final class MCPServer {
             content: content,
             config: config,
             contentTrust: .trustedFile,
-            minimumSeverity: minSeverity
+            minimumSeverity: minSeverity,
+            // WO-635: read advisories use the same real path as native file guards.
+            filePath: path
         )
 
         let partition = partitionMutationMatches(
@@ -706,7 +714,11 @@ final class MCPServer {
             minAdvisorySeverity: minSeverity
         )
         let matches = partition.authorized
-        let advisories: [JSONValue] = partition.advisory.map { match in
+        // WO-635: policy warnings remain visible even when the mutation advisory threshold is high.
+        let reportedAdvisories = partition.advisory + partition.advisoryBelowThreshold.filter {
+            $0.advisory == .documentationPolicy
+        }
+        let advisories: [JSONValue] = reportedAdvisories.map { match in
             .object([
                 "type": .string(match.displayName),
                 "severity": .string(match.effectiveSeverity.rawValue),
@@ -715,9 +727,10 @@ final class MCPServer {
         }
 
         if matches.isEmpty {
-            let advisorySuffix = partition.advisory.isEmpty
+            // WO-635: reporting a policy advisory must not claim the file is clean.
+            let advisorySuffix = reportedAdvisories.isEmpty
                 ? "clean"
-                : "advisory=\(partition.advisory.count)"
+                : "advisory=\(reportedAdvisories.count)"
             auditLogger?.log("READ  \(path)  \(advisorySuffix)")
             let result: JSONValue = .array([
                 .object([
@@ -726,7 +739,8 @@ final class MCPServer {
                     "text": .string(encodeReadPayload(content: content, range: readRange, metadata: [
                         "redactions": .array([]),
                         "advisories": .array(advisories),
-                        "clean": .bool(partition.advisory.isEmpty)
+                        // WO-635: preserve advisory presence in the existing MCP payload contract.
+                        "clean": .bool(reportedAdvisories.isEmpty)
                     ]))
                 ])
             ])
@@ -831,7 +845,9 @@ final class MCPServer {
             content: content,
             config: config,
             contentTrust: .agentControlled,
-            minimumSeverity: nil
+            minimumSeverity: nil,
+            // WO-635: write policy follows the target file path, not the source of its content.
+            filePath: path
         )
         let writePartition = partitionMutationMatches(
             writeDecision.reportableMatches,
@@ -959,7 +975,9 @@ final class MCPServer {
             content: text,
             config: config,
             contentTrust: .agentControlled,
-            minimumSeverity: nil
+            minimumSeverity: nil,
+            // WO-635: arbitrary model output is pathless, so existing enforcement is retained.
+            filePath: nil
         ).reportableMatches
         auditLogger?.log("CHECK (inline)  clean=\(matches.isEmpty)")
 

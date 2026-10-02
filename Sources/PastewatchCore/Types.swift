@@ -266,6 +266,8 @@ public enum SensitiveDataType: String, CaseIterable, Codable {
 /// WO-478: scanner conditions that are observable but never authorize mutation.
 public enum DetectionAdvisory: String, Equatable {
     case malformedPrivateKey
+    // WO-635: guard-classified documentation findings remain visible without blocking or mutation.
+    case documentationPolicy
 }
 
 /// WO-484: offline provenance for every intrinsically authorized provider pattern.
@@ -535,6 +537,12 @@ public struct ObfuscateEntry: Codable, Equatable {
     }
 }
 
+// WO-635: invalid policy values fail decoding rather than weakening enforcement.
+public enum DocumentationPolicy: String, Codable {
+    case advisory
+    case enforce
+}
+
 /// Configuration for Pastewatch.
 /// Loaded from ~/.config/pastewatch/config.json if present.
 public struct PastewatchConfig: Codable {
@@ -562,6 +570,8 @@ public struct PastewatchConfig: Codable {
     /// WO-529@v3: opt-in obfuscation entries for ambiguous classes (email, host).
     /// Default is empty — ambiguous classes are NOT detected/blocked/nagged unless explicitly listed here.
     public var obfuscate: [ObfuscateEntry]
+    // WO-635: documentation examples are advisory unless the selected config enforces them.
+    public var documentationPolicy: DocumentationPolicy
 
     public init(
         enabled: Bool,
@@ -582,7 +592,9 @@ public struct PastewatchConfig: Codable {
         protectedPaths: [String] = ["~/.openclaw"],
         sharedPatternFiles: [String] = [],
         responseStreamingRedactionMode: StreamingRedactionMode = .perSSEEvent,
-        obfuscate: [ObfuscateEntry] = []
+        obfuscate: [ObfuscateEntry] = [],
+        // WO-635: old callers retain the default documentation policy.
+        documentationPolicy: DocumentationPolicy = .advisory
     ) {
         self.enabled = enabled
         self.enabledTypes = enabledTypes
@@ -603,6 +615,8 @@ public struct PastewatchConfig: Codable {
         self.sharedPatternFiles = sharedPatternFiles
         self.responseStreamingRedactionMode = responseStreamingRedactionMode
         self.obfuscate = obfuscate
+        // WO-635: preserve the policy selected by the existing admin/project/user cascade.
+        self.documentationPolicy = documentationPolicy
     }
 
     // Backward-compatible decoding: missing fields get defaults
@@ -650,6 +664,8 @@ public struct PastewatchConfig: Codable {
         }
         // WO-529@v3: opt-in obfuscation entries for ambiguous classes.
         obfuscate = try container.decodeIfPresent([ObfuscateEntry].self, forKey: .obfuscate) ?? []
+        // WO-635: missing policy is backward compatible; unsupported values are invalid config.
+        documentationPolicy = try container.decodeIfPresent(DocumentationPolicy.self, forKey: .documentationPolicy) ?? .advisory
     }
 
     public static let defaultConfig = PastewatchConfig(

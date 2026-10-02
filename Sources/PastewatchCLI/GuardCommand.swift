@@ -50,7 +50,9 @@ struct Guard: ParsableCommand {
             content: command,
             config: config,
             contentTrust: .agentControlled,
-            minimumSeverity: failOnSeverity
+            minimumSeverity: failOnSeverity,
+            // WO-635: shell command text is not a documentation file.
+            filePath: nil
         )
         // WO-139: JSON redaction covers reportable inline findings even below block threshold.
         let commandDisplayMatches = commandDecision.reportableMatches
@@ -88,7 +90,9 @@ struct Guard: ParsableCommand {
                 content: content,
                 config: config,
                 contentTrust: .agentControlled,
-                minimumSeverity: failOnSeverity
+                minimumSeverity: failOnSeverity,
+                // WO-635: referenced file content has a real path, unlike the command string.
+                filePath: path
             ).actionableMatches
 
             if !filtered.isEmpty {

@@ -149,7 +149,9 @@ public final class FileWatcher {
             content: content,
             config: config,
             contentTrust: .trustedFile,
-            minimumSeverity: severity
+            minimumSeverity: severity,
+            // WO-635: supply the watched file's path to the shared guard policy.
+            filePath: fullPath
         ).actionableMatches
 
         guard !matches.isEmpty else { return }
