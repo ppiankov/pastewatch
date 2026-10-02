@@ -244,6 +244,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         "- CLI example: `--" + "pass" + "word=" + "Q7mN" + "4rZ9" + "T2xV`"
     }
 
+    // WO-635: intrinsic control value assembled at runtime so no literal key lands in source.
     private func intrinsic() -> String {
         "AK" + "IA" + String(repeating: "7B", count: 8)
     }
@@ -253,12 +254,14 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
     }
 
+    // WO-635: fixtures live only in the isolated temp root, never in the repo or operator dirs.
     private func writeFixture(_ content: String, name: String, in root: URL) throws -> String {
         let url = root.appendingPathComponent(name)
         try content.write(to: url, atomically: true, encoding: .utf8)
         return url.path
     }
 
+    // WO-635: run the freshly built CLI so subprocess tests exercise the code under review.
     private func cliURL() -> URL {
         let bundled = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("PastewatchCLI")
         if FileManager.default.fileExists(atPath: bundled.path) { return bundled }
@@ -302,6 +305,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         return try jsonObject(Data(text.utf8))
     }
 
+    // WO-635: assertions read structured output as JSON objects, never as raw matched text.
     private func jsonObject(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
