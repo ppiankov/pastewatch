@@ -21,8 +21,10 @@ brew install ppiankov/tap/pastewatch
 
 ### Config files
 
+<!-- WO-640: Include the administrator config in the public resolution reference. -->
 | File | Location | Purpose | Created By |
 |------|----------|---------|------------|
+| `/etc/pastewatch/config.json` | System | Administrator-pinned config; highest precedence | Administrator |
 | `.pastewatch.json` | Project root (`$CWD`) | Project-level config | `pastewatch-cli init` |
 | `~/.config/pastewatch/config.json` | Home | User-level defaults | Manual / GUI app |
 | `.pastewatch-allow` | Project root | Value allowlist (one per line, `#` comments) | `pastewatch-cli init` |
@@ -31,10 +33,12 @@ brew install ppiankov/tap/pastewatch
 
 ### Resolution cascade
 
-CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
+<!-- WO-640: Prevent agents from assuming project and user rules are merged. -->
+`/etc/pastewatch/config.json` > CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults. First existing config wins, with no merge. A project config can shadow user custom rules, opt-in detectors, allowlists, and shared pattern files. Run `pastewatch-cli doctor --explain` when rules seem inactive; follow [Troubleshooting](troubleshooting.md#my-rules-are-not-applied).
 
 ### `.pastewatch.json` schema
 
+<!-- WO-640: Show the documentation policy's default in the config example. -->
 ```json
 {
   "enabled": true,
@@ -50,6 +54,7 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
   "sensitiveHosts": [".local", "secrets.vault.internal.net"],
   "sensitiveIPPrefixes": ["172.16.", "10."],
   "mcpMinSeverity": "high",
+  "documentationPolicy": "advisory",
   "placeholderPrefix": "REDACTED_PLACEHOLDER_"
 }
 ```
@@ -58,20 +63,24 @@ CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
 
 ### Field reference
 
+<!-- WO-640: Distinguish opt-in detection, advisory thresholds, and document policy. -->
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable scanning globally |
-| `enabledTypes` | string[] | All except High Entropy | Which detection types to activate (see Detection Types) |
+| `enabledTypes` | string[] | Intrinsic detectors | Which detection types to activate; ambiguous types require opt-in (see Detection Types) |
 | `showNotifications` | bool | `true` | System notifications on GUI obfuscation |
 | `soundEnabled` | bool | `false` | Sound on GUI obfuscation |
 | `allowedValues` | string[] | `[]` | Exact values to suppress (merged with `.pastewatch-allow` file) |
 | `allowedPatterns` | string[] | `[]` | Regex patterns for value suppression (wrapped in `^(...)$`) |
-| `customRules` | object[] | `[]` | Additional regex detection patterns with name, pattern, optional severity |
+| `customRules` | object[] | `[]` | Additional regex detection patterns with name, pattern, optional severity (defaults to high) |
 | `safeHosts` | string[] | `[]` | Hostnames excluded from detection. Leading dot = suffix match (`.co.com` matches `x.co.com`) |
 | `sensitiveHosts` | string[] | `[]` | Hostnames always detected — overrides built-in and user safe hosts. Also catches 2-segment hosts (e.g., `.local` → `nas.local`) |
 | `sensitiveIPPrefixes` | string[] | `[]` | IP prefixes always detected — overrides built-in IP exclude list (e.g., `172.16.`, `10.`) |
-| `mcpMinSeverity` | string | `"high"` | Default minimum severity for MCP `pastewatch_read_file` redaction (critical, high, medium, low) |
+| `mcpMinSeverity` | string | `"high"` | MCP advisory-report threshold (critical, high, medium, low); authorized matches still become placeholders |
+| `documentationPolicy` | string | `"advisory"` | `advisory` reports ambiguous document findings without blocking; `enforce` applies the ordinary guard threshold. Invalid values fail closed; administrator config wins |
 | `placeholderPrefix` | string? | `null` | Custom prefix for MCP placeholders. When set, produces `{prefix}001` instead of `__PW_TYPE_N__` |
+
+`documentationPolicy` uses case-insensitive `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` source extensions. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain protection. Stdin has no document path. Use only the canonical [Documenting credentials](../README.md#documenting-credentials) forms in examples; an explicit database exception must allow the whole connection string. Validate config with `pastewatch-cli config check --file .pastewatch.json`.
 
 ## Commands
 
@@ -166,6 +175,9 @@ Generate a structured inventory of all detected secrets in a directory.
 ### pastewatch-cli guard
 
 Check if a shell command would access files containing secrets. Used as a PreToolUse hook for Bash tool.
+
+<!-- WO-640: Source paths govern copying and redirecting protected file content. -->
+Recognized `cp`, `mv`, `install`, `rsync`, and `ditto` sources are read targets, as are files fed through `cat` or `<` into `tee`, `>`, or `>>`. Each source uses its own path; a Markdown destination never relaxes it. Destination-only operands are not newly scanned as sources. Scripted renames, recursive directories, unsupported options, and obfuscated commands are not a containment boundary; see [copy-source limitations](troubleshooting.md#why-was-my-cpmv-blocked).
 
 **Arguments:**
 - `command` — shell command to check (required)
@@ -283,6 +295,17 @@ Check installation health and show active configuration. Reports CLI version, PA
 
 **Flags:**
 - `--json` — output results as JSON
+- `--explain` - read-only config resolution, validation, and per-surface rule coverage instead of installation checks
+
+<!-- WO-640: Use the shared resolution explanation when rules appear inactive. -->
+Run `doctor --explain` when rules seem inactive. It reports Resolution (winner/shadowed candidates and contribution counts), Config in use (compiled rule count), policy/thresholds, Detectors, Custom rules, Shared pattern files, Allowlists, and a rule-coverage Summary. WARNs include lost opt-in type names and counts of shadowed custom rules, allowlist entries, or shared files. Pattern/value summaries contain only byte length and character classes, never literal values, positional masks, or hashes.
+
+```bash
+pastewatch-cli doctor --explain
+pastewatch-cli doctor --explain --json
+```
+
+Use the [complete output-field reference](cli-reference.md#doctor---explain) to interpret text or JSON. `--explain` can report an invalid config with exit 0; inspect `valid` in JSON or run `config check` for a validation exit code. Scanning and guarding fail closed on invalid config. Plain `doctor` keeps the installation checks below.
 
 **Checks performed:**
 
@@ -290,7 +313,7 @@ Check installation health and show active configuration. Reports CLI version, PA
 |-------|----------------|
 | cli | Version and binary path |
 | path | Whether pastewatch-cli is on PATH |
-| config | Which config file is active (project > user > defaults), validation warnings |
+| config | Which config file is active (administrator > project > user > defaults), validation warnings |
 | hook | Pre-commit hook installation status |
 | allowlist | `.pastewatch-allow` file presence |
 | ignore | `.pastewatchignore` file presence |
@@ -300,6 +323,33 @@ Check installation health and show active configuration. Reports CLI version, PA
 
 **Exit codes:**
 - 0: success
+
+<!-- WO-640: Guide agents to safe stdin diagnostics and accurate surface verdicts. -->
+### pastewatch-cli check
+
+To verify whether a value would be blocked or redacted, pipe it to `check`; never pass secrets as arguments. Input is stdin or `--file` only. Interactive stdin uses a no-echo prompt. Shell literals in examples are placeholders, not real credentials.
+
+```bash
+printf '%s\n' '<value>' | pastewatch-cli check
+pastewatch-cli check --file README.md
+printf '%s\n' '<value>' | pastewatch-cli check --json
+pastewatch-cli check --file README.md --json
+```
+
+**Flags:**
+- `--file path` - read a file and apply its path's documentation policy; otherwise read stdin
+- `--json` - emit structured config and finding verdicts
+
+The report shows active config, compiled-rule count, policy/thresholds, per-finding type/name, severity, line, byte length and character classes, mutation authorization, guard/scan/MCP/proxy outcomes, and allowlist suppression reasons. It does not print input, matches, positional shapes, or hashes. See [every JSON field](cli-reference.md#check-json-fields).
+
+Guard verdicts use the `high` threshold and the `--file` path. MCP models a trusted read with `mcpMinSeverity`: **two-way**, placeholders restored locally on write. Proxy models outbound user-message text: **one-way**, redacted but never restored. The diagnostic makes no network request and does not validate credentials with a provider.
+
+**Exit codes:**
+- 0: diagnosis completed, even if another surface would block
+- 2: operational failure, such as invalid config, unreadable input, or scan limits
+- 64: positional value refused (shell history and process-list exposure)
+
+`scanExitCode` in the report is a separate 0/6 verdict, not the process exit code. Use `guard-read` or `scan --check` as a blocking gate. Use [Troubleshooting](troubleshooting.md) for inactive rules and unexpected document or copy-source decisions.
 
 ### pastewatch-cli version
 

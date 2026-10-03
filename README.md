@@ -292,11 +292,14 @@ No previews. No animations. No confirmations. Silence is success.
 
 `pastewatch-cli` provides scanning, guarding, and proxy subcommands for use without the GUI:
 
+<!-- WO-640: Link diagnostics from the command overview without duplicating detail. -->
 ```bash
 pastewatch-cli scan --dir .              # scan a directory
 pastewatch-cli launch claude             # proxy + agent in one step
 pastewatch-cli guard "cat .env"          # block secret-leaking commands
 pastewatch-cli mcp                        # redacted read/write MCP server
+pastewatch-cli check --file README.md     # explain per-surface decisions
+pastewatch-cli doctor --explain           # inspect active config and rule coverage
 ```
 
 **Full command reference:** [docs/cli-reference.md](docs/cli-reference.md) — every subcommand (`scan`, `proxy`, `launch`, `mcp`, `guard`, `fix`, `inventory`, `report`, `canary`, `watch`, `dashboard`, config, and CI integration) with flags and examples.
@@ -559,6 +562,8 @@ The GUI (clipboard monitoring) is macOS-only. The CLI runs on macOS and Linux vi
 
 ## Documentation
 
+<!-- WO-640: Route configuration and guard support questions to the runbook. -->
+- [docs/troubleshooting.md](docs/troubleshooting.md) - Inactive rules, document policy, and copy-source guard decisions
 - [docs/agent-integration.md](docs/agent-integration.md) - Consolidated agent reference (enforcement matrix, MCP setup, hooks, config)
 - [docs/agent-setup.md](docs/agent-setup.md) - Per-agent MCP setup (Claude Code, Claude Desktop, Cline, Cursor, OpenCode, Codex CLI, Qwen Code)
 - [docs/agent-safety.md](docs/agent-safety.md) - Agent safety guide (layered defenses for AI coding agents)

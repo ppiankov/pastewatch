@@ -2,6 +2,7 @@
 
 Full command reference for `pastewatch-cli`. For an overview and quick start, see the [README](../README.md).
 
+<!-- WO-640: Make diagnostic and policy documentation discoverable. -->
 **Contents**
 
 | | | |
@@ -15,6 +16,9 @@ Full command reference for `pastewatch-cli`. For an overview and quick start, se
 | [Config Init](#config-init) | [Exit Codes](#exit-codes) | [Stdin Filename](#stdin-filename-hint) |
 | [Inline Allowlist](#inline-allowlist) | [Pre-commit Framework](#pre-commit-framework-pre-commitcom) | [Manual Hook](#pre-commit-hook-manual) |
 | [Format-Aware Scanning](#format-aware-scanning) | [Allowlist](#allowlist) | [Custom Rules](#custom-rules) |
+| [Check](#check) | [Doctor --explain](#doctor---explain) | [Documentation Policy](#documentation-policy) |
+
+For inactive rules or unexpected guard decisions, start with [Troubleshooting](troubleshooting.md).
 
 Pastewatch includes a CLI tool for scanning text without the GUI:
 
@@ -374,6 +378,9 @@ Handles pipe chains (`|`), command chaining (`&&`, `||`, `;`), redirect operator
 
 Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [agent-setup.md](agent-setup.md) for hook configuration.
 
+<!-- WO-640: Explain source-path decisions without promising a shell sandbox. -->
+Recognized `cp`, `mv`, `install`, `rsync`, and `ditto` source operands are read targets. This also covers file content fed through `cat` or input redirection into `tee`, `>`, or `>>`. Each source is evaluated using its own path; a Markdown destination does not make a non-document source advisory. Destination-only operands are not newly scanned as sources. Scripts, obfuscated commands, unsupported options, and recursive directory copies remain limitations; see [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
+
 ## Secret Externalization (Fix)
 
 Externalize secrets to environment variables with language-aware code patching:
@@ -421,6 +428,60 @@ pastewatch-cli scan --git-diff --unstaged   # working tree changes
 pastewatch-cli scan --git-diff --check      # CI gate mode
 ```
 
+<!-- WO-640: Document the release binary's diagnostic input and output contract. -->
+## Check
+
+Explain how one input is handled by the guard, scanner, MCP read/write, and outbound proxy without making a network request:
+
+```bash
+printf '%s\n' '<value>' | pastewatch-cli check
+pastewatch-cli check --file README.md
+printf '%s\n' '<value>' | pastewatch-cli check --json
+pastewatch-cli check --file README.md --json
+```
+
+The first example contains a placeholder, not a credential. For a real value, use an existing file or run `pastewatch-cli check` in a terminal and enter it at the no-echo prompt. Never put secrets in positional arguments: they can enter shell history and process listings. Positional values are refused with exit 64. `--file` supplies the real path to the guard, so the [documentation policy](#documentation-policy) applies; stdin has no document path.
+
+`check` is a diagnostic, not a blocking hook. Exit 0 means the diagnosis completed, including when findings would block another surface. Exit 2 means the diagnosis could not run, for example because of invalid config, unreadable input, or scan limits. The reported `scanExitCode` is a separate scan outcome: 0 or 6. Use `guard-read` or `scan --check` for enforcement.
+
+| Surface | Meaning of the verdict |
+|---------|------------------------|
+| Guard | The real guard decision at the `high` threshold, including the input file's documentation policy |
+| Scan | Whether the scanner reports findings, with its own exit-code verdict |
+| MCP | **Two-way:** authorized spans become placeholders on read and are restored locally on write; `mcpMinSeverity` controls advisory reporting |
+| Proxy | **One-way:** outbound redaction, never restoration; the input is evaluated as user-message text, not as a complete HTTP request |
+
+The text report starts with the active config and compiled-rule count, policy and MCP threshold, and the two transport directions. Each finding then shows type, severity, line, non-revealing value metadata, mutation authorization, surface verdicts, and any allowlist suppression. It finishes with the scan exit-code verdict. No findings means no detector matched under this config, not proof that a credential is invalid or harmless.
+
+### Check JSON fields
+
+Optional fields are omitted when unavailable. Values, rule patterns, hashes, and positional value shapes are never printed. A value summary has only `lengthBytes` and `characterClasses`: a sorted set drawn from `letters`, `digits`, `whitespace`, and `symbols`.
+
+| Top-level field | Meaning |
+|-----------------|---------|
+| `configSource`, `configPath` | Winning config source and optional path |
+| `customRulesLoaded` | Number of successfully compiled custom rules |
+| `documentationPolicy`, `mcpMinSeverity` | Effective document policy and MCP advisory threshold |
+| `findings` | Array of the finding objects described below |
+| `scanExitCode` | Overall scan verdict, 0 or 6; not `check`'s process exit code |
+| `mcpRoundTripVerified` | Whether the local placeholder/restore check reproduced the original input |
+| `mcpDirection`, `proxyDirection` | Two-way MCP and one-way proxy descriptions |
+
+| Finding field | Meaning |
+|---------------|---------|
+| `type`, `classification`, `ruleName` | Detector type, classification, and optional custom-rule name |
+| `severity`, `line` | Detected severity and input line number |
+| `value.lengthBytes`, `value.characterClasses` | Byte length and unordered character-class membership, without the value |
+| `mutationAuthorized`, `mutationReasons` | Authorization decision and the evidence supporting it |
+| `guardVerdict`, `guardSeverity` | Guard outcome and optional effective severity after policy |
+| `scanExitCode` | This finding's scan outcome, 0 or 6 |
+| `mcp` | Placeholder/restore, advisory, or unreported MCP read outcome |
+| `placeholderShape` | Optional placeholder format, not a mask of the original value |
+| `proxy` | Outbound redacted, unchanged, or refused outcome |
+| `allowlistSuppression` | Suppression reasons; never the allowed values or patterns |
+
+See [Documenting credentials](../README.md#documenting-credentials) for the single supported placeholder list.
+
 ## Doctor
 
 Installation health check:
@@ -431,6 +492,48 @@ pastewatch-cli doctor --json # programmatic output
 ```
 
 Shows CLI version, config status, hook status, MCP server processes (with per-process `--min-severity` and `--audit-log`), and Homebrew version.
+
+<!-- WO-640: Explain all configuration diagnostic blocks and JSON fields. -->
+### Doctor --explain
+
+Use this when rules seem inactive:
+
+```bash
+pastewatch-cli doctor --explain
+pastewatch-cli doctor --explain --json
+```
+
+This read-only walkthrough uses the same config resolution, validation, and rule compilation as scanning. Plain `doctor` remains the installation health check above. Resolution is **first-wins, with no merge**: `/etc/pastewatch/config.json` (administrator), `.pastewatch.json` in the current working directory, the user config, then defaults. A project file can shadow the user's custom rules, opt-in detector types, allowlists, and shared pattern files. A WARN names lost detector types and contribution counts, not allowlist values, and explains how to move the intended settings into the winning config or remove the shadowing project config if appropriate. Administrator policy still takes precedence.
+
+| Text block | What to check |
+|------------|---------------|
+| Resolution | Candidate paths, presence, parse status, validation-error counts, winner/shadowed status, and contribution counts; WARNs explain lost coverage |
+| Config in use | Winning source/path and compiled custom-rule count |
+| Policy and thresholds | `documentationPolicy` and `mcpMinSeverity` |
+| Detectors | Type, classification, enabled state, and whether enabled by default |
+| Custom rules | Name, safe pattern metadata, compile status, effective severity (default `high` if omitted), duplicate names, and guard/scan/MCP/proxy outcomes when matched and not allowlisted |
+| Shared pattern files | Path, load status, and pattern count |
+| Allowlists | Counts of configured allowed values and patterns; possible-suppression warnings are hints, not a match test |
+| Summary | Rules capable of blocking the high-threshold guard, invalid rules, and rules below the threshold |
+
+`--explain` exits 0 when it produces the diagnosis, even for invalid configuration. Inspect `valid` in JSON, or use `config check` to validate with an exit code. Enforcement commands fail closed on invalid configuration; a successful diagnostic is not permission to proceed.
+
+#### Doctor --explain JSON fields
+
+| Field | Meaning |
+|-------|---------|
+| `resolution` | Candidate objects with `source`, `path`, `exists`, `parseOK`, `validationErrors` (count), `disposition`, and contribution counts `customRules`, `enabledTypes`, `allowlistEntries`, `sharedPatternFiles` |
+| `source`, `path`, `valid` | Winning source, optional path, and effective configuration validity |
+| `warnings` | Resolution and validation warnings, including shadowed contributions |
+| `detectors` | Objects with `type`, `classification`, `enabled`, `enabledByDefault` |
+| `customRules` | Objects with `name`, `pattern` (safe summary only), `compileStatus`, `severity`, `severityDefaulted`, `duplicateName`, `guardHook`, `scan`, `mcp`, `proxy` |
+| `sharedPatterns` | Objects with `path`, `status`, `patternCount` |
+| `allowedValues`, `allowedPatterns` | Arrays of safe summaries, never literal values or regexes |
+| `possibleSuppression` | Warnings about potential rule suppression by configured allowed patterns; use `check` to test a value |
+| `documentationPolicy`, `mcpMinSeverity` | Effective document policy and MCP advisory threshold |
+| `summary` | Custom-rule coverage summary shown in the text report |
+
+All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`. For a step-by-step diagnosis, see [My rules are not applied](troubleshooting.md#my-rules-are-not-applied).
 
 ## Watch Mode
 
@@ -549,9 +652,31 @@ pastewatch-cli init --force            # overwrite existing files
 
 **Banking profile** sets `mcpMinSeverity: medium` (catches IPs and internal hostnames), enables JDBC URL detection, adds example `customRules` for service accounts and internal URIs, and pre-fills `sensitiveIPPrefixes` with all RFC 1918 ranges. Replace `YOURBANK` in `sensitiveHosts` with your domain.
 
-Config resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults.
+<!-- WO-640: Document administrator precedence and the shared documentation policy. -->
+Config resolution cascade: `/etc/pastewatch/config.json` > CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults. First existing config wins; settings are not merged. See [Doctor --explain](#doctor---explain) to inspect the winner and shadowed contributions.
+
+### Documentation Policy
+
+The `documentationPolicy` config key accepts `advisory` (default) or `enforce`. Add the following field to a complete config, such as one generated by `init`; this fragment is not a replacement config file:
+
+```json
+{"documentationPolicy": "advisory"}
+```
+
+With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary guard severity threshold. Inputs without a file path do not receive the document exception.
+
+An administrator can pin `enforce` in `/etc/pastewatch/config.json`; a project or user config cannot override that winner. An invalid policy value makes configuration invalid and enforcement fails closed, rather than falling back to `advisory`. Check a config with:
+
+```bash
+pastewatch-cli config check --file .pastewatch.json
+```
+
+Use the canonical [Documenting credentials](../README.md#documenting-credentials) forms for examples, or follow the [Markdown troubleshooting](troubleshooting.md#why-was-my-markdown-not-blocked) steps.
 
 ## Exit Codes
+
+<!-- WO-640: Keep diagnostic exits distinct from scan and guard verdicts. -->
+Command-specific exceptions: [`check`](#check) exits 0 after diagnosis, 2 on operational failure, and 64 for positional values. `doctor --explain` reports config validity rather than failing on findings. Guards return 2 to block; `scan --check` returns 6 for findings.
 
 | Code | Meaning |
 |------|---------|
