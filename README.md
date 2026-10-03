@@ -527,8 +527,12 @@ The command guard scans recognized copy, move, install and redirection sources u
 the source file's policy, not the destination extension. Documentation classification
 is path-based. Expansions in destinations or option values do not suppress literal
 source checks; unresolved source operands cannot be inspected. Renaming through
-scripts, obfuscated shell commands, unsupported
-options or recursive directory operations can bypass this source-file check.
+scripts, obfuscated shell commands or recursive directory operations can bypass
+this source-file check.
+<!-- WO-644@v2: Unknown flags retain literal sources; unsupported syntax is reported without operands. -->
+Unknown copy options are treated as value-less flags and do not disable source
+checks. Truly unparseable copy commands are allowed with one stderr diagnostic
+naming the unsupported command, without its operands.
 This is not a shell sandbox or adversarial-agent containment. Intrinsic secrets,
 exact known values and custom rules remain actionable in documentation files.
 
