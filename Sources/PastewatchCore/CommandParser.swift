@@ -147,8 +147,9 @@ public struct CommandParser {
             cmd = rawCmd
         }
 
-        // WO-638: unknown copy syntax keeps its old behavior; known sources reuse existing path resolution.
-        let literalTokens = copyCommands.contains(cmd) ? tokenize(command, requiringLiteralArguments: true) : []
+        // WO-638: preserve operand roles even when only a destination or option value expands.
+        let literalTokens = copyCommands.contains(cmd)
+            ? tokenizeArguments(command, requiringLiteralArguments: true) ?? [] : []
         if copyCommands.contains(cmd),
            !literalTokens.isEmpty,
            let sources = extractCopySourceArgs(cmd, args: Array(literalTokens.dropFirst())) {
@@ -486,19 +487,69 @@ public struct CommandParser {
 
     // MARK: - Tokenizer
 
-    // WO-638: new copy classification rejects incomplete quotes and unevaluated shell expansions.
+    // WO-638: source classification keeps literal status alongside each shell token.
+    private struct CommandToken {
+        let value: String
+        let isLiteral: Bool
+    }
+
+    // WO-638: substitutions retain whitespace within one unresolved operand.
+    private struct ShellExpansion {
+        var opening: Character?
+        var depth = 0
+        var backtick = false
+        var isOpen: Bool { opening != nil || backtick }
+
+        // WO-638: consume a substitution without changing the surrounding quote state.
+        mutating func consume(_ char: Character) -> Bool {
+            if backtick {
+                if char == "`" { backtick = false }
+                return true
+            }
+            guard let opening else { return false }
+            let closing: Character = opening == "(" ? ")" : "}"
+            if char == opening { depth += 1 }
+            if char == closing { depth -= 1 }
+            if depth == 0 { self.opening = nil }
+            return true
+        }
+
+        // WO-638: variables and command substitutions mark only their owning token unknown.
+        mutating func begin(_ char: Character, next: Character?) -> Bool {
+            if char == "`" { backtick = true; return true }
+            guard char == "$" else { return false }
+            if next == "(" || next == "{" { opening = next }
+            return true
+        }
+    }
+
+    // WO-638: legacy callers retain their token values and copy parsing uses token metadata.
     /// Split a command string into tokens, respecting single and double quotes.
     static func tokenize(_ command: String, requiringLiteralArguments: Bool = false) -> [String] {
-        var tokens: [String] = []
+        (tokenizeArguments(command, requiringLiteralArguments: requiringLiteralArguments) ?? []).map { $0.value }
+    }
+
+    // WO-638: an expansion marks its token unknown without discarding other literal operands.
+    private static func tokenizeArguments(_ command: String, requiringLiteralArguments: Bool) -> [CommandToken]? {
+        var tokens: [CommandToken] = []
         var current = ""
+        var isLiteral = true
         var inSingle = false
         var inDouble = false
         var escaped = false
+        var expansion = ShellExpansion()
+        let characters = Array(command)
 
-        for char in command {
+        for (index, char) in characters.enumerated() {
             if escaped {
                 current.append(char)
                 escaped = false
+                continue
+            }
+
+            // WO-638: whitespace inside substitutions belongs to the same unknown operand.
+            if expansion.consume(char) {
+                current.append(char)
                 continue
             }
 
@@ -517,12 +568,16 @@ public struct CommandParser {
                 continue
             }
 
-            // WO-638: do not turn unresolved variables or substitutions into new file reads.
-            if requiringLiteralArguments && !inSingle && (char == "$" || char == "`") { return [] }
+            // WO-638: unresolved expansions change only this token's literal status.
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if requiringLiteralArguments && !inSingle && expansion.begin(char, next: next) {
+                isLiteral = false
+            }
             if (char == " " || (requiringLiteralArguments && char.isWhitespace)) && !inSingle && !inDouble {
                 if !current.isEmpty {
-                    tokens.append(current)
+                    tokens.append(CommandToken(value: current, isLiteral: isLiteral))
                     current = ""
+                    isLiteral = true
                 }
                 continue
             }
@@ -531,9 +586,9 @@ public struct CommandParser {
         }
 
         // WO-638: unmatched syntax keeps the pre-existing allow behavior for unsupported commands.
-        if requiringLiteralArguments && (inSingle || inDouble || escaped) { return [] }
+        if requiringLiteralArguments && (inSingle || inDouble || escaped || expansion.isOpen) { return nil }
         if !current.isEmpty {
-            tokens.append(current)
+            tokens.append(CommandToken(value: current, isLiteral: isLiteral))
         }
 
         return tokens
@@ -594,37 +649,45 @@ public struct CommandParser {
         return (.flag, nil)
     }
 
-    // WO-638: only positional sources and explicit input-file options become read targets.
-    private static func extractCopySourceArgs(_ command: String, args: [String]) -> [String]? {
-        var sources: [String] = []
-        var inputFiles: [String] = []
+    // WO-638: retain unknown operands for their roles but return only literal source paths.
+    private static func extractCopySourceArgs(_ command: String, args: [CommandToken]) -> [String]? {
+        var sources: [CommandToken] = []
+        var inputFiles: [CommandToken] = []
         var targetDirectory = false
         var endOfOptions = false
         var index = 0
         while index < args.count {
-            let argument = args[index]
+            // WO-638: use token text for option arity and keep its literal status for source selection.
+            let token = args[index]
+            let argument = token.value
             index += 1
             if !endOfOptions && argument == "--" { endOfOptions = true; continue }
             if endOfOptions || !argument.hasPrefix("-") || argument == "-" {
-                sources.append(argument)
+                sources.append(token)
                 continue
             }
             guard let option = parseCopyOption(argument, command: command) else { return nil }
             if option.kind == .directoryOnly { return [] }
             if option.kind == .flag { continue }
-            let value: String
-            if let attached = option.value { value = attached } else {
+            // WO-638: an expanded option value still consumes its argument, never a source.
+            let value: CommandToken
+            if let attached = option.value {
+                value = CommandToken(value: attached, isLiteral: token.isLiteral)
+            } else {
                 guard index < args.count else { return nil }
                 value = args[index]
                 index += 1
             }
-            guard !value.isEmpty else { return nil }
+            guard !value.value.isEmpty else { return nil }
             if option.kind == .targetDirectory { targetDirectory = true }
             if option.kind == .inputFile { inputFiles.append(value) }
         }
         guard sources.count >= (targetDirectory ? 1 : 2) else { return nil }
         if !targetDirectory { sources.removeLast() }
-        return inputFiles + sources.filter { command != "rsync" || !$0.contains(":") }
+        // WO-638: filtering after role classification prevents an unknown destination from shifting sources.
+        return inputFiles.filter { $0.isLiteral }.map { $0.value } + sources.filter {
+            $0.isLiteral && (command != "rsync" || !$0.value.contains(":"))
+        }.map { $0.value }
     }
 
     /// Extract positional (non-flag) arguments — used for cat, head, tail, etc.

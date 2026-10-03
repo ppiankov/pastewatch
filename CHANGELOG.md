@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep literal copy sources guarded when destinations or option values contain shell
+  expansions. Credential-file flags retain their existing guard policy. (WO-638)
+
 ## [0.38.1] - 2026-10-03
 
 ### Changed
@@ -24,8 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ditto`, and files fed into `tee` or `>`/`>>` redirects, using the source's own
   policy. Destination-only operands are not treated as read sources. Known gaps, to be
   fixed in a follow-up: a shell expansion anywhere in the command (for example a
-  `$HOME/...` destination) disables the source check for that command, and an
-  `rsync --password-file` is wrongly treated as a source. (WO-638)
+  `$HOME/...` destination) disables the source check for that command. (WO-638)
 
 ### Security
 

@@ -3,6 +3,25 @@ import XCTest
 
 final class GuardCommandTests: XCTestCase {
 
+    // WO-638: literal protected sources stay guarded when unrelated operands expand.
+    func testCopyExpandedDestinationsStillBlockSource() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try content.write(toFile: testDir + "/doc.env", atomically: true, encoding: .utf8)
+        let commands = ["cp doc.env \"$HOME/notes.md\"", "cp doc.env notes-$(date +%F).md",
+                        "mv doc.env \"$HOME/notes.md\"", "install doc.env \"$HOME/notes.md\"",
+                        "cp -t \"$DIR\" doc.env", "cp --target-directory=\"$DIR\" doc.env"]
+        for command in commands {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.stdout.isEmpty)
+            XCTAssertTrue(result.stderr.isEmpty)
+        }
+        try "clean text".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
+        let clean = try runGuardCLI(arguments: ["guard", "--quiet", "cp clean.txt \"$HOME/x.md\""])
+        XCTAssertEqual(clean.status, 0)
+    }
+
     // WO-638: destination suffixes cannot downgrade a non-documentation source's guard decision.
     func testCopySourceSecretsBlockRegardlessOfDestination() throws {
         try writeConfig(credentialConfig)

@@ -522,9 +522,12 @@ authorizes them.
 
 ### Known limitations
 
+<!-- WO-638: Expansion handling preserves literal source checks and their policy context. -->
 The command guard scans recognized copy, move, install and redirection sources using
 the source file's policy, not the destination extension. Documentation classification
-is path-based: renaming through scripts, obfuscated shell commands, unsupported
+is path-based. Expansions in destinations or option values do not suppress literal
+source checks; unresolved source operands cannot be inspected. Renaming through
+scripts, obfuscated shell commands, unsupported
 options or recursive directory operations can bypass this source-file check.
 This is not a shell sandbox or adversarial-agent containment. Intrinsic secrets,
 exact known values and custom rules remain actionable in documentation files.

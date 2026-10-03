@@ -3,6 +3,27 @@ import XCTest
 
 final class CommandParserTests: XCTestCase {
 
+    // WO-638: unresolved destinations never suppress literal source checks.
+    func testCopyExpansionsAreTrackedPerOperand() {
+        let cases = [
+            "cp src \"$D/x\"", "mv src \"$HOME/notes.md\"", "install src \"$HOME/notes.md\"",
+            "cp src notes-$(date +%F).md", "cp src notes-`date +%F`.md",
+            "cp -t \"$DIR\" src", "cp --target-directory=\"$DIR\" src",
+            "install -m \"$MODE\" src dst", "cp src \"${DIR:-some directory}/x\""
+        ]
+        for command in cases {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), ["/app/src"])
+        }
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp $SOURCE dst", workingDirectory: "/app"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp known $SOURCE dst", workingDirectory: "/app"), ["/app/known"])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp 'src dst", workingDirectory: "/app"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp 'literal$source' dst", workingDirectory: "/app"),
+                       ["/app/literal$source"])
+        XCTAssertEqual(CommandParser.extractFilePaths(
+            from: "rsync --password-file local:creds src remote:dst", workingDirectory: "/app"
+        ), ["/app/local:creds", "/app/src"])
+    }
+
     // WO-638: copy-like commands read sources, never their destination operand.
     func testCopyCommandsReturnOnlySources() {
         for command in ["cp", "mv", "install", "rsync", "ditto"] {
