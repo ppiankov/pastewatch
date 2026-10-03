@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detect Stripe Checkout Session IDs as intrinsic provider tokens, including in
+  redirect URLs; replace only the ID and preserve the surrounding URL. (WO-141)
+
 ### Fixed
 
 - Keep literal copy sources guarded when destinations or option values contain shell

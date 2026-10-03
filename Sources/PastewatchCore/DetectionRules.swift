@@ -115,6 +115,10 @@ public struct DetectionRules {
     private static let stripeWebhookSecretRegex = try? NSRegularExpression(
         pattern: #"\bwhsec_[A-Za-z0-9]{24,}\b"#
     )
+    // WO-141@v3: checkout session IDs are possession tokens with a provider-specific grammar.
+    private static let stripeCheckoutSessionRegex = try? NSRegularExpression(
+        pattern: #"\bcs_(?:live|test)_[A-Za-z0-9]{24,}\b"#
+    )
 
     // WO-484: reviewed primary references travel with the intrinsic provider set.
     public static let providerTokenPatternManifest: [ProviderTokenPatternMetadata] = [
@@ -122,6 +126,8 @@ public struct DetectionRules {
         .init(type: .genericApiKey, provider: "GitHub", tokenFamily: "classic tokens", primarySource: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-authentication-to-github", reviewedOn: "2026-07-15", fixtureID: "github-classic-token"),
         .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "API keys", primarySource: "https://docs.stripe.com/keys", reviewedOn: "2026-07-15", fixtureID: "stripe-api-key"),
         .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "webhook signing secrets", primarySource: "https://docs.stripe.com/webhooks/signature", reviewedOn: "2026-07-15", fixtureID: "stripe-webhook-secret"),
+        // WO-141@v3: offline provenance distinguishes checkout IDs from other Stripe provider families.
+        .init(type: .genericApiKey, provider: "Stripe", tokenFamily: "Checkout Session IDs", primarySource: "https://docs.stripe.com/api/checkout/sessions/object", reviewedOn: "2026-10-04", fixtureID: "stripe-checkout-session"),
         .init(type: .slackWebhook, provider: "Slack", tokenFamily: "incoming webhook", primarySource: "https://api.slack.com/messaging/webhooks", reviewedOn: "2026-07-15", fixtureID: "slack-webhook"),
         .init(type: .discordWebhook, provider: "Discord", tokenFamily: "webhook", primarySource: "https://discord.com/developers/docs/resources/webhook", reviewedOn: "2026-07-15", fixtureID: "discord-webhook"),
         .init(type: .openaiKey, provider: "OpenAI", tokenFamily: "API key", primarySource: "https://platform.openai.com/docs/api-reference/authentication", reviewedOn: "2026-07-15", fixtureID: "openai-key"),
@@ -945,6 +951,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-141@v3: standalone checkout IDs join the shared intrinsic provider scan.
     /// WO-537: exact provider grammars are intrinsic evidence, not broad generic detection.
     private static func scanSourcedGenericProviderTokens(
         _ content: String,
@@ -955,6 +962,8 @@ public struct DetectionRules {
             githubClassicTokenRegex,
             stripeAPIKeyRegex,
             stripeWebhookSecretRegex,
+            // WO-141@v3: scan checkout IDs even when ambiguous generic detection is disabled.
+            stripeCheckoutSessionRegex,
         ].compactMap { $0 }
         let nsRange = NSRange(content.startIndex..., in: content)
         for regex in regexes {
@@ -1075,6 +1084,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-141@v3: checkout IDs retain provider evidence when a broader scan produced the match.
     // WO-487/WO-488: genericApiKey provider evidence is attached to exact grammars;
     // dedicated intrinsic types are authorized centrally by DetectedMatch.init.
     private static func mutationAuthorizationSources(
@@ -1087,6 +1097,8 @@ public struct DetectionRules {
             githubClassicTokenRegex,
             stripeAPIKeyRegex,
             stripeWebhookSecretRegex,
+            // WO-141@v3: the authorization grammar mirrors standalone provider scanning.
+            stripeCheckoutSessionRegex,
         ].compactMap { $0 }
         let isSourcedProviderToken = sourcedRegexes.contains { regex in
             regex.firstMatch(in: value, options: [], range: range)?.range == range

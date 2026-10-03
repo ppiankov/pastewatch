@@ -21,6 +21,7 @@ final class ProviderTokenPatternTests: XCTestCase {
         }
     }
 
+    // WO-141@v3: each checkout provider grammar has an offline positive and boundary fixture.
     // WO-484: fixtures are synthetic and offline; none are usable credentials.
     private var fixtures: [Fixture] {
         [
@@ -29,6 +30,8 @@ final class ProviderTokenPatternTests: XCTestCase {
             .init(type: .genericApiKey, positive: "ghp_" + String(repeating: "B", count: 36), negative: "ghp_" + String(repeating: "B", count: 35), fixtureID: "github-classic-token"),
             .init(type: .genericApiKey, positive: "sk_live_" + String(repeating: "C", count: 24), negative: "sk_live_" + String(repeating: "C", count: 23), fixtureID: "stripe-api-key"),
             .init(type: .genericApiKey, positive: "whsec_" + String(repeating: "D", count: 24), negative: "whsec_" + String(repeating: "D", count: 23), fixtureID: "stripe-webhook-secret"),
+            // WO-141@v3: checkout session possession tokens have independent boundary coverage.
+            .init(type: .genericApiKey, positive: ["cs_", "live_", String(repeating: "E", count: 24)].joined(), negative: ["cs_", "live_", String(repeating: "E", count: 23)].joined(), fixtureID: "stripe-checkout-session"),
             .init(type: .slackWebhook, positive: "https://hooks.slack.com/services/TABC/BDEF/Token123", negative: "https://hooks.slack.com/services/ABC/BDEF/Token123"),
             .init(type: .discordWebhook, positive: "https://discord.com/api/webhooks/123456/Token_123", negative: "https://discord.com/api/webhooks/id/Token_123"),
             .init(type: .openaiKey, positive: "sk-proj-" + String(repeating: "C", count: 20), negative: "sk-proj-" + String(repeating: "C", count: 19)),
@@ -62,6 +65,7 @@ final class ProviderTokenPatternTests: XCTestCase {
         ]
     }
 
+    // WO-141@v3: checkout provenance extends the explicit family inventory without changing its types.
     // WO-145: keep DashScope in the explicit provider inventory and evidence manifest.
     func testManifestCoversExplicitProviderDetectorSet() {
         // WO-145: both detector fixtures and source evidence enumerate DashScope.
@@ -77,12 +81,15 @@ final class ProviderTokenPatternTests: XCTestCase {
 
         XCTAssertEqual(Set(manifest.map(\.type)), expected)
         XCTAssertEqual(Set(fixtures.map(\.type)), expected)
-        XCTAssertEqual(manifest.count, expected.count + 2)
-        XCTAssertEqual(fixtures.count, expected.count + 2)
+        // WO-141@v3: four generic provider families share one detector type.
+        XCTAssertEqual(manifest.count, expected.count + 3)
+        // WO-141@v3: the fixture inventory mirrors every sourced provider family.
+        XCTAssertEqual(fixtures.count, expected.count + 3)
         XCTAssertEqual(Set(manifest.map(\.fixtureID)).count, manifest.count)
         XCTAssertEqual(
             Set(manifest.filter { $0.type == .genericApiKey }.map(\.fixtureID)),
-            ["github-classic-token", "stripe-api-key", "stripe-webhook-secret"]
+            // WO-141@v3: checkout sessions join the closed generic provider inventory.
+            ["github-classic-token", "stripe-api-key", "stripe-webhook-secret", "stripe-checkout-session"]
         )
         XCTAssertEqual(
             Set(fixtures.compactMap(\.fixtureID)),
@@ -91,7 +98,12 @@ final class ProviderTokenPatternTests: XCTestCase {
         XCTAssertFalse(manifest.contains { $0.provider == "Prefixed tokens" })
         XCTAssertTrue(manifest.allSatisfy { $0.primarySource.hasPrefix("https://") })
         XCTAssertEqual(manifest.first { $0.type == .dashscopeKey }?.reviewedOn, "2026-07-17")
-        XCTAssertTrue(manifest.filter { $0.type != .dashscopeKey }.allSatisfy { $0.reviewedOn == "2026-07-15" })
+        // WO-141@v3: the newly reviewed family has its own date without changing older provenance.
+        XCTAssertEqual(manifest.first { $0.fixtureID == "stripe-checkout-session" }?.reviewedOn, "2026-10-04")
+        // WO-141@v3: retain the historical review-date assertion for every unchanged family.
+        XCTAssertTrue(manifest.filter {
+            $0.type != .dashscopeKey && $0.fixtureID != "stripe-checkout-session"
+        }.allSatisfy { $0.reviewedOn == "2026-07-15" })
     }
 
     func testProviderFixturesHavePositiveAndBoundaryNegativeCoverage() {
