@@ -38,7 +38,7 @@ The piped example is a placeholder. For a real secret, use an existing file or r
 
 ### 4. Check suppression
 
-Review **Allowlists** and possible-suppression warnings in `doctor --explain`, then the finding's suppression reasons in `check --json`. Exact `allowedValues`, configured `allowedPatterns`, and the project's `.pastewatch-allow` file can suppress a match. Shared pattern files may contribute patterns too. A possible-suppression warning is a hint; verify the actual value with `check`.
+Review **Allowlists** and possible-suppression warnings in `doctor --explain`, then the finding's suppression reasons in `check --json`. Exact `allowedValues` and configured `allowedPatterns` in the winning config can suppress a match on every surface. A `.pastewatch-allow` file (created by `init`) is applied only when passed explicitly with `scan --allowlist` or `inventory --allowlist`; the guard, MCP and `check` do not read it. A possible-suppression warning is a hint; verify the actual value with `check`.
 
 Trusted file reads can honor recognized comment markers such as `# pastewatch:allow` on a line. Agent-controlled text does not gain that trust merely by including the marker. Do not add blanket allow patterns to make a guard pass. For an intentional database example, use the canonical [Documenting credentials](../README.md#documenting-credentials) forms; an exact-value exception must allow the **whole connection string**, not just its password.
 
@@ -57,7 +57,7 @@ The default `documentationPolicy` is `advisory`. Ambiguous findings in `.md`, `.
 
 Intrinsic-format secrets, exact-known-secret evidence, and custom rules are not downgraded. A database connection with a non-placeholder password supplies intrinsic evidence even though a connection string as a whole is an ambiguous class. Use [Documenting credentials](../README.md#documenting-credentials) rather than inventing a new example password.
 
-To apply the ordinary guard threshold to ambiguous document findings as well, set `documentationPolicy` to `enforce` in the winning config. Administrator configuration takes precedence over project and user files. An invalid value fails closed. Use `doctor --explain` to verify the effective policy and `check --file README.md` to inspect a file-path-aware verdict. Guard advisories do not remove findings from a separate `scan --check` gate.
+To apply the ordinary guard threshold to ambiguous document findings as well, set `documentationPolicy` to `enforce` in the winning config. Administrator configuration takes precedence over project and user files. An invalid value fails closed. Use `doctor --explain` to verify the effective policy and `check --file README.md` to inspect a file-path-aware verdict. The same policy applies to `scan --check --file`: document advisories are still listed in the output but do not fail the scan. Set `enforce` if a CI gate must fail on them.
 
 <!-- WO-640: Explain the guarded source and the conservative parser's limits. -->
 ## Why was my cp/mv blocked?
