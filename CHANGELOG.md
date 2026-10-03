@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The command guard now scans the source file of `cp`, `mv`, `install`, `rsync` and
   `ditto`, and files fed into `tee` or `>`/`>>` redirects, using the source's own
-  policy. Copying a protected file to a Markdown destination no longer avoids the
-  check. Destination-only operands are not treated as read sources. (WO-638)
+  policy. Destination-only operands are not treated as read sources. Known gaps, to be
+  fixed in a follow-up: a shell expansion anywhere in the command (for example a
+  `$HOME/...` destination) disables the source check for that command, and an
+  `rsync --password-file` is wrongly treated as a source. (WO-638)
 
 ### Security
 
