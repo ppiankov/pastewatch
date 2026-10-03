@@ -5,6 +5,96 @@ import XCTest
 
 // WO-639: keep whole-match policy contracts independent from password-only mutation.
 final class DSNPasswordEvidenceTests: XCTestCase {
+    // WO-642@v2: reserved password bytes retain intrinsic evidence across the real decision paths.
+    func testRawDSNPasswordDelimitersAcrossGuardCheckAndMCP() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let config = fixtureConfig()
+            try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
+            let explanation = ConfigExplanation(
+                currentDirectory: root.path,
+                systemConfigPath: root.appendingPathComponent("absent-system.json").path,
+                userConfigPath: root.appendingPathComponent("absent-user.json").path
+            )
+            let session = try MCPProtocolTests.LiveMCPSession(
+                executableURL: cliURL(), maximumLineBytes: 65_536, config: config
+            )
+            defer { session.close() }
+            for delimiter in ["#", "/", "?"] {
+                let password = "Q7" + delimiter + fixturePassword()
+                let content = fixtureConnection(password) + "\n"
+                let path = session.directory.appendingPathComponent("reserved.md")
+                try Data(content.utf8).write(to: path)
+                let matches = DetectionRules.scan(content, config: config)
+                let decision = GuardDecision.evaluate(
+                    matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                    minimumSeverity: .high, filePath: path.path
+                )
+                XCTAssertEqual(decision.actionableMatches.count, 1)
+                let verdict = try ValueVerdict(content: content, filePath: path.path, explanation: explanation)
+                XCTAssertEqual(verdict.findings.count, 1)
+                XCTAssertTrue(verdict.findings.first?.mutationAuthorized == true)
+                XCTAssertTrue(verdict.findings.first?.mcp == "placeholder, restored on write")
+                let payload = try mcpPayload(session, name: "pastewatch_read_file", arguments: ["path": .string(path.path)])
+                let entries = try XCTUnwrap(payload["redactions"] as? [[String: Any]])
+                XCTAssertEqual(entries.count, 1)
+                guard let marker = entries.first?["placeholder"] as? String else { continue }
+                let redacted = try XCTUnwrap(payload["content"] as? String)
+                XCTAssertTrue(redacted == content.replacingOccurrences(of: password, with: marker))
+                _ = try mcpPayload(session, name: "pastewatch_write_file", arguments: [
+                    "path": .string(path.path), "content": .string(redacted)
+                ])
+                XCTAssertTrue(try Data(contentsOf: path) == Data(content.utf8))
+            }
+        }
+    }
+
+    // WO-642@v2: a query parameter's final at-sign is not the userinfo boundary.
+    func testTerminalQueryAtSignsDoNotStealPasswordEvidence() throws {
+        let password = fixturePassword()
+        let query = "?owner=" + ["observer", "@", "mail.example"].joined()
+        let content = fixtureConnection(password) + query
+        let match = try XCTUnwrap(DetectionRules.scan(content, config: fixtureConfig()).first)
+        let span = DetectionRules.dsnUserinfoPasswordRange(in: content, connectionRange: match.range)
+        XCTAssertTrue(span.map { String(content[$0]) == password } == true)
+        let hostOnly = ["post", "gres", "://", "db:5432/prod", query].joined()
+        let advisory = try XCTUnwrap(DetectionRules.scan(hostOnly, config: fixtureConfig()).first)
+        XCTAssertNil(DetectionRules.dsnUserinfoPasswordRange(in: hostOnly, connectionRange: advisory.range))
+        XCTAssertTrue(advisory.mutationAuthorizationSources.isEmpty)
+    }
+
+    // WO-642@v2: the host grammar must prove a nonempty authority after the userinfo delimiter.
+    func testInvalidDSNHostSuffixDoesNotAuthorizePassword() throws {
+        for suffix in ["", ":", "[not-an-ipv6-address]"] {
+            let content = ["post", "gres", "://", "app:Q7/", fixturePassword(), "@", suffix].joined()
+            let span = DetectionRules.dsnUserinfoPasswordRange(
+                in: content, connectionRange: content.startIndex..<content.endIndex
+            )
+            XCTAssertNil(span)
+        }
+    }
+
+    // WO-642@v2: a valid authority takes precedence over at-signs in later URL components.
+    func testValidAuthoritiesKeepPathQueryAndFragmentAtSignsAdvisory() throws {
+        for authority in ["host:5432", "host", "127.0.0.1:5432", "[::1]:5432"] {
+            for suffix in ["/db?x=a@b", "/db?user=a@b.com", "/a@b.com", "#a@b.com"] {
+                let content = ["post", "gres", "://", authority, suffix].joined()
+                let match = try XCTUnwrap(DetectionRules.scan(content, config: fixtureConfig()).first)
+                XCTAssertNil(DetectionRules.dsnUserinfoPasswordRange(in: content, connectionRange: match.range))
+                XCTAssertTrue(match.mutationAuthorizationSources.isEmpty)
+            }
+        }
+    }
+
+    // WO-642@v2: numeric password prefixes are intentionally indistinguishable from valid host ports.
+    func testNumericPasswordPrefixRemainsAnAcceptedAdvisory() throws {
+        for delimiter in ["/", "?", "#"] {
+            let content = ["post", "gres", "://", "u:12", delimiter, "x@db"].joined()
+            let match = try XCTUnwrap(DetectionRules.scan(content, config: fixtureConfig()).first)
+            XCTAssertNil(match.mutationSubrange)
+            XCTAssertTrue(match.mutationAuthorizationSources.isEmpty)
+        }
+    }
+
     // WO-639: raw files keep targeting when the source match gains path metadata.
     func testRealMCPReadWriteRawFilesAcrossUnicodeOffsets() throws {
         try assertMCPFormats(["md", "txt"])

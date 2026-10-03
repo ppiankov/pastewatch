@@ -807,15 +807,29 @@ public struct DetectionRules {
         return passwordRange
     }
 
-    // WO-639: retain the password component's original source indices for optional mutation targeting.
+    // WO-642@v2: standard authority parsing precedes extended raw-password extraction.
     static func dsnUserinfoPasswordRange(
         in content: String, connectionRange: Range<String.Index>
     ) -> Range<String.Index>? {
         let connection = content[connectionRange]
         guard let scheme = connection.range(of: "://") else { return nil }
-        let authority = connection[scheme.upperBound...].prefix { !"/?#".contains($0) }
-        guard let at = authority.lastIndex(of: "@"),
-              let colon = authority[..<at].firstIndex(of: ":") else { return nil }
+        // WO-642@v2: preserve the standard userinfo boundary when one is already present.
+        let remainder = connection[scheme.upperBound...]
+        let authority = remainder.prefix { !"/?#".contains($0) }
+        let hostPattern = #"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?"#
+        var at = authority.lastIndex(of: "@")
+        if at == nil {
+            // WO-642@v2: valid host ports intentionally leave digit-prefixed raw passwords advisory.
+            // A numeric prefix before a reserved delimiter cannot be distinguished from a port.
+            guard authority.range(of: "^" + hostPattern + "$", options: .regularExpression) == nil else { return nil }
+            at = remainder.indices.reversed().first { index in
+                guard remainder[index] == "@" else { return false }
+                let suffix = remainder[content.index(after: index)...]
+                return suffix.range(of: "^" + hostPattern + "(?=[/?#]|$)", options: .regularExpression) != nil
+            }
+        }
+        guard let at,
+              let colon = remainder[..<at].firstIndex(of: ":") else { return nil }
         let start = content.index(after: colon)
         guard start < at else { return nil }
         return start..<at

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expansions. Credential-file flags retain their existing guard policy. (WO-638)
 - Keep copy-source checks for unknown options and common GNU metadata flags.
   Unsupported copy syntax allows with one operand-free diagnostic. (WO-644)
+- Preserve database password evidence across raw URL delimiters while keeping valid
+  host-only authorities advisory, including at-signs in paths and queries. (WO-642)
 
 ## [0.38.1] - 2026-10-03
 
