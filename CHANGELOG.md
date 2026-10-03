@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Add command and output references for `check` and `doctor --explain`, document
+  configuration precedence and document/copy-source guard policy, and add an
+  inactive-rules troubleshooting runbook. Keep the README credential placeholder
+  contract as the single reference. (WO-640)
+
+### Changed
+
+- Password-bearing database userinfo now supplies password-span mutation evidence
+  unless it matches the fixed placeholder policy. Documentation guards retain
+  blocking severity for that evidence, and MCP redacts only the password. Detection,
+  allowlist matching and baseline fingerprints retain the whole connection. The
+  supported documentation placeholder forms are now a published contract. (WO-639)
+
+### Fixed
+
+- Guard recognized copy, move and install source files before their contents can
+  reach a differently classified destination; keep destination-only operands out
+  of source scans. (WO-638)
+
 ## [0.38.0] - 2026-10-03
 
 ### Added

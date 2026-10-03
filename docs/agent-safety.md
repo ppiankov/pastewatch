@@ -255,6 +255,16 @@ It parses shell commands (`cat`, `head`, `tail`, `sed`, `awk`, `grep`, `source`)
 
 Integrate with agent Bash hooks to block commands automatically. See [agent-setup.md](agent-setup.md) for hook configuration per agent.
 
+<!-- WO-640: Explain path-scoped advisories without weakening intrinsic protection. -->
+### Documentation policy
+
+`documentationPolicy: advisory` is the default: ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` source files remain visible without blocking the guard. Classification uses the path extension, case-insensitively, not a guess that the content is prose. Intrinsic-format secrets, exact-known-secret evidence, and custom rules remain protected; a non-placeholder database password supplies intrinsic evidence. Use the single [Documenting credentials](../README.md#documenting-credentials) contract for examples. Set `documentationPolicy` to `enforce` for ordinary guard thresholds on documents too; administrator config has precedence and invalid values fail closed. Pathless text has no document exception. Use `doctor --explain` and `check --file` to inspect effective policy; a guard advisory does not suppress a separate scan gate.
+
+<!-- WO-640: Describe source-based copy checks and their actual containment limits. -->
+### Copy-source guard
+
+The command guard treats recognized sources of `cp`, `mv`, `install`, `rsync`, and `ditto`, plus files fed through `cat` or `<` into `tee`, `>`, or `>>`, as read targets. Each source is checked under its own path's policy, so a Markdown destination cannot relax a protected non-document source. Destination-only operands are not newly read targets. This remains conservative command parsing, not a shell sandbox: renaming through scripts, unsupported options, obfuscated commands, and recursive directory copies can escape this file-level check. Use MCP redacted reads/writes for protected source files and retain the other enforcement layers. See [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
+
 ### `PW_GUARD=0` - escape hatch
 
 `PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately - every hook that calls pastewatch-cli gets the bypass for free.

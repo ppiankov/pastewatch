@@ -40,6 +40,7 @@ public final class RedactionStore {
         }
     }
 
+    // WO-639: preserve whole-match metadata while storing only the bytes actually replaced.
     /// Redact sensitive values in content, storing the mapping for later resolution.
     /// Returns the redacted content and a manifest of redactions.
     public func redact(content: String, matches: [DetectedMatch], filePath: String) -> (String, [RedactionEntry]) {
@@ -51,10 +52,13 @@ public final class RedactionStore {
         let sorted = matches.sorted { $0.range.lowerBound < $1.range.lowerBound }
 
         var entries: [RedactionEntry] = []
-        var placeholdersByMatch: [(DetectedMatch, String)] = []
+        // WO-639: replacement ranges are separate from whole-match reporting and authorization identity.
+        var replacements: [(Range<String.Index>, String)] = []
 
         for match in sorted {
-            let original = match.value
+            // WO-639: password-only placeholders restore their original raw encoding, not the entire DSN.
+            let range = authorizedMutationRange(for: match, in: content)
+            let original = range == match.range ? match.value : String(content[range])
 
             let placeholder: String
             if let existing = globalReverse[original] {
@@ -76,7 +80,8 @@ public final class RedactionStore {
             forward[placeholder] = original
             mappings[filePath] = forward
 
-            placeholdersByMatch.append((match, placeholder))
+            // WO-639: retain the verified replacement span without copying or narrowing the match.
+            replacements.append((range, placeholder))
 
             entries.append(RedactionEntry(
                 type: match.displayName,
@@ -88,8 +93,9 @@ public final class RedactionStore {
 
         // Replace from end to preserve indices
         var result = content
-        for (match, placeholder) in placeholdersByMatch.reversed() {
-            result.replaceSubrange(match.range, with: placeholder)
+        // WO-639: reverse-order subrange writes preserve all surrounding bytes and earlier indices.
+        for (range, placeholder) in replacements.reversed() {
+            result.replaceSubrange(range, with: placeholder)
         }
 
         return (result, entries)

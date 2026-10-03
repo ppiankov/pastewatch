@@ -734,6 +734,7 @@ public struct DetectionRules {
         )
     }
 
+    // WO-639: preserve whole-DSN detection identity and attach password-only mutation targeting.
     // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
     /// Scan content with regex rules.
     private static func scanWithRegexRules(
@@ -765,15 +766,73 @@ public struct DetectionRules {
                     continue
                 }
 
+                // WO-639: allowlists and baselines keep the whole match; only mutation consumes the password span.
+                let passwordRange = type == .dbConnectionString
+                    ? dsnPasswordEvidenceRange(in: content, connectionRange: range, config: config) : nil
+                let sources: Set<MutationAuthorizationSource> = passwordRange == nil
+                    ? mutationAuthorizationSources(for: type, value: value) : [.intrinsicFormat]
                 matches.append(DetectedMatch(
                     type: type,
                     value: value,
                     range: range,
                     line: 1,
-                    mutationAuthorizationSources: mutationAuthorizationSources(for: type, value: value)
+                    mutationAuthorizationSources: sources,
+                    mutationSubrange: passwordRange
                 ))
                 matchedRanges.insert(range, in: content)
             }
+        }
+    }
+
+    // WO-639: the operator-pinned vocabulary is closed; new exclusions require an explicit policy change.
+    static let DSNPlaceholderPasswords: Set<String> = [
+        "password", "passwd", "pass", "pwd", "secret", "changeme", "change_me", "example", "sample", "test",
+        "dummy", "placeholder", "redacted", "your_password", "yourpassword", "mypassword", "my_password"
+    ]
+
+    // WO-639: the documentation contract and detector share the same whole-password template families.
+    static let DSNPlaceholderTemplates = [
+        #"<[\s\S]*>"#, #"\$\{[\s\S]*\}"#, #"\{\{[\s\S]*\}\}"#, #"%\([\s\S]*\)s"#,
+        #"%[A-Za-z0-9_]+%"#, #"\$[A-Za-z_][A-Za-z0-9_]*"#
+    ]
+
+    // WO-639: retain original indices while comparing a once-decoded userinfo password.
+    private static func dsnPasswordEvidenceRange(
+        in content: String, connectionRange: Range<String.Index>, config: PastewatchConfig
+    ) -> Range<String.Index>? {
+        guard let passwordRange = dsnUserinfoPasswordRange(in: content, connectionRange: connectionRange) else { return nil }
+        let rawPassword = String(content[passwordRange])
+        let password = rawPassword.removingPercentEncoding ?? rawPassword
+        guard !isTestCredential(password), !isDSNPlaceholderPassword(password, config: config) else { return nil }
+        return passwordRange
+    }
+
+    // WO-639: retain the password component's original source indices for optional mutation targeting.
+    static func dsnUserinfoPasswordRange(
+        in content: String, connectionRange: Range<String.Index>
+    ) -> Range<String.Index>? {
+        let connection = content[connectionRange]
+        guard let scheme = connection.range(of: "://") else { return nil }
+        let authority = connection[scheme.upperBound...].prefix { !"/?#".contains($0) }
+        guard let at = authority.lastIndex(of: "@"),
+              let colon = authority[..<at].firstIndex(of: ":") else { return nil }
+        let start = content.index(after: colon)
+        guard start < at else { return nil }
+        return start..<at
+    }
+
+    // WO-639: apply exactly the pinned word, mask, whole-template and existing-marker exclusions.
+    private static func isDSNPlaceholderPassword(_ password: String, config: PastewatchConfig) -> Bool {
+        let value = password.lowercased()
+        if DSNPlaceholderPasswords.contains(value) { return true }
+        if value.count >= 3, let first = value.first, "x*.#".contains(first), value.allSatisfy({ $0 == first }) {
+            return true
+        }
+        let patterns = DSNPlaceholderTemplates + [#"__PW_[A-Z0-9_]+__"#]
+            + (config.placeholderPrefix.map { [Obfuscator.customPlaceholderPattern(prefix: $0)] } ?? [])
+        let whole = password.startIndex..<password.endIndex
+        return patterns.contains { pattern in
+            password.range(of: pattern, options: [.regularExpression, .caseInsensitive]) == whole
         }
     }
 
@@ -2055,6 +2114,7 @@ public struct DetectionRules {
         return line
     }
 
+    // WO-639: line-number copies must preserve optional mutation targeting.
     /// WO-595@v2: one ordered sweep replaces per-match prefix walks without storing every newline.
     private static func assigningLineNumbers(
         _ matches: [DetectedMatch],
@@ -2090,7 +2150,9 @@ public struct DetectionRules {
                 customSeverity: match.customSeverity,
                 advisory: match.advisory,
                 mutationAuthorizationSources: match.mutationAuthorizationSources,
-                obfuscateRuleIdentifier: match.obfuscateRuleIdentifier
+                // WO-639: keep targeting attached when rebuilding the match for its line number.
+                obfuscateRuleIdentifier: match.obfuscateRuleIdentifier,
+                mutationSubrange: match.mutationSubrange
             )
         }
     }
