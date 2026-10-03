@@ -302,6 +302,7 @@ public struct DirectoryScanner {
         )) ?? []
     }
 
+    // WO-639: pass index-owning strings to source metadata rebasing without changing parsing or range lookup.
     /// WO-128: scan file content without hiding configured shared-pattern load failures.
     public static func scanFileContentOrThrow(
         content: String,
@@ -320,7 +321,9 @@ public struct DirectoryScanner {
                 customRules: customRules,
                 limits: limits
             ).map { match in
-                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
+                // WO-639: raw matches already use source indices but still need identity verification.
+                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath,
+                            parsedContent: content, source: content)
             }
         }
 
@@ -338,7 +341,9 @@ public struct DirectoryScanner {
                 customRules: customRules,
                 limits: limits
             ).map { match in
-                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath)
+                // WO-639: preserve raw targeting when a structured parser yields no values.
+                sourceMatch(match, range: match.range, line: match.line, filePath: relativePath,
+                            parsedContent: content, source: content)
             }
         }
 
@@ -364,7 +369,8 @@ public struct DirectoryScanner {
                     vm,
                     range: sourceRange,
                     line: lineNumber(at: sourceRange.lowerBound, in: content),
-                    filePath: relativePath
+                    // WO-639: parsed-value indices must be translated into the full source file.
+                    filePath: relativePath, parsedContent: pv.value, source: content
                 ))
             }
 
@@ -395,7 +401,8 @@ public struct DirectoryScanner {
                     ),
                     range: sourceRange,
                     line: lineNumber(at: sourceRange.lowerBound, in: content),
-                    filePath: relativePath
+                    // WO-639: the shared source-copy path also accepts key-aware matches with no subrange.
+                    filePath: relativePath, parsedContent: pv.value, source: content
                 ))
             }
         }
@@ -429,12 +436,16 @@ public struct DirectoryScanner {
         return matches
     }
 
-    /// WO-549@v2: source metadata rebasing must retain authorization provenance.
-    private static func sourceMatch(
+    // WO-639: internal visibility lets tests force a verification mismatch through the production copy path.
+    // WO-549@v2: source metadata rebasing must retain authorization provenance.
+    // swiftlint:disable:next function_parameter_count
+    static func sourceMatch(
         _ match: DetectedMatch,
         range: Range<String.Index>,
         line: Int,
-        filePath: String
+        filePath: String,
+        parsedContent: String,
+        source: String
     ) -> DetectedMatch {
         DetectedMatch(
             type: match.type,
@@ -446,8 +457,31 @@ public struct DirectoryScanner {
             customSeverity: match.customSeverity,
             advisory: match.advisory,
             mutationAuthorizationSources: match.mutationAuthorizationSources,
-            obfuscateRuleIdentifier: match.obfuscateRuleIdentifier
+            // WO-639: a failed rebase drops only optional targeting, retaining whole-match authorization.
+            obfuscateRuleIdentifier: match.obfuscateRuleIdentifier,
+            mutationSubrange: rebasedMutationSubrange(match, range: range, parsedContent: parsedContent, source: source)
         )
+    }
+
+    // WO-639: verify container identity, then translate relative bytes using each string's own UTF-8 view.
+    private static func rebasedMutationSubrange(
+        _ match: DetectedMatch, range: Range<String.Index>, parsedContent: String, source: String
+    ) -> Range<String.Index>? {
+        guard let span = match.mutationSubrange, !span.isEmpty,
+              match.range.lowerBound >= parsedContent.startIndex, match.range.upperBound <= parsedContent.endIndex,
+              span.lowerBound >= match.range.lowerBound, span.upperBound <= match.range.upperBound,
+              range.lowerBound >= source.startIndex, range.upperBound <= source.endIndex,
+              String(parsedContent[match.range]) == match.value, String(source[range]) == match.value,
+              source[range].utf8.elementsEqual(match.value.utf8) else { return nil }
+        let offset = parsedContent.utf8.distance(from: match.range.lowerBound, to: span.lowerBound)
+        let length = parsedContent.utf8.distance(from: span.lowerBound, to: span.upperBound)
+        guard offset >= 0, length > 0, offset <= match.value.utf8.count,
+              length <= match.value.utf8.count - offset,
+              let lowerByte = source.utf8.index(range.lowerBound, offsetBy: offset, limitedBy: range.upperBound),
+              let upperByte = source.utf8.index(lowerByte, offsetBy: length, limitedBy: range.upperBound),
+              let lower = String.Index(lowerByte, within: source), let upper = String.Index(upperByte, within: source),
+              source[lower..<upper].utf8.elementsEqual(parsedContent[span].utf8) else { return nil }
+        return lower..<upper
     }
 
     /// WO-549@v2: parsed values must be rebased to the source string before callers

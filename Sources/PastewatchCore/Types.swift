@@ -288,6 +288,7 @@ public enum MutationAuthorizationSource: Hashable {
     case configuredObfuscate // WO-529@v3: explicit operator opt-in authorizes ambiguous mutation.
 }
 
+// WO-639: retain whole-match identity while optionally targeting a narrower mutation span.
 /// A single detected match in the clipboard content.
 public struct DetectedMatch: Identifiable, Equatable {
     public let id = UUID()
@@ -301,7 +302,10 @@ public struct DetectedMatch: Identifiable, Equatable {
     public let advisory: DetectionAdvisory? // WO-478: non-mutating malformed-input evidence.
     public let mutationAuthorizationSources: Set<MutationAuthorizationSource> // WO-454: OR-merged provenance.
     public let obfuscateRuleIdentifier: String? // WO-529@v3: privacy-safe configured-rule provenance.
+    // WO-639: nil preserves whole-match mutation for existing callers and field-by-field copies.
+    public let mutationSubrange: Range<String.Index>?
 
+    // WO-639: existing constructors default to whole-match targeting without losing authorization.
     public init(
         type: SensitiveDataType,
         value: String,
@@ -312,7 +316,9 @@ public struct DetectedMatch: Identifiable, Equatable {
         customSeverity: Severity? = nil,
         advisory: DetectionAdvisory? = nil,
         mutationAuthorizationSources: Set<MutationAuthorizationSource>? = nil,
-        obfuscateRuleIdentifier: String? = nil
+        obfuscateRuleIdentifier: String? = nil,
+        // WO-639: targeting metadata is optional, independent of detection and allowlist identity.
+        mutationSubrange: Range<String.Index>? = nil
     ) {
         self.type = type
         self.value = value
@@ -323,6 +329,8 @@ public struct DetectedMatch: Identifiable, Equatable {
         self.customSeverity = customSeverity
         self.advisory = advisory
         self.obfuscateRuleIdentifier = obfuscateRuleIdentifier
+        // WO-639: only the mutation gateway consumes this subrange.
+        self.mutationSubrange = mutationSubrange
         var sources = mutationAuthorizationSources ?? []
         // WO-488: type-level intrinsic formats authorize dedicated detector types;
         // genericApiKey provider grammars attach the same source in DetectionRules.

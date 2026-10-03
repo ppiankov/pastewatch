@@ -9,6 +9,97 @@ import Glibc
 
 // WO-635: exercise documentation policy through real entrypoints without operator config.
 final class DocumentationGuardPolicyTests: XCTestCase {
+    // WO-639: the real guard keeps whole-value allowlists rather than adopting password-only matching.
+    func testDSNWholeValueAllowlistPreservesGuardExitCodes() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let password = ["Q7m", "N4r", "Z9T", "2xV", "6k"].joined()
+            let content = ["post", "gres", "://", "app:", password, "@db:5432/prod"].joined()
+            let path = try writeFixture(content, name: "guide.md", in: root)
+            for (allowed, expected): (String, Int32) in [(content, 0), (password, 2)] {
+                var config = fixtureConfig()
+                config.allowedValues = [allowed]
+                try writeConfig(config, to: root)
+                XCTAssertEqual(try runCLI(cliURL(), ["guard-read", path], in: root).status, expected)
+            }
+        }
+    }
+
+    // WO-639: real password evidence blocks docs and the MCP response replaces precisely that raw span.
+    func testDSNPasswordEvidenceBlocksDocsAndRedactsOnlyPassword() throws {
+        let passwords = [["Q7m", "N4r", "Z9T", "2xV", "6k"], ["%51", "7mN4rZ9T2xV6k"],
+                         ["Q7mN", "@", "4rZ9T2xV6k"], ["%", "zz"]].map { $0.joined() }
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let config = fixtureConfig()
+            try writeConfig(config, to: root)
+            let session = try MCPProtocolTests.LiveMCPSession(executableURL: cliURL(), maximumLineBytes: 65_536, config: config)
+            defer { session.close() }
+            for password in passwords {
+                let prefix = ["post", "gres", "://", "app:"].joined()
+                let suffix = "@db:5432/prod"
+                let content = prefix + password + suffix
+                for name in ["guide.md", "doc.env"] {
+                    let path = try writeFixture(content, name: name, in: root)
+                    XCTAssertEqual(try runCLI(cliURL(), ["guard-read", path], in: root).status, 2)
+                    let payload = try readPayload(session, path: path)
+                    let redactions = try XCTUnwrap(payload["redactions"] as? [[String: Any]])
+                    XCTAssertEqual(redactions.count, 1)
+                    let placeholder = try XCTUnwrap(redactions.first?["placeholder"] as? String)
+                    let redacted = try XCTUnwrap(payload["content"] as? String)
+                    XCTAssertTrue(redacted == prefix + placeholder + suffix, "bytes outside the password must remain intact")
+                    XCTAssertFalse(redacted.contains(password), "the original password must not be returned")
+                    XCTAssertEqual(redactions.first?["type"] as? String, "DB Connection")
+                    XCTAssertEqual(redactions.first?["line"] as? Int, 1)
+                }
+            }
+        }
+    }
+
+    // WO-639: documentation placeholders retain advisory detection and are never replaced by MCP.
+    func testDSNPlaceholderDocsStayAdvisoryAndMCPPreservesContent() throws {
+        let passwords = [["pass", "word"], ["PASS", "WORD"], ["%70", "assword"], ["${", "DB_PASS", "}"],
+                         ["__PW_", "DB_CONNECTION_1", "__"]].map { $0.joined() }
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let config = fixtureConfig()
+            try writeConfig(config, to: root)
+            let session = try MCPProtocolTests.LiveMCPSession(executableURL: cliURL(), maximumLineBytes: 65_536, config: config)
+            defer { session.close() }
+            for password in passwords {
+                let content = ["post", "gres", "://", "app:", password, "@localhost/prod"].joined()
+                let path = try writeFixture(content, name: "guide.md", in: root)
+                XCTAssertEqual(try runCLI(cliURL(), ["guard-read", path], in: root).status, 0)
+                let payload = try readPayload(session, path: path)
+                XCTAssertEqual((payload["redactions"] as? [[String: Any]])?.count, 0)
+                XCTAssertEqual((payload["advisories"] as? [[String: Any]])?.count, 1)
+                XCTAssertTrue(payload["content"] as? String == content)
+            }
+        }
+    }
+
+    // WO-639: password-only placeholders preserve the existing two-way MCP write contract.
+    func testDSNPasswordPlaceholdersRestoreOnMCPWrite() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = fixtureConfig()
+            let session = try MCPProtocolTests.LiveMCPSession(executableURL: cliURL(), maximumLineBytes: 65_536, config: config)
+            defer { session.close() }
+            let password = ["Q7m", "N4r", "Z9T", "2xV", "6k"].joined()
+            let content = ["post", "gres", "://", "app:", password, "@db:5432/prod"].joined()
+            let path = try writeFixture(content, name: "guide.md", in: session.directory)
+            let payload = try readPayload(session, path: path)
+            XCTAssertEqual((payload["redactions"] as? [[String: Any]])?.count, 1)
+            let redacted = try XCTUnwrap(payload["content"] as? String)
+            XCTAssertFalse(redacted.contains(password))
+            let request = JSONRPCRequest(jsonrpc: "2.0", id: .int(2), method: "tools/call", params: .object([
+                "name": .string("pastewatch_write_file"),
+                "arguments": .object(["path": .string(path), "content": .string("updated\n" + redacted)])
+            ]))
+            try session.send(JSONEncoder().encode(request) + Data([0x0A]))
+            let response = try XCTUnwrap(session.response(), "MCP write deadline expired")
+            XCTAssertNil(response.error)
+            XCTAssertTrue(try String(contentsOfFile: path, encoding: .utf8) == "updated\n" + content,
+                          "MCP must restore the original password while applying the edit")
+        }
+    }
+
     private enum EntryPoint: CaseIterable {
         case scan, guardRead, mcpRead, watcher
     }

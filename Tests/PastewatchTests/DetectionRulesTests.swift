@@ -2,6 +2,116 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-639: the named placeholder vocabulary is closed and comparisons ignore case, not whitespace.
+    func testDSNPlaceholderPasswordWordsHaveNoEvidence() throws {
+        let words = [["pass", "word"], ["pass", "wd"], ["pa", "ss"], ["p", "wd"], ["sec", "ret"],
+                     ["change", "me"], ["change", "_me"], ["exam", "ple"], ["sam", "ple"], ["te", "st"],
+                     ["dum", "my"], ["place", "holder"], ["red", "acted"], ["your_", "password"],
+                     ["your", "password"], ["my", "password"], ["my_", "password"]]
+        for fragments in words {
+            let word = fragments.joined()
+            try assertDSNPasswordEvidence(word, authorized: false)
+            try assertDSNPasswordEvidence(word.uppercased(), authorized: false)
+        }
+        try assertDSNPasswordEvidence(["Change", "Me"].joined(), authorized: false)
+        try assertDSNPasswordEvidence(["pass", "words"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["pass", "word", "%20"].joined(), authorized: true)
+    }
+
+    // WO-639: only uniform masks of at least three decoded characters are placeholders.
+    func testDSNPasswordMasksHaveNoEvidence() throws {
+        for character in ["x", "X", "*", ".", "#"] {
+            try assertDSNPasswordEvidence(String(repeating: character, count: 3), authorized: false)
+        }
+        try assertDSNPasswordEvidence(["x", "x"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["x", "*", "x"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["%23", "%23", "%23"].joined(), authorized: false)
+        try assertDSNPasswordEvidence(["%23", "%23"].joined(), authorized: true)
+    }
+
+    // WO-639: interpolation syntax must occupy the entire decoded password.
+    func testDSNPasswordTemplatesHaveNoEvidence() throws {
+        let forms = [["<", "value", ">"], ["${", "DB_PASS", "}"], ["{{", "value", "}}"],
+                     ["%(", "value", ")s"], ["%", "DB_PASS9", "%"], ["$", "DB_PASS"]]
+        for parts in forms {
+            try assertDSNPasswordEvidence(parts.joined(), authorized: false)
+            try assertDSNPasswordEvidence(parts.joined().uppercased(), authorized: false)
+        }
+        try assertDSNPasswordEvidence(["$", "9VALUE"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["prefix", "${VALUE}"].joined(), authorized: true)
+    }
+
+    // WO-639: existing structured and configured-prefix placeholders must never be redacted again.
+    func testDSNExistingPlaceholdersHaveNoEvidence() throws {
+        try assertDSNPasswordEvidence(["__PW_", "DB_CONNECTION_1", "__"].joined(), authorized: false)
+        try assertDSNPasswordEvidence(["__pw_", "credential_2", "__"].joined(), authorized: false)
+        try assertDSNPasswordEvidence(["mask", "001"].joined(), authorized: false, prefix: "mask")
+        try assertDSNPasswordEvidence(["MASK", "001"].joined(), authorized: false, prefix: "mask")
+        try assertDSNPasswordEvidence(["<", "DB_CONNECTION_1", ">"].joined(), authorized: false)
+    }
+
+    // WO-639: decode once for comparison but authorize the original encoded byte span.
+    func testDSNPasswordPercentDecodingAndLastAtSplit() throws {
+        try assertDSNPasswordEvidence(["Q7m", "N4r", "Z9T", "2xV", "6k"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["%51", "7mN4r", "Z9T2xV6k"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["%70", "ass", "word"].joined(), authorized: false)
+        try assertDSNPasswordEvidence(["%2570", "ass", "word"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["%", "zz"].joined(), authorized: true)
+        try assertDSNPasswordEvidence(["Q7mN", "@", "4rZ9T2xV6k"].joined(), authorized: true)
+    }
+
+    // WO-639: evidence applies to a password, not the detector type, a bare scheme or a host-only URL.
+    func testDSNWithoutPasswordRemainsAmbiguous() {
+        let scheme = ["post", "gres", "://"].joined()
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString])
+        XCTAssertFalse(SensitiveDataType.dbConnectionString.mutationSafe)
+        for suffix in ["db:5432/prod", "app@db/prod", "app:@db/prod", "db:5432/prod?contact=a@b"] {
+            let matches = DetectionRules.scan(scheme + suffix, config: config)
+            XCTAssertEqual(matches.filter { $0.type == .dbConnectionString }.count, 1)
+            XCTAssertTrue(matches.allSatisfy { $0.mutationAuthorizationSources.isEmpty })
+        }
+        XCTAssertTrue(DetectionRules.scan(scheme, config: config).isEmpty)
+    }
+
+    // WO-639: the existing published-test-credential exclusion runs before password evidence.
+    func testDSNKnownTestCredentialRemainsWithoutEvidence() throws {
+        let value = ["AK", "IAIOSFODNN7", "EXAMPLE"].joined()
+        XCTAssertTrue(DetectionRules.isTestCredential(value))
+        let config = TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString])
+        let content = ["post", "gres", "://", "app:", value, "@db/prod"].joined()
+        let decision = GuardDecision.evaluate(
+            matches: DetectionRules.scan(content, config: config), content: content, config: config,
+            contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+        )
+        XCTAssertTrue(decision.actionableMatches.isEmpty)
+        XCTAssertTrue(partitionMutationMatches(decision.reportableMatches, site: .mcpRead, minAdvisorySeverity: .high).authorized.isEmpty)
+    }
+
+    // WO-639: assert range fidelity without printing a synthetic password on assertion failure.
+    private func assertDSNPasswordEvidence(_ password: String, authorized: Bool, prefix: String? = nil) throws {
+        var config = TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString])
+        config.placeholderPrefix = prefix
+        let content = ["post", "gres", "://", "app:", password, "@db:5432/prod"].joined()
+        let matches = DetectionRules.scan(content, config: config).filter { $0.type == .dbConnectionString }
+        XCTAssertEqual(matches.count, 1)
+        let match = try XCTUnwrap(matches.first)
+        XCTAssertEqual(match.mutationAuthorizationSources.contains(.intrinsicFormat), authorized)
+        XCTAssertEqual(match.effectiveSeverity, .critical)
+        XCTAssertTrue(match.value == content, "detection and allowlists must retain the entire connection")
+        XCTAssertTrue(String(content[match.range]) == content)
+        if authorized {
+            let span = try XCTUnwrap(match.mutationSubrange)
+            XCTAssertTrue(String(content[span]) == password, "only the raw password range may mutate")
+            let mutations = partitionMutationMatches([match], site: .mcpRead, minAdvisorySeverity: .high).authorized
+            XCTAssertEqual(mutations.count, 1)
+            XCTAssertTrue(mutations.first?.value == match.value)
+            XCTAssertEqual(mutations.first?.id, match.id)
+            XCTAssertEqual(mutations.first?.range, match.range)
+        } else {
+            XCTAssertNil(match.mutationSubrange)
+        }
+    }
+
     // WO-529@v3: Detector tests explicitly restore the pre-opt-in detector matrix.
     let config: PastewatchConfig = {
         var config = PastewatchConfig.defaultConfig

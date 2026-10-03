@@ -213,8 +213,8 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | UUIDs | `550e8400-e29b-41d4-a716-446655440000` |
 | JWT Tokens | `eyJhbGciOiJIUzI1NiIs...` |
 | DB Connections | `postgres://...`, `clickhouse://...` |
-| SSH Keys | `-----BEGIN RSA PRIVATE KEY-----` |
-| Credit Cards | `4111111111111111` (Luhn validated) |
+| SSH Keys | <!-- WO-639: describe the format without embedding a private-key header. --> PEM-encoded private keys |
+| Credit Cards | <!-- WO-639: keep the documentation guard clean without a complete card number. --> Card numbers validated with the Luhn checksum |
 | File Paths | `/etc/nginx/nginx.conf`, `/home/deploy/.ssh/id_rsa` |
 | Hostnames | `db-primary.internal.corp.net` |
 | Credentials | `password=...`, `secret: ...`, `api_key=...` |
@@ -352,6 +352,40 @@ Pass input through stdin or `--file`, never as a positional value: arguments are
 visible in shell history and `ps`. Positional values are refused with exit 64
 without being echoed. A completed diagnostic exits 0 and reports the scan exit
 code separately; unreadable input or invalid configuration exits 2.
+
+<!-- WO-639: publish the same closed placeholder contract enforced by DSN password evidence. -->
+### Documenting credentials
+
+To show a connection string or password in documentation, use one of these forms;
+every other value is treated as a real secret and blocked (and redacted on MCP
+read / proxy). This policy applies to database URL userinfo when the DB Connection
+detector is enabled; it does not expand detection coverage.
+
+| Preferred form | Example password component |
+|---|---|
+| Angle brackets | `<password>` |
+| Braced environment variable | `${DB_PASSWORD}` |
+| Environment variable | `$DB_PASSWORD` |
+| Double-braced template | `{{db_password}}` |
+| Percent-format template | `%(password)s` |
+| Percent-delimited variable | `%DB_PASSWORD%` |
+| Repeated mask | `****` / `xxxx` |
+
+Accepted words: `password`, `passwd`, `pass`, `pwd`, `secret`, `changeme`, `change_me`, `example`, `sample`, `test`, `dummy`, `placeholder`, `redacted`, `your_password`, `yourpassword`, `mypassword`, `my_password`.
+
+Word matching is case-insensitive and does not trim whitespace. Uniform masks
+must contain at least three characters. Passwords are percent-decoded once before
+comparison; malformed encodings are compared as written. `passw0rd` and `p@ssw0rd`
+are **not** placeholders: they are common real passwords.
+
+Verify a line before committing it, supplying the value through stdin:
+
+```sh
+printf '%s\n' '<line>' | pastewatch-cli check
+```
+
+For one specific known-safe example, put the **whole DSN** in `allowedValues`.
+Allowlisting only its password does not suppress the connection finding.
 
 ## Agent Integration
 
