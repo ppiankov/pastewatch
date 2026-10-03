@@ -7,26 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Documentation
-
-- Add command and output references for `check` and `doctor --explain`, document
-  configuration precedence and document/copy-source guard policy, and add an
-  inactive-rules troubleshooting runbook. Keep the README credential placeholder
-  contract as the single reference. (WO-640)
+## [0.38.1] - 2026-10-03
 
 ### Changed
 
-- Password-bearing database userinfo now supplies password-span mutation evidence
-  unless it matches the fixed placeholder policy. Documentation guards retain
-  blocking severity for that evidence, and MCP redacts only the password. Detection,
-  allowlist matching and baseline fingerprints retain the whole connection. The
-  supported documentation placeholder forms are now a published contract. (WO-639)
+- A database connection string whose password is not a documented placeholder is now
+  treated as a real secret: it blocks even in documentation files, and MCP reads and
+  the proxy replace only the password, not the whole connection string. Allowlist
+  entries and baseline fingerprints still match the whole connection string. The
+  accepted placeholder forms are a published contract; see "Documenting credentials"
+  in the README. (WO-639)
 
 ### Fixed
 
-- Guard recognized copy, move and install source files before their contents can
-  reach a differently classified destination; keep destination-only operands out
-  of source scans. (WO-638)
+- The command guard now scans the source file of `cp`, `mv`, `install`, `rsync` and
+  `ditto`, and files fed into `tee` or `>`/`>>` redirects, using the source's own
+  policy. Destination-only operands are not treated as read sources. Known gaps, to be
+  fixed in a follow-up: a shell expansion anywhere in the command (for example a
+  `$HOME/...` destination) disables the source check for that command, and an
+  `rsync --password-file` is wrongly treated as a source. (WO-638)
+
+### Security
+
+- The VS Code extension build toolchain moves to `@vscode/vsce` 4.0.0, which removes
+  the dependency chain affected by the high-severity `braces` advisory
+  GHSA-vfj7-8cjw-p6xm. Build-time only; the shipped extension and CLI are unaffected.
+  (WO-643)
+
+### Documentation
+
+- New command and output references for `check` and `doctor --explain`, the
+  configuration precedence and documentation/copy-source guard policies, and a
+  troubleshooting runbook for rules that appear inactive. (WO-640)
 
 ## [0.38.0] - 2026-10-03
 
