@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unlocatable authorized secrets with HTTP 502 before buffered forwarding, or stop
   an active stream before the offending frame; audit types without values.
   Overlapping replacement spans are also refused. Covered on macOS and Linux. (WO-641)
+- Place buffered proxy disclosures after leading thinking blocks without changing
+  their signatures or suppressing the disclosure on tool-use responses. (WO-109)
 
 ## [0.38.1] - 2026-10-03
 

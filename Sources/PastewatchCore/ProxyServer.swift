@@ -2666,6 +2666,7 @@ public final class ProxyServer {
     // WO-190: injectAlertIntoStream deleted — superseded by buildAlertBeforeDone (macOS)
     // and the lazy alertBeforeDone closure (Linux). Zero callers as of WO-182.
 
+    // WO-109@v3: keep leading signed thinking blocks ahead of the always-on disclosure.
     func injectAlertIntoResponse(_ responseBody: Data, redactionCount: Int, types: [String]) -> Data {
         guard let json = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any],
               var content = json["content"] as? [[String: Any]] else {
@@ -2673,7 +2674,11 @@ public final class ProxyServer {
         }
 
         let alert = buildAlertBlock(redactionCount: redactionCount, types: types)
-        content.insert(alert, at: 0)
+        let insertion = content.prefix {
+            let type = $0["type"] as? String
+            return type == "thinking" || type == "redacted_thinking"
+        }.count
+        content.insert(alert, at: insertion)
 
         var modified = json
         modified["content"] = content
