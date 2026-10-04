@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detect Stripe Checkout Session IDs as intrinsic provider tokens, including in
   redirect URLs; replace only the ID and preserve the surrounding URL. (WO-141)
 - Add MCP read/write regression coverage for secrets next to closing punctuation; the reported round-trip corruption no longer reproduces. (WO-133)
+- Read bounded plain-text MCP windows with `start_line` and `line_count`, after
+  whole-file scanning and redaction. (WO-630)
+
+### Changed
+
+- MCP reads fail closed with type-and-line errors when an authorized replacement
+  or payload encoding cannot be applied; advisory-only findings remain advisory. (WO-630)
 
 ### Fixed
 

@@ -341,3 +341,15 @@ Once configured, the agent has access to:
 | `pastewatch_inventory` | Generate secret posture report for a directory |
 
 Intrinsically identifiable, exact-known, and custom-rule matches leave only as placeholders. Advisory-only matches remain visible so the operator can decide whether to authorize mutation.
+
+<!-- WO-630@v2: line windows keep large read results usable without exposing raw-file slices. -->
+For large files, prefer `pastewatch_read_file` with `start_line` and `line_count`
+instead of splitting the raw file or decoding byte windows. These positive integer
+arguments select plain-text lines from the fully redacted output, starting at 1;
+the whole file is still scanned. Continue at `start_line + line_count` using the
+returned count and `has_more`. Do not combine line and byte ranges. Authorized
+replacement or encoding failures return an error with types and lines, without
+file content; advisory-only findings remain advisory. Placeholders retain their
+normal local restoration, but assemble a whole-file payload before writing edits.
+Client harnesses may persist oversized tool results outside pastewatch's control;
+bounded line reads reduce that risk without promising control over harness storage.

@@ -81,6 +81,69 @@ private struct MCPReadRange {
     }
 }
 
+// WO-630@v2: line windows address the redacted text and preserve its original newline bytes.
+private struct MCPLineReadRange {
+    let start: Double // WO-630@v2: defer integer conversion until clamping to the file's line count.
+    let count: Double? // WO-630@v2: an omitted count reads through EOF without an arbitrary limit.
+
+    // WO-630@v2: reject malformed or mixed range modes before reading or scanning a file.
+    init?(arguments: [String: JSONValue]) throws {
+        guard arguments["start_line"] != nil || arguments["line_count"] != nil else { return nil }
+        guard arguments["byte_offset"] == nil, arguments["byte_length"] == nil else {
+            throw NSError(domain: "MCPLineReadRange", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Line ranges and byte ranges are mutually exclusive"
+            ])
+        }
+        start = try Self.positiveInteger(arguments["start_line"], name: "start_line") ?? 1
+        count = try Self.positiveInteger(arguments["line_count"], name: "line_count")
+    }
+
+    // WO-630@v2: values are positive whole numbers; booleans and null never coerce to integers.
+    private static func positiveInteger(_ value: JSONValue?, name: String) throws -> Double? {
+        guard let value else { return nil }
+        guard case .number(let number) = value,
+              number.isFinite, number > 0, number.rounded(.towardZero) == number else {
+            throw NSError(domain: "MCPLineReadRange", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid \(name): expected a positive integer"
+            ])
+        }
+        return number
+    }
+
+    // WO-630@v2: split only after mutation so a window cannot expose part of a spanning secret.
+    func apply(to content: String, payload: inout [String: JSONValue]) throws {
+        let bytes = Data(content.utf8)
+        var total = 0
+        for byte in bytes where byte == 0x0A { total += 1 }
+        if let last = bytes.last, last != 0x0A { total += 1 }
+        let first = start - 1 >= Double(total) ? total : Int(start - 1)
+        let requested = count ?? Double(total - first)
+        let returned = requested >= Double(total - first) ? total - first : Int(requested)
+        let range = byteRange(in: bytes, first: first, count: returned)
+        guard let text = String(data: bytes.subdata(in: range), encoding: .utf8) else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        payload["content"] = .string(text)
+        payload["start_line"] = .number(start)
+        payload["line_count"] = .number(Double(returned))
+        payload["total_lines"] = .number(Double(total))
+        payload["has_more"] = .bool(first + returned < total)
+    }
+
+    // WO-630@v2: keep auxiliary memory constant even when a file contains millions of short lines.
+    private func byteRange(in bytes: Data, first: Int, count: Int) -> Range<Data.Index> {
+        guard count > 0 else { return bytes.endIndex..<bytes.endIndex }
+        var line = 0
+        var lower = first == 0 ? bytes.startIndex : bytes.endIndex
+        for index in bytes.indices where bytes[index] == 0x0A {
+            line += 1
+            if line == first { lower = index + 1 }
+            if line == first + count { return lower..<(index + 1) }
+        }
+        return lower..<bytes.endIndex
+    }
+}
+
 // WO-603@v3: retain bounded framing while allowing live request/response exchanges.
 private struct MCPLineReader {
     private static let readChunkBytes = 64 * 1_024
@@ -295,6 +358,7 @@ final class MCPServer {
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: result, error: nil)
     }
 
+    // WO-630@v2: advertise mutually exclusive text line windows beside existing byte windows.
     private func toolsListResponse(id: JSONRPCId?) -> JSONRPCResponse {
         let tools: JSONValue = .object([
             "tools": .array([
@@ -360,6 +424,15 @@ final class MCPServer {
                                 "type": .string("integer"),
                                 "minimum": .number(1),
                                 "description": .string("Maximum redacted bytes to return, capped at the existing file-read limit (also the default). Omit both byte arguments for the unchanged plain-text response.")
+                            ]),
+                            // WO-630@v2: text line windows are an alternative, never a raw-file bypass.
+                            "start_line": .object([
+                                "type": .string("integer"), "minimum": .number(1),
+                                "description": .string("One-based first line in redacted text (default 1). Line windows return plain text, start_line, line_count, total_lines and has_more. Mutually exclusive with byte ranges.")
+                            ]),
+                            "line_count": .object([
+                                "type": .string("integer"), "minimum": .number(1),
+                                "description": .string("Maximum redacted lines to return; default through EOF. The whole file is scanned and redacted before slicing; clamp at EOF.")
                             ]),
                             "min_severity": .object([
                                 "type": .string("string"),
@@ -631,6 +704,7 @@ final class MCPServer {
 
     // MARK: - Redacted read/write tools
 
+    // WO-630@v2: verify all authorized replacements and encoding before exposing any file content.
     // WO-637: share the read decision without changing ranges, payloads or audit output.
     // WO-549@v2: MCP reads use the same format-aware guard decision as protected file reads.
     // WO-627@v2: validate range inputs before work; apply them only to the final redacted payload.
@@ -641,7 +715,11 @@ final class MCPServer {
 
         // WO-627@v2: invalid range arguments must not silently fall back to an unbounded response.
         let readRange: MCPReadRange?
+        // WO-630@v2: line and byte range validation precedes file access.
+        let lineRange: MCPLineReadRange?
         do {
+            // WO-630@v2: mutually exclusive ranges cannot silently select one mode.
+            lineRange = try MCPLineReadRange(arguments: arguments)
             readRange = try MCPReadRange(arguments: arguments)
         } catch {
             return errorResult(id: id, text: error.localizedDescription)
@@ -705,7 +783,6 @@ final class MCPServer {
             minimumSeverity: minSeverity,
             filePath: path
         )
-        let matches = decision.authorized
         let reportedAdvisories = decision.reportedAdvisories
         let advisories: [JSONValue] = reportedAdvisories.map { match in
             .object([
@@ -715,71 +792,53 @@ final class MCPServer {
             ])
         }
 
-        if matches.isEmpty {
-            // WO-635: reporting a policy advisory must not claim the file is clean.
-            let advisorySuffix = reportedAdvisories.isEmpty
-                ? "clean"
-                : "advisory=\(reportedAdvisories.count)"
-            auditLogger?.log("READ  \(path)  \(advisorySuffix)")
-            let result: JSONValue = .array([
+        // WO-630@v2: the shared responder cannot forward an unapplied or unencoded read.
+        let (response, entries) = decision.response(request: (id: id, filePath: path), content: content, store: store, encode: { redacted, entries in
+            let redactions: [JSONValue] = entries.map { entry in
                 .object([
-                    "type": .string("text"),
-                    // WO-627@v2: even clean content uses the shared post-scan byte-window encoder.
-                    "text": .string(encodeReadPayload(content: content, range: readRange, metadata: [
-                        "redactions": .array([]),
-                        "advisories": .array(advisories),
-                        // WO-635: preserve advisory presence in the existing MCP payload contract.
-                        "clean": .bool(reportedAdvisories.isEmpty)
-                    ]))
+                    "type": .string(entry.type), "severity": .string(entry.severity),
+                    "line": .number(Double(entry.line)), "placeholder": .string(entry.placeholder)
                 ])
-            ])
-            return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+            }
+            var metadata: [String: JSONValue] = [
+                "redactions": .array(redactions), "advisories": .array(advisories),
+                "clean": .bool(entries.isEmpty && reportedAdvisories.isEmpty)
+            ]
+            if !entries.isEmpty { metadata["pastewatch_note"] = .string(modelRedactionNotice) }
+            return try encodeReadPayload(content: redacted, range: readRange, lineRange: lineRange,
+                                         metadata: metadata, decision: decision)
+        }, onFailure: { errorResult(id: id, text: $0) })
+        // WO-630@v2: failed reads have no success notice or apparent redaction count.
+        if case .object(let result) = response.result, result["isError"] == .bool(true) {
+            let failure = MCPReadRedactionError(matches: decision.authorized).localizedDescription
+            auditLogger?.log("READ  \(path)  refused \(failure)")
+        } else if entries.isEmpty {
+            let suffix = reportedAdvisories.isEmpty ? "clean" : "advisory=\(reportedAdvisories.count)"
+            auditLogger?.log("READ  \(path)  \(suffix)")
+        } else {
+            logReadRedactions(entries, path: path, config: config)
         }
+        return response
+    }
 
-        let (redacted, entries) = store.redact(content: content, matches: matches, filePath: path)
-
+    // WO-630@v2: success notices must follow verified redaction and successful payload encoding.
+    private func logReadRedactions(_ entries: [RedactionEntry], path: String, config: PastewatchConfig) {
         let typeNames = Set(entries.map { $0.type }).sorted()
         auditLogger?.log("READ  \(path)  redacted=\(entries.count) [\(typeNames.joined(separator: ", "))]")
         // WO-521: the opt-in notice contains metadata only and remains visible without an audit file.
         if config.operatorRedactionNotices {
-            let notice = "[PASTEWATCH] MCP REDACTED \(entries.count) secret(s) " +
-                "[\(typeNames.joined(separator: ", "))]"
-            if let auditLogger {
-                auditLogger.log(notice)
-            } else {
+            let notice = "[PASTEWATCH] MCP REDACTED \(entries.count) secret(s) [\(typeNames.joined(separator: ", "))]"
+            if let auditLogger { auditLogger.log(notice) } else {
                 FileHandle.standardError.write(Data("\(notice)\n".utf8))
             }
         }
-
-        var redactionsArray: [JSONValue] = []
-        for entry in entries {
-            redactionsArray.append(.object([
-                "type": .string(entry.type),
-                "severity": .string(entry.severity),
-                "line": .number(Double(entry.line)),
-                "placeholder": .string(entry.placeholder)
-            ]))
-        }
-
-        let result: JSONValue = .array([
-            .object([
-                "type": .string("text"),
-                // WO-627@v2: the encoder receives only fully redacted content, never a raw-file slice.
-                "text": .string(encodeReadPayload(content: redacted, range: readRange, metadata: [
-                    "redactions": .array(redactionsArray),
-                    "advisories": .array(advisories),
-                    "clean": .bool(false),
-                    // WO-522@v3: explain the session-specific, locally restorable marker.
-                    "pastewatch_note": .string(modelRedactionNotice)
-                ]))
-            ])
-        ])
-
-        return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
     }
 
-    // WO-627@v2: preserve unranged fields exactly; Base64 losslessly carries partial UTF-8 bytes.
-    private func encodeReadPayload(content: String, range: MCPReadRange?, metadata: [String: JSONValue]) -> String {
+    // WO-630@v2: preserve unranged fields while line windows use text and byte windows remain Base64.
+    private func encodeReadPayload(
+        content: String, range: MCPReadRange?, lineRange: MCPLineReadRange?,
+        metadata: [String: JSONValue], decision: MCPReadDecision
+    ) throws -> String {
         var payload = metadata
         if let range {
             let bytes = Data(content.utf8)
@@ -791,10 +850,14 @@ final class MCPServer {
             payload["byte_offset"] = .number(range.offset)
             payload["byte_length"] = .number(Double(length))
             payload["has_more"] = .bool(start + length < bytes.count)
+        } else if let lineRange {
+            // WO-630@v2: the line slicer receives only the fully redacted string.
+            try lineRange.apply(to: content, payload: &payload)
         } else {
             payload["content"] = .string(content)
         }
-        return encodeJSON(.object(payload))
+        // WO-630@v2: never mask an encoding failure with an apparently successful empty array.
+        return try decision.encodePayload(.object(payload))
     }
 
     // WO-549@v2: MCP writes reject agent-authored plaintext before restoring placeholders.

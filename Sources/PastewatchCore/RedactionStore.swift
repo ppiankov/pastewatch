@@ -40,6 +40,28 @@ public final class RedactionStore {
         }
     }
 
+    // WO-630@v2: validate every authorized span before creating any restorable mappings.
+    public func redactChecked(
+        content: String, matches: [DetectedMatch], filePath: String
+    ) throws -> (String, [RedactionEntry]) {
+        var previousUpper = content.startIndex
+        for match in matches.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+            guard match.range.lowerBound >= content.startIndex, match.range.upperBound <= content.endIndex,
+                  match.range.lowerBound < match.range.upperBound,
+                  let lower = String.Index(match.range.lowerBound, within: content),
+                  let upper = String.Index(match.range.upperBound, within: content),
+                  content[lower..<upper].utf8.elementsEqual(match.value.utf8) else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            let replacement = authorizedMutationRange(for: match, in: content)
+            guard replacement.lowerBound >= previousUpper, replacement.lowerBound < replacement.upperBound else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            previousUpper = replacement.upperBound
+        }
+        return redact(content: content, matches: matches, filePath: filePath)
+    }
+
     // WO-639: preserve whole-match metadata while storing only the bytes actually replaced.
     /// Redact sensitive values in content, storing the mapping for later resolution.
     /// Returns the redacted content and a manifest of redactions.
