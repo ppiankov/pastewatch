@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Use one placeholder rewrite path for whole matches and verified password spans,
+  preserving numbering, advisory filtering and surrounding bytes. (WO-645)
 - MCP reads fail closed with type-and-line errors when an authorized replacement
   or payload encoding cannot be applied; advisory-only findings remain advisory. (WO-630)
 

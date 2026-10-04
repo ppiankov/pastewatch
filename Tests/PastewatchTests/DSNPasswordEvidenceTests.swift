@@ -454,6 +454,32 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         XCTAssertEqual(second.range, first.range)
     }
 
+    // WO-645@v1: capture the duplicate writer's byte-exact password-only output before removal.
+    func testDSNRewriteGoldenBytesBeforeResolverExtraction() throws {
+        let first = fixtureConnection(fixturePassword())
+        let second = fixtureConnection(["Z8q", "R3s", "M9V", "4tP", "7d"].joined())
+        let content = "\u{1F600} first " + first + " next " + second + " tail"
+        let matches = DetectionRules.scan(content, config: fixtureConfig())
+        XCTAssertEqual(matches.count, 2)
+        let expected = "\u{1F600} first " + fixtureConnection("<DB_CONNECTION_1>") +
+            " next " + fixtureConnection("<DB_CONNECTION_2>") + " tail"
+        let result = applyAuthorizedMutations(to: content, matches: Array(matches.reversed()),
+                                             site: .proxyUserText, minAdvisorySeverity: .high)
+        XCTAssertTrue(result.text.utf8.elementsEqual(expected.utf8))
+    }
+
+    // WO-645@v1: the shared resolver must reproduce the duplicate writer's captured DSN output.
+    func testObfuscatorDSNResolverMatchesCapturedGoldenBytes() throws {
+        let content = "\u{1F600} first " + fixtureConnection(fixturePassword()) + " tail"
+        let matches = DetectionRules.scan(content, config: fixtureConfig())
+        XCTAssertEqual(matches.count, 1)
+        let expected = "\u{1F600} first " + fixtureConnection("<DB_CONNECTION_1>") + " tail"
+        let actual = Obfuscator.obfuscate(content, matches: matches, replacementRange: {
+            authorizedMutationRange(for: $0, in: content)
+        })
+        XCTAssertTrue(actual.utf8.elementsEqual(expected.utf8))
+    }
+
     // WO-639: every mutation site preserves finding identity while removing the detected password.
     func testEveryMutationSiteRemovesPasswordWithoutNarrowingMatchIdentity() throws {
         let password = fixturePassword()
