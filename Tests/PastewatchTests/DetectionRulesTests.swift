@@ -2,6 +2,58 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-141@v3: live and test sessions use intrinsic provider evidence without a new type.
+    func testStripeCheckoutSessionProviderEvidence() throws {
+        for mode in ["live", "test"] {
+            for length in [24, 66] {
+                let value = ["cs_", mode, "_", String(repeating: "Ab7", count: length / 3)].joined()
+                let matches = DetectionRules.scan(value, config: .defaultConfig)
+                XCTAssertEqual(matches.count, 1)
+                let match = try XCTUnwrap(matches.first)
+                XCTAssertEqual(match.type, .genericApiKey)
+                XCTAssertTrue(match.value == value)
+                XCTAssertTrue(match.mutationAuthorizationSources.contains(.intrinsicFormat))
+                let decision = GuardDecision.evaluate(
+                    matches: matches, content: value, config: .defaultConfig, contentTrust: .trustedFile,
+                    minimumSeverity: .high, filePath: "fixture.md"
+                )
+                XCTAssertEqual(decision.actionableMatches.count, 1)
+            }
+        }
+    }
+
+    // WO-141@v3: short examples, unrelated modes and missing word boundaries remain non-secrets.
+    func testStripeCheckoutSessionBoundaryNegatives() {
+        let suffix = String(repeating: "Ab7", count: 8)
+        let values = [["cs_", "test_"], ["cs_", "test_abc"], ["p", "cs_", "live_", suffix],
+                      ["cs_", "prod_", suffix], ["cs_", "live_", String(suffix.dropLast())]]
+        for fragments in values {
+            XCTAssertTrue(DetectionRules.scan(fragments.joined(), config: .defaultConfig).isEmpty)
+        }
+    }
+
+    // WO-141@v3: only the session ID is replaced in redirects, and MCP restoration preserves every byte.
+    func testStripeCheckoutSessionURLSurfaceRoundTrip() throws {
+        let value = ["cs_", "live_", String(repeating: "Ab7", count: 8)].joined()
+        let prefix = "https://example.com/success?session_id="
+        let suffix = "&mode=complete"
+        let content = prefix + value + suffix
+        let matches = DetectionRules.scan(content, config: .defaultConfig)
+        let outcome = applyAuthorizedMutations(
+            to: content, matches: matches, site: .proxyUserText, minAdvisorySeverity: .high
+        )
+        XCTAssertEqual(outcome.mutated.count, 1)
+        XCTAssertTrue(outcome.text == prefix + Obfuscator.makePlaceholder(type: .genericApiKey, number: 1) + suffix)
+        let decision = MCPReadDecision.evaluate(
+            matches: matches, content: content, config: .defaultConfig, minimumSeverity: .high, filePath: "fixture.md"
+        )
+        let store = RedactionStore()
+        let (redacted, entries) = store.redact(content: content, matches: decision.authorized, filePath: "fixture.md")
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertTrue(redacted == prefix + Obfuscator.makeMCPPlaceholder(type: .genericApiKey, number: 1) + suffix)
+        XCTAssertTrue(store.resolve(content: redacted, filePath: "fixture.md").content == content)
+    }
+
     // WO-639: the named placeholder vocabulary is closed and comparisons ignore case, not whitespace.
     func testDSNPlaceholderPasswordWordsHaveNoEvidence() throws {
         let words = [["pass", "word"], ["pass", "wd"], ["pa", "ss"], ["p", "wd"], ["sec", "ret"],

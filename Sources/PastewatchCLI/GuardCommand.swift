@@ -21,12 +21,19 @@ struct Guard: ParsableCommand {
     @Flag(name: .long, help: "Exit code only, no output")
     var quiet = false
 
+    // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
         // WO-574@v4: command guards cannot fall back from a corrupt active config.
         let config = try requireValidatedConfig()
-        let paths = CommandParser.extractFilePaths(from: command)
+        // WO-644@v2: diagnostics and read targets share the same parse result.
+        let access = CommandParser.fileAccess(from: command)
+        let paths = access.paths
+        if !access.unsupportedCommands.isEmpty {
+            let names = access.unsupportedCommands.joined(separator: ", ")
+            FileHandle.standardError.write(Data("Unsupported source scanning for: \(names).\n".utf8))
+        }
 
         var allFileResults: [FileResult] = []
         var allInlineResults: [InlineResult] = []

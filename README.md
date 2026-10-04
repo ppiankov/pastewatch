@@ -210,11 +210,12 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | IP Address | `192.168.1.100` |
 | AWS Keys | `AKIAIOSFODNN7EXAMPLE` |
 | API Keys | `sk_test_...`, `ghp_...` |
+| Stripe Checkout Sessions | <!-- WO-141@v3: possession-token IDs are redacted independently of their URL. --> `cs_live_...`, `cs_test_...` (24+ alphanumeric characters) |
 | UUIDs | `550e8400-e29b-41d4-a716-446655440000` |
 | JWT Tokens | `eyJhbGciOiJIUzI1NiIs...` |
 | DB Connections | `postgres://...`, `clickhouse://...` |
-| SSH Keys | <!-- WO-639: describe the format without embedding a private-key header. --> PEM-encoded private keys |
-| Credit Cards | <!-- WO-639: keep the documentation guard clean without a complete card number. --> Card numbers validated with the Luhn checksum |
+| SSH Keys | <!-- WO-639: describe the format without embedding a private-key header. --> PEM header shape: `-----BEGIN ... PRIVATE KEY-----` |
+| Credit Cards | <!-- WO-639: keep the documentation guard clean without a complete card number. --> `4111 **** **** 1111` (Luhn validated) |
 | File Paths | `/etc/nginx/nginx.conf`, `/home/deploy/.ssh/id_rsa` |
 | Hostnames | `db-primary.internal.corp.net` |
 | Credentials | `password=...`, `secret: ...`, `api_key=...` |
@@ -522,10 +523,17 @@ authorizes them.
 
 ### Known limitations
 
+<!-- WO-638: Expansion handling preserves literal source checks and their policy context. -->
 The command guard scans recognized copy, move, install and redirection sources using
 the source file's policy, not the destination extension. Documentation classification
-is path-based: renaming through scripts, obfuscated shell commands, unsupported
-options or recursive directory operations can bypass this source-file check.
+is path-based. Expansions in destinations or option values do not suppress literal
+source checks; unresolved source operands cannot be inspected. Renaming through
+scripts, obfuscated shell commands or recursive directory operations can bypass
+this source-file check.
+<!-- WO-644@v2: Unknown flags retain literal sources; unsupported syntax is reported without operands. -->
+Unknown copy options are treated as value-less flags and do not disable source
+checks. Truly unparseable copy commands are allowed with one stderr diagnostic
+naming the unsupported command, without its operands.
 This is not a shell sandbox or adversarial-agent containment. Intrinsic secrets,
 exact known values and custom rules remain actionable in documentation files.
 

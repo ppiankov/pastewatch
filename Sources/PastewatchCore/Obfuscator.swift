@@ -14,10 +14,14 @@ public struct Obfuscator {
         obfuscate(content, matches: matches)
     }
 
+    // WO-645@v1: a span resolver shares numbering and advisory filtering across rewrite callers.
     // WO-478: advisory scanner outcomes cannot authorize content replacement.
     /// Obfuscate all matches in the content.
     /// Returns the obfuscated content with matches replaced by placeholders.
-    public static func obfuscate(_ content: String, matches: [DetectedMatch]) -> String {
+    public static func obfuscate(
+        _ content: String, matches: [DetectedMatch],
+        replacementRange: (DetectedMatch) -> Range<String.Index> = { $0.range }
+    ) -> String {
         // WO-478: advisory diagnostics reserve ranges for reporting but never
         // authorize replacement, even when a caller passes the full scan result.
         let matches = matches.filter { $0.advisory == nil }
@@ -43,7 +47,8 @@ public struct Obfuscator {
         for match in sortedMatches {
             let number = matchNumbers[match.id] ?? 1
             let placeholder = makePlaceholder(type: match.type, number: number)
-            result.replaceSubrange(match.range, with: placeholder)
+            // WO-645@v1: resolve only replacement bytes after authorization-independent advisory filtering.
+            result.replaceSubrange(replacementRange(match), with: placeholder)
         }
 
         return result

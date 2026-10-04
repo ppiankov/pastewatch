@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detect Stripe Checkout Session IDs as intrinsic provider tokens, including in
+  redirect URLs; replace only the ID and preserve the surrounding URL. (WO-141)
+- Add MCP read/write regression coverage for secrets next to closing punctuation; the reported round-trip corruption no longer reproduces. (WO-133)
+- Read bounded plain-text MCP windows with `start_line` and `line_count`, after
+  whole-file scanning and redaction. (WO-630)
+
+### Changed
+
+- Use one placeholder rewrite path for whole matches and verified password spans,
+  preserving numbering, advisory filtering and surrounding bytes. (WO-645)
+- MCP reads fail closed with type-and-line errors when an authorized replacement
+  or payload encoding cannot be applied; advisory-only findings remain advisory. (WO-630)
+
+### Fixed
+
+- Keep literal copy sources guarded when destinations or option values contain shell
+  expansions. Credential-file flags retain their existing guard policy. (WO-638)
+- Keep copy-source checks for unknown options and common GNU metadata flags.
+  Unsupported copy syntax allows with one operand-free diagnostic. (WO-644)
+- Preserve database password evidence across raw URL delimiters while keeping valid
+  host-only authorities advisory, including at-signs in paths and queries. (WO-642)
+- Redact multibyte secrets at their exact binary response positions. Refuse
+  unlocatable authorized secrets with HTTP 502 before buffered forwarding, or stop
+  an active stream before the offending frame; audit types without values.
+  Overlapping replacement spans are also refused. Covered on macOS and Linux. (WO-641)
+- Place buffered proxy disclosures after leading thinking blocks without changing
+  their signatures or suppressing the disclosure on tool-use responses. (WO-109)
+
+### Documentation
+
+- Restore recognizable masked SSH-key and card examples in the detection table. (WO-646)
+
 ## [0.38.1] - 2026-10-03
 
 ### Changed
@@ -24,8 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ditto`, and files fed into `tee` or `>`/`>>` redirects, using the source's own
   policy. Destination-only operands are not treated as read sources. Known gaps, to be
   fixed in a follow-up: a shell expansion anywhere in the command (for example a
-  `$HOME/...` destination) disables the source check for that command, and an
-  `rsync --password-file` is wrongly treated as a source. (WO-638)
+  `$HOME/...` destination) disables the source check for that command. (WO-638)
 
 ### Security
 

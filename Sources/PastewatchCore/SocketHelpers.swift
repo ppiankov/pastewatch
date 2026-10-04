@@ -44,6 +44,7 @@ func sendAll(
     return sent
 }
 
+// WO-641@v2: refused binary payloads carry only class names, never forwardable bytes.
 /// WO-220: result from shared SSE frame redaction.
 struct SSEFrameRedactionResult {
     let data: Data
@@ -53,7 +54,11 @@ struct SSEFrameRedactionResult {
     let advisoryTypes: [String]
     let toolCallRedactionCount: Int // WO-512: distinguish tool payload mutation from ordinary text.
     let coverageEvents: [ObfuscationCoverageEvent] // WO-539: stream receipt evidence.
+    // WO-641@v2: refusal is separate from successful replacement statistics.
+    let refusedTypes: [String]
+    var refused: Bool { !refusedTypes.isEmpty }
 
+    // WO-641@v2: the default keeps every non-refused caller's result unchanged.
     init(
         data: Data,
         count: Int,
@@ -61,7 +66,9 @@ struct SSEFrameRedactionResult {
         advisoryCount: Int = 0,
         advisoryTypes: [String] = [],
         toolCallRedactionCount: Int = 0,
-        coverageEvents: [ObfuscationCoverageEvent] = []
+        coverageEvents: [ObfuscationCoverageEvent] = [],
+        // WO-641@v2: only an unlocatable authorized binary match sets this outcome.
+        refusedTypes: [String] = []
     ) {
         self.data = data
         self.redactionCount = count
@@ -70,6 +77,8 @@ struct SSEFrameRedactionResult {
         self.advisoryTypes = advisoryTypes
         self.toolCallRedactionCount = toolCallRedactionCount
         self.coverageEvents = coverageEvents
+        // WO-641@v2: retain the refusal channel independently of redaction counts.
+        self.refusedTypes = refusedTypes
     }
 
     var count: Int { redactionCount }
@@ -103,6 +112,7 @@ func scanStreamText(
     )
 }
 
+// WO-641@v2: binary stream bytes use the same anchored replacement and refusal boundary as buffers.
 /// WO-291: raw streaming fallback redaction must not become a strict-UTF-8 bypass.
 /// Invalid bytes with no mutation-safe match are forwarded byte-identical; when a
 /// mutation-safe ASCII fixture is present, the lossy view is redacted before relay.
@@ -118,6 +128,13 @@ func redactRawStreamBytes(
     // swiftlint:disable:next optional_data_string_conversion
     let text = String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
     let matches = scanStreamText(text, config: config, customRules: customRules)
+    // WO-641@v2: preserve historical ASCII raw-stream repair; multibyte authorized values need exact mapping.
+    if String(data: raw, encoding: .utf8) == nil,
+       mutationSafeProxyMatches(matches, site: .proxyResponse).contains(where: {
+           !$0.value.unicodeScalars.allSatisfy({ $0.value <= 0x7F })
+       }) {
+        return CurlHTTPClient.redactNonUTF8ResponseBody(raw, config: config, severity: severity, customRules: customRules)
+    }
     let outcome = applyAuthorizedMutations(
         to: text,
         matches: matches,
@@ -182,6 +199,7 @@ private func rawSSEDoneFrameStart(in data: Data) -> Data.Index? {
     return data.index(data.startIndex, offsetBy: startOffset)
 }
 
+// WO-641@v2: reject an unlocatable binary frame before any repaired JSON view can be forwarded.
 /// WO-220: shared per-SSE-event frame redaction used by both the macOS URLSession path
 /// (SSEStreamRelay) and the Linux curl path (CurlHTTPClient).
 /// Extracts text-bearing string fields from an Anthropic SSE JSON delta, scans for
@@ -195,6 +213,10 @@ func redactSSEFrame(
     severity: Severity,
     customRules: [CustomRule]? = nil
 ) -> SSEFrameRedactionResult {
+    // WO-641@v2: only invalid UTF-8 frames enter the binary refusal path.
+    if String(data: frame.raw, encoding: .utf8) == nil {
+        return redactRawStreamBytes(frame.raw, config: config, severity: severity, customRules: customRules)
+    }
     guard let dataPayload = frame.data else {
         return redactRawStreamBytes(frame.raw, config: config, severity: severity, customRules: customRules)
     }

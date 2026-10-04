@@ -56,6 +56,49 @@ final class ProxyAlertTests: XCTestCase {
 
     // MARK: - injectAlertIntoResponse
 
+    // WO-109@v3: disclosure must follow leading thinking without changing signed blocks.
+    func testBufferedAlertFollowsOnlyLeadingThinkingBlocks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let proxy = ProxyServer(port: 0, config: .defaultConfig, injectAlert: true)
+            let thinking: [String: Any] = [
+                "type": "thinking", "thinking": "Reasoning", "signature": "opaque-signature"
+            ]
+            let redacted: [String: Any] = ["type": "redacted_thinking", "data": "opaque-data"]
+            let text: [String: Any] = ["type": "text", "text": "Answer"]
+            let tool: [String: Any] = [
+                "type": "tool_use", "id": "call_1", "name": "lookup", "input": ["query": "hello"]
+            ]
+            let rows: [([[String: Any]], Int)] = [
+                ([thinking, tool], 1), ([redacted, thinking, text], 2),
+                ([text, tool], 0), ([tool], 0), ([text, thinking, tool], 0),
+                ([thinking, redacted], 2)
+            ]
+            for (blocks, insertion) in rows {
+                let original = try JSONSerialization.data(withJSONObject: ["content": blocks])
+                let result = proxy.injectAlertIntoResponse(original, redactionCount: 1, types: ["Credential"])
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: Any])
+                var output = try XCTUnwrap(object["content"] as? [[String: Any]])
+                XCTAssertEqual(output.count, blocks.count + 1)
+                let alert = output.remove(at: insertion)
+                XCTAssertTrue((alert["text"] as? String ?? "").hasPrefix("[PASTEWATCH]"))
+                XCTAssertTrue(try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]) ==
+                    JSONSerialization.data(withJSONObject: blocks, options: [.sortedKeys]))
+            }
+        }
+    }
+
+    // WO-109@v3: malformed or absent content must retain the original response bytes.
+    func testBufferedAlertLeavesNonArrayContentUnchanged() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let proxy = ProxyServer(port: 0, config: .defaultConfig, injectAlert: true)
+            for body in ["{\"type\":\"error\"}", "{\"content\":null}",
+                         "{\"content\":\"answer\"}", "{\"content\":[42]}"] {
+                let data = Data(body.utf8)
+                XCTAssertTrue(proxy.injectAlertIntoResponse(data, redactionCount: 1, types: ["Credential"]) == data)
+            }
+        }
+    }
+
     func testInjectAlertIntoValidResponse() throws {
         let response: [String: Any] = [
             "id": "msg_123",

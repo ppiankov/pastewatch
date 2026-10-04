@@ -268,6 +268,24 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 | `pastewatch_scan_file` | Scan a file for sensitive data |
 | `pastewatch_scan_dir` | Scan a directory recursively |
 
+<!-- WO-630@v2: redacted text windows avoid oversized tool results without bypassing whole-file scanning. -->
+`pastewatch_read_file` accepts optional `start_line` and `line_count` for plain-text
+windows. Lines are 1-based in the **redacted output**; `start_line` defaults to 1
+and `line_count` defaults to the remaining lines. The server scans and redacts the
+whole file before slicing, clamps at EOF, and rejects zero, negative, fractional,
+non-numeric, or mixed line/byte ranges. The response includes `start_line`, the
+actual returned `line_count`, `total_lines`, and `has_more`; continue at
+`start_line + line_count`. A start beyond EOF returns empty text and zero lines.
+
+For example, use arguments `{"path":"README.md","start_line":1,"line_count":40}`.
+Byte windows (`byte_offset`, `byte_length`) remain Base64 with their existing byte
+metadata; an unranged read keeps its existing fields. Redaction manifests and
+advisories describe the whole file, even when a window excludes those findings.
+An authorized replacement or encoding failure returns a tool error naming only
+finding types and lines, never partial file content. Advisory-only matches remain
+visible. Window placeholders are restorable, but a window is not a complete-file
+write payload: assemble the intended whole file before calling `pastewatch_write_file`.
+
 `pastewatch_write_file` accepts either inline `content` or a local UTF-8
 `contentPath`, never both. Use `contentPath` for a large locally prepared payload;
 it passes through the same plaintext-secret scan and placeholder restoration as

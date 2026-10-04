@@ -76,6 +76,7 @@ func authorizedMutationRange(for match: DetectedMatch, in text: String) -> Range
     return lower..<upper
 }
 
+// WO-645@v1: share the obfuscator writer while preserving whole-match authorization identities.
 // WO-639: rewrite optional subranges without changing the match identities reported to callers.
 /// WO-454: every normal mutation call passes through this evidence gate.
 public func applyAuthorizedMutations(
@@ -90,28 +91,12 @@ public func applyAuthorizedMutations(
         minAdvisorySeverity: minAdvisorySeverity
     )
     return MutationOutcome(
-        // WO-639: targeting belongs to replacement bytes, not to the authorized match objects.
-        text: rewriteAuthorizedMatches(in: text, matches: partition.authorized),
+        // WO-645@v1: targeting is supplied to the single placeholder-numbering and replacement path.
+        text: Obfuscator.obfuscate(text, matches: partition.authorized, replacementRange: {
+            authorizedMutationRange(for: $0, in: text)
+        }),
         mutated: partition.authorized,
         advisory: partition.advisory,
         advisoryBelowThreshold: partition.advisoryBelowThreshold
     )
-}
-
-// WO-639: retain standard placeholder order and reverse replacement while limiting writes to verified spans.
-private func rewriteAuthorizedMatches(in text: String, matches: [DetectedMatch]) -> String {
-    guard matches.contains(where: { $0.mutationSubrange != nil }) else {
-        return Obfuscator.obfuscate(text, matches: matches)
-    }
-    var counters: [SensitiveDataType: Int] = [:]
-    let replacements = matches.sorted { $0.range.lowerBound < $1.range.lowerBound }.map { match in
-        counters[match.type, default: 0] += 1
-        let placeholder = Obfuscator.makePlaceholder(type: match.type, number: counters[match.type] ?? 1)
-        return (authorizedMutationRange(for: match, in: text), placeholder)
-    }
-    var result = text
-    for (range, placeholder) in replacements.reversed() {
-        result.replaceSubrange(range, with: placeholder)
-    }
-    return result
 }

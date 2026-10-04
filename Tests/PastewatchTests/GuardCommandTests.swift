@@ -3,6 +3,52 @@ import XCTest
 
 final class GuardCommandTests: XCTestCase {
 
+    // WO-644@v2: ordinary and unknown flags cannot bypass a protected copy source.
+    func testCopyUnknownOptionsStillBlockSources() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try content.write(toFile: testDir + "/doc.env", atomically: true, encoding: .utf8)
+        for command in ["cp --unknown doc.env notes.md", "cp --unknown=value doc.env notes.md",
+                        "cp --preserve=all doc.env notes.md", "cp -b doc.env notes.md",
+                        "cp --parents doc.env docs/", "mv -u doc.env notes.md"] {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 2)
+        }
+    }
+
+    // WO-644@v2: unsupported copy syntax allows with one diagnostic that never echoes operands.
+    func testUnparseableCopyCommandsReportUnsupportedWithoutValues() throws {
+        try writeConfig(credentialConfig)
+        for command in ["cp 'private-path destination", "cp -t", "mv -S"] {
+            let result = try runGuardCLI(arguments: ["guard", command])
+            XCTAssertEqual(result.status, 0)
+            XCTAssertTrue(result.stdout.isEmpty)
+            XCTAssertEqual(result.stderr.split(separator: "\n").count, 1)
+            XCTAssertTrue(result.stderr.contains("Unsupported"))
+            XCTAssertFalse(result.stderr.contains("private-path"))
+            XCTAssertFalse(result.stderr.contains("destination"))
+        }
+    }
+
+    // WO-638: literal protected sources stay guarded when unrelated operands expand.
+    func testCopyExpandedDestinationsStillBlockSource() throws {
+        try writeConfig(credentialConfig)
+        let content = ["pass", "word", "=", syntheticCredentialLiteral()].joined()
+        try content.write(toFile: testDir + "/doc.env", atomically: true, encoding: .utf8)
+        let commands = ["cp doc.env \"$HOME/notes.md\"", "cp doc.env notes-$(date +%F).md",
+                        "mv doc.env \"$HOME/notes.md\"", "install doc.env \"$HOME/notes.md\"",
+                        "cp -t \"$DIR\" doc.env", "cp --target-directory=\"$DIR\" doc.env"]
+        for command in commands {
+            let result = try runGuardCLI(arguments: ["guard", "--quiet", command])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.stdout.isEmpty)
+            XCTAssertTrue(result.stderr.isEmpty)
+        }
+        try "clean text".write(toFile: testDir + "/clean.txt", atomically: true, encoding: .utf8)
+        let clean = try runGuardCLI(arguments: ["guard", "--quiet", "cp clean.txt \"$HOME/x.md\""])
+        XCTAssertEqual(clean.status, 0)
+    }
+
     // WO-638: destination suffixes cannot downgrade a non-documentation source's guard decision.
     func testCopySourceSecretsBlockRegardlessOfDestination() throws {
         try writeConfig(credentialConfig)

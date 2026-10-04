@@ -3,6 +3,47 @@ import XCTest
 
 final class CommandParserTests: XCTestCase {
 
+    // WO-644@v2: unknown flags and supported metadata options retain literal source operands.
+    func testCopyUnknownAndCommonOptionsKeepSources() {
+        let commands = [
+            "cp --unknown src dst", "cp --unknown=value src dst", "cp -Q src dst",
+            "cp --preserve=all src dst", "cp --preserve src dst", "cp -b src dst",
+            "cp --backup=numbered src dst", "cp --backup src dst", "cp --parents src dir/",
+            "cp -u src dst", "cp --update src dst", "cp --sparse=always src dst",
+            "cp --sparse always src dst", "cp --reflink=auto src dst", "cp --reflink src dst",
+            "cp -Z src dst", "cp --context=ctx src dst", "cp --context src dst",
+            "cp --no-preserve=all src dst", "cp --no-preserve all src dst", "cp -v src dst",
+            "mv -u src dst", "mv -b src dst", "mv --backup=numbered src dst",
+            "mv --context src dst", "install --backup=numbered src dst",
+            "install --context=ctx src dst", "install --context src dst", "install -Z src dst",
+            "cp --unknown -t dir src", "cp --preserve=all src \"$HOME/dst\""
+        ]
+        for command in commands {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), ["/app/src"])
+        }
+    }
+
+    // WO-638: unresolved destinations never suppress literal source checks.
+    func testCopyExpansionsAreTrackedPerOperand() {
+        let cases = [
+            "cp src \"$D/x\"", "mv src \"$HOME/notes.md\"", "install src \"$HOME/notes.md\"",
+            "cp src notes-$(date +%F).md", "cp src notes-`date +%F`.md",
+            "cp -t \"$DIR\" src", "cp --target-directory=\"$DIR\" src",
+            "install -m \"$MODE\" src dst", "cp src \"${DIR:-some directory}/x\""
+        ]
+        for command in cases {
+            XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), ["/app/src"])
+        }
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp $SOURCE dst", workingDirectory: "/app"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp known $SOURCE dst", workingDirectory: "/app"), ["/app/known"])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp 'src dst", workingDirectory: "/app"), [])
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp 'literal$source' dst", workingDirectory: "/app"),
+                       ["/app/literal$source"])
+        XCTAssertEqual(CommandParser.extractFilePaths(
+            from: "rsync --password-file local:creds src remote:dst", workingDirectory: "/app"
+        ), ["/app/local:creds", "/app/src"])
+    }
+
     // WO-638: copy-like commands read sources, never their destination operand.
     func testCopyCommandsReturnOnlySources() {
         for command in ["cp", "mv", "install", "rsync", "ditto"] {
@@ -52,11 +93,14 @@ final class CommandParserTests: XCTestCase {
                        ["/app/passfile", "/app/src"])
     }
 
-    // WO-638: unsupported, incomplete and obfuscated copy commands must not acquire false read targets.
+    // WO-644@v2: incomplete syntax retains allow behavior while unknown flags retain source checks.
     func testUnparseableCopyCommandsKeepAllowBehavior() {
-        for command in ["cp --unknown value src dst", "cp -t", "cp src", "cp 'src dst", "cp $SOURCE dst", "install -d dir"] {
+        for command in ["cp -t", "cp src", "cp 'src dst", "cp $SOURCE dst", "install -d dir"] {
             XCTAssertEqual(CommandParser.extractFilePaths(from: command, workingDirectory: "/app"), [], command)
         }
+        // WO-644@v2: the unknown option is a value-less flag rather than a source-check bypass.
+        XCTAssertEqual(CommandParser.extractFilePaths(from: "cp --unknown value src dst", workingDirectory: "/app"),
+                       ["/app/value", "/app/src"])
     }
 
     // WO-638: directory copies must not be blocked as unreadable regular files.

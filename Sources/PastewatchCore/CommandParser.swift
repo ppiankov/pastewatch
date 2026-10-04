@@ -4,6 +4,12 @@ import Foundation
 /// Used by the `guard` subcommand to determine which files a Bash command would access.
 public struct CommandParser {
 
+    // WO-644@v2: paths and unsupported command names come from the same source-role parse.
+    public struct FileAccess {
+        public let paths: [String]
+        public let unsupportedCommands: [String]
+    }
+
     // WO-638: source reads are guarded before a copy can change the destination's policy context.
     private static let copyCommands: Set<String> = ["cp", "mv", "install", "rsync", "ditto"]
 
@@ -82,6 +88,7 @@ public struct CommandParser {
         "helm": ["-f", "--values", "--kubeconfig"],
     ]
 
+    // WO-644@v2: existing callers retain the path-only API and the shared parsing decisions.
     /// Extract file paths from a shell command string.
     /// Handles pipe chains (|), command chaining (&&, ||, ;), redirects, and subshells.
     /// Returns absolute paths resolved against `workingDirectory`.
@@ -90,7 +97,16 @@ public struct CommandParser {
         from command: String,
         workingDirectory: String = FileManager.default.currentDirectoryPath
     ) -> [String] {
+        fileAccess(from: command, workingDirectory: workingDirectory).paths
+    }
+
+    // WO-644@v2: unsupported copy syntax is reported without including any operand values.
+    public static func fileAccess(
+        from command: String,
+        workingDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> FileAccess {
         var allPaths: [String] = []
+        var unsupportedCommands: Set<String> = []
 
         // Process main command segments
         let segments = splitCommandChain(command)
@@ -100,7 +116,7 @@ public struct CommandParser {
                 expandAndResolve($0, workingDirectory: workingDirectory)
             })
             allPaths.append(contentsOf: extractFilePathsSingle(
-                from: cleaned, workingDirectory: workingDirectory
+                from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
             ))
         }
 
@@ -114,19 +130,20 @@ public struct CommandParser {
                     expandAndResolve($0, workingDirectory: workingDirectory)
                 })
                 allPaths.append(contentsOf: extractFilePathsSingle(
-                    from: cleaned, workingDirectory: workingDirectory
+                    from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
                 ))
             }
         }
 
-        return allPaths
+        return FileAccess(paths: allPaths, unsupportedCommands: unsupportedCommands.sorted())
     }
 
-    // WO-638: extend the shared dispatch so source policy never depends on the destination suffix.
+    // WO-644@v2: copy parse failures retain existing fallbacks and provide command-only diagnostics.
     /// Extract file paths from a single command (no pipes or chaining).
     private static func extractFilePathsSingle(
         from command: String,
-        workingDirectory: String
+        workingDirectory: String,
+        unsupportedCommands: inout Set<String>
     ) -> [String] {
         let tokens = tokenize(command)
         guard let rawCmd = tokens.first else { return [] }
@@ -147,16 +164,12 @@ public struct CommandParser {
             cmd = rawCmd
         }
 
-        // WO-638: unknown copy syntax keeps its old behavior; known sources reuse existing path resolution.
-        let literalTokens = copyCommands.contains(cmd) ? tokenize(command, requiringLiteralArguments: true) : []
-        if copyCommands.contains(cmd),
-           !literalTokens.isEmpty,
-           let sources = extractCopySourceArgs(cmd, args: Array(literalTokens.dropFirst())) {
-            return sources.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }.filter { path in
-                // WO-638: recursive directory traversal is not a file read and is outside this bounded parser.
-                var isDirectory: ObjCBool = false
-                return !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) || !isDirectory.boolValue
+        // WO-644@v2: only genuinely unsupported source roles add a diagnostic.
+        if copyCommands.contains(cmd) {
+            if let paths = copySourcePaths(from: command, commandName: cmd, workingDirectory: workingDirectory) {
+                return paths
             }
+            unsupportedCommands.insert(cmd)
         }
 
         let rawPaths: [String]
@@ -180,6 +193,19 @@ public struct CommandParser {
         }
 
         return rawPaths.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }
+    }
+
+    // WO-644@v2: strict copy tokenization preserves the existing directory and expansion policy.
+    private static func copySourcePaths(
+        from command: String, commandName: String, workingDirectory: String
+    ) -> [String]? {
+        guard let tokens = tokenizeArguments(command, requiringLiteralArguments: true),
+              !tokens.isEmpty,
+              let sources = extractCopySourceArgs(commandName, args: Array(tokens.dropFirst())) else { return nil }
+        return sources.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }.filter { path in
+            var isDirectory: ObjCBool = false
+            return !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) || !isDirectory.boolValue
+        }
     }
 
     // MARK: - Command chain splitting
@@ -486,19 +512,69 @@ public struct CommandParser {
 
     // MARK: - Tokenizer
 
-    // WO-638: new copy classification rejects incomplete quotes and unevaluated shell expansions.
+    // WO-638: source classification keeps literal status alongside each shell token.
+    private struct CommandToken {
+        let value: String
+        let isLiteral: Bool
+    }
+
+    // WO-638: substitutions retain whitespace within one unresolved operand.
+    private struct ShellExpansion {
+        var opening: Character?
+        var depth = 0
+        var backtick = false
+        var isOpen: Bool { opening != nil || backtick }
+
+        // WO-638: consume a substitution without changing the surrounding quote state.
+        mutating func consume(_ char: Character) -> Bool {
+            if backtick {
+                if char == "`" { backtick = false }
+                return true
+            }
+            guard let opening else { return false }
+            let closing: Character = opening == "(" ? ")" : "}"
+            if char == opening { depth += 1 }
+            if char == closing { depth -= 1 }
+            if depth == 0 { self.opening = nil }
+            return true
+        }
+
+        // WO-638: variables and command substitutions mark only their owning token unknown.
+        mutating func begin(_ char: Character, next: Character?) -> Bool {
+            if char == "`" { backtick = true; return true }
+            guard char == "$" else { return false }
+            if next == "(" || next == "{" { opening = next }
+            return true
+        }
+    }
+
+    // WO-638: legacy callers retain their token values and copy parsing uses token metadata.
     /// Split a command string into tokens, respecting single and double quotes.
     static func tokenize(_ command: String, requiringLiteralArguments: Bool = false) -> [String] {
-        var tokens: [String] = []
+        (tokenizeArguments(command, requiringLiteralArguments: requiringLiteralArguments) ?? []).map { $0.value }
+    }
+
+    // WO-638: an expansion marks its token unknown without discarding other literal operands.
+    private static func tokenizeArguments(_ command: String, requiringLiteralArguments: Bool) -> [CommandToken]? {
+        var tokens: [CommandToken] = []
         var current = ""
+        var isLiteral = true
         var inSingle = false
         var inDouble = false
         var escaped = false
+        var expansion = ShellExpansion()
+        let characters = Array(command)
 
-        for char in command {
+        for (index, char) in characters.enumerated() {
             if escaped {
                 current.append(char)
                 escaped = false
+                continue
+            }
+
+            // WO-638: whitespace inside substitutions belongs to the same unknown operand.
+            if expansion.consume(char) {
+                current.append(char)
                 continue
             }
 
@@ -517,12 +593,16 @@ public struct CommandParser {
                 continue
             }
 
-            // WO-638: do not turn unresolved variables or substitutions into new file reads.
-            if requiringLiteralArguments && !inSingle && (char == "$" || char == "`") { return [] }
+            // WO-638: unresolved expansions change only this token's literal status.
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if requiringLiteralArguments && !inSingle && expansion.begin(char, next: next) {
+                isLiteral = false
+            }
             if (char == " " || (requiringLiteralArguments && char.isWhitespace)) && !inSingle && !inDouble {
                 if !current.isEmpty {
-                    tokens.append(current)
+                    tokens.append(CommandToken(value: current, isLiteral: isLiteral))
                     current = ""
+                    isLiteral = true
                 }
                 continue
             }
@@ -531,9 +611,9 @@ public struct CommandParser {
         }
 
         // WO-638: unmatched syntax keeps the pre-existing allow behavior for unsupported commands.
-        if requiringLiteralArguments && (inSingle || inDouble || escaped) { return [] }
+        if requiringLiteralArguments && (inSingle || inDouble || escaped || expansion.isOpen) { return nil }
         if !current.isEmpty {
-            tokens.append(current)
+            tokens.append(CommandToken(value: current, isLiteral: isLiteral))
         }
 
         return tokens
@@ -541,13 +621,27 @@ public struct CommandParser {
 
     // MARK: - Argument extractors
 
-    // WO-638: option arity distinguishes metadata, source files and target directories.
+    // WO-644@v2: optional long-option values are attached and never consume a source operand.
     private enum CopyOption {
-        case flag, value, targetDirectory, inputFile, directoryOnly
+        case flag, optionalValue, value, targetDirectory, inputFile, directoryOnly
     }
 
-    // WO-638: classify only known option forms, leaving unknown shell syntax to existing behavior.
+    // WO-644@v2: common GNU metadata options retain their documented argument arity.
+    private static func copyMetadataOption(_ name: String, command: String) -> CopyOption? {
+        guard ["cp", "mv", "install"].contains(command) else { return nil }
+        if name == "backup" { return .optionalValue }
+        if name == "context" { return .optionalValue }
+        if name == "Z" { return .flag }
+        if command == "cp" {
+            if ["preserve", "reflink"].contains(name) { return .optionalValue }
+            if ["no-preserve", "sparse"].contains(name) { return .value }
+        }
+        return nil
+    }
+
+    // WO-644@v2: supported flags and metadata values retain source positions.
     private static func copyOption(_ name: String, command: String) -> CopyOption? {
+        if let kind = copyMetadataOption(name, command: command) { return kind }
         if ["cp", "mv", "install"].contains(command) {
             if ["t", "target-directory"].contains(name) { return .targetDirectory }
             if ["S", "suffix"].contains(name) { return .value }
@@ -561,12 +655,15 @@ public struct CommandParser {
             if ["e", "rsh", "f", "filter", "B", "block-size", "T", "temp-dir"].contains(name) { return .value }
         }
         let shortFlags: [String: String] = [
-            "cp": "aRrpfivnHLPlsduxXTc", "mv": "finvT", "install": "bCcDpsv",
+            // WO-644@v2: backup and update flags do not take a following argument.
+            "cp": "baRrpfivnHLPlsduxXTc", "mv": "bfinvuT", "install": "bCcDpsv",
             "rsync": "avzrtplogDHRWcnuqIhSxKLOJ", "ditto": "vVXckxz"
         ]
         let longFlags: [String: Set<String>] = [
-            "cp": ["force", "interactive", "no-clobber", "verbose", "recursive", "archive", "no-target-directory"],
-            "mv": ["force", "interactive", "no-clobber", "verbose", "no-target-directory"],
+            // WO-644@v2: ordinary copy metadata flags cannot disable source inspection.
+            "cp": ["force", "interactive", "no-clobber", "verbose", "recursive", "archive", "no-target-directory",
+                   "parents", "update"],
+            "mv": ["force", "interactive", "no-clobber", "verbose", "no-target-directory", "update"],
             "install": ["verbose", "no-target-directory", "preserve-timestamps", "strip"],
             "rsync": ["verbose", "recursive", "archive", "dry-run", "delete", "progress"],
             "ditto": ["rsrc", "norsrc", "extattr", "noextattr", "acl", "noacl"]
@@ -575,17 +672,19 @@ public struct CommandParser {
         return longFlags[command]?.contains(name) == true ? .flag : nil
     }
 
-    // WO-638: combined short options consume an attached value only at the option that owns it.
+    // WO-644@v2: unknown option spelling does not disable known source checks.
     private static func parseCopyOption(_ argument: String, command: String) -> (kind: CopyOption, value: String?)? {
         if argument.hasPrefix("--") {
             let parts = argument.dropFirst(2).split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard let name = parts.first, let kind = copyOption(String(name), command: command) else { return nil }
+            guard let name = parts.first else { return nil }
+            guard let kind = copyOption(String(name), command: command) else { return (.flag, nil) }
             if kind == .flag && parts.count > 1 { return nil }
             return (kind, parts.count > 1 ? String(parts[1]) : nil)
         }
         let flags = argument.dropFirst()
         for index in flags.indices {
-            guard let kind = copyOption(String(flags[index]), command: command) else { return nil }
+            // WO-644@v2: an unknown short flag never discards literal positional operands.
+            let kind = copyOption(String(flags[index]), command: command) ?? .flag
             if kind != .flag {
                 let rest = flags[flags.index(after: index)...]
                 return (kind, rest.isEmpty ? nil : String(rest))
@@ -594,37 +693,46 @@ public struct CommandParser {
         return (.flag, nil)
     }
 
-    // WO-638: only positional sources and explicit input-file options become read targets.
-    private static func extractCopySourceArgs(_ command: String, args: [String]) -> [String]? {
-        var sources: [String] = []
-        var inputFiles: [String] = []
+    // WO-644@v2: options retain source roles even when their spelling is not in a flag table.
+    private static func extractCopySourceArgs(_ command: String, args: [CommandToken]) -> [String]? {
+        var sources: [CommandToken] = []
+        var inputFiles: [CommandToken] = []
         var targetDirectory = false
         var endOfOptions = false
         var index = 0
         while index < args.count {
-            let argument = args[index]
+            // WO-638: use token text for option arity and keep its literal status for source selection.
+            let token = args[index]
+            let argument = token.value
             index += 1
             if !endOfOptions && argument == "--" { endOfOptions = true; continue }
             if endOfOptions || !argument.hasPrefix("-") || argument == "-" {
-                sources.append(argument)
+                sources.append(token)
                 continue
             }
             guard let option = parseCopyOption(argument, command: command) else { return nil }
             if option.kind == .directoryOnly { return [] }
-            if option.kind == .flag { continue }
-            let value: String
-            if let attached = option.value { value = attached } else {
+            // WO-644@v2: optional GNU values use the equals form and do not consume a positional.
+            if option.kind == .flag || option.kind == .optionalValue { continue }
+            // WO-638: an expanded option value still consumes its argument, never a source.
+            let value: CommandToken
+            if let attached = option.value {
+                value = CommandToken(value: attached, isLiteral: token.isLiteral)
+            } else {
                 guard index < args.count else { return nil }
                 value = args[index]
                 index += 1
             }
-            guard !value.isEmpty else { return nil }
+            guard !value.value.isEmpty else { return nil }
             if option.kind == .targetDirectory { targetDirectory = true }
             if option.kind == .inputFile { inputFiles.append(value) }
         }
         guard sources.count >= (targetDirectory ? 1 : 2) else { return nil }
         if !targetDirectory { sources.removeLast() }
-        return inputFiles + sources.filter { command != "rsync" || !$0.contains(":") }
+        // WO-638: filtering after role classification prevents an unknown destination from shifting sources.
+        return inputFiles.filter { $0.isLiteral }.map { $0.value } + sources.filter {
+            $0.isLiteral && (command != "rsync" || !$0.value.contains(":"))
+        }.map { $0.value }
     }
 
     /// Extract positional (non-flag) arguments — used for cat, head, tail, etc.
