@@ -45,7 +45,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", "1.3.0"..<"2.0.0"),
-        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0")
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"6.0.0")
     ],
     targets: targets
 )
