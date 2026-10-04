@@ -518,7 +518,7 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         }
     }
 
-    // WO-639: rev 9 tracks the WO-641 known gap explicitly; a fix must make this characterization fail.
+    // WO-641@v2: both binary response entry points remove the authorized multibyte password.
     func testKnownGapWO641NonASCIISecretsRemainInBinaryResponses() throws {
         let password = "\u{00E9}" + fixturePassword()
         let content = fixtureConnection(password) + "\n"
@@ -531,9 +531,10 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             CurlHTTPClient.redactNonUTF8ResponseBody(binary, config: config, severity: .high)
         ]
         for result in results {
-            XCTAssertEqual(result.count, 0, "WO-641: remove this known-gap expectation once binary redaction is fixed")
-            XCTAssertTrue(result.data == binary, "WO-641: the current binary writer skips the authorized non-ASCII value")
-            XCTAssertNotNil(result.data.range(of: Data(password.utf8)), "WO-641: the known gap must remain visible")
+            // WO-641@v2: binary prefixes stay byte-exact and successful counts describe actual replacements.
+            XCTAssertEqual(result.count, 1)
+            XCTAssertTrue(result.data.first == binary.first)
+            XCTAssertNil(result.data.range(of: Data(password.utf8)))
         }
     }
 

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unsupported copy syntax allows with one operand-free diagnostic. (WO-644)
 - Preserve database password evidence across raw URL delimiters while keeping valid
   host-only authorities advisory, including at-signs in paths and queries. (WO-642)
+- Redact multibyte secrets at their exact binary response positions. Refuse
+  unlocatable authorized secrets with HTTP 502 before buffered forwarding, or stop
+  an active stream before the offending frame; audit types without values.
+  Overlapping replacement spans are also refused. Covered on macOS and Linux. (WO-641)
 
 ## [0.38.1] - 2026-10-03
 

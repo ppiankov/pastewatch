@@ -975,6 +975,7 @@ public final class ProxyServer {
     }
 
     #if canImport(Darwin)
+    // WO-641@v2: buffered binary refusal is handled before preserving the upstream status.
     private func forwardDarwinRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         var upstreamRequest = URLRequest(url: ctx.upstreamURL)
         upstreamRequest.httpMethod = ctx.parsed.method
@@ -1020,6 +1021,10 @@ public final class ProxyServer {
             return nil
         }
         let redaction = redactDarwinBufferedResponseBodyIfNeeded(data)
+        // WO-641@v2: error bytes never masquerade as a successful upstream response.
+        if refuseBufferedResponseIfNeeded(redaction.refusedTypes, to: ctx.clientSocket, path: ctx.parsed.path) {
+            return nil
+        }
         return BufferedResponse(
             status: resp.statusCode,
             headers: resp.allHeaderFields,
@@ -1062,6 +1067,7 @@ public final class ProxyServer {
         }
     }
     #else
+    // WO-641@v2: curl carries binary refusal metadata to the existing error writer and audit.
     private func forwardLinuxRequest(_ ctx: ForwardContext) -> BufferedResponse? {
         let streamingMode = config.responseStreamingRedactionMode
         // WO-286: buffer mode must keep the legacy full-response path on Linux too.
@@ -1101,6 +1107,8 @@ public final class ProxyServer {
             return nil
         }
         if curlResponse.wasStreamed {
+            // WO-641@v2: headers already reached the client, so audit termination without another response.
+            recordResponseRefusal(curlResponse.refusedTypes, path: ctx.parsed.path)
             // WO-158: wire Linux streaming redaction stats into audit log and proxy stats.
             recordLinuxStreamStats(StreamingAuditStats(
                 path: ctx.parsed.path,
@@ -1113,6 +1121,10 @@ public final class ProxyServer {
                 toolCallCount: curlResponse.streamToolCallRedactionCount,
                 coverageEvents: curlResponse.streamCoverageEvents
             ))
+            return nil
+        }
+        // WO-641@v2: non-streaming refusal returns one class-only 502 instead of forwarding upstream bytes.
+        if refuseBufferedResponseIfNeeded(curlResponse.refusedTypes, to: ctx.clientSocket, path: ctx.parsed.path) {
             return nil
         }
         return BufferedResponse(
@@ -2195,6 +2207,7 @@ public final class ProxyServer {
     }
 
     #if canImport(Darwin)
+    // WO-641@v2: the Darwin stream's refusal is audited once after the relay stops.
     /// Forward a streaming (SSE) response to the client socket incrementally.
     /// Uses URLSessionDataDelegate so each upstream chunk is written to the
     /// client immediately, without buffering the full response.
@@ -2260,6 +2273,8 @@ public final class ProxyServer {
 
         // WO-153: account for secrets redacted from SSE frames in the stream.
         let streamStats = relay.snapshotStreamStats()
+        // WO-641@v2: a refused frame is not a redaction and cannot generate a second HTTP response.
+        recordResponseRefusal(relay.refusedTypes, path: request.url?.path ?? "/")
         recordStreamingAuditStats(StreamingAuditStats(
             path: request.url?.path ?? "/",
             bodyCount: redactionCount,
@@ -2687,6 +2702,22 @@ public final class ProxyServer {
             case .response: return "response "
             }
         }
+    }
+
+    // WO-641@v2: buffered refusal reuses the established JSON error writer on both transports.
+    private func refuseBufferedResponseIfNeeded(_ types: [String], to socket: Int32, path: String) -> Bool {
+        guard !types.isEmpty else { return false }
+        recordResponseRefusal(types, path: path)
+        let classes = Set(types).sorted().joined(separator: ", ")
+        sendError(to: socket, status: 502, message: "Proxy refused response: unredactable \(classes)")
+        return true
+    }
+
+    // WO-641@v2: reuse failure accounting and audit without recording values or successful replacements.
+    private func recordResponseRefusal(_ types: [String], path: String) {
+        guard !types.isEmpty else { return }
+        recordRedactionFailure()
+        logRedactionFailure(path: path, count: types.count, types: types)
     }
 
     // WO-452: serialization failures are never represented as successful redactions

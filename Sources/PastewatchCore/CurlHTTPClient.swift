@@ -37,6 +37,7 @@ struct CurlHTTPClient {
         case failure
     }
 
+    // WO-641@v2: buffered and streaming callers receive class-only refusal metadata.
     struct Response {
         let statusCode: Int
         let headers: [String: String]
@@ -60,7 +61,10 @@ struct CurlHTTPClient {
         let responseAdvisoryCount: Int
         let responseAdvisoryTypes: [String]
         let responseCoverageEvents: [ObfuscationCoverageEvent] // WO-539: buffered response receipt.
+        // WO-641@v2: a refusal is not a successful redaction or an upstream HTTP status.
+        let refusedTypes: [String]
 
+        // WO-641@v2: preserve all existing callers with an empty refusal default.
         init(statusCode: Int, headers: [String: String], body: Data, wasStreamed: Bool = false,
              streamRedactionCount: Int = 0, streamRedactionTypes: [String] = [],
              streamAdvisoryCount: Int = 0, streamAdvisoryTypes: [String] = [],
@@ -68,7 +72,9 @@ struct CurlHTTPClient {
              streamCoverageEvents: [ObfuscationCoverageEvent] = [],
              responseRedactionCount: Int = 0, responseRedactionTypes: [String] = [],
              responseAdvisoryCount: Int = 0, responseAdvisoryTypes: [String] = [],
-             responseCoverageEvents: [ObfuscationCoverageEvent] = []) {
+             responseCoverageEvents: [ObfuscationCoverageEvent] = [],
+             // WO-641@v2: transports propagate refusal without exposing matched values.
+             refusedTypes: [String] = []) {
             self.statusCode = statusCode
             self.headers = headers
             self.body = body
@@ -84,6 +90,8 @@ struct CurlHTTPClient {
             self.responseAdvisoryCount = responseAdvisoryCount
             self.responseAdvisoryTypes = responseAdvisoryTypes
             self.responseCoverageEvents = responseCoverageEvents
+            // WO-641@v2: do not conflate unredactable findings with replacement totals.
+            self.refusedTypes = refusedTypes
         }
     }
 
@@ -112,6 +120,7 @@ struct CurlHTTPClient {
         return []
     }
 
+    // WO-641@v2: callers receive explicit binary refusal metadata alongside ordinary response statistics.
     /// Execute an HTTP request via /usr/bin/curl.
     /// Throws if curl is not available or the process fails.
     ///
@@ -260,7 +269,9 @@ struct CurlHTTPClient {
             responseRedactionTypes: responseRedaction.types,
             responseAdvisoryCount: responseRedaction.advisoryCount,
             responseAdvisoryTypes: responseRedaction.advisoryTypes,
-            responseCoverageEvents: responseRedaction.coverageEvents
+            responseCoverageEvents: responseRedaction.coverageEvents,
+            // WO-641@v2: ProxyServer owns the class-only 502 writer and audit.
+            refusedTypes: responseRedaction.refusedTypes
         )
     }
 
@@ -403,6 +414,7 @@ struct CurlHTTPClient {
         }
     }
 
+    // WO-641@v2: stream termination reports refused classes independently of delivered frames.
     /// WO-336/WO-404: named Linux relay result carries mutation-safe and advisory stream totals.
     struct StreamRelayResult {
         let redactionCount: Int
@@ -411,8 +423,11 @@ struct CurlHTTPClient {
         let advisoryTypes: [String]
         let toolCallRedactionCount: Int // WO-512: separate signal for tool payload mutations.
         let coverageEvents: [ObfuscationCoverageEvent] // WO-539: aggregate per-frame coverage receipts.
+        // WO-641@v2: an empty default preserves existing relay fixture construction.
+        var refusedTypes: [String] = []
     }
 
+    // WO-641@v2: refused classes remain separate from stream replacement and advisory totals.
     /// WO-336/WO-404: keep raw-stream mutation-safe/advisory counters together across helpers.
     private struct StreamScanTotals {
         var redactionCount = 0
@@ -421,13 +436,17 @@ struct CurlHTTPClient {
         var advisoryTypes: [String] = []
         var toolCallRedactionCount = 0 // WO-512: included in redactionCount, also reported separately.
         var coverageEvents: [ObfuscationCoverageEvent] = [] // WO-539: preserve source/tier evidence.
+        // WO-641@v2: one refusal stops the stream without inflating successful replacement counts.
+        var refusedTypes: [String] = []
 
         mutating func record(_ redaction: SSEFrameRedactionResult) {
             recordCritical(redaction)
             recordAdvisory(count: redaction.advisoryCount, types: redaction.advisoryTypes)
         }
 
+        // WO-641@v2: retain refusal evidence but count only applied mutations.
         mutating func recordCritical(_ redaction: SSEFrameRedactionResult) {
+            refusedTypes.append(contentsOf: redaction.refusedTypes)
             redactionCount += redaction.count
             redactionTypes.append(contentsOf: redaction.types)
             toolCallRedactionCount += redaction.toolCallRedactionCount
@@ -562,6 +581,7 @@ struct CurlHTTPClient {
         activeProcessLock.unlock()
     }
 
+    // WO-641@v2: stream refusal metadata reaches the connection audit after forwarding has stopped.
     /// WO-196: alertBeforeDone passed directly rather than via StreamContext to avoid
     /// silent nil-default divergence when StreamContext is constructed without it.
     static func relayStreamingResponse(
@@ -698,7 +718,9 @@ struct CurlHTTPClient {
             streamAdvisoryCount: relayResult.advisoryCount,
             streamAdvisoryTypes: relayResult.advisoryTypes,
             streamToolCallRedactionCount: relayResult.toolCallRedactionCount,
-            streamCoverageEvents: relayResult.coverageEvents
+            streamCoverageEvents: relayResult.coverageEvents,
+            // WO-641@v2: the proxy logs one class-only stream refusal after relay stops.
+            refusedTypes: relayResult.refusedTypes
         )
     }
 
@@ -735,6 +757,7 @@ struct CurlHTTPClient {
             data.range(of: lfHeaderTerminator, options: [], in: searchRange)
     }
 
+    // WO-641@v2: a refused binary chunk ends relay before its bytes reach the client.
     /// WO-155: blocking read loop that relays body pipe chunks to the client socket.
     /// Returns accumulated redaction stats (count, type names) for audit logging.
     /// WO-182/WO-192: alertBeforeDone closure is evaluated at [DONE] time with accumulated stream
@@ -796,6 +819,8 @@ struct CurlHTTPClient {
                     totals: &totals,
                     alertState: &rawStreamAlertState
                 ) else { continue readLoop }
+                // WO-641@v2: never send the refused raw chunk or any later upstream bytes.
+                if !totals.refusedTypes.isEmpty { policyTerminated = true; break readLoop }
                 outData = rawOutput.data
                 deliveryScopedAdvisoryCount = rawOutput.advisoryCount
                 deliveryScopedAdvisoryTypes = rawOutput.advisoryTypes
@@ -829,10 +854,13 @@ struct CurlHTTPClient {
             advisoryCount: totals.advisoryCount,
             advisoryTypes: totals.advisoryTypes,
             toolCallRedactionCount: totals.toolCallRedactionCount,
-            coverageEvents: totals.coverageEvents
+            coverageEvents: totals.coverageEvents,
+            // WO-641@v2: refusal metadata survives both normal loop termination and EOF scanning.
+            refusedTypes: totals.refusedTypes
         )
     }
 
+    // WO-641@v2: a frame batch preserves earlier frames and stops at the first refused frame.
     // WO-509: isolate stateful per-event assembly from the generic curl read loop.
     // WO-243, WO-248, WO-250, WO-256, and WO-345: retain pending-stat, alert,
     // failed-send, overflow-attempt, and delivery-scoped advisory semantics.
@@ -862,6 +890,8 @@ struct CurlHTTPClient {
             )
             // WO-256: overflow detections are recorded even when the client write fails.
             totals.recordCritical(redaction)
+            // WO-641@v2: no portion of an unlocatable binary overflow is written.
+            guard !redaction.refused else { return .policyTerminated }
             let delivered = sendAll(
                 redaction.data,
                 to: context.stream.clientSocket,
@@ -882,9 +912,10 @@ struct CurlHTTPClient {
         for frame in parsed.frames {
             if frame.data == "[DONE]" {
                 let tail = toolCallRedactor.finish()
-                for redaction in tail.frames {
-                    output.append(redaction.data)
-                    pending.record(redaction)
+                // WO-641@v2: buffered tail frames use the same refusal boundary as normal frames.
+                if !appendSafeStreamFrames(tail.frames, to: &output, pending: &pending) {
+                    policyTerminated = true
+                    break
                 }
                 if tail.terminateStream {
                     policyTerminated = true
@@ -904,9 +935,10 @@ struct CurlHTTPClient {
             }
 
             let transformed = toolCallRedactor.process(frame)
-            for redaction in transformed.frames {
-                output.append(redaction.data)
-                pending.record(redaction)
+            // WO-641@v2: earlier complete frames stay deliverable; the offending frame never enters output.
+            if !appendSafeStreamFrames(transformed.frames, to: &output, pending: &pending) {
+                policyTerminated = true
+                break
             }
             if transformed.terminateStream {
                 policyTerminated = true
@@ -920,12 +952,31 @@ struct CurlHTTPClient {
         totals.redactionTypes.append(contentsOf: pending.redactionTypes)
         totals.toolCallRedactionCount += pending.toolCallRedactionCount
         totals.coverageEvents.append(contentsOf: pending.coverageEvents)
+        // WO-641@v2: carry refusal classes to the connection-level audit without counting a replacement.
+        totals.refusedTypes.append(contentsOf: pending.refusedTypes)
         if delivered {
             totals.advisoryCount += pending.advisoryCount
             totals.advisoryTypes.append(contentsOf: pending.advisoryTypes)
         }
         guard delivered else { return .clientEpipe }
         return policyTerminated ? .policyTerminated : .continueRelay
+    }
+
+    // WO-641@v2: one shared batch check rejects a binary frame before append or replacement accounting.
+    private static func appendSafeStreamFrames(
+        _ frames: [SSEFrameRedactionResult],
+        to output: inout Data,
+        pending: inout StreamScanTotals
+    ) -> Bool {
+        for redaction in frames {
+            guard !redaction.refused else {
+                pending.refusedTypes.append(contentsOf: redaction.refusedTypes)
+                return false
+            }
+            output.append(redaction.data)
+            pending.record(redaction)
+        }
+        return true
     }
 
     private static func flushRelayRemainder(
@@ -959,6 +1010,7 @@ struct CurlHTTPClient {
         }
     }
 
+    // WO-641@v2: EOF buffers obey the same binary refusal boundary as completed frames.
     private static func flushPerSSEEventRemainder(
         parser: inout SSEFrameParser,
         toolCallRedactor: inout ToolCallStreamRedactor,
@@ -971,6 +1023,12 @@ struct CurlHTTPClient {
         var tailAdvisoryCount = 0
         var tailAdvisoryTypes: [String] = []
         for redaction in tail.frames {
+            // WO-641@v2: a refused tail cannot be appended, even at clean EOF.
+            if redaction.refused {
+                totals.refusedTypes.append(contentsOf: redaction.refusedTypes)
+                _ = sendAll(output, to: ctx.clientSocket, flags: ctx.sendFlags)
+                return
+            }
             output.append(redaction.data)
             totals.recordCritical(redaction)
             tailAdvisoryCount += redaction.advisoryCount
@@ -996,6 +1054,11 @@ struct CurlHTTPClient {
             rem, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
         )
         totals.recordCritical(redaction)
+        // WO-641@v2: only earlier buffered frames may be delivered when the remainder is refused.
+        if redaction.refused {
+            _ = sendAll(output, to: ctx.clientSocket, flags: ctx.sendFlags)
+            return
+        }
         // WO-191, WO-200, and WO-205: retry until all bytes sent; skip on EPIPE.
         let alert = alertBeforeDone?(
             totals.redactionCount,
@@ -1016,6 +1079,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-641@v2: a refused raw EOF window emits no bytes or synthetic trailing alert.
     private static func flushRawStreamRemainder(
         parser: inout SSEFrameParser,
         state: inout RawStreamAlertState,
@@ -1030,6 +1094,8 @@ struct CurlHTTPClient {
             alertBeforeDone: alertBeforeDone,
             totals: &totals
         ) else { return }
+        // WO-641@v2: refusal metadata is audited by the caller without socket output.
+        guard totals.refusedTypes.isEmpty else { return }
         let delivered = sendAll(rawOutput.data, to: ctx.clientSocket, flags: ctx.sendFlags)
         totals.recordAdvisoryIfDelivered(
             delivered,
@@ -1038,6 +1104,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-641@v2: a refused terminal window cannot be followed by post-DONE scanning or delivery.
     private static func relayRawStreamChunk(
         _ chunk: Data,
         parser: inout SSEFrameParser,
@@ -1089,6 +1156,8 @@ struct CurlHTTPClient {
                 totals: &totals,
                 alertState: &alertState
             )
+            // WO-641@v2: stop before handling any bytes after the refused window.
+            guard totals.refusedTypes.isEmpty else { return terminal }
             let trailing = Data(data[frameEnd...])
             guard !trailing.isEmpty,
                   let postDone = relayPostDoneRawStreamChunk(
@@ -1123,6 +1192,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-641@v2: refuse raw binary windows before inserting an alert or reporting delivered advisories.
     private static func relayRawStreamBufferedData(
         _ data: Data,
         doneLineStart: Data.Index?,
@@ -1137,6 +1207,10 @@ struct CurlHTTPClient {
             customRules: alert.stream.customRules
         )
         totals.recordCritical(redaction)
+        // WO-641@v2: the empty result is a transport stop, not an authorized mutation.
+        guard !redaction.refused else {
+            return StreamChunkRelayResult(data: Data(), advisoryCount: 0, advisoryTypes: [])
+        }
         let advisory = detectNewRawStreamAdvisories(
             data,
             state: &alertState,
@@ -1193,6 +1267,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-641@v2: an unlocatable binary EOF window suppresses all trailing output.
     private static func relayRawStreamEOF(
         parser: inout SSEFrameParser,
         state: inout RawStreamAlertState,
@@ -1230,6 +1305,10 @@ struct CurlHTTPClient {
             data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
         )
         totals.recordCritical(redaction)
+        // WO-641@v2: a refused EOF payload cannot generate a terminal synthetic event.
+        guard !redaction.refused else {
+            return StreamChunkRelayResult(data: Data(), advisoryCount: 0, advisoryTypes: [])
+        }
         let advisory = detectNewRawStreamAdvisories(
             data,
             state: &state,
@@ -1333,6 +1412,7 @@ struct CurlHTTPClient {
         }
     }
 
+    // WO-641@v2: a refused binary overflow produces no output or synthetic DONE alert.
     private static func relayRawStreamOverflow(
         _ data: Data,
         ctx: StreamContext,
@@ -1348,6 +1428,10 @@ struct CurlHTTPClient {
             data, config: ctx.config, severity: ctx.severity, customRules: ctx.customRules
         )
         totals.recordCritical(redaction)
+        // WO-641@v2: keep overflow refusal separate from delivered mutations and advisories.
+        guard !redaction.refused else {
+            return StreamChunkRelayResult(data: Data(), advisoryCount: 0, advisoryTypes: [])
+        }
         let alert = alertBeforeDone?(
             totals.redactionCount,
             totals.redactionTypes,
@@ -1410,6 +1494,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-641@v2: map repaired UTF-8 positions to original bytes and refuse unmatched authorized ranges.
     /// WO-359/WO-563@v3: mutate exact ASCII secret ranges without lossy
     /// round-tripping of the surrounding binary response.
     static func redactNonUTF8ResponseBody(
@@ -1451,14 +1536,31 @@ struct CurlHTTPClient {
         var replacements: [NonUTF8ResponseReplacement] = []
         var mutatedMatches: [DetectedMatch] = []
         var typeCounters: [SensitiveDataType: Int] = [:]
-        var searchStart = body.startIndex
-        for match in redactionMatches {
-            guard match.value.unicodeScalars.allSatisfy({ $0.value <= 0x7F }) else { continue }
+        // WO-641@v2: offset mapping uses Swift's maximal-subpart UTF-8 parser, never a first-occurrence search.
+        let ranges = redactionMatches.map { match in
+            lossyText[..<match.range.lowerBound].utf8.count..<lossyText[..<match.range.upperBound].utf8.count
+        }
+        let offsets = originalUTF8Offsets(in: body, needed: Set(ranges.flatMap { [$0.lowerBound, $0.upperBound] }))
+        var refusedTypes: [String] = []
+        // WO-641@v2: validate monotonic byte spans independently of scanner overlap filtering.
+        var previousAcceptedUpper = body.startIndex
+        for (match, decodedRange) in zip(redactionMatches, ranges) {
             let needle = Data(match.value.utf8)
+            // WO-641@v2: verify the exact original span; a repaired scalar or mapping mismatch fails closed.
             guard !needle.isEmpty,
-                  let range = body.range(of: needle, options: [], in: searchStart..<body.endIndex) else {
+                  let lower = offsets[decodedRange.lowerBound], let upper = offsets[decodedRange.upperBound],
+                  lower >= body.startIndex, upper <= body.endIndex, lower < upper,
+                  body[lower..<upper] == needle else {
+                refusedTypes.append(match.displayName)
                 continue
             }
+            // WO-641@v2: overlapping replacements must refuse rather than corrupt binary offsets.
+            guard lower >= previousAcceptedUpper else {
+                refusedTypes.append(match.displayName)
+                continue
+            }
+            previousAcceptedUpper = upper
+            let range = lower..<upper
             let number = (typeCounters[match.type] ?? 0) + 1
             typeCounters[match.type] = number
             let placeholder = Data(Obfuscator.makePlaceholder(type: match.type, number: number).utf8)
@@ -1468,7 +1570,10 @@ struct CurlHTTPClient {
                 type: match.displayName
             ))
             mutatedMatches.append(match)
-            searchStart = range.upperBound
+        }
+        // WO-641@v2: discard partial replacements on refusal and expose only class metadata.
+        if !refusedTypes.isEmpty {
+            return SSEFrameRedactionResult(data: Data(), count: 0, types: [], refusedTypes: refusedTypes)
         }
         guard !replacements.isEmpty else {
             return SSEFrameRedactionResult(
@@ -1496,6 +1601,28 @@ struct CurlHTTPClient {
                 source: .response
             )
         )
+    }
+
+    // WO-641@v2: retain only needed scalar boundaries while the standard decoder accounts for invalid bytes.
+    private static func originalUTF8Offsets(in body: Data, needed: Set<Int>) -> [Int: Int] {
+        var parser = Unicode.UTF8.ForwardParser()
+        var iterator = body.makeIterator()
+        var decodedOffset = 0
+        var originalOffset = body.startIndex
+        var offsets: [Int: Int] = [:]
+        while true {
+            if needed.contains(decodedOffset) { offsets[decodedOffset] = originalOffset }
+            switch parser.parseScalar(from: &iterator) {
+            case .valid(let scalar):
+                decodedOffset += scalar.count
+                originalOffset += scalar.count
+            case .error(let count):
+                decodedOffset += "\u{FFFD}".utf8.count
+                originalOffset += count
+            case .emptyInput:
+                return offsets
+            }
+        }
     }
 
     /// WO-290: shared close-delimited streaming headers for Linux and macOS relay paths.

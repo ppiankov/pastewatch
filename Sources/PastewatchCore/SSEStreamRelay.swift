@@ -100,6 +100,13 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
     /// WO-153: count and type names of secrets redacted from SSE frames.
     private var streamRedactionCountStorage = 0
     private var streamRedactionTypesStorage: [String] = []
+    // WO-641@v2: preserve one class-only refusal receipt outside successful replacement totals.
+    private var refusedTypesStorage: [String] = []
+    var refusedTypes: [String] {
+        streamStatsLock.lock()
+        defer { streamStatsLock.unlock() }
+        return refusedTypesStorage
+    }
     /// WO-324: lower-certainty stream detections are advisory-only and do not mutate bytes.
     private var streamAdvisoryCountStorage = 0
     private var streamAdvisoryTypesStorage: [String] = []
@@ -323,6 +330,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-641@v2: a refused raw payload is dropped before socket delivery.
     // WO-381: advisory stats are committed only after raw bytes reach the client.
     private func relayRawRedactedData(_ data: Data) {
         // WO-381: keep critical attempts separate from delivery-scoped advisories.
@@ -331,6 +339,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             return
         }
         let redaction = redactRawBytes(data)
+        // WO-641@v2: subsequent callbacks and EOF flushing are suppressed on refusal.
+        guard !stopForRefusal(redaction) else { return }
         recordCriticalStreamScan(redaction)
         let output = insertingAlertBeforeDoneIfNeeded(redaction.data)
         if relayFrameData(output) {
@@ -339,12 +349,15 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-641@v2: raw frame batches never append an unlocatable binary frame.
     // WO-382: stage frame-batch advisories until the combined socket write succeeds.
     private func relayRawRedactedFrames(_ data: Data) {
         // WO-382: commit batch advisories only after one successful send.
         let result = parser.feed(data)
         if result.overflowFlushed {
             let redaction = redactRawBytes(result.overflowBytes)
+            // WO-641@v2: do not write any part of a refused overflow payload.
+            guard !stopForRefusal(redaction) else { return }
             recordCriticalStreamScan(redaction)
             let stats = snapshotStreamStats(adding: redaction)
             let output = insertingRawStreamOverflowAlertIfNeeded(redaction.data, stats: stats)
@@ -378,6 +391,14 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 continue
             }
             let redaction = redactRawBytes(frame.raw)
+            // WO-641@v2: deliver only the earlier complete frames before closing the stream.
+            if redaction.refused {
+                if !output.isEmpty, relayFrameData(output) {
+                    recordAdvisoryStreamScan(count: pendingAdvisoryCount, types: pendingAdvisoryTypes)
+                }
+                _ = stopForRefusal(redaction)
+                return
+            }
             recordCriticalStreamScan(redaction)
             pendingAdvisoryCount += redaction.advisoryCount
             pendingAdvisoryTypes.append(contentsOf: redaction.advisoryTypes)
@@ -393,6 +414,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         }
     }
 
+    // WO-641@v2: binary overflow refusals stop before the raw fallback writes any bytes.
     // WO-511: parser overflow and cross-frame buffering share one fail-closed boundary.
     private func relaySSEEventData(_ data: Data) {
         let result = parser.feed(data)
@@ -405,6 +427,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             }
             // WO-164: 4MB+ frame bypassed per-frame path; redact as raw text.
             let redaction = redactRawBytes(result.overflowBytes)
+            // WO-641@v2: an unlocatable binary overflow cannot escape through the SSE fallback.
+            guard !stopForRefusal(redaction) else { return }
             recordCriticalStreamScan(redaction)
             if writeToSocket(redaction.data) {
                 // WO-381: an EPIPE must not report an undelivered advisory.
@@ -429,6 +453,7 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // Partial remainder stays in the parser buffer and is flushed at stream end.
     }
 
+    // WO-641@v2: transformed binary frames are refused before socket delivery.
     private func relaySSEFrame(_ frame: SSEFrameParser.Frame) -> Bool {
         // WO-182: inject the alert immediately before [DONE] so SSE consumers
         // (which stop reading at [DONE]) see the alert before the stream ends.
@@ -444,6 +469,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             // WO-511: release and account for buffered tool arguments before building the alert.
             let tail = toolCallRedactor.finish()
             for redaction in tail.frames {
+                // WO-641@v2: a buffered binary frame cannot bypass the terminal-frame refusal boundary.
+                guard !stopForRefusal(redaction) else { return false }
                 let delivered = relayFrameData(redaction.data)
                 recordCriticalStreamScan(redaction)
                 if delivered { recordAdvisoryStreamScan(redaction) } else { return false }
@@ -472,6 +499,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         // WO-509: tool-call fragments may require later frames before an authorized mutation is known.
         let transformed = toolCallRedactor.process(frame)
         for redaction in transformed.frames {
+            // WO-641@v2: the offending frame and all later frames remain unforwarded.
+            guard !stopForRefusal(redaction) else { return false }
             let delivered = relayFrameData(redaction.data)
             // WO-372: mutation-safe redactions stay attempted-detection scoped, but
             // WO-404 keeps advisory-only matches delivery-scoped.
@@ -524,15 +553,32 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         return false
     }
 
+    // WO-641@v2: EOF tool buffers preserve the same binary refusal outcome as normal frames.
     // WO-511: keep EOF tool-buffer delivery outside the already complex completion callback.
     private func flushBufferedToolCallsAtEOF() -> Bool {
         let tail = toolCallRedactor.finish()
         for redaction in tail.frames {
+            // WO-641@v2: no refused frame is written during EOF flushing.
+            guard !stopForRefusal(redaction) else { return false }
             recordCriticalStreamScan(redaction)
             guard writeToSocket(redaction.data) else { return false }
             recordAdvisoryStreamScan(redaction)
         }
         if tail.terminateStream { markStreamPolicyTerminated() }
+        return true
+    }
+
+    @discardableResult
+    // WO-641@v2: latch refusal before shutdown so queued callbacks cannot release later bytes.
+    private func stopForRefusal(_ redaction: SSEFrameRedactionResult) -> Bool {
+        guard redaction.refused else { return false }
+        streamStatsLock.lock()
+        if refusedTypesStorage.isEmpty { refusedTypesStorage = redaction.refusedTypes }
+        streamStatsLock.unlock()
+        markStreamPolicyTerminated()
+        activeTask?.cancel()
+        cancelIdleTimerAsync()
+        shutdown(clientSocket, Int32(SHUT_WR))
         return true
     }
 
@@ -543,7 +589,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
         socketWriteLock.unlock()
     }
 
+    // WO-641@v2: binary remainder refusal prevents EOF and disconnect notices from releasing later bytes.
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // WO-641@v2: refusal returns still perform the existing one-shot completion signaling.
+        defer { signalCompletion() }
         // WO-177: capture timerDidFire once under the lock; all socket writes below are gated on it.
         // WO-194: socketWriteLock guards didWriteHeaders+timerDidFire together (intentional coupling).
         socketWriteLock.lock()
@@ -593,6 +642,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 let rem = parser.remainingBytes
                 if !epipeAfterFlush && !streamPolicyTerminated && !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
+                    // WO-641@v2: refused remainder bytes never reach the socket.
+                    if stopForRefusal(redaction) { return }
                     recordCriticalStreamScan(redaction)
                     if writeToSocket(redaction.data) {
                         // WO-383: remainder advisories are delivery-scoped on clean close.
@@ -611,6 +662,8 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
                 let rem = parser.remainingBytes
                 if !rem.isEmpty {
                     let redaction = redactRawBytes(rem)
+                    // WO-641@v2: refuse before raw EOF alert insertion or delivery.
+                    if stopForRefusal(redaction) { return }
                     recordCriticalStreamScan(redaction)
                     let stats = snapshotStreamStats(adding: redaction)
                     let output = insertingAlertBeforeDoneOrEOFIfNeeded(redaction.data, stats: stats)
@@ -640,6 +693,10 @@ final class SSEStreamRelay: NSObject, URLSessionDataDelegate {
             }
         }
 
+    }
+
+    // WO-641@v2: preserve the existing head and completion signal guard on every EOF/refusal return.
+    private func signalCompletion() {
         // If head was never received (connection refused, DNS fail), signal head too.
         if responseStatus == 0 {
             headReceived.signal()
