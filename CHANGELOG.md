@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Place buffered proxy disclosures after leading thinking blocks without changing
   their signatures or suppressing the disclosure on tool-use responses. (WO-109)
 
+### Documentation
+
+- Restore recognizable masked SSH-key and card examples in the detection table. (WO-646)
+
 ## [0.38.1] - 2026-10-03
 
 ### Changed

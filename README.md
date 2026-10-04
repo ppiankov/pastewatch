@@ -214,8 +214,8 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | UUIDs | `550e8400-e29b-41d4-a716-446655440000` |
 | JWT Tokens | `eyJhbGciOiJIUzI1NiIs...` |
 | DB Connections | `postgres://...`, `clickhouse://...` |
-| SSH Keys | <!-- WO-639: describe the format without embedding a private-key header. --> PEM-encoded private keys |
-| Credit Cards | <!-- WO-639: keep the documentation guard clean without a complete card number. --> Card numbers validated with the Luhn checksum |
+| SSH Keys | <!-- WO-639: describe the format without embedding a private-key header. --> PEM header shape: `-----BEGIN ... PRIVATE KEY-----` |
+| Credit Cards | <!-- WO-639: keep the documentation guard clean without a complete card number. --> `4111 **** **** 1111` (Luhn validated) |
 | File Paths | `/etc/nginx/nginx.conf`, `/home/deploy/.ssh/id_rsa` |
 | Hostnames | `db-primary.internal.corp.net` |
 | Credentials | `password=...`, `secret: ...`, `api_key=...` |
