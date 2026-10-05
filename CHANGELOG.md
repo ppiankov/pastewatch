@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add atomic redacted-view MCP edits with unique byte matches, bounded complete placeholder restoration and metadata-only refusals. Consistency tokens hash only the whole redacted view, and authorization checks the complete edited view before restoring secrets. (WO-647)
+
 ### Changed
 
 - Block native Read only for mutation-authorized secrets, retaining advisory diagnostics and unchanged Write policy; document enforcement remains effective for scan/CI and Edit. (WO-659)

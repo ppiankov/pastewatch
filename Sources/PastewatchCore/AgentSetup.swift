@@ -37,6 +37,8 @@ public enum AgentSetupError: LocalizedError {
 
 /// Reusable logic for agent auto-setup: JSON config merging, hook script generation.
 public enum AgentSetup {
+    // WO-658@v2: every block offers both sanctioned surfaces, even when MCP write tools are unavailable.
+    private static let redactedEditRemedies = "For small edits use MCP pastewatch_read_file / pastewatch_edit_file, or CLI pastewatch-cli read <file> then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... ."
 
     // WO-500: Keep this in the same order as the setup command's accepted agents.
     public static let mcpSetupMatrix = [

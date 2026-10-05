@@ -266,6 +266,7 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 |------|---------|
 | `pastewatch_read_file` | Read file with secrets replaced by `__PW_TYPE_N__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
+| `pastewatch_edit_file` | Replace one unique string in the redacted view, restoring placeholders locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan` | Scan text for sensitive data |
 | `pastewatch_scan_file` | Scan a file for sensitive data |
@@ -287,7 +288,23 @@ advisories describe the whole file, even when a window excludes those findings.
 An authorized replacement or encoding failure returns a tool error naming only
 finding types and lines, never partial file content. Advisory-only matches remain
 visible. Window placeholders are restorable, but a window is not a complete-file
-write payload: assemble the intended whole file before calling `pastewatch_write_file`.
+write payload: use `pastewatch_edit_file` for small edits, or assemble the intended
+whole file before calling `pastewatch_write_file`.
+
+<!-- WO-647@v2: document the exact partial-edit contract without exposing file values. -->
+`pastewatch_edit_file` requires `path`, `old_string` and `new_string`. Copy the old
+text from the redacted view, including complete placeholders where needed. It must
+match exactly once in the whole file, even when copied from a line window. The
+engine refuses missing or ambiguous text, split or unresolved placeholders, and
+newly authored plaintext secrets. It restores placeholders using that file's
+session mappings and replaces the file atomically while preserving its mode.
+The response contains `edited`, `linesChanged` and `redactions`, not file content.
+
+<!-- WO-647@v2: complete-view validation refuses boundary-assembled values and unmapped marker-shaped literals. -->
+The complete edited redacted view is checked for plaintext secrets before
+restoration. Unmapped placeholder-shaped text anywhere in the file refuses edits,
+even outside the edited span. A consistency token hashes the whole redacted view,
+never private source bytes; the final atomic write checks raw bytes internally.
 
 `pastewatch_write_file` accepts either inline `content` or a local UTF-8
 `contentPath`, never both. Use `contentPath` for a large locally prepared payload;

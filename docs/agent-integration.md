@@ -203,7 +203,7 @@ For advisory-only agents (no hooks), add explicit rules to agent config files:
 When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use the pastewatch MCP tool:
 - Read blocked → use `pastewatch_read_file`
 - Write blocked → use `pastewatch_write_file`
-- Edit blocked → use `pastewatch_read_file` then `pastewatch_write_file`
+- Edit blocked → use `pastewatch_read_file` then `pastewatch_edit_file` for a small edit
 
 NEVER work around a pastewatch block:
 - NEVER use python3/ruby/perl/node to read or write files that pastewatch blocked
@@ -337,11 +337,27 @@ Once configured, the agent has access to:
 | `pastewatch_scan` | Scan file or directory for secrets |
 | `pastewatch_read_file` | Read file with secrets replaced by `__PW_...__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
+| `pastewatch_edit_file` | Replace one unique string in a redacted view; restore complete placeholders locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan_diff` | Scan git diff for secrets in changed lines |
 | `pastewatch_inventory` | Generate secret posture report for a directory |
 
 Intrinsically identifiable, exact-known, and custom-rule matches leave only as placeholders. Advisory-only matches remain visible so the operator can decide whether to authorize mutation.
+
+<!-- WO-647@v2: line windows supply context, not a replacement whole file. -->
+Prefer `pastewatch_edit_file` for small edits: pass `path`, `old_string` copied from
+the redacted view, and `new_string`. The old text must occur exactly once across
+the whole file. Keep placeholder tokens complete and unchanged where the original
+value should survive. Partial markers, unresolved markers and newly authored
+plaintext secrets are refused. Successful edits preserve file permissions and
+return only `edited`, `linesChanged` and `redactions`. A line window can supply
+the edit context; it never truncates the surrounding file.
+
+<!-- WO-647@v2: safe edits validate both boundaries and refuse unknown marker-shaped literals in the whole view. -->
+The complete edited redacted view is scanned before restoring placeholders.
+Unmapped placeholder-shaped text anywhere in a file refuses edits, including
+when the literal is outside the selected span. Consistency tokens hash redacted
+structure rather than raw file bytes or secret values.
 
 <!-- WO-630@v2: line windows keep large read results usable without exposing raw-file slices. -->
 For large files, prefer `pastewatch_read_file` with `start_line` and `line_count`

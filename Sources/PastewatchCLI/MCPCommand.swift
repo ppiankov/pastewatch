@@ -359,6 +359,7 @@ final class MCPServer {
     }
 
     // WO-630@v2: advertise mutually exclusive text line windows beside existing byte windows.
+    // WO-647@v2: expose partial edits beside the whole-file read/write surface.
     private func toolsListResponse(id: JSONRPCId?) -> JSONRPCResponse {
         let tools: JSONValue = .object([
             "tools": .array([
@@ -478,6 +479,20 @@ final class MCPServer {
                         ])
                     ])
                 ]),
+                // WO-647@v2: required edit arguments describe one byte-literal replacement, not a whole-file payload.
+                .object([
+                    "name": .string("pastewatch_edit_file"),
+                    "description": .string("Replace one unique occurrence in a redacted file view, restoring whole placeholders locally. Prefer this tool for small edits; partial placeholders and new plaintext secrets are refused."),
+                    "inputSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object(["type": .string("string"), "description": .string("File path to edit")]),
+                            "old_string": .object(["type": .string("string"), "description": .string("Exact unique text from the redacted view")]),
+                            "new_string": .object(["type": .string("string"), "description": .string("Replacement text; retain complete placeholders")])
+                        ]),
+                        "required": .array([.string("path"), .string("old_string"), .string("new_string")])
+                    ])
+                ]),
                 .object([
                     "name": .string("pastewatch_check_output"),
                     "description": .string("Check if text contains raw sensitive data. Use before writing or returning code to verify no secrets leak."),
@@ -497,6 +512,7 @@ final class MCPServer {
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: tools, error: nil)
     }
 
+    // WO-647@v2: route partial edits through the shared engine and session-local mappings.
     private func toolsCallResponse(id: JSONRPCId?, params: JSONValue?) -> JSONRPCResponse {
         guard case .object(let paramsDict) = params,
               case .string(let toolName) = paramsDict["name"] else {
@@ -525,6 +541,9 @@ final class MCPServer {
             return handleReadFile(id: id, arguments: arguments, config: config)
         case "pastewatch_write_file":
             return handleWriteFile(id: id, arguments: arguments, config: config)
+        // WO-647@v2: edits reuse the same store populated by preceding MCP reads.
+        case "pastewatch_edit_file":
+            return handleEditFile(id: id, arguments: arguments, config: config)
         case "pastewatch_check_output":
             return handleCheckOutput(id: id, arguments: arguments, config: config)
         default:
@@ -953,6 +972,33 @@ final class MCPServer {
         ])
 
         return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object(["content": result]), error: nil)
+    }
+
+    // WO-647@v2: the MCP handler delegates all edit decisions and returns metadata only.
+    private func handleEditFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
+        guard case .string(let path) = arguments["path"],
+              case .string(let oldString) = arguments["old_string"],
+              case .string(let newString) = arguments["new_string"] else {
+            return errorResult(id: id, text: "Missing required parameters: path, old_string, new_string")
+        }
+        do {
+            let summary = try RedactedEdit.edit(filePath: path, oldString: oldString, newString: newString,
+                                                store: store, config: config)
+            auditLogger?.log("EDIT  lines=\(summary.linesChanged) redactions=\(summary.redactions)")
+            let payload: JSONValue = .object([
+                "edited": .bool(true), "linesChanged": .number(Double(summary.linesChanged)),
+                "redactions": .number(Double(summary.redactions))
+            ])
+            return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object([
+                "content": .array([.object(["type": .string("text"), "text": .string(encodeJSON(payload))])])
+            ]), error: nil)
+        } catch let error as RedactedEditError {
+            return errorResult(id: id, text: error.localizedDescription)
+        } catch let error as MCPReadRedactionError {
+            return errorResult(id: id, text: error.localizedDescription)
+        } catch {
+            return errorResult(id: id, text: "Edit refused: inspection or replacement failed")
+        }
     }
 
     // WO-597@v2: one resolver owns mutually exclusive inline and local-file payloads.
