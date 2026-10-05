@@ -9,6 +9,50 @@ import Glibc
 
 // WO-636@v2: diagnostics must be opt-in without changing plain doctor.
 final class DoctorExplainTests: XCTestCase {
+    // WO-649@v1: dependency status identifies a resolved path or the same actionable refusal.
+    func testDoctorCurlStatusUsesInjectedLookup() {
+        let found = doctorCurlStatus(lookup: { "/fixture/bin/curl" })
+        XCTAssertEqual(found.status, "ok")
+        XCTAssertEqual(found.detail, "/fixture/bin/curl")
+        let missing = doctorCurlStatus(lookup: { nil })
+        XCTAssertEqual(missing.status, "warn")
+        XCTAssertEqual(missing.detail, CurlExecutable.missingDependencyMessage)
+    }
+
+    #if os(Linux)
+    // WO-649@v1: both plain Linux output formats identify a found transport dependency.
+    func testLinuxDoctorReportsResolvedCurlInTextAndJSON() throws {
+        try assertDoctorCurlOutput(path: "/fixture/bin/curl")
+    }
+
+    // WO-649@v1: both plain Linux output formats expose a missing dependency and its remedy.
+    func testLinuxDoctorReportsMissingCurlInTextAndJSON() throws {
+        try assertDoctorCurlOutput(path: nil)
+    }
+
+    // WO-649@v1: invoke actual health renderers under isolated project policy.
+    private func assertDoctorCurlOutput(path: String?) throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            try TestConfigHelper.ensureProjectConfig(in: root)
+            for json in [false, true] {
+                let command = try Doctor.parse(json ? ["--json"] : [])
+                let output = try capture { try command.run(curlLookup: { path }) }
+                XCTAssertTrue(output.stderr.isEmpty)
+                if json {
+                    let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [[String: Any]])
+                    let curl = try XCTUnwrap(rows.first { $0["check"] as? String == "curl" })
+                    XCTAssertEqual(curl["status"] as? String, path == nil ? "warn" : "ok")
+                    XCTAssertEqual(curl["detail"] as? String, path ?? CurlExecutable.missingDependencyMessage)
+                } else {
+                    XCTAssertTrue(output.stdout.contains("curl"))
+                    XCTAssertTrue(output.stdout.contains(path ?? CurlExecutable.missingDependencyMessage))
+                    XCTAssertTrue(output.stdout.contains(path == nil ? "[WARN]" : "[ok]"))
+                }
+            }
+        }
+    }
+    #endif
+
     // WO-636@v2: the public flag is the regression boundary for the new walkthrough.
     func testExplainFlagIsAccepted() throws {
         XCTAssertNoThrow(try Doctor.parse(["--explain"]))

@@ -8,6 +8,123 @@ import Glibc
 #endif
 
 final class ProxyCommandTests: XCTestCase {
+    // WO-649@v1: the preferred system executable wins without searching PATH.
+    func testCurlLookupPrefersExecutableSystemPath() {
+        var checked: [String] = []
+        let path = CurlExecutable.resolve(searchPath: "/first:/second") {
+            checked.append($0)
+            return true
+        }
+        XCTAssertEqual(path, "/usr/bin/curl")
+        XCTAssertEqual(checked, ["/usr/bin/curl"])
+    }
+
+    // WO-649@v1: fallback uses the first executable candidate and skips unavailable entries.
+    func testCurlLookupFallsBackInPathOrder() {
+        var checked: [String] = []
+        let path = CurlExecutable.resolve(searchPath: "/not-executable:/first:/second") {
+            checked.append($0)
+            return $0 == "/first/curl" || $0 == "/second/curl"
+        }
+        XCTAssertEqual(path, "/first/curl")
+        XCTAssertEqual(checked, ["/usr/bin/curl", "/not-executable/curl", "/first/curl"])
+        XCTAssertNil(CurlExecutable.resolve(searchPath: nil, isExecutable: { _ in false }))
+        XCTAssertNil(CurlExecutable.resolve(searchPath: "/missing", isExecutable: { _ in false }))
+    }
+
+    // WO-649@v1: empty PATH entries must not probe a cwd-controlled executable when system curl is absent.
+    func testCurlLookupSkipsEmptyPathSegments() {
+        for searchPath in ["/a::/b", ":/a:/b", "/a:/b:", ":/a::/b:"] {
+            var checked: [String] = []
+            let path = CurlExecutable.resolve(searchPath: searchPath) { candidate in
+                checked.append(candidate)
+                return candidate != "/usr/bin/curl" &&
+                    !candidate.hasPrefix("/a/") && !candidate.hasPrefix("/b/")
+            }
+            XCTAssertNil(path, "empty PATH segments must never select a cwd-derived curl")
+            XCTAssertEqual(checked, ["/usr/bin/curl", "/a/curl", "/b/curl"])
+        }
+    }
+
+    // WO-649@v1: relative PATH entries cannot select binaries controlled by the launch directory.
+    func testCurlLookupSkipsRelativePathSegments() {
+        let relativeCandidate = URL(fileURLWithPath: "bin", isDirectory: true)
+            .appendingPathComponent("curl").standardizedFileURL.path
+        var checked: [String] = []
+        let path = CurlExecutable.resolve(searchPath: "bin:/abs") { candidate in
+            checked.append(candidate)
+            return candidate == "bin/curl" || candidate == relativeCandidate
+        }
+        XCTAssertNil(path, "relative PATH segments must never select a cwd-derived curl")
+        XCTAssertEqual(checked, ["/usr/bin/curl", "/abs/curl"])
+    }
+
+    // WO-649@v1: rejecting cwd-derived entries must retain legitimate absolute-path fallback.
+    func testCurlLookupStillResolvesAbsolutePathSegments() {
+        for searchPath in ["/abs", ":bin:/abs:"] {
+            let path = CurlExecutable.resolve(searchPath: searchPath) { $0 == "/abs/curl" }
+            XCTAssertEqual(path, "/abs/curl")
+        }
+    }
+
+    // WO-649@v1: missing dependencies refuse startup with one actionable diagnostic.
+    func testProxyCurlStartupGateReportsMissingAndResolvedPath() throws {
+        var diagnostics: [String] = []
+        XCTAssertThrowsError(try requireProxyCurl(lookup: { nil }, diagnostic: { diagnostics.append($0) })) { error in
+            XCTAssertEqual(Proxy.exitCode(for: error).rawValue, 2)
+        }
+        XCTAssertEqual(diagnostics, [CurlExecutable.missingDependencyMessage])
+        diagnostics.removeAll()
+        let path = try requireProxyCurl(lookup: { "/fixture/bin/curl" }, diagnostic: { diagnostics.append($0) })
+        XCTAssertEqual(path, "/fixture/bin/curl")
+        XCTAssertEqual(diagnostics, ["curl: /fixture/bin/curl"])
+    }
+
+    // WO-649@v1: a later missing executable fails with a dependency reason inside the transport.
+    func testCurlRequestReportsMissingDependencyBeforeExecution() {
+        var diagnostics: [String] = []
+        XCTAssertThrowsError(try CurlHTTPClient.execute(
+            method: "GET", url: URL(string: "http://127.0.0.1:1")!, headers: [], body: nil,
+            curlLookup: { nil }, diagnostic: { diagnostics.append($0) }
+        )) { error in
+            XCTAssertEqual(error as? CurlHTTPClient.ExecuteError, .failure)
+        }
+        XCTAssertEqual(diagnostics, [CurlExecutable.missingDependencyMessage])
+    }
+
+    #if os(Linux)
+    // WO-649@v1: exercise the real Linux command before its listening and signal-handler paths.
+    func testLinuxProxyRefusesMissingCurlBeforeListening() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let command = try Proxy.parse(["--port", "0"])
+            let diagnostic = try captureCurlStartupError {
+                XCTAssertThrowsError(try command.run(curlLookup: { nil })) { error in
+                    XCTAssertEqual(Proxy.exitCode(for: error).rawValue, 2)
+                }
+            }
+            XCTAssertEqual(diagnostic, CurlExecutable.missingDependencyMessage + "\n")
+            XCTAssertFalse(diagnostic.contains("listening"))
+        }
+    }
+
+    // WO-649@v1: inspect dependency stderr without subprocess environment overrides.
+    private func captureCurlStartupError(_ body: () throws -> Void) throws -> String {
+        let pipe = Pipe()
+        fflush(nil)
+        let saved = dup(STDERR_FILENO)
+        defer {
+            dup2(saved, STDERR_FILENO)
+            close(saved)
+        }
+        dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
+        try body()
+        fflush(nil)
+        dup2(saved, STDERR_FILENO)
+        pipe.fileHandleForWriting.closeFile()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+    #endif
+
     // WO-473: the shared command gate rejects mixed valid/invalid rules before listen.
     func testProxyCustomRuleStartupGateRejectsWholeSet() {
         var config = PastewatchConfig.defaultConfig

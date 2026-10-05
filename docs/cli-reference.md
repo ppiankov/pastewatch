@@ -90,6 +90,9 @@ Every tool call an AI agent makes — including internal subprocesses you don't 
 
 > **Single session.** The proxy handles one agent session at a time. Run a separate `pastewatch-cli proxy` instance (on a different port) for each concurrent session.
 
+<!-- WO-649@v1: Linux forwarding requires an executable curl before the proxy can listen. -->
+**Linux requirements.** Install `curl` (Debian/Ubuntu: `sudo apt-get install curl`). The proxy checks `/usr/bin/curl` first, then executable `curl` files on `PATH`, and logs the selected path. If none is available, startup exits 2 before listening. `pastewatch-cli doctor` reports the resolved path or the missing dependency and installation remedy. macOS uses its existing native HTTP transport and does not require curl.
+
 ![Proxy alert injection — 27 secrets redacted from a tool call](../assets/proxy-alert.png)
 
 ```

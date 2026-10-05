@@ -8,6 +8,14 @@ private struct CheckResult {
     let detail: String
 }
 
+// WO-649@v1: doctor reports the same dependency selection used by startup and execution.
+func doctorCurlStatus(lookup: () -> String? = { CurlExecutable.resolve() }) -> (status: String, detail: String) {
+    guard let path = lookup() else {
+        return ("warn", CurlExecutable.missingDependencyMessage)
+    }
+    return ("ok", path)
+}
+
 // WO-636@v2: the walkthrough is opt-in; the existing health report remains unchanged.
 struct Doctor: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -21,8 +29,14 @@ struct Doctor: ParsableCommand {
     @Flag(name: .long, help: "Explain config resolution, rule coverage, and surface outcomes")
     var explain = false
 
-    // WO-636@v2: return before legacy checks only when the walkthrough was requested.
+    // WO-649@v1: command decoding retains its existing fields and delegates transport lookup.
     func run() throws {
+        try run(curlLookup: { CurlExecutable.resolve() })
+    }
+
+    // WO-649@v1: inject lookup through execution without adding a command or environment override.
+    // WO-636@v2: return before legacy checks only when the walkthrough was requested.
+    func run(curlLookup: () -> String?) throws {
         if explain {
             try printExplanation(ConfigExplanation())
             return
@@ -36,6 +50,12 @@ struct Doctor: ParsableCommand {
 
         // 2. PATH check — is pastewatch-cli on PATH?
         checks.append(checkOnPath())
+
+        // WO-649@v1: keep macOS output unchanged while reporting Linux curl availability.
+        #if os(Linux)
+        let curlResult = doctorCurlStatus(lookup: curlLookup)
+        checks.append(CheckResult(check: "curl", status: curlResult.status, detail: curlResult.detail))
+        #endif
 
         // 3. Config resolution
         checks.append(contentsOf: checkConfig())

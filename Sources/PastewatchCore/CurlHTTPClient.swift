@@ -5,6 +5,35 @@ import Darwin
 import Glibc
 #endif
 
+// WO-649@v1: Linux startup, diagnostics and transport share the same executable selection.
+public enum CurlExecutable {
+    // WO-649@v1: dependency errors name a remedy without exposing request data.
+    public static let missingDependencyMessage =
+        "error: Linux proxy requires curl; install curl (Debian/Ubuntu: apt-get install curl)."
+
+    // WO-649@v1: prefer the system binary, then executable files in PATH order.
+    public static func resolve(
+        searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        isExecutable: (String) -> Bool = { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) &&
+                !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: path)
+        }
+    ) -> String? {
+        let systemPath = "/usr/bin/curl"
+        if isExecutable(systemPath) { return systemPath }
+        guard let searchPath else { return nil }
+        for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
+            // WO-649@v1: empty or relative PATH entries can select a cwd-controlled curl.
+            guard directory.hasPrefix("/") else { continue }
+            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
+                .appendingPathComponent("curl").standardizedFileURL.path
+            if isExecutable(candidate) { return candidate }
+        }
+        return nil
+    }
+}
+
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
 /// WO-565@v2: on macOS the HTTP transport path is not used, but shared utility
@@ -128,8 +157,9 @@ struct CurlHTTPClient {
         return []
     }
 
+    // WO-649@v1: transport resolves curl through the shared startup and diagnostic lookup.
     // WO-641@v2: callers receive explicit binary refusal metadata alongside ordinary response statistics.
-    /// Execute an HTTP request via /usr/bin/curl.
+    /// Execute an HTTP request via curl.
     /// Throws if curl is not available or the process fails.
     ///
     /// For non-streaming responses: uses a large total timeout ceiling.
@@ -152,10 +182,16 @@ struct CurlHTTPClient {
         streamDebugSink: StreamDebugSink? = nil,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
-        alertBeforeDone: StreamAlertBuilder? = nil
+        alertBeforeDone: StreamAlertBuilder? = nil,
+        // WO-649@v1: tests inject dependency lookup without altering any system executable.
+        curlLookup: () -> String? = { CurlExecutable.resolve() },
+        diagnostic: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
     ) throws -> Response {
-        let curlPath = "/usr/bin/curl"
-        guard FileManager.default.fileExists(atPath: curlPath) else { throw ExecuteError.failure }
+        // WO-649@v1: missing transport dependencies remain specific even after startup.
+        guard let curlPath = curlLookup() else {
+            diagnostic(CurlExecutable.missingDependencyMessage)
+            throw ExecuteError.failure
+        }
         let customRules = proxyCustomRules ?? CustomRule.compileValid(proxyConfig.customRules)
 
         let process = Process()
