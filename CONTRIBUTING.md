@@ -97,6 +97,20 @@ swift run
 swift test
 ```
 
+<!-- WO-653@v1: document the isolated, CI-equivalent Linux verification gate. -->
+### Linux Verification
+
+With Docker available, run the local Linux gate from a committed checkout:
+
+```bash
+make test-linux
+```
+
+The target exports `git archive HEAD` to a temporary directory, mounts it at `/work`,
+and builds the CLI and runs the full test suite with Swift 5.9 on Ubuntu Jammy and
+curl installed, matching the Linux CI prerequisites. It never shares the host
+`.build` directory. Uncommitted changes are not included in the export.
+
 ### Adding Detection Rules
 
 1. Add pattern to `DetectionRules.swift`

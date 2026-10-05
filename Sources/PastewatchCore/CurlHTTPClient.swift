@@ -5,6 +5,35 @@ import Darwin
 import Glibc
 #endif
 
+// WO-649@v1: Linux startup, diagnostics and transport share the same executable selection.
+public enum CurlExecutable {
+    // WO-649@v1: dependency errors name a remedy without exposing request data.
+    public static let missingDependencyMessage =
+        "error: Linux proxy requires curl; install curl (Debian/Ubuntu: apt-get install curl)."
+
+    // WO-649@v1: prefer the system binary, then executable files in PATH order.
+    public static func resolve(
+        searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        isExecutable: (String) -> Bool = { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) &&
+                !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: path)
+        }
+    ) -> String? {
+        let systemPath = "/usr/bin/curl"
+        if isExecutable(systemPath) { return systemPath }
+        guard let searchPath else { return nil }
+        for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
+            // WO-649@v1: empty or relative PATH entries can select a cwd-controlled curl.
+            guard directory.hasPrefix("/") else { continue }
+            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
+                .appendingPathComponent("curl").standardizedFileURL.path
+            if isExecutable(candidate) { return candidate }
+        }
+        return nil
+    }
+}
+
 /// HTTP client using Process + curl for Linux where URLSession/FoundationNetworking
 /// is unreliable (arm64 dataTask completion handler never fires).
 /// WO-565@v2: on macOS the HTTP transport path is not used, but shared utility
@@ -95,10 +124,18 @@ struct CurlHTTPClient {
         }
     }
 
-    private struct NonUTF8ResponseReplacement {
+    // WO-655@v1: planned byte spans are visible to the internal overlap-test seam.
+    struct NonUTF8ResponseReplacement {
         let range: Range<Data.Index> // WO-359: byte range to redact in original body.
         let placeholder: Data // WO-359: ASCII placeholder replacing the matched bytes.
         let type: String // WO-359: detection type recorded for audit stats.
+    }
+
+    // WO-655@v1: refusal plans contain no tentative mutations or replacement bytes.
+    struct NonUTF8ResponsePlan {
+        let replacements: [NonUTF8ResponseReplacement] // WO-655@v1: verified original-byte spans.
+        let mutatedMatches: [DetectedMatch] // WO-655@v1: successful coverage observations only.
+        let refusedTypes: [String] // WO-655@v1: refusal metadata never includes matched values.
     }
 
     /// WO-313: byte-preserving parsed curl output for non-streaming responses.
@@ -120,8 +157,9 @@ struct CurlHTTPClient {
         return []
     }
 
+    // WO-649@v1: transport resolves curl through the shared startup and diagnostic lookup.
     // WO-641@v2: callers receive explicit binary refusal metadata alongside ordinary response statistics.
-    /// Execute an HTTP request via /usr/bin/curl.
+    /// Execute an HTTP request via curl.
     /// Throws if curl is not available or the process fails.
     ///
     /// For non-streaming responses: uses a large total timeout ceiling.
@@ -144,10 +182,16 @@ struct CurlHTTPClient {
         streamDebugSink: StreamDebugSink? = nil,
         /// WO-192: closure called at [DONE] time with accumulated stream counts so stream-only
         /// secrets (no body redaction) also trigger the alert. Nil = no alert injection.
-        alertBeforeDone: StreamAlertBuilder? = nil
+        alertBeforeDone: StreamAlertBuilder? = nil,
+        // WO-649@v1: tests inject dependency lookup without altering any system executable.
+        curlLookup: () -> String? = { CurlExecutable.resolve() },
+        diagnostic: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
     ) throws -> Response {
-        let curlPath = "/usr/bin/curl"
-        guard FileManager.default.fileExists(atPath: curlPath) else { throw ExecuteError.failure }
+        // WO-649@v1: missing transport dependencies remain specific even after startup.
+        guard let curlPath = curlLookup() else {
+            diagnostic(CurlExecutable.missingDependencyMessage)
+            throw ExecuteError.failure
+        }
         let customRules = proxyCustomRules ?? CustomRule.compileValid(proxyConfig.customRules)
 
         let process = Process()
@@ -1494,6 +1538,7 @@ struct CurlHTTPClient {
         )
     }
 
+    // WO-655@v1: reuse the independently tested planner without changing response policy.
     // WO-641@v2: map repaired UTF-8 positions to original bytes and refuse unmatched authorized ranges.
     /// WO-359/WO-563@v3: mutate exact ASCII secret ranges without lossy
     /// round-tripping of the surrounding binary response.
@@ -1510,8 +1555,8 @@ struct CurlHTTPClient {
         let lossyText = String(decoding: body, as: UTF8.self)
         // WO-563@v3: use shared scanStreamText for consistent custom-rule loading.
         let matches = scanStreamText(lossyText, config: config, customRules: customRules)
+        // WO-655@v1: ordering and span validation belong to the shared planner.
         let redactionMatches = mutationSafeProxyMatches(matches, site: .proxyResponse)
-            .sorted { $0.range.lowerBound < $1.range.lowerBound }
         let advisories = streamAdvisoryMatches(
             matches,
             severity: severity,
@@ -1533,6 +1578,49 @@ struct CurlHTTPClient {
             )
         }
 
+        // WO-655@v1: discard every tentative replacement if the shared plan refuses.
+        let plan = planNonUTF8ResponseReplacements(body, lossyText: lossyText, matches: redactionMatches)
+        // WO-641@v2: discard partial replacements on refusal and expose only class metadata.
+        if !plan.refusedTypes.isEmpty {
+            return SSEFrameRedactionResult(data: Data(), count: 0, types: [], refusedTypes: plan.refusedTypes)
+        }
+        // WO-655@v1: preserve the observation-only result when no spans are accepted.
+        guard !plan.replacements.isEmpty else {
+            return SSEFrameRedactionResult(
+                data: body, count: 0, types: [],
+                advisoryCount: advisories.count, advisoryTypes: advisoryTypes,
+                coverageEvents: observationEvents
+            )
+        }
+
+        var redacted = body
+        // WO-655@v1: rewrite only the planner's verified, non-overlapping original ranges.
+        for replacement in plan.replacements.reversed() {
+            redacted.replaceSubrange(replacement.range, with: replacement.placeholder)
+        }
+        // WO-655@v1: counts and type metadata come from the accepted replacement plan.
+        return SSEFrameRedactionResult(
+            data: redacted,
+            count: plan.replacements.count,
+            types: plan.replacements.map(\.type),
+            advisoryCount: advisories.count,
+            advisoryTypes: advisoryTypes,
+            coverageEvents: DetectionRules.obfuscationCoverageEvents(
+                in: lossyText,
+                config: config,
+                // WO-655@v1: only accepted spans contribute mutation coverage.
+                mutatedMatches: plan.mutatedMatches,
+                advisoryMatches: advisories,
+                source: .response
+            )
+        )
+    }
+
+    // WO-655@v1: plan exact original-byte spans independently of scanner overlap coalescing.
+    static func planNonUTF8ResponseReplacements(
+        _ body: Data, lossyText: String, matches: [DetectedMatch]
+    ) -> NonUTF8ResponsePlan {
+        let redactionMatches = matches.sorted { $0.range.lowerBound < $1.range.lowerBound }
         var replacements: [NonUTF8ResponseReplacement] = []
         var mutatedMatches: [DetectedMatch] = []
         var typeCounters: [SensitiveDataType: Int] = [:]
@@ -1565,42 +1653,14 @@ struct CurlHTTPClient {
             typeCounters[match.type] = number
             let placeholder = Data(Obfuscator.makePlaceholder(type: match.type, number: number).utf8)
             replacements.append(NonUTF8ResponseReplacement(
-                range: range,
-                placeholder: placeholder,
-                type: match.displayName
+                range: range, placeholder: placeholder, type: match.displayName
             ))
             mutatedMatches.append(match)
         }
-        // WO-641@v2: discard partial replacements on refusal and expose only class metadata.
-        if !refusedTypes.isEmpty {
-            return SSEFrameRedactionResult(data: Data(), count: 0, types: [], refusedTypes: refusedTypes)
+        guard refusedTypes.isEmpty else {
+            return NonUTF8ResponsePlan(replacements: [], mutatedMatches: [], refusedTypes: refusedTypes)
         }
-        guard !replacements.isEmpty else {
-            return SSEFrameRedactionResult(
-                data: body, count: 0, types: [],
-                advisoryCount: advisories.count, advisoryTypes: advisoryTypes,
-                coverageEvents: observationEvents
-            )
-        }
-
-        var redacted = body
-        for replacement in replacements.reversed() {
-            redacted.replaceSubrange(replacement.range, with: replacement.placeholder)
-        }
-        return SSEFrameRedactionResult(
-            data: redacted,
-            count: replacements.count,
-            types: replacements.map(\.type),
-            advisoryCount: advisories.count,
-            advisoryTypes: advisoryTypes,
-            coverageEvents: DetectionRules.obfuscationCoverageEvents(
-                in: lossyText,
-                config: config,
-                mutatedMatches: mutatedMatches,
-                advisoryMatches: advisories,
-                source: .response
-            )
-        )
+        return NonUTF8ResponsePlan(replacements: replacements, mutatedMatches: mutatedMatches, refusedTypes: [])
     }
 
     // WO-641@v2: retain only needed scalar boundaries while the standard decoder accounts for invalid bytes.

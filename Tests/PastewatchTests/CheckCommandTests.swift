@@ -460,11 +460,15 @@ final class CheckCommandTests: XCTestCase {
                       stderr: try String(contentsOf: errorURL, encoding: .utf8), exitCode: exitCode)
     }
 
+    // WO-654@v1: report PTY syscall errors and retry interrupted echo checks.
     // WO-637: wait for no-echo mode before injecting input; a deadline makes a broken prompt fail, not hang.
     private func terminalCheck(input: Data, expectedExit: Int32) throws {
         var controller: Int32 = -1
         var terminal: Int32 = -1
-        guard openpty(&controller, &terminal, nil, nil, nil) == 0 else { throw POSIXError(.EIO) }
+        // WO-654@v1: openpty supplies errno before any descriptor cleanup can change it.
+        guard openpty(&controller, &terminal, nil, nil, nil) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
         defer { close(controller); close(terminal) }
         var before = termios()
         XCTAssertEqual(tcgetattr(terminal, &before), 0)
@@ -500,7 +504,11 @@ final class CheckCommandTests: XCTestCase {
         XCTAssertEqual(after.c_lflag & changedFlags, before.c_lflag & changedFlags)
         XCTAssertEqual(fcntl(controller, F_SETFL, O_NONBLOCK), 0)
         var echoed = [UInt8](repeating: 0, count: 512)
-        let count = read(controller, &echoed, echoed.count)
+        // WO-654@v1: an interrupted read must not falsely prove that echo was disabled.
+        var count: Int
+        repeat {
+            count = read(controller, &echoed, echoed.count)
+        } while count < 0 && errno == EINTR
         XCTAssertLessThanOrEqual(count, 0, "the PTY must not echo any checked bytes")
     }
 }

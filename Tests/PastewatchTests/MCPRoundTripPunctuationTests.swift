@@ -37,6 +37,7 @@ final class MCPRoundTripPunctuationTests: XCTestCase {
         try assertRoundTrip(original, extension: "go", variant: 0, requireDetection: false)
     }
 
+    // WO-656@v1: assert the founding observation without adding test-log noise.
     // WO-133@v3: use only an isolated project policy and the actual persistent MCP process.
     private func assertRoundTrip(
         _ original: String, extension ext: String, variant: Int, requireDetection: Bool = true
@@ -55,7 +56,9 @@ final class MCPRoundTripPunctuationTests: XCTestCase {
                 XCTAssertFalse(redactions.isEmpty, "fixture must exercise a detected secret")
             } else {
                 let advisoryCount = (payload["advisories"] as? [[String: Any]])?.count ?? 0
-                print("WO-133 founding fixture: detected count=\(redactions.count + advisoryCount)")
+                // WO-656@v1: retain the zero-finding observation without reporting values.
+                XCTAssertEqual(redactions.count + advisoryCount, 0,
+                               "the symbolic founding fixture must remain undetected")
             }
             let redacted = try XCTUnwrap(payload["content"] as? String)
             let edited = redacted.replacingOccurrences(of: "unrelated before", with: "unrelated after")

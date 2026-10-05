@@ -1843,6 +1843,120 @@ final class ProxyRealServerTests: XCTestCase {
         XCTAssertEqual(proxy.stats.secretsRedacted, 1)
     }
 
+    // WO-650@v2: growing histories must retain cached bytes through the real HTTP forwarding path.
+    func testGrowingConversationPreservesRedactedUpstreamPrefix() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let keys = ["A", "B", "C", "D"].map { "AK" + "IA" + String(repeating: $0, count: 16) }
+            let password = ["Cache", "Probe", "91", "Secret"].joined()
+            let dsn = ["post", "gres", "://reader:", password, "@db.internal/cache"].joined()
+            let checkout = ["cs_", "live_", String(repeating: "Q", count: 30)].joined()
+            let responseBody = Data("""
+            {"role":"assistant","content":[{"type":"thinking","thinking":"Inspect the input","signature":"signed"},
+            {"type":"tool_use","id":"inspection-1","name":"inspect","input":{"z":"last","a":"first"}}]}
+            """.utf8)
+            let requestLock = NSLock()
+            var forwardedBodies: [Data] = []
+            let upstream = try StubHTTPServer { request in
+                if let separator = request.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
+                    requestLock.lock()
+                    forwardedBodies.append(Data(request[separator.upperBound...]))
+                    requestLock.unlock()
+                }
+                return StubHTTPResponse(status: 200, headers: ["Content-Type": "application/json"], body: responseBody)
+            }
+            try upstream.start()
+            defer { upstream.stop() }
+            let proxyPort = try TCPTestSocket.reserveLoopbackPort()
+            let proxy = ProxyServer(
+                port: proxyPort, upstream: URL(string: "http://127.0.0.1:\(upstream.port)")!,
+                config: TestConfigHelper.configWithAmbiguousAdvisories([.dbConnectionString]), quietLog: true
+            )
+            let runningProxy = RunningProxy(server: proxy)
+            try runningProxy.start()
+            defer { runningProxy.stop() }
+            var messages = [try cacheMessageLiteral([
+                "role": "user", "content": [keys[0], keys[1], dsn, checkout].joined(separator: "\n")
+            ])]
+            for turn in 0..<3 {
+                let request = cacheConversationRequest(messages)
+                let firstReply = try cachedConversationReply(port: proxyPort, request: request)
+                _ = try cachedConversationReply(port: proxyPort, request: request)
+                if turn < 2 {
+                    messages.append(try cacheMessageLiteral(firstReply))
+                    messages.append(try cacheMessageLiteral([
+                        "role": "user", "content": [[
+                            "type": "tool_result", "tool_use_id": "inspection-1",
+                            "content": [keys[turn + 2], keys[0]].joined(separator: "\n")
+                        ]]
+                    ]))
+                }
+            }
+            requestLock.lock()
+            let bodies = forwardedBodies
+            requestLock.unlock()
+            try assertCachedConversationBodies(bodies, secrets: keys + [password, checkout])
+        }
+    }
+
+    // WO-650@v2: preserve previously encoded message bytes instead of rebuilding the entire history.
+    private func cacheConversationRequest(_ messages: [String]) -> String {
+        let prefix = #"{"model":"claude-3","max_tokens":1024,"tools":[{"name":"inspect","input_schema":{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"string"}}}}],"messages":["#
+        return prefix + messages.joined(separator: ",") + "]}"
+    }
+
+    // WO-650@v2: deterministically encode only each appended replay message.
+    private func cacheMessageLiteral(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
+
+    // WO-650@v2: replay the actual proxy response, including disclosure after signed thinking.
+    private func cachedConversationReply(port: UInt16, request: String) throws -> [String: Any] {
+        let response = try TCPTestSocket.roundTrip(
+            port: port, request: TCPTestSocket.postRequest(path: "/v1/messages", body: request), timeoutSeconds: 10
+        )
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 200 OK"), "conversation request was not forwarded")
+        let separator = try XCTUnwrap(response.range(of: "\r\n\r\n"))
+        let body = Data(response[separator.upperBound...].utf8)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let content = try XCTUnwrap(object["content"] as? [[String: Any]])
+        XCTAssertEqual(content.compactMap { $0["type"] as? String }, ["thinking", "text", "tool_use"])
+        XCTAssertTrue((content.dropFirst().first?["text"] as? String)?.hasPrefix("[PASTEWATCH]") == true)
+        return ["role": "assistant", "content": content]
+    }
+
+    // WO-650@v2: cache and containment failures report booleans and counts, never captured payloads.
+    private func assertCachedConversationBodies(_ bodies: [Data], secrets: [String]) throws {
+        XCTAssertEqual(bodies.count, 6)
+        guard bodies.count == 6 else { return }
+        let turns = stride(from: 0, to: bodies.count, by: 2).map { bodies[$0] }
+        for index in turns.indices {
+            XCTAssertTrue(bodies[index * 2] == bodies[index * 2 + 1], "repeated request changed upstream bytes")
+            XCTAssertTrue(secrets.allSatisfy { turns[index].range(of: Data($0.utf8)) == nil }, "upstream leaked a secret")
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: turns[index]) as? [String: Any])
+            let messages = try XCTUnwrap(object["messages"] as? [[String: Any]])
+            XCTAssertEqual(messages.count, 1 + index * 2)
+        }
+        for index in 1..<turns.count {
+            XCTAssertTrue(turns[index].starts(with: turns[index - 1].dropLast(2)), "earlier cached history changed")
+        }
+        let original = try cacheFirstMessageContent(turns[0])
+        let pattern = try NSRegularExpression(pattern: #"<[A-Z_]+_[0-9]+>"#)
+        let placeholders = pattern.matches(in: original, range: NSRange(original.startIndex..., in: original))
+        XCTAssertEqual(placeholders.count, 4)
+        XCTAssertGreaterThanOrEqual(Set(placeholders.map { (original as NSString).substring(with: $0.range) }).count, 3)
+        for body in turns.dropFirst() {
+            XCTAssertTrue(try cacheFirstMessageContent(body) == original, "turn-one placeholders changed")
+        }
+    }
+
+    // WO-650@v2: isolate the first replayed value for explicit placeholder-continuity assertions.
+    private func cacheFirstMessageContent(_ body: Data) throws -> String {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try XCTUnwrap(object["messages"] as? [[String: Any]])
+        return try XCTUnwrap(messages.first?["content"] as? String)
+    }
+
     func testSerializationFailureBlocksForwardingAndPreservesAdvisoryEvidence() throws {
         // WO-452/WO-458: serializer failure is observable and cannot discard scan evidence.
         let upstream = try StubHTTPServer { _ in

@@ -43,6 +43,19 @@ func streamDebugDumpWarning(path: String?) -> String? {
     return "WARNING: --debug-stream-dump writes raw streaming data with secrets to local file: \(path)\n"
 }
 
+// WO-649@v1: dependency checks complete before Linux creates a listening server.
+func requireProxyCurl(
+    lookup: () -> String? = { CurlExecutable.resolve() },
+    diagnostic: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
+) throws -> String {
+    guard let path = lookup() else {
+        diagnostic(CurlExecutable.missingDependencyMessage)
+        throw ExitCode(rawValue: 2)
+    }
+    diagnostic("curl: \(path)")
+    return path
+}
+
 struct Proxy: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start API proxy that scans and redacts secrets from outbound requests"
@@ -80,7 +93,13 @@ struct Proxy: ParsableCommand {
     @Flag(name: .long, help: "Skip upstream TLS verification (insecure; for private-CA gateways only)")
     var insecure: Bool = false
 
+    // WO-649@v1: command decoding retains its existing fields and delegates transport lookup.
     func run() throws {
+        try run(curlLookup: { CurlExecutable.resolve() })
+    }
+
+    // WO-649@v1: inject lookup through execution, not a non-Decodable command field.
+    func run(curlLookup: () -> String?) throws {
         guard let upstreamURL = URL(string: upstream) else {
             FileHandle.standardError.write(Data("error: invalid upstream URL: \(upstream)\n".utf8))
             throw ExitCode(rawValue: 2)
@@ -90,6 +109,11 @@ struct Proxy: ParsableCommand {
             FileHandle.standardError.write(Data("error: upstream URL has no host component: \(upstream)\n".utf8))
             throw ExitCode(rawValue: 2)
         }
+
+        // WO-649@v1: macOS retains its existing URLSession startup path.
+        #if os(Linux)
+        _ = try requireProxyCurl(lookup: curlLookup)
+        #endif
 
         var forwardProxyURL: URL?
         if let fp = forwardProxy {

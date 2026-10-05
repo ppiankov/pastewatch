@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a clean-export Linux test gate matching CI's Swift 5.9 toolchain and curl dependency. (WO-653)
+- Pin redacted upstream request prefixes across growing multi-turn conversations and replayed tool results. (WO-650)
+
+### Fixed
+
+- Keep MCP punctuation round-trip checks silent while pinning zero findings for symbolic references. (WO-656)
+- Preserve syscall errors and retry interrupted waits in MCP and terminal test helpers. (WO-654)
+- Add direct regression coverage for binary-response overlap and duplicate-span refusals. (WO-655)
+- Refuse Linux proxy startup without curl, share executable lookup, and report dependency status in doctor. PATH lookup ignores empty and relative entries. (WO-649)
+
 ## [0.39.0] - 2026-10-04
 
 ### Added
