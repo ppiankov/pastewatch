@@ -184,7 +184,8 @@ pastewatch-cli guard-write /path/to/config.yml
 
 Generated Claude Code and Codex hooks use `guard-mutation` for structured Edit and Write calls. The command reads the hook JSON from stdin. It allows an unrelated edit when existing actionable findings are preserved exactly, and blocks any mutation that touches, adds, changes, or drops an actionable finding. `guard-write` remains available when a whole-file legacy decision is required.
 
-Read protection is unchanged: a file with actionable secrets must still be read through `pastewatch_read_file`.
+<!-- WO-659@v1: Read enforcement follows replacement authorization rather than advisory severity. -->
+Native Read blocks only when `pastewatch_read_file` would redact a value. Advisory-only findings still report their type and line on stderr but do not block Read. To protect an ambiguous class from being read, opt it into `obfuscate`; enabling its detector alone only reports it. Intrinsic, custom-rule and opted-in secrets remain protected, and invalid active configuration still fails closed. Write and Edit policy are unchanged.
 
 ### Directive language in hook messages
 

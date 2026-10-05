@@ -402,6 +402,9 @@ Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls be
 <!-- WO-640: Explain source-path decisions without promising a shell sandbox. -->
 Recognized `cp`, `mv`, `install`, `rsync`, and `ditto` source operands are read targets. This also covers file content fed through `cat` or input redirection into `tee`, `>`, or `>>`. Each source is evaluated using its own path; a Markdown destination does not make a non-document source advisory. Destination-only operands are not newly scanned as sources. Scripts, obfuscated commands, unsupported options, and recursive directory copies remain limitations; see [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
 
+<!-- WO-659@v1: Native Read uses the same replacement authorization as MCP read. -->
+`guard-read <file>` blocks only when `pastewatch_read_file` would redact a value. Advisory-only findings still report their type and line on stderr but allow native Read. To protect an ambiguous class from being read, configure an applicable `obfuscate` entry; enabling its detector alone does not authorize redaction. Invalid configuration and unreadable input still fail closed. Write and Edit policy are unchanged.
+
 ## Secret Externalization (Fix)
 
 Externalize secrets to environment variables with language-aware code patching:
@@ -684,7 +687,8 @@ The `documentationPolicy` config key accepts `advisory` (default) or `enforce`. 
 {"documentationPolicy": "advisory"}
 ```
 
-With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary guard severity threshold. Inputs without a file path do not receive the document exception.
+<!-- WO-659@v1: Document enforcement does not override the MCP-authorized native Read policy. -->
+With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary severity threshold for scan/CI and Edit; native Read instead follows the MCP redaction decision and never blocks advisory-only findings. Inputs without a file path do not receive the document exception.
 
 An administrator can pin `enforce` in `/etc/pastewatch/config.json`; a project or user config cannot override that winner. An invalid policy value makes configuration invalid and enforcement fails closed, rather than falling back to `advisory`. Check a config with:
 

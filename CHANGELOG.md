@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Block native Read only for mutation-authorized secrets, retaining advisory diagnostics and unchanged Write policy; document enforcement remains effective for scan/CI and Edit. (WO-659)
+
 ## [0.39.1] - 2026-10-05
 
 ### Added
