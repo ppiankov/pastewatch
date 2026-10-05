@@ -512,6 +512,12 @@ Extraction stops at the first backslash escape or matching closing quote; inside
 an unquoted value also ends at a closing parenthesis, semicolon or comma. This floor does not apply to
 intrinsic/provider formats, exact-known values, custom rules, DSN password evidence or XML credentials.
 
+<!-- WO-648@v2: describe whole-placeholder exclusions shared with the documentation password contract. -->
+The Credential rule also ignores whole angle placeholders `<...>`, `${...}`, `{{...}}`, `%(...)s`,
+`:name` path parameters, `your-*` references, and the placeholder words and masks listed in
+[Documenting credentials](../README.md#documenting-credentials). A placeholder prefix followed by real
+value text is not a whole-placeholder exclusion. These exclusions do not change the DSN password rules.
+
 ## Doctor
 
 Installation health check:

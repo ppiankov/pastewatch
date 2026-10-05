@@ -2,6 +2,68 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-648@v2: whole query placeholders remain non-credentials in raw text and parsed JSON help strings.
+    func testCredentialWholePlaceholderValuesAreIgnored() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["to", "ken"].joined()
+            let values = [
+                ["<ticket", "-placeholder>"].joined(), ["<magic-link", " placeholder>"].joined(),
+                ["${", "DB_SECRET", "}"].joined(), ["{{", ".Value", "}}"].joined(),
+                ["%(", "ticket_name", ")s"].joined(), [":", "ticket_name"].joined(),
+                ["place", "holder"].joined(), ["change", "me"].joined(), ["your-", "ticket"].joined()
+            ]
+            for value in values {
+                let help = "GET /v1/redeem?" + key + "=" + value
+                XCTAssertFalse(DetectionRules.scan(help, config: config).contains { $0.type == .credential })
+                let data = try JSONSerialization.data(withJSONObject: ["help": help])
+                let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+                let matches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: content, ext: "json", relativePath: "help.json", config: config
+                )
+                XCTAssertFalse(matches.contains { $0.type == .credential })
+            }
+        }
+    }
+
+    // WO-648@v2: a real value or a placeholder prefix followed by real data must retain Credential detection.
+    func testCredentialPlaceholdersDoNotHideRealValues() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let real = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            for value in [real, ["<ticket", "-placeholder>", real].joined()] {
+                let content = ["GET /v1/redeem?", "to", "ken=", value].joined()
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertEqual(matches.first?.effectiveSeverity, .critical)
+                XCTAssertTrue(matches.first?.value.contains(real) == true)
+            }
+            let quoted = ["to", "ken=\"", "<magic-link", " placeholder> ", real, "\""].joined()
+            let matches = DetectionRules.scan(quoted, config: config).filter { $0.type == .credential }
+            XCTAssertEqual(matches.count, 1)
+            XCTAssertTrue(matches.first?.value.contains(real) == true)
+        }
+    }
+
+    // WO-648@v2: reusing placeholder definitions does not change the closed DSN password contract.
+    func testCredentialPlaceholderReusePreservesDSNEvidence() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential, .dbConnectionString])
+            let prefix = ["post", "gres://user:"].joined()
+            let suffix = "@db.internal/app"
+            for word in DetectionRules.DSNPlaceholderPasswords {
+                let matches = DetectionRules.scan(prefix + word + suffix, config: config)
+                XCTAssertFalse(matches.contains {
+                    $0.type == .dbConnectionString && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+                })
+            }
+            let real = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            XCTAssertTrue(DetectionRules.scan(prefix + real + suffix, config: config).contains {
+                $0.type == .dbConnectionString && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+            })
+        }
+    }
+
     // WO-651@v2: source escapes and literal punctuation cannot extend a trivial value into a Credential.
     func testCredentialKeywordSourceTerminators() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

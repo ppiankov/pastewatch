@@ -878,6 +878,7 @@ public struct DetectionRules {
         return next.map { !$0.isLetter && !$0.isNumber && $0 != "_" } ?? true
     }
 
+    // WO-648@v2: retain a whole angle placeholder even when its text contains spaces.
     // WO-651@v2: a keyword match ends at value syntax, not the rest of its source literal.
     private static func credentialMatchRange(
         _ range: Range<String.Index>, in content: String, literalQuote: Character?
@@ -888,7 +889,11 @@ public struct DetectionRules {
         let first = content[index]
         let valueQuote: Character? = first == "\"" || first == "'" ? first : nil
         if valueQuote != nil { index = content.index(after: index) }
-        while index < range.upperBound {
+        // WO-648@v2: extending a placeholder candidate must also retain any contiguous real-value suffix.
+        let placeholderEnd = credentialAngleValueEnd(at: index, in: content, valueQuote: valueQuote,
+                                                     literalQuote: literalQuote)
+        let upperBound = max(range.upperBound, placeholderEnd ?? range.upperBound)
+        while index < upperBound {
             let character = content[index]
             if character == "\\" { break }
             if character == valueQuote {
@@ -901,6 +906,20 @@ public struct DetectionRules {
             index = content.index(after: index)
         }
         return range.lowerBound..<index
+    }
+
+    // WO-648@v2: bracketed prose is one candidate, bounded by its own source line and literal delimiters.
+    private static func credentialAngleValueEnd(
+        at start: String.Index, in content: String, valueQuote: Character?, literalQuote: Character?
+    ) -> String.Index? {
+        guard start < content.endIndex, content[start] == "<" else { return nil }
+        let quote = valueQuote ?? literalQuote
+        let tail = content[start...].prefix { !$0.isNewline && $0 != "\\" && $0 != quote }
+        guard let close = tail.firstIndex(of: ">") else { return nil }
+        if valueQuote != nil { return tail.endIndex }
+        var end = content.index(after: close)
+        while end < tail.endIndex, !content[end].isWhitespace { end = content.index(after: end) }
+        return end
     }
 
     // WO-626: keep lexical state constant-size while visiting candidate ranges in source order.
@@ -1939,6 +1958,7 @@ public struct DetectionRules {
     // WO-651@v2: short keyword values are too weak to justify blocking regardless of surrounding syntax.
     private static let credentialMinValueLength = 8
 
+    // WO-648@v2: keyword placeholders reuse the DSN vocabulary without changing DSN password evidence.
     // WO-651@v2: raw and structured keyword detection share one floor without weakening intrinsic evidence.
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).
     public static func isValidCredentialValue(_ value: String) -> Bool {
@@ -1956,6 +1976,13 @@ public struct DetectionRules {
 
         // WO-651@v2: a numeric literal or a value below the fixed floor is never a keyword Credential.
         if credentialValue.count < credentialMinValueLength || credentialValue.allSatisfy({ $0.isNumber }) {
+            return false
+        }
+
+        // WO-648@v2: whole templates and placeholder words are non-secrets; mixed real values stay eligible.
+        if isDSNPlaceholderPassword(credentialValue, config: .defaultConfig) { return false }
+        let referencePattern = #"^(?::[A-Za-z_][A-Za-z0-9_]*|your-[A-Za-z0-9_-]+)$"#
+        if credentialValue.range(of: referencePattern, options: [.regularExpression, .caseInsensitive]) != nil {
             return false
         }
 

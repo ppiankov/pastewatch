@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Bound keyword Credential values at source escapes and quotes, rejecting values below eight characters and digits-only literals. (WO-651)
+- Ignore whole URL-query and structured Credential placeholders while preserving real-value detection and the existing DSN password contract. (WO-648)
 
 ## [0.39.1] - 2026-10-05
 
