@@ -384,6 +384,7 @@ public enum AgentSetup {
     // MARK: - Embedded Templates
 
     // WO-526@v3: generated Claude hooks default structured mutations to change-aware policy.
+    // WO-658@v2: Claude Code block messages include both available redacted edit surfaces.
     /// Generate Claude Code guard script with configured severity.
     public static func claudeCodeGuardScript(severity: String) -> String {
         return """
@@ -438,7 +439,7 @@ public enum AgentSetup {
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
           if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
-            echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
+            echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values. \(redactedEditRemedies)"
             echo "Blocked: pastewatch placeholders in Write" >&2
             exit \(GuardExitContract.blocked)
           fi
@@ -451,7 +452,7 @@ public enum AgentSetup {
         if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
           printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
           if [ $? -ne 0 ]; then
-            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch_read_file and pastewatch_write_file."
+            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch_read_file and pastewatch_write_file. \(redactedEditRemedies)"
             echo "Blocked: protected content in mutation" >&2
             exit \(GuardExitContract.blocked)
           fi
@@ -467,7 +468,7 @@ public enum AgentSetup {
 
         # WO-580@v3: generated guards consume the named scan findings contract.
         if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
-          echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround."
+          echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use python3, cat, or any workaround. \(redactedEditRemedies)"
           echo "Blocked: secrets in Read target — use pastewatch_read_file" >&2
           exit \(GuardExitContract.blocked)
         fi
@@ -477,6 +478,7 @@ public enum AgentSetup {
         """
     }
 
+    // WO-658@v2: Windsurf block messages include the CLI remedy when MCP editing is unavailable.
     /// Generate Windsurf guard script with configured severity.
     /// Windsurf uses separate hook events (pre_read_code, pre_write_code, pre_run_command)
     /// and passes input as JSON via stdin. Exit 2 blocks the action.
@@ -522,7 +524,7 @@ public enum AgentSetup {
             if [ "$action" = "pre_write_code" ]; then
               content=$(echo "$input" | jq -r '.content // empty')
               if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
-                echo "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file MCP tool." >&2
+                echo "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file MCP tool. \(redactedEditRemedies)" >&2
                 exit \(GuardExitContract.blocked)
               fi
             fi
@@ -533,7 +535,7 @@ public enum AgentSetup {
             pastewatch-cli scan --check --fail-on-severity "$PW_SEVERITY" --file "$file_path" >/dev/null 2>&1
             # WO-580@v3: generated guards consume the named scan findings contract.
             if [ $? -eq \(ScanExitContract.findingsDetected) ]; then
-              echo "BLOCKED: $file_path contains secrets. Use pastewatch_read_file or pastewatch_write_file MCP tool instead." >&2
+              echo "BLOCKED: $file_path contains secrets. Use pastewatch_read_file or pastewatch_write_file MCP tool instead. \(redactedEditRemedies)" >&2
               exit \(GuardExitContract.blocked)
             fi
             ;;
@@ -543,7 +545,7 @@ public enum AgentSetup {
 
             pastewatch-cli guard "$command_str" >/dev/null 2>&1
             if [ $? -ne 0 ]; then
-              echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access." >&2
+              echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access. \(redactedEditRemedies)" >&2
               exit \(GuardExitContract.blocked)
             fi
             ;;
@@ -553,6 +555,7 @@ public enum AgentSetup {
         """
     }
 
+    // WO-658@v2: Cursor denial payloads preserve enforcement while offering both redacted edit surfaces.
     /// Generate Cursor guard script with configured severity.
     public static func cursorGuardScript(severity: String) -> String {
         return """
@@ -608,7 +611,7 @@ public enum AgentSetup {
         if [ "$tool" = "Write" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // empty')
           if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
-            deny "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
+            deny "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values. \(redactedEditRemedies)"
           fi
         fi
 
@@ -622,10 +625,10 @@ public enum AgentSetup {
         if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
           case "$tool" in
             Read)
-              deny "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use cat or any workaround."
+              deny "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use cat or any workaround. \(redactedEditRemedies)"
               ;;
             Write)
-              deny "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead."
+              deny "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead. \(redactedEditRemedies)"
               ;;
           esac
         fi
@@ -693,6 +696,7 @@ public enum AgentSetup {
     }
 
     // WO-526@v3: structured Codex mutations share the same evaluator as Claude hooks.
+    // WO-658@v2: Codex guard failures advertise the same MCP and CLI remedies as other agents.
     /// Generate Codex CLI guard script with configured severity.
     /// Extends the Claude Code guard to also handle apply_patch and Bash.
     public static func codexGuardScript(severity: String) -> String {
@@ -725,7 +729,7 @@ public enum AgentSetup {
           [ -z "$command_str" ] && exit 0
           pastewatch-cli guard "$command_str" >/dev/null 2>&1
           if [ $? -ne 0 ]; then
-            echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access."
+            echo "BLOCKED: command may expose secrets. Use pastewatch MCP tools for safe file access. \(redactedEditRemedies)"
             exit \(GuardExitContract.blocked)
           fi
           exit 0
@@ -758,7 +762,7 @@ public enum AgentSetup {
         if [ "$tool" = "Write" ] || [ "$tool" = "apply_patch" ]; then
           content=$(echo "$input" | jq -r '.tool_input.content // .tool_input.patch // empty')
           if [ -n "$content" ] && echo "$content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
-            echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values."
+            echo "BLOCKED: content contains pastewatch placeholders (__PW_...__). Use pastewatch_write_file to resolve placeholders back to real values. \(redactedEditRemedies)"
             exit \(GuardExitContract.blocked)
           fi
         fi
@@ -767,7 +771,7 @@ public enum AgentSetup {
         if [ "$tool" = "Edit" ] || [ "$tool" = "Write" ]; then
           printf '%s' "$input" | pastewatch-cli guard-mutation --fail-on-severity "$PW_SEVERITY" >/dev/null
           if [ $? -ne 0 ]; then
-            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch MCP file tools."
+            echo "BLOCKED: proposed mutation changes protected content. Use pastewatch MCP file tools. \(redactedEditRemedies)"
             exit \(GuardExitContract.blocked)
           fi
           exit 0
@@ -783,13 +787,13 @@ public enum AgentSetup {
         if [ "$scan_exit" -eq \(ScanExitContract.findingsDetected) ]; then
           case "$tool" in
             Read)
-              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround."
+              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround. \(redactedEditRemedies)"
               ;;
             Write|apply_patch)
-              echo "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead."
+              echo "BLOCKED: $file_path contains secrets on disk. You MUST use pastewatch_write_file instead. \(redactedEditRemedies)"
               ;;
             Edit)
-              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file then pastewatch_write_file."
+              echo "BLOCKED: $file_path contains secrets. You MUST use pastewatch_read_file then pastewatch_write_file. \(redactedEditRemedies)"
               ;;
           esac
           exit \(GuardExitContract.blocked)
@@ -799,6 +803,7 @@ public enum AgentSetup {
         """
     }
 
+    // WO-658@v2: Cline and Roo block messages include both sanctioned edit surfaces.
     /// Generate Cline hook script with configured severity.
     public static func clineHookScript(severity: String) -> String {
         return """
@@ -864,7 +869,7 @@ public enum AgentSetup {
                   pw_content=$(echo "$input" | jq -r '.preToolUse.parameters.content // empty')
                   # WO-124: block pastewatch's active proxy-compatible placeholder envelope.
                   if [ -n "$pw_content" ] && echo "$pw_content" | grep -qE "\(Obfuscator.mcpPlaceholderPOSIXERE)"; then
-                    block "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file to resolve them."
+                    block "BLOCKED: content contains pastewatch placeholders. Use pastewatch_write_file to resolve them. \(redactedEditRemedies)"
                   fi
                 fi
 
@@ -875,9 +880,9 @@ public enum AgentSetup {
                     # WO-580@v3: generated guards consume the named scan findings contract.
                     if [ $? -eq \(ScanExitContract.findingsDetected) ]; then
                       case "$tool_name" in
-                        read_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround." ;;
-                        write_to_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_write_file instead. Do NOT delete the file or use any workaround." ;;
-                        edit_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_read_file then pastewatch_write_file. Do NOT use any workaround." ;;
+                        read_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_read_file instead. Do NOT use any workaround. \(redactedEditRemedies)" ;;
+                        write_to_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_write_file instead. Do NOT delete the file or use any workaround. \(redactedEditRemedies)" ;;
+                        edit_file) block "BLOCKED: $pw_path contains secrets. You MUST use pastewatch_read_file then pastewatch_write_file. Do NOT use any workaround. \(redactedEditRemedies)" ;;
                       esac
                     fi
                   fi

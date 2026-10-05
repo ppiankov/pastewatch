@@ -8,6 +8,7 @@ public struct CommandParser {
     public struct FileAccess {
         public let paths: [String]
         public let unsupportedCommands: [String]
+        public let hasUnsafeRedactedCommand: Bool // WO-658@v2: unresolved remedy paths cannot acquire a guard exemption.
     }
 
     // WO-638: source reads are guarded before a copy can change the destination's policy context.
@@ -101,20 +102,29 @@ public struct CommandParser {
     }
 
     // WO-644@v2: unsupported copy syntax is reported without including any operand values.
+    // WO-658@v2: sanctioned redacted segments never hide readers in other chain or substitution segments.
     public static func fileAccess(
         from command: String,
         workingDirectory: String = FileManager.default.currentDirectoryPath
     ) -> FileAccess {
         var allPaths: [String] = []
         var unsupportedCommands: Set<String> = []
+        var hasUnsafeRedactedCommand = false
 
         // Process main command segments
         let segments = splitCommandChain(command)
         for segment in segments {
+            // WO-658@v2: a redefined executable name cannot earn the redacted-reader exemption.
+            hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || definesRedactedRemedy(segment)
             let (cleaned, inputFiles) = stripRedirects(segment)
             allPaths.append(contentsOf: inputFiles.flatMap {
                 expandAndResolve($0, workingDirectory: workingDirectory)
             })
+            // WO-658@v2: only a literal target and substitution-free remedy segment may bypass raw file reads.
+            if let safe = redactedRemedyIsSafe(segment) {
+                hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || !safe
+                continue
+            }
             allPaths.append(contentsOf: extractFilePathsSingle(
                 from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
             ))
@@ -125,17 +135,76 @@ public struct CommandParser {
         for subCmd in subshellCommands {
             let subSegments = splitCommandChain(subCmd)
             for segment in subSegments {
+                // WO-658@v2: definitions in substitutions retain the same fail-closed shadowing rule.
+                hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || definesRedactedRemedy(segment)
                 let (cleaned, inputFiles) = stripRedirects(segment)
                 allPaths.append(contentsOf: inputFiles.flatMap {
                     expandAndResolve($0, workingDirectory: workingDirectory)
                 })
+                // WO-658@v2: nested segments retain the same literal-path contract.
+                if let safe = redactedRemedyIsSafe(segment) {
+                    hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || !safe
+                    continue
+                }
                 allPaths.append(contentsOf: extractFilePathsSingle(
                     from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
                 ))
             }
         }
 
-        return FileAccess(paths: allPaths, unsupportedCommands: unsupportedCommands.sorted())
+        // WO-658@v2: return unresolved remedy state without exposing any operands.
+        return FileAccess(paths: allPaths, unsupportedCommands: unsupportedCommands.sorted(),
+                          hasUnsafeRedactedCommand: hasUnsafeRedactedCommand)
+    }
+
+    // WO-658@v2: inspect executable definitions through the existing lexer, not quoted mentions in ordinary arguments.
+    private static func definesRedactedRemedy(_ segment: String) -> Bool {
+        let command = segment.drop { $0.isWhitespace || "({".contains($0) }
+        let tokens = tokenize(String(command))
+        let head = tokens.prefix(3).joined(separator: " ")
+        let functionPattern = #"^(?:pastewatch-cli\s*\(\s*\)|function\s+pastewatch-cli(?:\s|\(|$))"#
+        if head.range(of: functionPattern, options: .regularExpression) != nil { return true }
+        return tokens.first == "alias" && tokens.dropFirst().contains { $0.hasPrefix("pastewatch-cli=") }
+    }
+
+    // WO-658@v2: recognize only the named remedy executable and subcommands through the existing shell lexer.
+    private static func redactedRemedyIsSafe(_ segment: String) -> Bool? {
+        let cleaned = stripRedirects(segment).command
+        let loose = tokenize(cleaned)
+        guard loose.count >= 2, loose[0] == "pastewatch-cli", ["read", "edit"].contains(loose[1]) else { return nil }
+        guard extractSubshellCommands(segment).isEmpty,
+              let tokens = tokenizeArguments(cleaned, requiringLiteralArguments: true), tokens.count >= 2,
+              tokens[0].isLiteral, tokens[1].isLiteral else { return false }
+        let arguments = Array(tokens.dropFirst(2))
+        if arguments.count == 1, ["--help", "-h", "--version"].contains(arguments[0].value) { return true }
+        guard let path = redactedRemedyPath(arguments, command: tokens[1].value) else { return false }
+        return path.isLiteral && !path.hasWordExpansion
+    }
+
+    // WO-658@v2: option values are not targets; only one literal positional file earns the exemption.
+    private static func redactedRemedyPath(_ arguments: [CommandToken], command: String) -> CommandToken? {
+        let options: Set<String> = command == "read" ? ["--start-line", "--line-count"]
+            : ["--old", "--new", "--old-file", "--new-file", "--expect-view-token"]
+        var path: CommandToken?
+        var index = 0
+        var endOfOptions = false
+        while index < arguments.count {
+            let token = arguments[index]
+            index += 1
+            if token.value == "--", !endOfOptions { endOfOptions = true; continue }
+            if token.value.hasPrefix("-"), !endOfOptions {
+                let parts = token.value.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard let name = parts.first, options.contains(String(name)) else { return nil }
+                if parts.count == 1 {
+                    guard index < arguments.count else { return nil }
+                    index += 1
+                }
+            } else {
+                guard path == nil else { return nil }
+                path = token
+            }
+        }
+        return path
     }
 
     // WO-644@v2: copy parse failures retain existing fallbacks and provide command-only diagnostics.
@@ -516,6 +585,14 @@ public struct CommandParser {
     private struct CommandToken {
         let value: String
         let isLiteral: Bool
+        let hasWordExpansion: Bool // WO-658@v2: distinguish literal remedy paths without changing copy-source semantics.
+
+        // WO-658@v2: existing token constructors retain their previous literal classification.
+        init(value: String, isLiteral: Bool, hasWordExpansion: Bool = false) {
+            self.value = value
+            self.isLiteral = isLiteral
+            self.hasWordExpansion = hasWordExpansion
+        }
     }
 
     // WO-638: substitutions retain whitespace within one unresolved operand.
@@ -555,10 +632,12 @@ public struct CommandParser {
     }
 
     // WO-638: an expansion marks its token unknown without discarding other literal operands.
+    // WO-658@v2: separately retain unquoted word expansions for sanctioned read/edit target checks.
     private static func tokenizeArguments(_ command: String, requiringLiteralArguments: Bool) -> [CommandToken]? {
         var tokens: [CommandToken] = []
         var current = ""
         var isLiteral = true
+        var hasWordExpansion = false
         var inSingle = false
         var inDouble = false
         var escaped = false
@@ -595,14 +674,20 @@ public struct CommandParser {
 
             // WO-638: unresolved expansions change only this token's literal status.
             let next = index + 1 < characters.count ? characters[index + 1] : nil
+            // WO-658@v2: quoted or escaped glob/tilde characters remain literal filenames.
+            if requiringLiteralArguments && !inSingle && !inDouble && isWordExpansion(char, leading: current.isEmpty) {
+                hasWordExpansion = true
+            }
             if requiringLiteralArguments && !inSingle && expansion.begin(char, next: next) {
                 isLiteral = false
             }
             if (char == " " || (requiringLiteralArguments && char.isWhitespace)) && !inSingle && !inDouble {
                 if !current.isEmpty {
-                    tokens.append(CommandToken(value: current, isLiteral: isLiteral))
+                    // WO-658@v2: word-expansion metadata does not alter existing source-role literal status.
+                    tokens.append(CommandToken(value: current, isLiteral: isLiteral, hasWordExpansion: hasWordExpansion))
                     current = ""
                     isLiteral = true
+                    hasWordExpansion = false
                 }
                 continue
             }
@@ -613,10 +698,16 @@ public struct CommandParser {
         // WO-638: unmatched syntax keeps the pre-existing allow behavior for unsupported commands.
         if requiringLiteralArguments && (inSingle || inDouble || escaped || expansion.isOpen) { return nil }
         if !current.isEmpty {
-            tokens.append(CommandToken(value: current, isLiteral: isLiteral))
+            // WO-658@v2: the final operand carries the same independent expansion metadata.
+            tokens.append(CommandToken(value: current, isLiteral: isLiteral, hasWordExpansion: hasWordExpansion))
         }
 
         return tokens
+    }
+
+    // WO-658@v2: unquoted shell word expansions cannot designate a literal protected-tool path.
+    private static func isWordExpansion(_ character: Character, leading: Bool) -> Bool {
+        "*?[{".contains(character) || (leading && character == "~")
     }
 
     // MARK: - Argument extractors

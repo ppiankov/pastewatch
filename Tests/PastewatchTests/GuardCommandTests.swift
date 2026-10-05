@@ -2,6 +2,48 @@ import XCTest
 @testable import PastewatchCore
 
 final class GuardCommandTests: XCTestCase {
+    // WO-658@v2: redefining a sanctioned executable name cannot bypass a protected-file read.
+    func testRedactedRemedyFunctionAndAliasShadowingBlock() throws {
+        let secret = ["AKIA", String(repeating: "Q", count: 16)].joined()
+        try Data(("key=" + secret + "\n").utf8).write(to: URL(fileURLWithPath: testDir + "/remedy.env"))
+        for definition in ["pastewatch-cli() { cat \"$2\"; }", "function pastewatch-cli { cat \"$2\"; }",
+                           "alias pastewatch-cli='cat'"] {
+            let chain = definition + "; pastewatch-cli read remedy.env"
+            for command in [chain, "(" + chain + ")", "echo \"$(" + chain + ")\""] {
+                let result = try runGuardCLI(arguments: ["guard", command])
+                XCTAssertEqual(result.status, 2)
+                XCTAssertFalse(result.stdout.contains(secret))
+                XCTAssertFalse(result.stderr.contains(secret))
+                XCTAssertFalse(result.stderr.contains(command))
+            }
+        }
+        XCTAssertEqual(try runGuardCLI(arguments: ["guard", "pastewatch-cli read remedy.env", "--quiet"]).status, 0)
+    }
+
+    // WO-658@v2: sanctioned literal remedies are allowed, but subsequent raw readers remain guarded.
+    func testRedactedRemediesAllowOnlyTheirOwnSegments() throws {
+        let secret = ["AKIA", String(repeating: "Q", count: 16)].joined()
+        let path = testDir + "/remedy.env"
+        try Data(("key=" + secret + "\n").utf8).write(to: URL(fileURLWithPath: path))
+        for command in ["pastewatch-cli read remedy.env", "pastewatch-cli read remedy.env > out.txt",
+                        "pastewatch-cli edit remedy.env --old before --new after --expect-view-token " + String(repeating: "0", count: 64)] {
+            XCTAssertEqual(try runGuardCLI(arguments: ["guard", command, "--quiet"]).status, 0)
+        }
+        for command in ["pastewatch-cli read remedy.env; cat remedy.env", "pastewatch-cli read remedy.env | cat remedy.env"] {
+            XCTAssertEqual(try runGuardCLI(arguments: ["guard", command, "--quiet"]).status, 2)
+        }
+    }
+
+    // WO-658@v2: unresolved path expansions cannot acquire the sanctioned-tool exemption.
+    func testRedactedRemedyExpansionsAreNotExempt() throws {
+        for command in ["pastewatch-cli read \"$F\"", "pastewatch-cli read $(printf file)",
+                        "pastewatch-cli read *.env", "pastewatch-cli edit ~/file.env --old before --new after"] {
+            let result = try runGuardCLI(arguments: ["guard", command])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.stderr.contains("literal"))
+            XCTAssertFalse(result.stderr.contains(command))
+        }
+    }
 
     // WO-644@v2: ordinary and unknown flags cannot bypass a protected copy source.
     func testCopyUnknownOptionsStillBlockSources() throws {

@@ -231,6 +231,49 @@ Response streaming has no authoritative catalog of exact local secret values. It
 
 For local protocol diagnosis only, `pastewatch-cli proxy --debug-stream-dump <path>` writes raw input frames, transformed output, and mutation decisions as owner-only JSONL. It requires the default `per_sse_event` mode so each record reflects the actual frame decision; startup fails instead of producing an incomplete dump in `raw_stream` or `buffer` mode. The file contains unredacted secrets by design, is disabled unless the option is supplied, and prints a warning even with `--quiet`. Delete it securely after diagnosis and never attach it to an issue or commit.
 
+<!-- WO-658@v2: CLI remedies share the checked redacted-edit engine when MCP editing is unavailable. -->
+## Redacted CLI Read/Edit
+
+```bash
+pastewatch-cli read settings.env --start-line 1 --line-count 20
+pastewatch-cli edit settings.env --old 'enabled=false' --new 'enabled=true' \
+  --expect-view-token '<view token from read stderr>'
+```
+
+`read` writes redacted text to stdout without adding a newline. Stderr contains
+`view-token=<64 hex characters>` and placeholder type, line and marker
+metadata, never the original values. Optional positive `--start-line` and
+`--line-count` select a window after whole-file scanning and redaction.
+
+<!-- WO-647@v2: a view token binds redacted structure without exposing a raw-file digest. -->
+The view token is SHA-256 of the whole-file redacted view, computed before any
+line window. Secret-only changes that leave that view identical do not change
+the token; the final atomic write still checks unchanged raw bytes internally.
+
+`edit` requires the view token from `read`, exactly one of `--old` or `--old-file`, and
+exactly one of `--new` or `--new-file`. The file options accept bounded UTF-8
+multiline text. Supply only redacted text: never put plaintext secrets in command
+arguments, which can enter shell history or process listings.
+
+The old text must occur exactly once in the whole redacted view. A stale view token,
+missing or ambiguous match, partial or unknown placeholder, or a new plaintext
+secret refuses the edit without changing the file. A fresh local placeholder map
+restores secrets before an atomic, permission-preserving write. Success reports
+only `linesChanged` and `redactions` counts.
+
+<!-- WO-647@v2: unmapped marker-shaped text remains a fail-closed limitation of whole-file restoration. -->
+Unmapped placeholder-shaped text anywhere in the file refuses edits, even when
+that text is outside the edited span. The complete edited redacted view is
+checked for plaintext secrets before any placeholders are restored.
+
+Exit codes: **0** success, **1** refused, **2** invalid usage or active configuration.
+The command guard permits literal-path `pastewatch-cli read` and `edit` segments,
+including redirected redacted output. Expanded paths and command substitutions
+are not exempt; other commands in a chain or pipeline remain guarded.
+<!-- WO-658@v2: literal command names are not trustworthy after a definition shadows the remedy. -->
+Defining `pastewatch-cli` as a function or alias anywhere in the command,
+including a nested segment, refuses the command rather than exempting its calls.
+
 ## MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
@@ -299,12 +342,6 @@ engine refuses missing or ambiguous text, split or unresolved placeholders, and
 newly authored plaintext secrets. It restores placeholders using that file's
 session mappings and replaces the file atomically while preserving its mode.
 The response contains `edited`, `linesChanged` and `redactions`, not file content.
-
-<!-- WO-647@v2: complete-view validation refuses boundary-assembled values and unmapped marker-shaped literals. -->
-The complete edited redacted view is checked for plaintext secrets before
-restoration. Unmapped placeholder-shaped text anywhere in the file refuses edits,
-even outside the edited span. A consistency token hashes the whole redacted view,
-never private source bytes; the final atomic write checks raw bytes internally.
 
 `pastewatch_write_file` accepts either inline `content` or a local UTF-8
 `contentPath`, never both. Use `contentPath` for a large locally prepared payload;

@@ -200,10 +200,11 @@ For advisory-only agents (no hooks), add explicit rules to agent config files:
 ```markdown
 ## Pastewatch - Secret Redaction - CRITICAL
 
-When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use the pastewatch MCP tool:
-- Read blocked → use `pastewatch_read_file`
+When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use a sanctioned redacted surface:
+- Read blocked → use `pastewatch_read_file` or `pastewatch-cli read <file>`
 - Write blocked → use `pastewatch_write_file`
 - Edit blocked → use `pastewatch_read_file` then `pastewatch_edit_file` for a small edit
+- MCP editing unavailable → use `pastewatch-cli read <file>` then `pastewatch-cli edit <file> --old ... --new ... --expect-view-token ...`
 
 NEVER work around a pastewatch block:
 - NEVER use python3/ruby/perl/node to read or write files that pastewatch blocked
@@ -213,6 +214,20 @@ NEVER work around a pastewatch block:
 ```
 
 Add to `CLAUDE.md`, `AGENTS.md`, `.clinerules`, or equivalent per-agent instruction file.
+
+<!-- WO-658@v2: agents without MCP editing retain a checked, local redacted CLI remedy. -->
+The CLI remedy uses the whole-file redacted view token printed by `read` on stderr and a fresh
+local placeholder map; it does not require an MCP session. Pass only redacted
+text to `edit`, and retain the required view token so shifted placeholders cannot
+restore a different secret. See [Redacted CLI Read/Edit](cli-reference.md#redacted-cli-readedit)
+for multiline options, refusal cases and exit codes. Generated block messages
+name both the MCP and CLI edit remedies.
+
+<!-- WO-647@v2: safe edits validate both boundaries and refuse unknown marker-shaped literals in the whole view. -->
+The view token hashes redacted structure, not raw file bytes or secret values.
+Both edit boundaries are scanned before restoring placeholders. Unmapped
+placeholder-shaped text anywhere in a file refuses edits, including when the
+literal is outside the selected span.
 
 ---
 
@@ -352,12 +367,6 @@ value should survive. Partial markers, unresolved markers and newly authored
 plaintext secrets are refused. Successful edits preserve file permissions and
 return only `edited`, `linesChanged` and `redactions`. A line window can supply
 the edit context; it never truncates the surrounding file.
-
-<!-- WO-647@v2: safe edits validate both boundaries and refuse unknown marker-shaped literals in the whole view. -->
-The complete edited redacted view is scanned before restoring placeholders.
-Unmapped placeholder-shaped text anywhere in a file refuses edits, including
-when the literal is outside the selected span. Consistency tokens hash redacted
-structure rather than raw file bytes or secret values.
 
 <!-- WO-630@v2: line windows keep large read results usable without exposing raw-file slices. -->
 For large files, prefer `pastewatch_read_file` with `start_line` and `line_count`

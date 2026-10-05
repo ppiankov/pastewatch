@@ -2,6 +2,22 @@ import XCTest
 @testable import PastewatchCore
 
 final class AgentSetupTests: XCTestCase {
+    // WO-658@v2: every generated block message offers both the MCP and engine-backed CLI remedies.
+    func testEveryBlockMessageNamesBothRedactedRemedies() {
+        let scripts = [AgentSetup.claudeCodeGuardScript(severity: "high"), AgentSetup.windsurfGuardScript(severity: "high"),
+                       AgentSetup.cursorGuardScript(severity: "high"), AgentSetup.codexGuardScript(severity: "high"),
+                       AgentSetup.clineHookScript(severity: "high")]
+        for script in scripts {
+            let lines = script.split(separator: "\n").filter { $0.contains("BLOCKED:") }
+            XCTAssertFalse(lines.isEmpty)
+            for line in lines {
+                XCTAssertTrue(line.contains("pastewatch_edit_file"))
+                XCTAssertTrue(line.contains("pastewatch-cli read"))
+                XCTAssertTrue(line.contains("pastewatch-cli edit"))
+                XCTAssertTrue(line.contains("--expect-view-token"))
+            }
+        }
+    }
 
     // MARK: - mergeCodexHooks
 
