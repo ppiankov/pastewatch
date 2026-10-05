@@ -2,6 +2,19 @@ import XCTest
 @testable import PastewatchCore
 
 final class AmbiguousGuardDefaultsTests: XCTestCase {
+    // WO-651@v2: source fixtures that no longer contain Credential findings permit an append-only Edit.
+    func testAppendToTrivialRustCredentialFixtureIsAllowed() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let content = ["fs::write(&file, \"", "SEC", "RET=", "1", "\\n", "\").unwrap();"].joined()
+            let decision = try GuardMutationEvaluator.evaluateEdit(
+                currentContent: content, oldString: ";", newString: ";\n// appended fixture",
+                replaceAll: false, filePath: "fixture.rs", config: config, minimumSeverity: .high
+            )
+            XCTAssertEqual(decision, .allow)
+        }
+    }
+
     // WO-596: default configuration keeps every ambiguous detector out of the CLI guard path.
     func testDefaultConfigKeepsAmbiguousClassesGuardClean() throws {
         let entropyValue = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p", "Q1rS0tU"].joined()

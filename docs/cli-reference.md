@@ -506,6 +506,12 @@ Optional fields are omitted when unavailable. Values, rule patterns, hashes, and
 
 See [Documenting credentials](../README.md#documenting-credentials) for the single supported placeholder list.
 
+<!-- WO-651@v2: document the fixed keyword-value floor and source extraction boundaries. -->
+Keyword-value Credential detection requires at least eight characters and rejects digits-only values.
+Extraction stops at the first backslash escape or matching closing quote; inside a source string literal,
+an unquoted value also ends at a closing parenthesis, semicolon or comma. This floor does not apply to
+intrinsic/provider formats, exact-known values, custom rules, DSN password evidence or XML credentials.
+
 ## Doctor
 
 Installation health check:

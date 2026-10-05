@@ -740,6 +740,7 @@ public struct DetectionRules {
         )
     }
 
+    // WO-651@v2: bound keyword values before validation so source syntax cannot become credential evidence.
     // WO-639: preserve whole-DSN detection identity and attach password-only mutation targeting.
     // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
     /// Scan content with regex rules.
@@ -758,7 +759,12 @@ public struct DetectionRules {
             var vaultContext = VaultCodeContext(start: content.startIndex)
 
             for match in regexMatches {
-                guard let range = Range(match.range, in: content) else { continue }
+                // WO-651@v2: only keyword Credentials use literal-aware value extraction.
+                guard let rawRange = Range(match.range, in: content) else { continue }
+                let range = type == .credential
+                    ? credentialMatchRange(rawRange, in: content,
+                                           literalQuote: vaultContext.quote(at: rawRange.lowerBound, in: content))
+                    : rawRange
                 guard !matchedRanges.overlaps(range, in: content) else { continue }
 
                 let value = String(content[range])
@@ -872,6 +878,31 @@ public struct DetectionRules {
         return next.map { !$0.isLetter && !$0.isNumber && $0 != "_" } ?? true
     }
 
+    // WO-651@v2: a keyword match ends at value syntax, not the rest of its source literal.
+    private static func credentialMatchRange(
+        _ range: Range<String.Index>, in content: String, literalQuote: Character?
+    ) -> Range<String.Index> {
+        guard let separator = content[range].range(of: #"(?::=|[=:])\s*"#, options: .regularExpression),
+              separator.upperBound < range.upperBound else { return range }
+        var index = separator.upperBound
+        let first = content[index]
+        let valueQuote: Character? = first == "\"" || first == "'" ? first : nil
+        if valueQuote != nil { index = content.index(after: index) }
+        while index < range.upperBound {
+            let character = content[index]
+            if character == "\\" { break }
+            if character == valueQuote {
+                // Keep the matched pair as syntax; the shared validator strips it before applying the floor.
+                index = content.index(after: index)
+                break
+            }
+            if valueQuote == nil,
+               character == literalQuote || (literalQuote != nil && ");,".contains(character)) { break }
+            index = content.index(after: index)
+        }
+        return range.lowerBound..<index
+    }
+
     // WO-626: keep lexical state constant-size while visiting candidate ranges in source order.
     private enum VaultCodeState {
         case code, quoted(Character), escaped(Character), lineComment, blockComment
@@ -926,6 +957,15 @@ public struct DetectionRules {
             }
             if case .code = state { return true }
             return false
+        }
+
+        // WO-651@v2: reuse the incremental lexer rather than classifying entire files as source code.
+        mutating func quote(at boundary: String.Index, in content: String) -> Character? {
+            _ = isCode(at: boundary, in: content)
+            switch state {
+            case .quoted(let delimiter), .escaped(let delimiter): return delimiter
+            default: return nil
+            }
         }
     }
 
@@ -1693,6 +1733,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-651@v2: an escape-terminated source value excludes its unmatched opening quote before validation.
     /// Validate credential key=value matches.
     /// Rejects common English words, documentation labels, and placeholders.
     private static func isValidCredential(_ fullMatch: String) -> Bool {
@@ -1703,8 +1744,12 @@ public struct DetectionRules {
         let key = String(fullMatch[..<separatorRange.lowerBound])
             .trimmingCharacters(in: .whitespaces)
         let separator = String(fullMatch[separatorRange])
-        let value = String(fullMatch[separatorRange.upperBound...])
+        // WO-651@v2: a quote is syntax even when extraction ends before its closing delimiter.
+        var value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
+        if let first = value.first, first == "\"" || first == "'", value.last != first {
+            value = String(value.dropFirst())
+        }
 
         // WO-390@v2: source assignments and schema labels can carry code references,
         // while values with deterministic secret evidence must remain detectable.
@@ -1891,6 +1936,10 @@ public struct DetectionRules {
             .map { $0.lowercased() }
     }
 
+    // WO-651@v2: short keyword values are too weak to justify blocking regardless of surrounding syntax.
+    private static let credentialMinValueLength = 8
+
+    // WO-651@v2: raw and structured keyword detection share one floor without weakening intrinsic evidence.
     /// Validate a credential value in isolation (used by key-aware detection for JSON/YAML).
     public static func isValidCredentialValue(_ value: String) -> Bool {
         // WO-122: matched shell quotes should not hide env-var references from the prefix gate.
@@ -1905,8 +1954,10 @@ public struct DetectionRules {
             credentialValue = value
         }
 
-        // Too short to be a real secret
-        if credentialValue.count < 4 { return false }
+        // WO-651@v2: a numeric literal or a value below the fixed floor is never a keyword Credential.
+        if credentialValue.count < credentialMinValueLength || credentialValue.allSatisfy({ $0.isNumber }) {
+            return false
+        }
 
         // Skip env var references ($VAR, ${VAR}, %VAR%)
         if credentialValue.hasPrefix("$") || credentialValue.hasPrefix("%") { return false }
