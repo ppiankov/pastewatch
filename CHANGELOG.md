@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a clean-export Linux test gate matching CI's Swift 5.9 toolchain and curl dependency. (WO-653)
+
 ## [0.39.0] - 2026-10-04
 
 ### Added

@@ -1,5 +1,8 @@
 .DEFAULT_GOAL := help
 
+# WO-653@v1: match the build-linux Swift version in .github/workflows/ci.yml.
+SWIFT_LINUX_IMAGE := swift:5.9-jammy
+
 .PHONY: help
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -20,6 +23,17 @@ release: ## Build release binary
 .PHONY: test
 test: ## Run tests
 	swift test
+
+.PHONY: test-linux
+# WO-653@v1: test an archived tree without sharing host build artifacts.
+test-linux: ## Run the CI-equivalent Linux build and tests in Docker
+	@set -eu; \
+		export_dir=$$(mktemp -d /tmp/pastewatch-test-linux.XXXXXX); \
+		trap 'rm -rf "$$export_dir"' EXIT; \
+		git archive --format=tar -o "$$export_dir/source.tar" HEAD; \
+		tar -xf "$$export_dir/source.tar" -C "$$export_dir"; \
+		docker run --rm -v "$$export_dir:/work" -w /work $(SWIFT_LINUX_IMAGE) \
+			bash -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null && swift build --product PastewatchCLI && swift test'
 
 .PHONY: run
 run: build ## Build and run
