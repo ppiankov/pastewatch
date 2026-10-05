@@ -743,6 +743,7 @@ public struct DetectionRules {
     // WO-651@v2: bound keyword values before validation so source syntax cannot become credential evidence.
     // WO-639: preserve whole-DSN detection identity and attach password-only mutation targeting.
     // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
+    // WO-652@v2: retain following declaration syntax for raw colon-keyword validation.
     /// Scan content with regex rules.
     private static func scanWithRegexRules(
         _ content: String,
@@ -769,7 +770,10 @@ public struct DetectionRules {
 
                 let value = String(content[range])
                 guard !shouldExclude(value) else { continue }
-                guard isValidMatch(value, type: type, config: config) else { continue }
+                // WO-652@v2: structured key-aware values do not pass through declaration discrimination.
+                guard isValidMatch(value, type: type, config: config,
+                                   following: content[range.upperBound...],
+                                   preceding: content[..<range.lowerBound]) else { continue }
 
                 // WO-626: only unquoted legacy identifier expressions are excluded; modern tokens stay intrinsic.
                 if type == .vaultToken,
@@ -1737,8 +1741,12 @@ public struct DetectionRules {
         return false
     }
 
+    // WO-652@v2: only the raw Credential rule needs the candidate's following declaration syntax.
     /// Additional validation for specific types.
-    private static func isValidMatch(_ value: String, type: SensitiveDataType, config: PastewatchConfig) -> Bool {
+    private static func isValidMatch(
+        _ value: String, type: SensitiveDataType, config: PastewatchConfig,
+        following: Substring? = nil, preceding: Substring? = nil
+    ) -> Bool {
         switch type {
         case .ipAddress:   return isValidIP(value, config: config)
         case .phone:       return isValidPhone(value)
@@ -1747,15 +1755,19 @@ public struct DetectionRules {
         case .hostname:    return isValidHostname(value, config: config)
         case .filePath:    return isValidFilePath(value)
         case .uuid:        return isValidUUID(value)
-        case .credential:  return isValidCredential(value)
+        // WO-652@v2: type references are excluded before the shared value-only validator.
+        case .credential:  return isValidCredential(value, following: following, preceding: preceding)
         default:           return true
         }
     }
 
     // WO-651@v2: an escape-terminated source value excludes its unmatched opening quote before validation.
+    // WO-652@v2: declarations carry types rather than assigned values, without changing parsed config values.
     /// Validate credential key=value matches.
     /// Rejects common English words, documentation labels, and placeholders.
-    private static func isValidCredential(_ fullMatch: String) -> Bool {
+    private static func isValidCredential(
+        _ fullMatch: String, following: Substring?, preceding: Substring?
+    ) -> Bool {
         // Extract just the value part (after = or :)
         guard let separatorRange = fullMatch.range(of: #"(?::=|[=:])\s*"#, options: .regularExpression) else {
             return true
@@ -1766,6 +1778,10 @@ public struct DetectionRules {
         // WO-651@v2: a quote is syntax even when extraction ends before its closing delimiter.
         var value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
+        // WO-652@v2: check before quote normalization so actual quoted literals stay eligible.
+        if isCredentialTypeReference(value, separator: separator, following: following, preceding: preceding) {
+            return false
+        }
         if let first = value.first, first == "\"" || first == "'", value.last != first {
             value = String(value.dropFirst())
         }
@@ -1777,6 +1793,62 @@ public struct DetectionRules {
         }
 
         return isValidCredentialValue(value)
+    }
+
+    // WO-652@v2: colon identifiers are types only under the pinned C/builtin or same-line declaration rules.
+    private static func isCredentialTypeReference(
+        _ value: String, separator: String, following: Substring?, preceding: Substring?
+    ) -> Bool {
+        guard separator.trimmingCharacters(in: .whitespaces) == ":",
+              let identifierRange = value.range(of: #"^[A-Za-z_][A-Za-z0-9_]*"#, options: .regularExpression)
+        else { return false }
+        let identifier = String(value[identifierRange])
+        let remainder = value[identifierRange.upperBound...]
+        let tail = (remainder.isEmpty ? following ?? "" : remainder)
+            .drop { $0.isWhitespace && !$0.isNewline }
+        let isDeclarationBoundary = tail.first.map { "),={".contains($0) } == true || tail.hasPrefix("->")
+        guard remainder.isEmpty || isDeclarationBoundary else { return false }
+        if identifier.range(of: #"^[A-Za-z_][A-Za-z0-9_]*_t$"#, options: .regularExpression) != nil {
+            return true
+        }
+        let builtinTypes: Set<String> = ["String", "Int", "Data", "Bool", "string", "number"]
+        if builtinTypes.contains(identifier) { return true }
+        // WO-652@v2: punctuation alone cannot erase a real value outside a declaration.
+        guard isDeclarationBoundary, let preceding else { return false }
+        let start = preceding.lastIndex(where: \.isNewline).map { preceding.index(after: $0) }
+            ?? preceding.startIndex
+        let prefix = preceding[start...]
+        // WO-652@v2: comma declarations require a parameter list, not a mapping or array enclosing the key.
+        if prefix.range(of: #"\b(?:let|var|val|const)\s+$"#, options: .regularExpression) != nil { return true }
+        guard nearestUnclosedCredentialBracket(prefix) == "(" else { return false }
+        let declarationPattern = #"[,(]\s*(?:[A-Za-z_][A-Za-z0-9_]*\s+)?$"#
+        return prefix.range(of: declarationPattern, options: .regularExpression) != nil
+    }
+
+    // WO-652@v2: quoted punctuation cannot turn an object value into a parameter declaration.
+    private static func nearestUnclosedCredentialBracket(_ prefix: Substring) -> Character? {
+        var brackets: [Character] = []
+        var quote: Character?
+        var escaped = false
+        let closingBrackets: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+        for character in prefix {
+            if let currentQuote = quote {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == currentQuote {
+                    quote = nil
+                }
+                continue
+            }
+            if "\"'`".contains(character) { quote = character } else if "([{".contains(character) {
+                brackets.append(character)
+            } else if let opening = closingBrackets[character] {
+                guard brackets.popLast() == opening else { return nil }
+            }
+        }
+        return brackets.last
     }
 
     // WO-390@v2: classify source-language references by value shape, not key casing.
