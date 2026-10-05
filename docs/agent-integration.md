@@ -184,7 +184,8 @@ pastewatch-cli guard-write /path/to/config.yml
 
 Generated Claude Code and Codex hooks use `guard-mutation` for structured Edit and Write calls. The command reads the hook JSON from stdin. It allows an unrelated edit when existing actionable findings are preserved exactly, and blocks any mutation that touches, adds, changes, or drops an actionable finding. `guard-write` remains available when a whole-file legacy decision is required.
 
-Read protection is unchanged: a file with actionable secrets must still be read through `pastewatch_read_file`.
+<!-- WO-659@v1: Read enforcement follows replacement authorization rather than advisory severity. -->
+Native Read blocks only when `pastewatch_read_file` would redact a value. Advisory-only findings still report their type and line on stderr but do not block Read. To protect an ambiguous class from being read, opt it into `obfuscate`; enabling its detector alone only reports it. Intrinsic, custom-rule and opted-in secrets remain protected, and invalid active configuration still fails closed. Write and Edit policy are unchanged.
 
 ### Directive language in hook messages
 
@@ -199,10 +200,11 @@ For advisory-only agents (no hooks), add explicit rules to agent config files:
 ```markdown
 ## Pastewatch - Secret Redaction - CRITICAL
 
-When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use the pastewatch MCP tool:
-- Read blocked → use `pastewatch_read_file`
+When the pastewatch-guard hook blocks Read/Write/Edit, you MUST use a sanctioned redacted surface:
+- Read blocked → use `pastewatch_read_file` or `pastewatch-cli read <file>`
 - Write blocked → use `pastewatch_write_file`
-- Edit blocked → use `pastewatch_read_file` then `pastewatch_write_file`
+- Edit blocked → use `pastewatch_read_file` then `pastewatch_edit_file` for a small edit
+- MCP editing unavailable → use `pastewatch-cli read <file>` then `pastewatch-cli edit <file> --old ... --new ... --expect-view-token ...`
 
 NEVER work around a pastewatch block:
 - NEVER use python3/ruby/perl/node to read or write files that pastewatch blocked
@@ -212,6 +214,20 @@ NEVER work around a pastewatch block:
 ```
 
 Add to `CLAUDE.md`, `AGENTS.md`, `.clinerules`, or equivalent per-agent instruction file.
+
+<!-- WO-658@v2: agents without MCP editing retain a checked, local redacted CLI remedy. -->
+The CLI remedy uses the whole-file redacted view token printed by `read` on stderr and a fresh
+local placeholder map; it does not require an MCP session. Pass only redacted
+text to `edit`, and retain the required view token so shifted placeholders cannot
+restore a different secret. See [Redacted CLI Read/Edit](cli-reference.md#redacted-cli-readedit)
+for multiline options, refusal cases and exit codes. Generated block messages
+name both the MCP and CLI edit remedies.
+
+<!-- WO-647@v2: safe edits validate both boundaries and refuse unknown marker-shaped literals in the whole view. -->
+The view token hashes redacted structure, not raw file bytes or secret values.
+Both edit boundaries are scanned before restoring placeholders. Unmapped
+placeholder-shaped text anywhere in a file refuses edits, including when the
+literal is outside the selected span.
 
 ---
 
@@ -336,11 +352,21 @@ Once configured, the agent has access to:
 | `pastewatch_scan` | Scan file or directory for secrets |
 | `pastewatch_read_file` | Read file with secrets replaced by `__PW_...__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
+| `pastewatch_edit_file` | Replace one unique string in a redacted view; restore complete placeholders locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan_diff` | Scan git diff for secrets in changed lines |
 | `pastewatch_inventory` | Generate secret posture report for a directory |
 
 Intrinsically identifiable, exact-known, and custom-rule matches leave only as placeholders. Advisory-only matches remain visible so the operator can decide whether to authorize mutation.
+
+<!-- WO-647@v2: line windows supply context, not a replacement whole file. -->
+Prefer `pastewatch_edit_file` for small edits: pass `path`, `old_string` copied from
+the redacted view, and `new_string`. The old text must occur exactly once across
+the whole file. Keep placeholder tokens complete and unchanged where the original
+value should survive. Partial markers, unresolved markers and newly authored
+plaintext secrets are refused. Successful edits preserve file permissions and
+return only `edited`, `linesChanged` and `redactions`. A line window can supply
+the edit context; it never truncates the surrounding file.
 
 <!-- WO-630@v2: line windows keep large read results usable without exposing raw-file slices. -->
 For large files, prefer `pastewatch_read_file` with `start_line` and `line_count`

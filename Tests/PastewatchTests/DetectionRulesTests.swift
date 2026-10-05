@@ -2,6 +2,254 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-652@v2: flow mappings and object literals remain values even after a comma or nested parenthesis.
+    func testCredentialFlowMappingsAndObjectLiteralsRemainDetected() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["pass", "word"].joined()
+            let value = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            let assignment = key + ": " + value
+            let cases = [
+                ("yaml-first", "creds: {" + assignment + ", user: admin, port: 5}"),
+                ("yaml-middle", "creds: {user: admin, " + assignment + ", port: 5}"),
+                ("yaml-last", "creds: {user: admin, port: 5, " + assignment + "}"),
+                ("js-object", "const creds = {a: x, " + assignment + ", b: y}"),
+                ("nested-object", "run({a: x, " + assignment + ", b: y})"),
+                ("array-object", "creds: [{a: x, " + assignment + ", b: y}]")
+            ]
+            for (name, content) in cases {
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1, name)
+                XCTAssertEqual(matches.first?.effectiveSeverity, .critical, name)
+            }
+        }
+    }
+
+    // WO-652@v2: a colon followed by a declaration type is not an assigned Credential value.
+    func testCredentialTypedDeclarationsAreNotValues() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["to", "ken"].joined()
+            let cases = [
+                ["func read(_ ", key, ": audit_", key, "_t) {}"].joined(),
+                ["function read(", key, ": string, next: number) {}"].joined(),
+                ["fun read(", key, ": String) {}"].joined(),
+                ["func read(_ ", key, ": TicketBuffer32) {}"].joined(),
+                ["function read(", key, ": TicketBuffer32, next: string) {}"].joined(),
+                ["let ", key, ": TicketBuffer32 = nil"].joined(),
+                ["fun read(", key, ": TicketBuffer32) {}"].joined(),
+                ["var ", key, ": TicketBuffer32 { body }"].joined(),
+                ["func read(", key, ": TicketBuffer32 -> Result) {}"].joined()
+            ]
+            for content in cases {
+                XCTAssertFalse(DetectionRules.scan(content, config: config).contains { $0.type == .credential })
+            }
+        }
+    }
+
+    // WO-652@v2: equals assignments and quoted literals remain values even when their text resembles a type.
+    func testCredentialTypeExclusionPreservesRealAssignments() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let real = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            let key = ["to", "ken"].joined()
+            let cases = [
+                [key, ": ", real].joined(), [key.uppercased(), "=", real].joined(),
+                ["let ", key, " = \"", real, "\""].joined(),
+                [key, ": \"audit_", key, "_t\""].joined(),
+                ["Value: ", key, ": ", real, ")"].joined(),
+                ["Value: ", key, ": ", real, ","].joined()
+            ]
+            for content in cases {
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertEqual(matches.first?.effectiveSeverity, .critical)
+            }
+        }
+    }
+
+    // WO-652@v2: file-format key-aware detection must retain unquoted values, including type-shaped identifiers.
+    func testCredentialTypeExclusionPreservesStructuredValues() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["to", "ken"].joined()
+            let values = [["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined(), ["audit_", key, "_t"].joined()]
+            for ext in ["yaml", "yml", "env", "properties", "ini"] {
+                for value in values {
+                    let separator = ["env", "ini"].contains(ext) ? "=" : ": "
+                    let matches = try DirectoryScanner.scanFileContentOrThrow(
+                        content: key + separator + value, ext: ext, relativePath: "fixture." + ext, config: config
+                    ).filter { $0.type == .credential }
+                    XCTAssertEqual(matches.count, 1, ext)
+                    XCTAssertEqual(matches.first?.effectiveSeverity, .critical, ext)
+                }
+            }
+        }
+    }
+
+    // WO-648@v2: whole query placeholders remain non-credentials in raw text and parsed JSON help strings.
+    func testCredentialWholePlaceholderValuesAreIgnored() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["to", "ken"].joined()
+            let values = [
+                ["<ticket", "-placeholder>"].joined(), ["<magic-link", " placeholder>"].joined(),
+                ["${", "DB_SECRET", "}"].joined(), ["{{", ".Value", "}}"].joined(),
+                ["%(", "ticket_name", ")s"].joined(), [":", "ticket_name"].joined(),
+                ["place", "holder"].joined(), ["change", "me"].joined(), ["your-", "ticket"].joined()
+            ]
+            for value in values {
+                let help = "GET /v1/redeem?" + key + "=" + value
+                XCTAssertFalse(DetectionRules.scan(help, config: config).contains { $0.type == .credential })
+                let data = try JSONSerialization.data(withJSONObject: ["help": help])
+                let content = try XCTUnwrap(String(data: data, encoding: .utf8))
+                let matches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: content, ext: "json", relativePath: "help.json", config: config
+                )
+                XCTAssertFalse(matches.contains { $0.type == .credential })
+            }
+        }
+    }
+
+    // WO-648@v2: a real value or a placeholder prefix followed by real data must retain Credential detection.
+    func testCredentialPlaceholdersDoNotHideRealValues() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let real = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            for value in [real, ["<ticket", "-placeholder>", real].joined()] {
+                let content = ["GET /v1/redeem?", "to", "ken=", value].joined()
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertEqual(matches.first?.effectiveSeverity, .critical)
+                XCTAssertTrue(matches.first?.value.contains(real) == true)
+            }
+            let quoted = ["to", "ken=\"", "<magic-link", " placeholder> ", real, "\""].joined()
+            let matches = DetectionRules.scan(quoted, config: config).filter { $0.type == .credential }
+            XCTAssertEqual(matches.count, 1)
+            XCTAssertTrue(matches.first?.value.contains(real) == true)
+        }
+    }
+
+    // WO-648@v2: reusing placeholder definitions does not change the closed DSN password contract.
+    func testCredentialPlaceholderReusePreservesDSNEvidence() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential, .dbConnectionString])
+            let prefix = ["post", "gres://user:"].joined()
+            let suffix = "@db.internal/app"
+            for word in DetectionRules.DSNPlaceholderPasswords {
+                let matches = DetectionRules.scan(prefix + word + suffix, config: config)
+                XCTAssertFalse(matches.contains {
+                    $0.type == .dbConnectionString && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+                })
+            }
+            let real = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            XCTAssertTrue(DetectionRules.scan(prefix + real + suffix, config: config).contains {
+                $0.type == .dbConnectionString && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+            })
+        }
+    }
+
+    // WO-651@v2: source escapes and literal punctuation cannot extend a trivial value into a Credential.
+    func testCredentialKeywordSourceTerminators() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["SEC", "RET"].joined()
+            let cases = [
+                ["fs::write(&file, \"", key, "=", "1", "\\n", "\").unwrap();"].joined(),
+                ["fs::write(&file, \"", key, "=", "2", "\\n", "\").unwrap();"].joined(),
+                ["let text = \"", key, "=", "1", "),trailing_code\";"].joined(),
+                ["let text = \"", key, "=", "2", ";trailing_code\";"].joined(),
+                ["let text = \"", key, "=", "1", ",trailing_code\";"].joined(),
+                ["let pass", "word = \"", "Ab3", "Dx7", "Z", "\\n", "\";"].joined(),
+            ]
+            for content in cases {
+                XCTAssertFalse(DetectionRules.scan(content, config: config).contains { $0.type == .credential })
+            }
+        }
+    }
+
+    // WO-651@v2: keyword values below the floor and digits-only values are non-credentials on both scan paths.
+    func testCredentialKeywordValueFloor() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["pass", "word"].joined()
+            let values = [["Ab3", "Dx7", "Z"].joined(), String(repeating: "123", count: 10)]
+            for value in values {
+                let raw = [key, "=\"", value, "\";"].joined()
+                XCTAssertFalse(DetectionRules.scan(raw, config: config).contains { $0.type == .credential })
+                for ext in ["env", "yaml"] {
+                    let separator = ext == "env" ? "=" : ": "
+                    let matches = try DirectoryScanner.scanFileContentOrThrow(
+                        content: key + separator + value, ext: ext, relativePath: "fixture." + ext, config: config
+                    )
+                    XCTAssertFalse(matches.contains { $0.type == .credential }, ext)
+                }
+            }
+        }
+    }
+
+    // WO-651@v2: the exact floor, quoted values and longer mixed values retain their critical severity.
+    func testCredentialKeywordFloorRetainsTruePositives() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let key = ["pass", "word"].joined()
+            let values = [["Z9aB", "8cD7"].joined(), ["Q7mN", "4rZ9", "T2xV"].joined(),
+                          ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()]
+            for value in values {
+                let raw = [key, "=\"", value, "\";"].joined()
+                let rawMatches = DetectionRules.scan(raw, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(rawMatches.count, 1)
+                XCTAssertEqual(rawMatches.first?.effectiveSeverity, .critical)
+                for ext in ["env", "yaml"] {
+                    let separator = ext == "env" ? "=" : ": "
+                    let content = key + separator + "\"" + value + "\""
+                    let matches = try DirectoryScanner.scanFileContentOrThrow(
+                        content: content, ext: ext, relativePath: "fixture." + ext, config: config
+                    ).filter { $0.type == .credential }
+                    XCTAssertEqual(matches.count, 1, ext)
+                    XCTAssertEqual(matches.first?.effectiveSeverity, .critical, ext)
+                }
+            }
+        }
+    }
+
+    // WO-651@v2: actual unquoted punctuation remains part of a value outside a source string literal.
+    func testCredentialKeywordUnquotedPunctuationRemainsDetected() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            for punctuation in [")", ";", ","] {
+                let value = ["Q7mN", punctuation, "4rZ9T2xV"].joined()
+                let content = ["pass", "word=", value].joined()
+                let matches = DetectionRules.scan(content, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertTrue(matches.first?.value == content)
+            }
+        }
+    }
+
+    // WO-651@v2: provider, exact-known, custom, XML and DSN evidence bypass the ambiguous keyword floor.
+    func testCredentialKeywordFloorDoesNotChangeAuthorizedEvidence() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential, .dbConnectionString])
+            let short = ["Ab3", "Dx7", "Z"].joined()
+            let known = DetectionRules.scan(short, config: config, knownSecretValues: [short])
+            XCTAssertTrue(known.contains { $0.mutationAuthorizationSources.contains(.exactKnownSecret) })
+            let regex = try NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: short))
+            let rule = CustomRule(name: "fixture", regex: regex)
+            XCTAssertTrue(DetectionRules.scan(short, config: config, customRules: [rule]).contains {
+                $0.mutationAuthorizationSources.contains(.customRule)
+            })
+            let xml = ["<pass", "word>", short, "</pass", "word>"].joined()
+            XCTAssertTrue(DetectionRules.scan(xml, config: config).contains { $0.type == .xmlCredential })
+            let dsn = ["post", "gres://user:", "A9", "x", "@db.internal/app"].joined()
+            XCTAssertTrue(DetectionRules.scan(dsn, config: config).contains {
+                $0.type == .dbConnectionString && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+            })
+            let provider = ["AKIA", "QWERTYUIOPASDFGH"].joined()
+            XCTAssertTrue(DetectionRules.scan(provider, config: config).contains { $0.type == .awsKey })
+        }
+    }
+
     // WO-141@v3: live and test sessions use intrinsic provider evidence without a new type.
     func testStripeCheckoutSessionProviderEvidence() throws {
         for mode in ["live", "test"] {
@@ -741,6 +989,7 @@ final class DetectionRulesTests: XCTestCase {
         }
     }
 
+    // WO-651@v2: quote controls remain intact, while literals below the fixed floor are now rejected.
     // WO-122: stripping quotes must expose literals while backticks stay fail-closed.
     func testQuoteWrappedCredentialLiteralsStillDetected() {
         let literal = "Alpha" + String(repeating: "A1", count: 18) + "_tail"
@@ -753,13 +1002,15 @@ final class DetectionRulesTests: XCTestCase {
         ]
 
         for testCase in literalCases {
-            XCTAssertTrue(
-                DetectionRules.isValidCredentialValue(testCase.value),
+            // WO-651@v2: retain the original fixtures and apply the pinned eight-character expectation.
+            let expected = testCase.value.count >= 8
+            XCTAssertEqual(
+                DetectionRules.isValidCredentialValue(testCase.value), expected,
                 "Should keep detecting credential value: \(testCase.name)"
             )
             let matches = DetectionRules.scan(testCase.source, config: config)
             let credMatches = matches.filter { $0.type == .credential }
-            XCTAssertGreaterThanOrEqual(credMatches.count, 1, "Should detect credential: \(testCase.name)")
+            XCTAssertEqual(!credMatches.isEmpty, expected, "Credential floor mismatch: \(testCase.name)")
         }
     }
 

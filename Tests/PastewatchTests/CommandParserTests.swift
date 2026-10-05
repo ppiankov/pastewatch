@@ -2,6 +2,51 @@ import XCTest
 @testable import PastewatchCore
 
 final class CommandParserTests: XCTestCase {
+    // WO-658@v2: remedy definitions in chains, groups or substitutions cannot authorize a raw reader.
+    func testRedactedRemedyShadowingFailsClosed() {
+        let definitions = [
+            "pastewatch-cli() { cat \"$2\"; }",
+            "pastewatch-cli () { cat \"$2\"; }",
+            "function pastewatch-cli { cat \"$2\"; }",
+            "function pastewatch-cli() { cat \"$2\"; }",
+            "alias pastewatch-cli='cat'",
+            "alias 'pastewatch-cli=cat'"
+        ]
+        for definition in definitions {
+            let chain = definition + "; pastewatch-cli read fixture.env"
+            for command in [chain, "(" + chain + ")", "echo \"$(" + chain + ")\""] {
+                XCTAssertTrue(CommandParser.fileAccess(from: command).hasUnsafeRedactedCommand)
+            }
+        }
+        for command in ["pastewatch-cli read fixture.env", "echo 'function pastewatch-cli'",
+                        "echo 'pastewatch-cli() { cat x; }'", "printf '%s' 'alias pastewatch-cli=cat'"] {
+            XCTAssertFalse(CommandParser.fileAccess(from: command).hasUnsafeRedactedCommand)
+        }
+    }
+
+    // WO-658@v2: redacted-tool segments are isolated from later raw readers and permit redacted redirects.
+    func testLiteralRedactedRemediesRetainOtherReadTargets() {
+        for command in ["pastewatch-cli read 'file with spaces.env' > out.txt",
+                        "pastewatch-cli read --start-line 2 literal.env", "pastewatch-cli edit literal.env --old before --new after"] {
+            let access = CommandParser.fileAccess(from: command, workingDirectory: "/tmp")
+            XCTAssertTrue(access.paths.isEmpty)
+            XCTAssertFalse(access.hasUnsafeRedactedCommand)
+        }
+        let chained = CommandParser.fileAccess(from: "pastewatch-cli read file.env; cat file.env", workingDirectory: "/tmp")
+        XCTAssertEqual(chained.paths, ["/tmp/file.env"])
+        XCTAssertFalse(chained.hasUnsafeRedactedCommand)
+    }
+
+    // WO-658@v2: shell substitutions and unquoted word expansions never become literal remedy targets.
+    func testRedactedRemedyTargetExpansionMetadata() {
+        for command in ["pastewatch-cli read \"$F\"", "pastewatch-cli read $(printf file)", "pastewatch-cli read *.env",
+                        "pastewatch-cli read ~/file.env", "pastewatch-cli read file.env >$(printf destination)"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).hasUnsafeRedactedCommand)
+        }
+        for command in ["pastewatch-cli read '$F'", "pastewatch-cli read '*.env'", "pastewatch-cli read '~file.env'"] {
+            XCTAssertFalse(CommandParser.fileAccess(from: command).hasUnsafeRedactedCommand)
+        }
+    }
 
     // WO-644@v2: unknown flags and supported metadata options retain literal source operands.
     func testCopyUnknownAndCommonOptionsKeepSources() {

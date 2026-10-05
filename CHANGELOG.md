@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add atomic redacted-view MCP edits with unique byte matches, bounded complete placeholder restoration and metadata-only refusals. Consistency tokens hash only the whole redacted view, and authorization checks the complete edited view before restoring secrets. (WO-647)
+- Add view-token-checked redacted CLI read/edit commands and offer both MCP and CLI remedies in guarded-file messages. Function or alias shadowing of the remedy executable refuses the command, including in nested segments. (WO-658)
+
+### Changed
+
+- Block native Read only for mutation-authorized secrets, retaining advisory diagnostics and unchanged Write policy; document enforcement remains effective for scan/CI and Edit. (WO-659)
+
+### Fixed
+
+- Bound keyword Credential values at source escapes and quotes, rejecting values below eight characters and digits-only literals. (WO-651)
+- Ignore whole URL-query and structured Credential placeholders while preserving real-value detection and the existing DSN password contract. (WO-648)
+- Exclude typed parameter and variable declarations from raw Credential matching while retaining quoted assignments and structured configuration values. Comma declarations require an enclosing parameter list, preserving flow mappings and object literals. (WO-652)
+
 ## [0.39.1] - 2026-10-05
 
 ### Added

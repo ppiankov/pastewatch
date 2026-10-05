@@ -159,13 +159,28 @@ final class DocumentationGuardPolicyTests: XCTestCase {
     }
 
     // WO-635: pathless input and non-document extensions retain existing blocking behavior.
+    // WO-659@v1: advisory-only native Read remains allowed while stdin scan enforcement is unchanged.
     func testNonDocumentAndStdinRemainBlocking() throws {
         let binary = cliURL()
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try writeConfig(fixtureConfig(), to: root)
             for name in ["guide.env", "guide.yaml", "guide.swift", "guide.txt"] {
                 let path = try writeFixture(example(), name: name, in: root)
-                XCTAssertEqual(try runCLI(binary, ["guard-read", path], in: root).status, 2, name)
+                // WO-659@v1: capture advisory diagnostics without changing the shared subprocess helper.
+                let process = Process()
+                let stderr = Pipe()
+                process.executableURL = binary
+                process.arguments = ["guard-read", path]
+                process.currentDirectoryURL = root
+                process.environment = ["PW_GUARD": "1"]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = stderr
+                try process.run()
+                let diagnostics = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0, name)
+                XCTAssertTrue(diagnostics.contains("ADVISORY: Credential line 1 count=1"), name)
+                XCTAssertFalse(diagnostics.contains(example()), name)
             }
             let result = try runCLI(
                 binary, ["scan", "--check", "--stdin-filename", "guide.md"], in: root, input: example()
@@ -175,6 +190,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
     }
 
     // WO-635: admins may restore enforcement; the existing cascade must not merge in project overrides.
+    // WO-659@v1: admin enforcement remains observable in scan, independently of native Read authorization.
     func testEnforcePolicyAndAdminPrecedence() throws {
         let binary = cliURL()
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -191,7 +207,9 @@ final class DocumentationGuardPolicyTests: XCTestCase {
             XCTAssertEqual(resolved.source, .system)
             try writeConfig(resolved.config, to: root)
             let path = try writeFixture(example(), name: "guide.md", in: root)
-            XCTAssertEqual(try runCLI(binary, ["guard-read", path], in: root).status, 2)
+            // WO-659@v1: enforce affects the scan outcome but cannot promote advisory findings into Read blocks.
+            XCTAssertEqual(try runCLI(binary, ["scan", "--file", path, "--check"], in: root).status, 6)
+            XCTAssertEqual(try runCLI(binary, ["guard-read", path], in: root).status, 0)
         }
     }
 

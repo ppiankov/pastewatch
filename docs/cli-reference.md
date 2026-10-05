@@ -231,6 +231,49 @@ Response streaming has no authoritative catalog of exact local secret values. It
 
 For local protocol diagnosis only, `pastewatch-cli proxy --debug-stream-dump <path>` writes raw input frames, transformed output, and mutation decisions as owner-only JSONL. It requires the default `per_sse_event` mode so each record reflects the actual frame decision; startup fails instead of producing an incomplete dump in `raw_stream` or `buffer` mode. The file contains unredacted secrets by design, is disabled unless the option is supplied, and prints a warning even with `--quiet`. Delete it securely after diagnosis and never attach it to an issue or commit.
 
+<!-- WO-658@v2: CLI remedies share the checked redacted-edit engine when MCP editing is unavailable. -->
+## Redacted CLI Read/Edit
+
+```bash
+pastewatch-cli read settings.env --start-line 1 --line-count 20
+pastewatch-cli edit settings.env --old 'enabled=false' --new 'enabled=true' \
+  --expect-view-token '<view token from read stderr>'
+```
+
+`read` writes redacted text to stdout without adding a newline. Stderr contains
+`view-token=<64 hex characters>` and placeholder type, line and marker
+metadata, never the original values. Optional positive `--start-line` and
+`--line-count` select a window after whole-file scanning and redaction.
+
+<!-- WO-647@v2: a view token binds redacted structure without exposing a raw-file digest. -->
+The view token is SHA-256 of the whole-file redacted view, computed before any
+line window. Secret-only changes that leave that view identical do not change
+the token; the final atomic write still checks unchanged raw bytes internally.
+
+`edit` requires the view token from `read`, exactly one of `--old` or `--old-file`, and
+exactly one of `--new` or `--new-file`. The file options accept bounded UTF-8
+multiline text. Supply only redacted text: never put plaintext secrets in command
+arguments, which can enter shell history or process listings.
+
+The old text must occur exactly once in the whole redacted view. A stale view token,
+missing or ambiguous match, partial or unknown placeholder, or a new plaintext
+secret refuses the edit without changing the file. A fresh local placeholder map
+restores secrets before an atomic, permission-preserving write. Success reports
+only `linesChanged` and `redactions` counts.
+
+<!-- WO-647@v2: unmapped marker-shaped text remains a fail-closed limitation of whole-file restoration. -->
+Unmapped placeholder-shaped text anywhere in the file refuses edits, even when
+that text is outside the edited span. The complete edited redacted view is
+checked for plaintext secrets before any placeholders are restored.
+
+Exit codes: **0** success, **1** refused, **2** invalid usage or active configuration.
+The command guard permits literal-path `pastewatch-cli read` and `edit` segments,
+including redirected redacted output. Expanded paths and command substitutions
+are not exempt; other commands in a chain or pipeline remain guarded.
+<!-- WO-658@v2: literal command names are not trustworthy after a definition shadows the remedy. -->
+Defining `pastewatch-cli` as a function or alias anywhere in the command,
+including a nested segment, refuses the command rather than exempting its calls.
+
 ## MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
@@ -266,6 +309,7 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 |------|---------|
 | `pastewatch_read_file` | Read file with secrets replaced by `__PW_TYPE_N__` placeholders |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
+| `pastewatch_edit_file` | Replace one unique string in the redacted view, restoring placeholders locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan` | Scan text for sensitive data |
 | `pastewatch_scan_file` | Scan a file for sensitive data |
@@ -287,7 +331,17 @@ advisories describe the whole file, even when a window excludes those findings.
 An authorized replacement or encoding failure returns a tool error naming only
 finding types and lines, never partial file content. Advisory-only matches remain
 visible. Window placeholders are restorable, but a window is not a complete-file
-write payload: assemble the intended whole file before calling `pastewatch_write_file`.
+write payload: use `pastewatch_edit_file` for small edits, or assemble the intended
+whole file before calling `pastewatch_write_file`.
+
+<!-- WO-647@v2: document the exact partial-edit contract without exposing file values. -->
+`pastewatch_edit_file` requires `path`, `old_string` and `new_string`. Copy the old
+text from the redacted view, including complete placeholders where needed. It must
+match exactly once in the whole file, even when copied from a line window. The
+engine refuses missing or ambiguous text, split or unresolved placeholders, and
+newly authored plaintext secrets. It restores placeholders using that file's
+session mappings and replaces the file atomically while preserving its mode.
+The response contains `edited`, `linesChanged` and `redactions`, not file content.
 
 `pastewatch_write_file` accepts either inline `content` or a local UTF-8
 `contentPath`, never both. Use `contentPath` for a large locally prepared payload;
@@ -402,6 +456,9 @@ Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls be
 <!-- WO-640: Explain source-path decisions without promising a shell sandbox. -->
 Recognized `cp`, `mv`, `install`, `rsync`, and `ditto` source operands are read targets. This also covers file content fed through `cat` or input redirection into `tee`, `>`, or `>>`. Each source is evaluated using its own path; a Markdown destination does not make a non-document source advisory. Destination-only operands are not newly scanned as sources. Scripts, obfuscated commands, unsupported options, and recursive directory copies remain limitations; see [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
 
+<!-- WO-659@v1: Native Read uses the same replacement authorization as MCP read. -->
+`guard-read <file>` blocks only when `pastewatch_read_file` would redact a value. Advisory-only findings still report their type and line on stderr but allow native Read. To protect an ambiguous class from being read, configure an applicable `obfuscate` entry; enabling its detector alone does not authorize redaction. Invalid configuration and unreadable input still fail closed. Write and Edit policy are unchanged.
+
 ## Secret Externalization (Fix)
 
 Externalize secrets to environment variables with language-aware code patching:
@@ -502,6 +559,18 @@ Optional fields are omitted when unavailable. Values, rule patterns, hashes, and
 | `allowlistSuppression` | Suppression reasons; never the allowed values or patterns |
 
 See [Documenting credentials](../README.md#documenting-credentials) for the single supported placeholder list.
+
+<!-- WO-651@v2: document the fixed keyword-value floor and source extraction boundaries. -->
+Keyword-value Credential detection requires at least eight characters and rejects digits-only values.
+Extraction stops at the first backslash escape or matching closing quote; inside a source string literal,
+an unquoted value also ends at a closing parenthesis, semicolon or comma. This floor does not apply to
+intrinsic/provider formats, exact-known values, custom rules, DSN password evidence or XML credentials.
+
+<!-- WO-648@v2: describe whole-placeholder exclusions shared with the documentation password contract. -->
+The Credential rule also ignores whole angle placeholders `<...>`, `${...}`, `{{...}}`, `%(...)s`,
+`:name` path parameters, `your-*` references, and the placeholder words and masks listed in
+[Documenting credentials](../README.md#documenting-credentials). A placeholder prefix followed by real
+value text is not a whole-placeholder exclusion. These exclusions do not change the DSN password rules.
 
 ## Doctor
 
@@ -684,7 +753,8 @@ The `documentationPolicy` config key accepts `advisory` (default) or `enforce`. 
 {"documentationPolicy": "advisory"}
 ```
 
-With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary guard severity threshold. Inputs without a file path do not receive the document exception.
+<!-- WO-659@v1: Document enforcement does not override the MCP-authorized native Read policy. -->
+With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary severity threshold for scan/CI and Edit; native Read instead follows the MCP redaction decision and never blocks advisory-only findings. Inputs without a file path do not receive the document exception.
 
 An administrator can pin `enforce` in `/etc/pastewatch/config.json`; a project or user config cannot override that winner. An invalid policy value makes configuration invalid and enforcement fails closed, rather than falling back to `advisory`. Check a config with:
 

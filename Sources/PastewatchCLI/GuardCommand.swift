@@ -22,6 +22,7 @@ struct Guard: ParsableCommand {
     var quiet = false
 
     // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
+    // WO-658@v2: unresolved redacted-tool paths do not bypass guarded file access.
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
 
@@ -29,6 +30,8 @@ struct Guard: ParsableCommand {
         let config = try requireValidatedConfig()
         // WO-644@v2: diagnostics and read targets share the same parse result.
         let access = CommandParser.fileAccess(from: command)
+        // WO-658@v2: refuse only the recognized remedy's unresolved syntax, without echoing its operands.
+        try requireLiteralRedactedAccess(access)
         let paths = access.paths
         if !access.unsupportedCommands.isEmpty {
             let names = access.unsupportedCommands.joined(separator: ", ")
@@ -138,7 +141,9 @@ struct Guard: ParsableCommand {
                     let msg = "BLOCKED: command contains inline secret(s) (\(ir.severityCounts): \(ir.types.joined(separator: ", ")))\n"
                     FileHandle.standardError.write(Data(msg.utf8))
                 }
-                FileHandle.standardError.write(Data("Use pastewatch MCP tools for files with secrets.\n".utf8))
+                // WO-658@v2: offer both sanctioned surfaces when referenced or inline findings block a command.
+                FileHandle.standardError.write(Data(("Use pastewatch_read_file / pastewatch_edit_file, or pastewatch-cli read <file> " +
+                    "then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... .\n").utf8))
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
@@ -146,6 +151,15 @@ struct Guard: ParsableCommand {
         if json {
             printJSON(GuardResult(blocked: false, command: redactedCommand, files: [], inlineFindings: []))
         }
+    }
+
+    // WO-658@v2: unresolved remedy paths refuse without disclosing command operands.
+    private func requireLiteralRedactedAccess(_ access: CommandParser.FileAccess) throws {
+        guard access.hasUnsafeRedactedCommand else { return }
+        if !quiet {
+            FileHandle.standardError.write(Data("Redacted file access requires a literal path and no command substitution.\n".utf8))
+        }
+        throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 
     // WO-601@v2: one fail-closed boundary owns referenced-file decoding and scanning.

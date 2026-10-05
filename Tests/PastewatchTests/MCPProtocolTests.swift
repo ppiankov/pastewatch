@@ -10,6 +10,60 @@ import Darwin
 
 final class MCPProtocolTests: XCTestCase {
 
+    // WO-647@v2: the partial-edit tool is discoverable with all three required text arguments.
+    func testEditFileToolIsRegistered() throws {
+        let request = JSONRPCRequest(jsonrpc: "2.0", id: .int(1), method: "tools/list", params: nil)
+        let directory = try TestConfigHelper.makeProjectDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let response = try callMCPRequest(request, currentDirectory: directory)
+        guard case .object(let result) = response.result,
+              case .array(let tools) = result["tools"],
+              let tool = tools.first(where: {
+                  guard case .object(let entry) = $0 else { return false }
+                  return entry["name"] == .string("pastewatch_edit_file")
+              }), case .object(let entry) = tool,
+              case .object(let schema) = entry["inputSchema"],
+              case .array(let required) = schema["required"] else {
+            return XCTFail("Missing partial-edit tool schema")
+        }
+        XCTAssertEqual(Set(required.compactMap { value -> String? in
+            guard case .string(let field) = value else { return nil }
+            return field
+        }), ["path", "old_string", "new_string"])
+    }
+
+    // WO-647@v2: a persistent read/edit session restores secret context while changing only the requested bytes.
+    func testEditFileLiveSessionRestoresPlaceholderContext() throws {
+        let executable = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let session = try LiveMCPSession(executableURL: executable,
+                                             maximumLineBytes: ScanInputLimits.defaultMaximumLineBytes)
+            defer { session.close() }
+            let path = session.directory.appendingPathComponent("fixture.env")
+            let secret = ["AKIA", String(repeating: "Q", count: 16)].joined()
+            let original = "title=before\nkey=" + secret + "\nfooter=keep\n"
+            try Data(original.utf8).write(to: path)
+            let read = toolRequest(id: 1, name: "pastewatch_read_file", arguments: ["path": .string(path.path)])
+            try session.send(try JSONEncoder().encode(read) + Data("\n".utf8))
+            let readResponse = try XCTUnwrap(session.response())
+            let readText = try joinedMCPContentText(readResponse)
+            guard case .object(let payload) = try JSONDecoder().decode(JSONValue.self, from: Data(readText.utf8)),
+                  case .string(let view) = payload["content"] else { return XCTFail("Missing redacted view") }
+            XCTAssertFalse(view.contains(secret))
+            let editedView = view.replacingOccurrences(of: "title=before", with: "title=after")
+            let edit = toolRequest(id: 2, name: "pastewatch_edit_file", arguments: [
+                "path": .string(path.path), "old_string": .string(view), "new_string": .string(editedView)
+            ])
+            try session.send(try JSONEncoder().encode(edit) + Data("\n".utf8))
+            let edited = try XCTUnwrap(session.response())
+            XCTAssertNil(edited.error)
+            guard edited.result != nil else { return XCTFail("Missing partial-edit result") }
+            let expected = original.replacingOccurrences(of: "title=before", with: "title=after")
+            XCTAssertTrue(try Data(contentsOf: path).elementsEqual(Data(expected.utf8)))
+            XCTAssertFalse(try joinedMCPContentText(edited).contains(secret))
+        }
+    }
+
     // MARK: - JSONValue encoding/decoding
 
     func testJSONValueStringEncodingDecoding() throws {

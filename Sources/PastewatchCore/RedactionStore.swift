@@ -123,6 +123,22 @@ public final class RedactionStore {
         return (result, entries)
     }
 
+    // WO-647@v2: bound every intermediate restoration before allocating original placeholder values.
+    public func resolveChecked(content: String, filePath: String, maximumBytes: Int) throws -> ResolveResult {
+        var projectedBytes = content.utf8.count
+        guard maximumBytes >= 0, projectedBytes <= maximumBytes else { throw CocoaError(.fileWriteOutOfSpace) }
+        let regex = customRegex ?? Self.structuredRegex
+        let text = content as NSString
+        for match in regex.matches(in: content, range: NSRange(location: 0, length: text.length)).reversed() {
+            let marker = text.substring(with: match.range)
+            guard let original = mappings[filePath]?[marker] else { continue }
+            let delta = original.utf8.count - marker.utf8.count
+            guard delta <= maximumBytes - projectedBytes else { throw CocoaError(.fileWriteOutOfSpace) }
+            projectedBytes += delta
+        }
+        return resolve(content: content, filePath: filePath)
+    }
+
     /// Resolve placeholders in content using mappings for a specific file.
     public func resolve(content: String, filePath: String) -> ResolveResult {
         return resolveWithMappings(content: content, filePaths: [filePath])
@@ -144,6 +160,31 @@ public final class RedactionStore {
     /// Check if any mappings exist for a file.
     public func hasMappings(for filePath: String) -> Bool {
         mappings[filePath] != nil && !(mappings[filePath]?.isEmpty ?? true)
+    }
+
+    // WO-647@v2: byte offsets let exact replacements reject selections that split a placeholder token.
+    public func placeholderByteRanges(in content: String) -> [Range<Int>] {
+        let regex = customRegex ?? Self.structuredRegex
+        return regex.matches(in: content, range: NSRange(content.startIndex..., in: content)).compactMap { match in
+            guard let range = Range(match.range, in: content) else { return nil }
+            let lower = content.utf8.distance(from: content.utf8.startIndex, to: range.lowerBound)
+            let upper = content.utf8.distance(from: content.utf8.startIndex, to: range.upperBound)
+            return lower..<upper
+        }
+    }
+
+    // WO-647@v2: complete markers are allowed, but recognizable truncated marker syntax cannot be written.
+    public func hasPartialPlaceholder(in content: String, filePath: String) -> Bool {
+        let regex = customRegex ?? Self.structuredRegex
+        let remainder = regex.stringByReplacingMatches(
+            in: content, range: NSRange(content.startIndex..., in: content), withTemplate: ""
+        )
+        if let prefix = customPrefix { return remainder.contains(prefix) }
+        let markerPrefix = "__PW_"
+        if remainder.contains("__PW") { return true }
+        return (mappings[filePath]?.keys ?? [String: String]().keys).contains { marker in
+            marker.hasPrefix(markerPrefix) && remainder.contains(String(marker.dropFirst(markerPrefix.count)))
+        }
     }
 
     private func resolveWithMappings(content: String, filePaths: [String]) -> ResolveResult {

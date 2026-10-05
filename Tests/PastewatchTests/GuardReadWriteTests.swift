@@ -272,6 +272,63 @@ final class GuardReadWriteTests: XCTestCase {
                       "Guard should block access to ~/.openclaw/ by default")
     }
 
+    // WO-659@v1: native Read blocks exactly the matches the MCP read would replace.
+    func testReadGuardMatchesMCPAuthorization() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let secret = ["Z9aB8cD7", "eF6gH5iJ", "4kL3mN2p"].joined()
+            let aws = ["AKIA", "QWERTYUIOPASDFGH"].joined()
+            var config = TestConfigHelper.configWithAmbiguousAdvisories([.credential, .dbConnectionString, .email])
+            config.customRules = [CustomRuleConfig(name: "fixture", pattern: "fixture-" + "[A-Z]{20}")]
+            config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@corp.com")]
+            try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
+            let blockingNames: Set<String> = ["intrinsic.txt", "database.md", "custom.txt", "opt-in.txt"]
+            let cases: [(String, String)] = [
+                ("advisory.txt", ["pass", "word=", secret].joined()),
+                ("intrinsic.txt", aws),
+                ("database.md", ["post", "gres://user:", secret, "@db.internal/app"].joined()),
+                ("custom.txt", "fixture-" + String(repeating: "Q", count: 20)),
+                ("opt-in.txt", ["operator", "@corp.com"].joined()),
+                ("documentation.md", ["pass", "word=", secret].joined()),
+                ("clean.txt", "ordinary prose"),
+            ]
+            for (name, content) in cases {
+                let file = root.appendingPathComponent(name)
+                try Data(content.utf8).write(to: file)
+                let matches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: content, ext: file.pathExtension, relativePath: file.path, config: config
+                )
+                let decision = MCPReadDecision.evaluate(
+                    matches: matches, content: content, config: config,
+                    minimumSeverity: .high, filePath: file.path
+                )
+                XCTAssertEqual(!decision.authorized.isEmpty, blockingNames.contains(name), name)
+                let blocked: Bool
+                do {
+                    try FileGuard.check(filePath: file.path, failOnSeverity: .high, operation: .read)
+                    blocked = false
+                } catch let error as ExitCode {
+                    XCTAssertEqual(error.rawValue, GuardExitContract.blocked, name)
+                    blocked = true
+                }
+                XCTAssertEqual(blocked, !decision.authorized.isEmpty, name)
+            }
+        }
+    }
+
+    // WO-659@v1: advisory-only Read does not change the legacy Write enforcement policy.
+    func testAdvisoryOnlyFileStillBlocksWrite() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
+            let file = root.appendingPathComponent("fixture.txt")
+            let content = ["pass", "word=", "Z9aB8cD7eF6gH5iJ"].joined()
+            try Data(content.utf8).write(to: file)
+            XCTAssertThrowsError(try FileGuard.check(filePath: file.path, failOnSeverity: .high, operation: .write)) {
+                XCTAssertEqual(($0 as? ExitCode)?.rawValue, GuardExitContract.blocked)
+            }
+        }
+    }
+
     // WO-588@v2: both file guard operations must use the same blocked exit contract.
     // WO-634: in-process guard entry points must resolve only fixture policy.
     private func assertFileGuardBlocks(path: String, operation: FileGuard.Operation) {

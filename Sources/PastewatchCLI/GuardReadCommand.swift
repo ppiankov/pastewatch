@@ -16,6 +16,7 @@ enum FileGuard {
         }
     }
 
+    // WO-659@v1: Read enforces MCP mutation authorization; Write retains its existing policy.
     /// Throws `ExitCode(2)` on block or shared-pattern error.
     /// Returns normally when the file is clean (no actionable secrets).
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
@@ -84,21 +85,32 @@ enum FileGuard {
         }
         // WO-502: read/write/command/watch use one post-scan decision pipeline.
         // WO-635: retain reportable advisories while only actionable matches block file access.
-        let decision = GuardDecision.evaluate(
-            matches: matches,
-            content: content,
-            config: config,
-            contentTrust: .trustedFile,
-            minimumSeverity: failOnSeverity,
+        // WO-659@v1: use the MCP decision directly so Read never blocks an advisory-only file.
+        let filtered: [DetectedMatch]
+        let advisories: [DetectedMatch]
+        switch operation {
+        case .read:
+            let decision = MCPReadDecision.evaluate(
+                matches: matches, content: content, config: config,
+                minimumSeverity: failOnSeverity, filePath: filePath
+            )
+            filtered = decision.authorized
+            advisories = decision.reportedAdvisories
+        case .write:
             // WO-635: path-based documentation policy is shared by read and write guards.
-            filePath: filePath
-        )
+            let decision = GuardDecision.evaluate(
+                matches: matches, content: content, config: config,
+                contentTrust: .trustedFile, minimumSeverity: failOnSeverity, filePath: filePath
+            )
+            filtered = decision.actionableMatches
+            advisories = decision.reportableMatches.filter { $0.advisory == .documentationPolicy }
+        }
         // WO-635: advisory diagnostics expose type and line, never matched values.
-        for match in decision.reportableMatches where match.advisory == .documentationPolicy {
+        // WO-659@v1: advisory reporting retains the type-and-line wording without exposing values.
+        for match in advisories {
             let message = "ADVISORY: \(match.displayName) line \(match.line) count=1\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
-        let filtered = decision.actionableMatches
         guard !filtered.isEmpty else { return }
 
         let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
