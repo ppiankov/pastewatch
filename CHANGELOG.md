@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep MCP punctuation round-trip checks silent while pinning zero findings for symbolic references. (WO-656)
 - Preserve syscall errors and retry interrupted waits in MCP and terminal test helpers. (WO-654)
+- Add direct regression coverage for binary-response overlap and duplicate-span refusals. (WO-655)
 
 ## [0.39.0] - 2026-10-04
 

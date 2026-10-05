@@ -10,6 +10,71 @@ import FoundationNetworking
 
 // WO-641@v2: binary response tests distinguish exact replacement from transport refusal.
 final class NonUTF8ResponseRedactionTests: XCTestCase {
+    // WO-655@v1: an overlap must discard every tentative replacement before forwarding.
+    func testOverlappingSpanPlanRefusesWithoutPartialReplacements() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let fixture = spanFixture()
+            let matches = try [
+                spanMatch(in: fixture.text, value: ["first", "middle"].joined()),
+                spanMatch(in: fixture.text, value: ["middle", "last"].joined())
+            ]
+            let plan = CurlHTTPClient.planNonUTF8ResponseReplacements(
+                fixture.body, lossyText: fixture.text, matches: matches
+            )
+            XCTAssertEqual(plan.refusedTypes, ["Span fixture"])
+            XCTAssertTrue(plan.replacements.isEmpty, "a refusal must expose no partial replacements")
+            XCTAssertTrue(plan.mutatedMatches.isEmpty, "a refusal must count no successful mutation")
+        }
+    }
+
+    // WO-655@v1: touching spans are safe and retain their exact original-byte boundaries.
+    func testAdjacentSpanPlanAcceptsBothReplacements() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let fixture = spanFixture()
+            let matches = try [
+                spanMatch(in: fixture.text, value: ["first", "middle"].joined()),
+                spanMatch(in: fixture.text, value: ["la", "st"].joined())
+            ]
+            let plan = CurlHTTPClient.planNonUTF8ResponseReplacements(
+                fixture.body, lossyText: fixture.text, matches: matches
+            )
+            XCTAssertTrue(plan.refusedTypes.isEmpty)
+            XCTAssertEqual(plan.replacements.count, 2)
+            XCTAssertEqual(plan.mutatedMatches.count, 2)
+            XCTAssertEqual(plan.replacements.first?.range.lowerBound, 1)
+            XCTAssertEqual(plan.replacements.first?.range.upperBound, plan.replacements.last?.range.lowerBound)
+            XCTAssertEqual(plan.replacements.last?.range.upperBound, fixture.body.endIndex)
+        }
+    }
+
+    // WO-655@v1: identical ranges must refuse the second occurrence rather than double-rewrite it.
+    func testDuplicateSpanPlanRefusesSecondReplacement() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let fixture = spanFixture()
+            let match = try spanMatch(in: fixture.text, value: ["first", "middle"].joined())
+            let plan = CurlHTTPClient.planNonUTF8ResponseReplacements(
+                fixture.body, lossyText: fixture.text, matches: [match, match]
+            )
+            XCTAssertEqual(plan.refusedTypes, ["Span fixture"])
+            XCTAssertTrue(plan.replacements.isEmpty)
+            XCTAssertTrue(plan.mutatedMatches.isEmpty)
+        }
+    }
+
+    // WO-655@v1: malformed leading bytes exercise decoded-to-original offset mapping.
+    private func spanFixture() -> (body: Data, text: String) {
+        let body = Data([0xFF]) + Data(["first", "middle", "last"].joined().utf8)
+        // swiftlint:disable:next optional_data_string_conversion
+        return (body, String(decoding: body, as: UTF8.self))
+    }
+
+    // WO-655@v1: hand-built authorized matches bypass scanner overlap coalescing.
+    private func spanMatch(in text: String, value: String) throws -> DetectedMatch {
+        let range = try XCTUnwrap(text.range(of: value), "the fixture span must exist")
+        return DetectedMatch(type: .credential, value: value, range: range,
+                             customRuleName: "Span fixture", customSeverity: .critical)
+    }
+
     // WO-641@v2: a multibyte value is replaced at its detected occurrence without rewriting binary bytes.
     func testLocatableMultibyteSecretPreservesSurroundingBytes() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in
