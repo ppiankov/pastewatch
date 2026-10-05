@@ -829,6 +829,7 @@ final class MCPProtocolTests: XCTestCase {
         private var started = false
         private static let deadlineSeconds: TimeInterval = 10
 
+        // WO-654@v1: retain syscall failures before session cleanup runs.
         // WO-627@v2: configure read caps and explicit rules before the subprocess loads policy.
         init(
             executableURL: URL,
@@ -858,8 +859,9 @@ final class MCPProtocolTests: XCTestCase {
             do {
                 let descriptor = stdin.fileHandleForWriting.fileDescriptor
                 let flags = fcntl(descriptor, F_GETFL)
+                // WO-654@v1: fcntl supplies errno; the catch cleans up after it is captured.
                 guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
-                    throw POSIXError(.EIO)
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
                 }
                 try process.run()
                 started = true
@@ -869,6 +871,7 @@ final class MCPProtocolTests: XCTestCase {
             }
         }
 
+        // WO-654@v1: distinguish syscall failures from a timeout or a zero-progress write.
         // WO-603@v3: a stalled reader must fail a test deadline rather than block the test writer.
         func send(_ data: Data) throws {
             let descriptor = stdin.fileHandleForWriting.fileDescriptor
@@ -876,6 +879,7 @@ final class MCPProtocolTests: XCTestCase {
             var offset = 0
             while offset < data.count {
                 guard try ready(descriptor, events: Int16(POLLOUT), deadline: deadline) else {
+                    // WO-654@v1: the monotonic deadline is not a failed syscall with errno.
                     throw POSIXError(.ETIMEDOUT)
                 }
                 let count = data.withUnsafeBytes { bytes in
@@ -885,12 +889,17 @@ final class MCPProtocolTests: XCTestCase {
                     offset += count
                 } else if count < 0, errno == EINTR || errno == EAGAIN {
                     continue
+                // WO-654@v1: a failed write supplies its own errno.
+                } else if count < 0 {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
                 } else {
+                    // WO-654@v1: a zero-byte write has no errno and must not livelock.
                     throw POSIXError(.EIO)
                 }
             }
         }
 
+        // WO-654@v1: unexpected EOF is a protocol failure, not a failed syscall.
         // WO-603@v3: await one framed response without closing or padding the request pipe.
         func response(timeout: TimeInterval = deadlineSeconds) throws -> JSONRPCResponse? {
             let deadline = ProcessInfo.processInfo.systemUptime + timeout
@@ -904,11 +913,13 @@ final class MCPProtocolTests: XCTestCase {
                     return nil
                 }
                 let chunk = stdout.fileHandleForReading.availableData
+                // WO-654@v1: empty availableData means EOF, so errno is not meaningful.
                 guard !chunk.isEmpty else { throw POSIXError(.EPIPE) }
                 output.append(chunk)
             }
         }
 
+        // WO-654@v1: preserve poll failures while retrying interrupted waits.
         // WO-603@v3: interrupted readiness waits share the original monotonic deadline.
         private func ready(_ descriptor: Int32, events: Int16, deadline: TimeInterval) throws -> Bool {
             while true {
@@ -917,7 +928,8 @@ final class MCPProtocolTests: XCTestCase {
                 var descriptor = pollfd(fd: descriptor, events: events, revents: 0)
                 let result = poll(&descriptor, 1, Int32((remaining * 1_000).rounded(.up)))
                 if result >= 0 { return result > 0 }
-                guard errno == EINTR else { throw POSIXError(.EIO) }
+                // WO-654@v1: non-interruption failures must keep poll's actual error code.
+                guard errno == EINTR else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             }
         }
 
