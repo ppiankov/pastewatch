@@ -2,6 +2,46 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-661@v2: phone-shaped UUID slices remain identifiers in source and structured strings.
+    func testCanonicalUUIDTokensDoNotProducePhoneMatches() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
+            XCTAssertTrue(config.isTypeEnabled(.phone))
+            let digitUUID = ["1844" + "0000", "0000", "4000", "8000", "00000000" + "0005"].joined(separator: "-")
+            let hexUUID = ["550e" + "8400", "e29b", "41d4", "a716", "4466" + "5544" + "0000"].joined(separator: "-")
+            for uuid in [digitUUID, hexUUID, hexUUID.uppercased()] {
+                let rows = [
+                    "OptionID: \"" + uuid + "\",",
+                    "{\"option_id\": \"" + uuid + "\"}",
+                    "option_id: \"" + uuid + "\"",
+                    "\u{1f680} option_id: \"" + uuid + "\""
+                ]
+                for (index, row) in rows.enumerated() {
+                    let phones = DetectionRules.scan(row, config: config).filter { $0.type == .phone }
+                    XCTAssertTrue(phones.isEmpty, "Phone row \(index + 1) count=\(phones.count)")
+                }
+            }
+        }
+    }
+
+    // WO-661@v2: UUID containment does not suppress independently formatted phone numbers on the same line.
+    func testRealPhonesAlongsideUUIDRemainDetectedExactlyOnce() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
+            let uuid = ["1844" + "0000", "0000", "4000", "8000", "00000000" + "0006"].joined(separator: "-")
+            let phones = [["+1", "415", "555", "0132"].joined(separator: " "),
+                          ["(555)", " 123", "-4567"].joined()]
+            for phone in phones {
+                for row in ["id=\"" + uuid + "\" contact=" + phone, phone + " id=\"" + uuid + "\""] {
+                    let matches = DetectionRules.scan(row, config: config).filter { $0.type == .phone }
+                    XCTAssertEqual(matches.count, 1)
+                    XCTAssertTrue(matches.first?.value.trimmingCharacters(in: .whitespacesAndNewlines) == phone)
+                    XCTAssertEqual(matches.first?.effectiveSeverity, .high)
+                }
+            }
+        }
+    }
+
     // WO-657@v1: billing's signed license is blocked by guard and replaced without disturbing surrounding bytes.
     func testBillingLicenseShapeAcrossGuardMCPAndProxy() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in

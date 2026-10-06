@@ -76,6 +76,12 @@ final class FalsePositiveCorpusTests: XCTestCase {
             "timeout: 3600", "retries: 3", "enabled: true", "level: debug",
             "port: 8443", "workers: 4", "mode: strict",
         ],
+        // WO-661@v2: synthetic oracul identifier rows pin the canonical UUID/Phone false-positive class.
+        "uuid-phone-slices": [
+            "OptionID: \"" + ["1844" + "0000", "0000", "4000", "8000", "00000000" + "0005"].joined(separator: "-") + "\",",
+            "{\"assumption_id\": \"" + ["1844" + "0000", "0000", "4000", "8000", "00000000" + "0006"].joined(separator: "-") + "\"}",
+            "assumption_id: \"" + ["1844" + "0000", "0000", "4000", "8000", "00000000" + "0006"].joined(separator: "-") + "\""
+        ],
         // WO-633: assemble documentation shapes without embedding scanner-triggering literals in source.
         "bare-dsn-prose": [
             ["- Detects connection strings (`", "post", "gres", "://", "`, `", "mongo", "db", "://", "`)."].joined(),
@@ -87,6 +93,18 @@ final class FalsePositiveCorpusTests: XCTestCase {
             "- Credential regex: exclude literal values (`" + ["pass", "word", "="].joined() + $0 + "`)."
         },
     ]
+
+    // WO-661@v2: default-off Phone must not mask a golden-corpus precision regression.
+    func testUUIDCorpusWithPhoneEnabledProducesNoPhoneFindings() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let enabled = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
+            XCTAssertTrue(enabled.isTypeEnabled(.phone))
+            for (index, row) in try XCTUnwrap(Self.benignCorpus["uuid-phone-slices"]).enumerated() {
+                let phones = DetectionRules.scan(row, config: enabled).filter { $0.type == .phone }
+                XCTAssertTrue(phones.isEmpty, "Phone line \(index + 1) count=\(phones.count)")
+            }
+        }
+    }
 
     // WO-569: benign corpus must not produce guard-blocking findings.
     func testBenignCorpusProducesNoGuardBlockingFindings() {

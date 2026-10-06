@@ -1741,6 +1741,7 @@ public struct DetectionRules {
         return false
     }
 
+    // WO-661@v2: Phone validation also receives context to distinguish slices of UUID identifiers.
     // WO-652@v2: only the raw Credential rule needs the candidate's following declaration syntax.
     /// Additional validation for specific types.
     private static func isValidMatch(
@@ -1749,7 +1750,8 @@ public struct DetectionRules {
     ) -> Bool {
         switch type {
         case .ipAddress:   return isValidIP(value, config: config)
-        case .phone:       return isValidPhone(value)
+        // WO-661@v2: a candidate is excluded only when a canonical UUID contains its complete range.
+        case .phone:       return isValidPhone(value, following: following, preceding: preceding)
         case .creditCard:  return isValidLuhn(value)
         case .email:       return isValidEmail(value)
         case .hostname:    return isValidHostname(value, config: config)
@@ -2133,7 +2135,8 @@ public struct DetectionRules {
         return true
     }
 
-    private static func isValidPhone(_ value: String) -> Bool {
+    // WO-661@v2: contextual UUID rejection preserves the existing phone digit cutsets.
+    private static func isValidPhone(_ value: String, following: Substring?, preceding: Substring?) -> Bool {
         let digitsOnly = value.filter { $0.isNumber }
         guard digitsOnly.count >= 10 else { return false }
 
@@ -2148,7 +2151,31 @@ public struct DetectionRules {
         // A degenerate digit sequence is never a phone number, with or without
         // separators (a UUID's 0000-0000 segments must not match either).
         if isDegenerateDigitRun(digitsOnly) { return false }
+        // WO-661@v2: reject identifier fragments without suppressing another phone on the same line.
+        if isPhoneFragmentOfCanonicalUUID(value, following: following, preceding: preceding) { return false }
         return true
+    }
+
+    // WO-661@v2: UUIDs have 36 ASCII characters; retain one additional character to test word boundaries.
+    private static let uuidContextLength = 37
+    // WO-661@v2: only the canonical hexadecimal UUID grammar excludes a Phone match.
+    private static let canonicalUUIDRegex = try? NSRegularExpression(
+        pattern: #"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"#,
+        options: .caseInsensitive
+    )
+
+    // WO-661@v2: a bounded context window locates the containing UUID using UTF-16 regex ranges.
+    private static func isPhoneFragmentOfCanonicalUUID(
+        _ value: String, following: Substring?, preceding: Substring?
+    ) -> Bool {
+        guard let regex = canonicalUUIDRegex else { return false }
+        let before = preceding.map { String($0.suffix(uuidContextLength)) } ?? ""
+        let after = following.map { String($0.prefix(uuidContextLength)) } ?? ""
+        let context = before + value + after
+        let candidate = NSRange(location: before.utf16.count, length: value.utf16.count)
+        return regex.matches(in: context, range: NSRange(context.startIndex..., in: context)).contains {
+            $0.range.location <= candidate.location && NSMaxRange(candidate) <= NSMaxRange($0.range)
+        }
     }
 
     // WO-571@v2: true iff the digit string is a degenerate sequence that is never a real
