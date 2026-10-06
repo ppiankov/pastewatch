@@ -210,6 +210,7 @@ Pastewatch detects only **deterministic, high-confidence patterns**:
 | IP Address | `192.168.1.100` |
 | AWS Keys | `AKIAIOSFODNN7EXAMPLE` |
 | API Keys | `sk_test_...`, `ghp_...` |
+| Obsta Labs Licenses | <!-- WO-657@v1: signed billing licenses share one intrinsic grammar. --> `ol_<base64url-payload>.<base64url-signature>` (issued signature: 86 unpadded characters; includes renewal and trial licenses) |
 | Stripe Checkout Sessions | <!-- WO-141@v3: possession-token IDs are redacted independently of their URL. --> `cs_live_...`, `cs_test_...` (24+ alphanumeric characters) |
 | UUIDs | `550e8400-e29b-41d4-a716-446655440000` |
 | JWT Tokens | `eyJhbGciOiJIUzI1NiIs...` |

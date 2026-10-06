@@ -2,6 +2,47 @@ import XCTest
 @testable import PastewatchCore
 
 final class DetectionRulesTests: XCTestCase {
+    // WO-657@v1: billing's signed license is blocked by guard and replaced without disturbing surrounding bytes.
+    func testBillingLicenseShapeAcrossGuardMCPAndProxy() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let value = try BillingLicenseFixture.makeSignedShape()
+            let prefix = "license: "
+            let suffix = "\ncomplete\n"
+            let content = prefix + value + suffix
+            let config = PastewatchConfig.defaultConfig
+            let path = root.appendingPathComponent("fixture.md").path
+            let matches = DetectionRules.scan(content, config: config)
+            XCTAssertEqual(matches.count, 1)
+            XCTAssertEqual(matches.first?.type, .obstalabsKey)
+            let guardDecision = GuardDecision.evaluate(
+                matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                minimumSeverity: .high, filePath: path
+            )
+            XCTAssertEqual(guardDecision.actionableMatches.count, 1)
+            let mcp = MCPReadDecision.evaluate(
+                matches: matches, content: content, config: config, minimumSeverity: .high, filePath: path
+            )
+            let store = RedactionStore()
+            let (redacted, entries) = try mcp.redact(content: content, store: store, filePath: path)
+            XCTAssertEqual(entries.count, 1)
+            XCTAssertFalse(redacted.contains(value))
+            XCTAssertTrue(redacted == prefix + Obfuscator.makeMCPPlaceholder(type: .obstalabsKey, number: 1) + suffix)
+            XCTAssertTrue(store.resolve(content: redacted, filePath: path).content == content)
+
+            let body: [String: Any] = ["messages": [["role": "user", "content": content]]]
+            let bytes = try JSONSerialization.data(withJSONObject: body)
+            let proxy = ProxyServer(port: 0, config: config, injectAlert: false, quietLog: true)
+            let result = proxy.scanAndRedactBody(try XCTUnwrap(String(data: bytes, encoding: .utf8)))
+            XCTAssertEqual(result.redacted, 1)
+            XCTAssertFalse(result.serializationFailed)
+            XCTAssertFalse(result.body.contains(value))
+            let parsed = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(result.body.utf8)) as? [String: Any])
+            let messages = try XCTUnwrap(parsed["messages"] as? [[String: Any]])
+            XCTAssertTrue(messages.first?["content"] as? String ==
+                          prefix + Obfuscator.makePlaceholder(type: .obstalabsKey, number: 1) + suffix)
+        }
+    }
+
     // WO-652@v2: flow mappings and object literals remain values even after a comma or nested parenthesis.
     func testCredentialFlowMappingsAndObjectLiteralsRemainDetected() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

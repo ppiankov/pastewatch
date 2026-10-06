@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Verify signed Obsta Labs license coverage across guard, MCP and proxy, including billing-format fixtures and boundary negatives. (WO-657)
 - Add atomic redacted-view MCP edits with unique byte matches, bounded complete placeholder restoration and metadata-only refusals. Consistency tokens hash only the whole redacted view, and authorization checks the complete edited view before restoring secrets. (WO-647)
 - Add view-token-checked redacted CLI read/edit commands and offer both MCP and CLI remedies in guarded-file messages. Function or alias shadowing of the remedy executable refuses the command, including in nested segments. (WO-658)
 
