@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.40.0] - 2026-10-05
+### Added
+
+- Verify signed Obsta Labs license coverage across guard, MCP and proxy, including billing-format fixtures and boundary negatives. (WO-657)
+
+### Fixed
+
+- Exclude canonical UUID fragments from Phone findings while retaining independently formatted phone numbers on the same line. (WO-661)
+
+## [0.40.0] - 2026-10-07
 
 ### Added
 

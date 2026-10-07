@@ -1,7 +1,79 @@
 import XCTest
 @testable import PastewatchCore
 
+// WO-657@v1: billing issues one signed two-part grammar; fixtures contain no signing key.
+enum BillingLicenseFixture {
+    // WO-657@v1: reproduce the versioned JSON envelope and the 64-byte Ed25519 wire length offline.
+    static func makeSignedShape() throws -> String {
+        let payload: [String: Any] = [
+            "version": 2,
+            "license_id": "lic_" + String(repeating: "a", count: 32),
+            "subject": "fixture-buyer",
+            "products": ["fixture-product"],
+            "entitlements": [["product": "fixture-product", "tier": "fixture-tier"]],
+            "plan": "fixture-tier",
+            "issued_at": 1_700_000_000,
+            "not_before": 1_700_000_000,
+            "expires_at": 1_800_000_000,
+            "issuer": "obstalabs-billing",
+            "key_id": ["ol-", "ed25519-primary"].joined()
+        ]
+        let encoded = encodeBase64URL(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
+        let ed25519SignatureBytes = 64
+        let signature = encodeBase64URL(Data(repeating: 0xfb, count: ed25519SignatureBytes))
+        return ["o", "l_", encoded, ".", signature].joined()
+    }
+
+    // WO-657@v1: billing uses unpadded URL-safe base64 for both token parts.
+    private static func encodeBase64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
 final class ProviderTokenPatternTests: XCTestCase {
+    // WO-657@v1: the billing-derived shape stays covered by the existing intrinsic manifest family.
+    func testBillingSignedLicenseShapeHasIntrinsicProviderCoverage() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = try BillingLicenseFixture.makeSignedShape()
+            let parts = value.dropFirst(3).split(separator: ".")
+            XCTAssertEqual(parts.count, 2)
+            XCTAssertGreaterThanOrEqual(parts[0].count, 20)
+            XCTAssertEqual(parts[1].count, 86)
+            XCTAssertFalse(value.contains("="))
+            let manifest = DetectionRules.providerTokenPatternManifest.filter { $0.type == .obstalabsKey }
+            XCTAssertEqual(manifest.count, 1)
+            XCTAssertEqual(manifest.first?.fixtureID, "obstalabs-key")
+            let matches = DetectionRules.scan(value, config: .defaultConfig)
+            XCTAssertEqual(matches.count, 1)
+            XCTAssertTrue(matches.first?.value == value)
+            XCTAssertTrue(matches.first?.mutationAuthorizationSources.contains(.intrinsicFormat) == true)
+            XCTAssertEqual(matches.first?.effectiveSeverity, .critical)
+        }
+    }
+
+    // WO-657@v1: short parts, missing separators and prefix mentions cannot authorize provider mutation.
+    func testBillingLicenseShapeNearMissesRemainNonSecrets() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = try BillingLicenseFixture.makeSignedShape()
+            let parts = value.dropFirst(3).split(separator: ".").map(String.init)
+            let prefix = ["o", "l_"].joined()
+            let values = [
+                prefix + String(parts[0].prefix(19)) + "." + parts[1],
+                prefix + parts[0] + "." + String(parts[1].prefix(39)),
+                prefix + parts[0] + ":" + parts[1],
+                prefix + parts[0] + parts[1],
+                "A license prefix is " + prefix + " in prose.",
+                "x" + value
+            ]
+            for (index, candidate) in values.enumerated() {
+                XCTAssertFalse(DetectionRules.scan(candidate, config: .defaultConfig).contains {
+                    $0.type == .obstalabsKey
+                }, "near-miss row \(index)")
+            }
+        }
+    }
+
     private struct Fixture {
         let type: SensitiveDataType
         let positive: String
