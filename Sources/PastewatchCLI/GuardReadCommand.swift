@@ -16,6 +16,7 @@ enum FileGuard {
         }
     }
 
+    // WO-665@v1: blocked large reads name the bounded MCP continuation arguments.
     // WO-659@v1: Read enforces MCP mutation authorization; Write retains its existing policy.
     /// Throws `ExitCode(2)` on block or shared-pattern error.
     /// Returns normally when the file is clean (no actionable secrets).
@@ -28,6 +29,8 @@ enum FileGuard {
             let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
             FileHandle.standardError.write(Data(msg.utf8))
             print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files in protected directories.")
+            // WO-665@v1: inspect only size metadata when protected paths refuse content access.
+            printReadWindowHint(filePath: filePath, operation: operation)
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
@@ -120,10 +123,22 @@ enum FileGuard {
         FileHandle.standardError.write(Data(msg.utf8))
 
         print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files containing secrets.")
+        // WO-665@v1: the already-read byte count avoids extra I/O on the ordinary block path.
+        printReadWindowHint(filePath: filePath, operation: operation, byteCount: data.count)
 
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 
+    // WO-665@v1: large-file guidance uses one shared threshold and never prints file content.
+    private static func printReadWindowHint(filePath: String, operation: Operation, byteCount: Int? = nil) {
+        guard operation == .read else { return }
+        let size = byteCount ?? ((try? FileManager.default.attributesOfItem(atPath: filePath))?[.size] as? NSNumber)?.intValue ?? 0
+        guard size > MCPReadDecision.unrangedResponseLimitBytes else { return }
+        // WO-665@v1: default line windows use the token-efficient 24 KiB cap; explicit bytes remain available.
+        print("For large files, pastewatch_read_file returns whole lines up to 24 KiB; continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
+    }
+
+    // WO-665@v1: oversized refusals name byte arguments without suggesting an input-limit bypass.
     // WO-588@v2: diagnostics identify the failed file without echoing its bytes.
     private static func blockUnscannableFile(
         filePath: String,
@@ -133,6 +148,8 @@ enum FileGuard {
         let message = "BLOCKED: \(filePath) \(reason)\n"
         FileHandle.standardError.write(Data(message.utf8))
         print("Use pastewatch_\(operation == .read ? "read" : "write")_file only after the file is readable UTF-8.")
+        // WO-665@v1: metadata-only size lookup does not inspect an unscannable file's bytes.
+        printReadWindowHint(filePath: filePath, operation: operation)
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }

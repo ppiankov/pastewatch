@@ -53,13 +53,16 @@ final class MCPReadRangeTests: XCTestCase {
     }
 
     // WO-627@v2: F1 proves one long physical line is retrievable in bounded pieces.
+    // WO-665@v1: the full reconstruction baseline comes from the unchanged fixture, not a truncated default window.
     func testLongLineReassemblesFromBoundedWindows() throws {
         let session = try makeSession()
         defer { session.close() }
         let content = String(repeating: "ordinary text ", count: 2_500)
         let path = try fixture(content, session: session)
         let full = try readPayload(session, path: path)
-        let bytes = Data(try plainContent(full).utf8)
+        // WO-665@v1: an overlong first line returns a byte window while explicit ranges still reassemble the entire file.
+        let bytes = Data(content.utf8)
+        XCTAssertTrue(try decodedWindow(full) == bytes.prefix(MCPReadDecision.unrangedResponseLimitBytes))
         let collected = try collectWindows(session, path: path, expected: bytes, length: 4_096)
         XCTAssertTrue(collected == bytes)
     }

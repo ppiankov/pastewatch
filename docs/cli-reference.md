@@ -329,7 +329,13 @@ actual returned `line_count`, `total_lines`, and `has_more`; continue at
 
 For example, use arguments `{"path":"README.md","start_line":1,"line_count":40}`.
 Byte windows (`byte_offset`, `byte_length`) remain Base64 with their existing byte
-metadata; an unranged read keeps its existing fields. Redaction manifests and
+metadata; an unranged read of at most 24 KiB keeps its existing fields. Larger
+unranged output returns the first whole-line text window within 24 KiB, with
+`start_line`, `end_line`, `line_count`, `total_lines`, `has_more` and a
+`continuation_hint` naming the next `start_line`. A first line longer than the
+limit falls back to a Base64 byte window. The client result cap is in tokens;
+plain text is more efficient than Base64. Explicit byte ranges are unchanged.
+Redaction manifests and
 advisories describe the whole file, even when a window excludes those findings.
 An authorized replacement or encoding failure returns a tool error naming only
 finding types and lines, never partial file content. Advisory-only matches remain
