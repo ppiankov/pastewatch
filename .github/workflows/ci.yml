@@ -38,6 +38,31 @@ jobs:
       - name: Run Tests
         run: swift test
 
+  # WO-664@v1: PR placement validation complements the release-note content guard without changing build jobs.
+  changelog-placement:
+    name: Check Changelog Placement
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # WO-664@v1: retain the existing release validator beside the new placement regression gate.
+      - name: Test release changelog guard
+        run: bash scripts/changelog-guard_test.sh
+
+      # WO-664@v1: fixture cases exercise the exact script used on PR commits.
+      - name: Test changelog placement guard
+        run: bash scripts/changelog-placement-guard_test.sh
+
+      # WO-664@v1: inspect actual base/head commits so release exemptions do not use a merge subject.
+      - name: Check changelog placement
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/changelog-placement-guard.sh "$PR_BASE_SHA" "$PR_HEAD_SHA"
+
   lint:
     name: Lint
     runs-on: macos-14
