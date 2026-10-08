@@ -128,7 +128,7 @@ public struct GitDiffScanner {
         }
     }
 
-    // WO-599@v2: Git diff scans enforce bounded subprocess and file inputs.
+    // WO-662@v3: retain the findings-only API while exposing counted line-limit skips.
     /// Scan staged and/or unstaged git changes for secrets.
     public static func scan(
         staged: Bool = true,
@@ -137,15 +137,22 @@ public struct GitDiffScanner {
         bail: Bool = false,
         limits: ScanInputLimits = .current()
     ) throws -> [FileScanResult] {
+        try scanWithStatistics(staged: staged, unstaged: unstaged, config: config, bail: bail, limits: limits).files
+    }
+
+    // WO-662@v3: Git diff consumers receive the same measured coverage as directory scans.
+    public static func scanWithStatistics(
+        staged: Bool = true, unstaged: Bool = false, config: PastewatchConfig,
+        bail: Bool = false, limits: ScanInputLimits = .current()
+    ) throws -> DirectoryScanReport {
         let diffFiles = try collectDiffFiles(
             staged: staged,
             unstaged: unstaged,
             limits: limits
         )
 
-        guard !diffFiles.isEmpty else { return [] }
-
         var results: [FileScanResult] = []
+        var statistics = DirectoryScanStatistics()
 
         for df in diffFiles {
             // WO-562@v3: shared extension classification.
@@ -154,11 +161,12 @@ public struct GitDiffScanner {
             }
 
             // Get file content
-            let content: String
+            // WO-662@v3: retrieve raw blobs so each file's extension governs legacy encoding.
+            let data: Data
             if staged && !unstaged {
                 // Staged only: get from git index
                 do {
-                    content = try runGit(["show", ":\(df.path)"], limits: limits)
+                    data = try runGitData(["show", ":\(df.path)"], limits: limits)
                 } catch let error as ScanInputLimitError {
                     // WO-599@v2: a bounded staged blob is an operational failure, not a skipped file.
                     throw error
@@ -170,7 +178,6 @@ public struct GitDiffScanner {
                 }
             } else {
                 // Unstaged or both: read from disk
-                let data: Data
                 do {
                     data = try DetectionRules.readBoundedFileData(
                         atPath: df.path,
@@ -182,24 +189,23 @@ public struct GitDiffScanner {
                 } catch {
                     continue
                 }
-                // WO-602@v2: malformed supported working-tree text fails the scan.
-                guard let disk = String(data: data, encoding: .utf8) else {
-                    throw ScanInputTextError.invalidUTF8
-                }
-                content = disk
             }
 
-            guard !content.isEmpty else { continue }
-
-            // WO-562@v3: share classification only; trust-policy filtering remains
-            // explicit at this caller.
-            var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
-                content: content,
-                ext: GitScanHelpers.scanExtension(for: df.path),
-                relativePath: df.path,
-                config: config,
-                limits: limits
-            )
+            // WO-662@v3: skip only the over-line-limit member; file limits still fail closed.
+            let input: DirectoryScanner.DetectionInput
+            var fileMatches: [DetectedMatch]
+            do {
+                let ext = GitScanHelpers.scanExtension(for: df.path)
+                input = try DirectoryScanner.decodeScanData(data, ext: ext, limits: limits)
+                guard !input.content.isEmpty else { continue }
+                fileMatches = try input.scan(ext: ext, path: df.path, config: config)
+            } catch let error as ScanInputLimitError {
+                guard case .lineBytes = error else { throw error }
+                statistics.recordOverLimit(path: df.path, error: error)
+                continue
+            }
+            let content = input.content
+            statistics.recordScanned()
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
             fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
@@ -212,11 +218,13 @@ public struct GitDiffScanner {
                     matches: fileMatches,
                     content: content
                 ))
-                if bail { return results }
+                // WO-662@v3: bail retains only work performed before its first finding.
+                if bail { return DirectoryScanReport(files: results, statistics: statistics) }
             }
         }
 
-        return results.sorted { $0.filePath < $1.filePath }
+        // WO-662@v3: skipped counts accompany the unchanged sorted findings list.
+        return DirectoryScanReport(files: results.sorted { $0.filePath < $1.filePath }, statistics: statistics)
     }
 
     // WO-594: produce reviewable authorization evidence without returning fixture text.
@@ -524,7 +532,7 @@ public struct GitDiffScanner {
             && fingerprint.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
-    // WO-599@v2: collect bounded Git output without inflating scan control flow.
+    // WO-662@v3: decode patch content by extension without relaxing metadata or original formats.
     private static func collectDiffFiles(
         staged: Bool,
         unstaged: Bool,
@@ -532,7 +540,7 @@ public struct GitDiffScanner {
     ) throws -> [DiffFile] {
         var diffFiles: [DiffFile] = []
         if staged {
-            let diff = try runGit(
+            let diff = try runGitPatch(
                 ["diff", "--cached", "--no-color", "--diff-filter=d"],
                 limits: limits
             )
@@ -540,7 +548,8 @@ public struct GitDiffScanner {
         }
         guard unstaged else { return diffFiles }
 
-        let diff = try runGit(
+        // WO-662@v3: unstaged patches use the same per-file encoding policy.
+        let diff = try runGitPatch(
             ["diff", "--no-color", "--diff-filter=d"],
             limits: limits
         )
@@ -636,11 +645,40 @@ public struct GitDiffScanner {
 
     // MARK: - Git subprocess
 
-    /// Run a git command and return stdout. Throws on non-zero exit.
+    // WO-662@v3: retain strict decoding for existing Git metadata consumers.
     static func runGit(
         _ arguments: [String],
         limits: ScanInputLimits = .current()
     ) throws -> String {
+        let data = try runGitData(arguments, limits: limits)
+        guard let output = String(data: data, encoding: .utf8) else { throw ScanInputTextError.invalidUTF8 }
+        return output
+    }
+
+    // WO-662@v3: only source hunk lines for new extensions receive Latin-1 fallback.
+    static func runGitPatch(_ arguments: [String], limits: ScanInputLimits) throws -> String {
+        let data = try runGitData(arguments, limits: limits)
+        if let output = String(data: data, encoding: .utf8) { return output }
+        var ext = ""
+        var lines: [String] = []
+        for bytes in data.split(separator: 0x0A, omittingEmptySubsequences: false) {
+            if let line = String(data: bytes, encoding: .utf8) {
+                if line.hasPrefix("diff --git ") { ext = "" }
+                if line.hasPrefix("+++ b/") { ext = (String(line.dropFirst(6)) as NSString).pathExtension.lowercased() }
+                lines.append(line)
+            } else {
+                guard DirectoryScanner.latin1DetectionExtensions.contains(ext),
+                      let first = bytes.first, [UInt8(0x2B), 0x2D, 0x20].contains(first) else {
+                    throw ScanInputTextError.invalidUTF8
+                }
+                lines.append(String(String.UnicodeScalarView(bytes.map { UnicodeScalar($0) })))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    // WO-662@v3: bounded raw Git output lets source files select their detection encoding.
+    static func runGitData(_ arguments: [String], limits: ScanInputLimits) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
@@ -671,11 +709,8 @@ public struct GitDiffScanner {
             throw GitDiffError.gitCommandFailed(arguments.joined(separator: " "))
         }
 
-        // WO-602@v2: malformed Git output must not collapse into a clean empty scan.
-        guard let output = String(data: data, encoding: .utf8) else {
-            throw ScanInputTextError.invalidUTF8
-        }
-        return output
+        // WO-662@v3: decoding occurs only after command success and the whole-output byte cap.
+        return data
     }
 }
 

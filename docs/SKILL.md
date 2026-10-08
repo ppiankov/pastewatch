@@ -577,7 +577,10 @@ pastewatch-cli scan --file .env --format json | jq -r '.findings[].type'
 cat debug.log | pastewatch-cli scan --format json | jq -r '.obfuscated'
 
 # Scan directory, check mode
-pastewatch-cli scan --dir . --check --format json | jq '.count'
+pastewatch-cli scan --dir . --check --format json | jq '[.[].count] | add // 0'
+
+# Directory JSON is a per-file array; clean scans emit no stdout.
+# Coverage and named skippedOverLimit paths go to stderr in every format.
 
 # Fast gate check (bail at first finding)
 pastewatch-cli scan --dir . --check --bail --fail-on-severity high

@@ -71,9 +71,12 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
-File-oriented scans reject inputs larger than 64 MiB or containing a line longer
-than 1,000,000 bytes. A rejected input is an operational error, never a clean scan,
-and diagnostics report only the tripped limit. Override the bounds for a known
+File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
+lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
+overlong files, name their paths on stderr and count them as `skippedOverLimit`;
+they do not abort inspection of the remaining files. Whole-file limit errors still
+abort. Newly supported source extensions accept ISO-8859-1 for detection only if
+UTF-8 decoding fails; no file is rewritten. Override the bounds for a known
 workload with positive integer byte counts:
 
 ```bash

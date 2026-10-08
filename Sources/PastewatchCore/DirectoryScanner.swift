@@ -26,6 +26,44 @@ public struct FileScanResult {
     }
 }
 
+// WO-662@v3: coverage counts distinguish inspected files from findings and pruned subtrees.
+public struct DirectoryScanStatistics: Codable {
+    public fileprivate(set) var filesScanned = 0
+    public fileprivate(set) var skippedUnsupported = 0
+    public fileprivate(set) var skippedIgnored = 0
+    public fileprivate(set) var skippedBinary = 0
+    public fileprivate(set) var skippedEmpty = 0
+    public fileprivate(set) var skippedUnreadable = 0
+    public fileprivate(set) var skippedDirectories = 0
+    // WO-662@v3: oversized lines are visible skips rather than whole-scan failures.
+    public private(set) var skippedOverLimit = 0
+
+    // WO-662@v3: shared scanners count inspected files independently of their findings.
+    mutating func recordScanned() { filesScanned += 1 }
+
+    // WO-662@v3: report only the affected path and limit, never its contents.
+    mutating func recordOverLimit(path: String, error: ScanInputLimitError) {
+        skippedOverLimit += 1
+        FileHandle.standardError.write(Data("Skipped over-limit file \(path): \(error.localizedDescription)\n".utf8))
+    }
+
+    // WO-662@v3: a zero scan cannot be presented as evidence of a clean directory.
+    public func summary(findings: Int) -> String {
+        let skipped = "Skipped: unsupported=\(skippedUnsupported), ignored=\(skippedIgnored), "
+            + "binary=\(skippedBinary), empty=\(skippedEmpty), unreadable=\(skippedUnreadable), "
+            + "pruned-directories=\(skippedDirectories), skippedOverLimit=\(skippedOverLimit)."
+        let warning = filesScanned == 0
+            ? " No text files were scanned; results do not establish a clean directory." : ""
+        return "Scanned \(filesScanned) files. Found \(findings) findings. \(skipped)\(warning)"
+    }
+}
+
+// WO-662@v3: keep findings-only consumers compatible while exposing truthful directory coverage.
+public struct DirectoryScanReport {
+    public let files: [FileScanResult]
+    public let statistics: DirectoryScanStatistics
+}
+
 /// Recursive directory scanner for sensitive data detection.
 public struct DirectoryScanner {
     /// WO-549@v2: parser-local identity distinguishes repeated equal matches.
@@ -49,12 +87,92 @@ public struct DirectoryScanner {
         }
     }
 
+    // WO-662@v3: these source formats are text; the existing binary probe still applies.
     /// File extensions to scan.
     public static let allowedExtensions: Set<String> = [
         "env", "yml", "yaml", "json", "toml", "conf", "xml", "tf",
         "sh", "py", "go", "js", "ts", "rb", "swift", "java",
-        "properties", "cfg", "ini", "txt", "md", "pem", "key"
+        "properties", "cfg", "ini", "txt", "md", "pem", "key",
+        "kt", "kts", "gradle", "c", "h", "cpp", "rs", "php", "cs", "html", "sql", "scala", "dart",
+        // WO-662@v3: line-delimited JSON transcripts are text even when each line is a separate object.
+        "jsonl", "ndjson"
     ]
+
+    // WO-662@v3: legacy text encoding is detection-only and limited to newly admitted source formats.
+    static let latin1DetectionExtensions: Set<String> = [
+        "kt", "kts", "gradle", "c", "h", "cpp", "rs", "php", "cs", "html", "sql", "scala", "dart", "jsonl", "ndjson"
+    ]
+
+    // WO-662@v3: retain original byte limits and line positions when Latin-1 expands in UTF-8 memory.
+    struct DetectionInput {
+        let content: String
+        let limits: ScanInputLimits
+        let latin1Bytes: Data?
+
+        // WO-662@v3: scanners share detection decoding without introducing a file-writing path.
+        func scan(ext: String, path: String, config: PastewatchConfig) throws -> [DetectedMatch] {
+            let matches = try DirectoryScanner.scanFileContentOrThrow(
+                content: content, ext: ext, relativePath: path, config: config, limits: limits
+            )
+            guard let bytes = latin1Bytes else { return matches }
+            var lineStarts = [0]
+            var previous: UInt8 = 0
+            for (offset, byte) in bytes.enumerated() {
+                if byte == 0x0A && previous == 0x0D { lineStarts[lineStarts.count - 1] = offset + 1 } else if byte == 0x0A || byte == 0x0D { lineStarts.append(offset + 1) }
+                previous = byte
+            }
+            return matches.map { match in
+                let offset = NSRange(match.range, in: content).location
+                let line = lineStarts.prefix { $0 <= offset }.count
+                return DetectedMatch(
+                    type: match.type, value: match.value, range: match.range, line: line,
+                    filePath: match.filePath, customRuleName: match.customRuleName, customSeverity: match.customSeverity,
+                    advisory: match.advisory, mutationAuthorizationSources: match.mutationAuthorizationSources,
+                    obfuscateRuleIdentifier: match.obfuscateRuleIdentifier, mutationSubrange: match.mutationSubrange
+                )
+            }
+        }
+    }
+
+    // WO-662@v3: ISO-8859-1 maps every raw byte to one scalar; original formats retain strict UTF-8.
+    static func decodeScanData(_ data: Data, ext: String, limits: ScanInputLimits) throws -> DetectionInput {
+        if let content = String(data: data, encoding: .utf8) {
+            return DetectionInput(content: content, limits: limits, latin1Bytes: nil)
+        }
+        guard latin1DetectionExtensions.contains(ext.lowercased()) else { throw ScanInputTextError.invalidUTF8 }
+        try validateRawScanData(data, limits: limits)
+        let content = String(String.UnicodeScalarView(data.map { UnicodeScalar($0) }))
+        // Each validated Latin-1 byte requires at most two UTF-8 bytes; raw limits were already enforced.
+        let expandedLineLimit = limits.maximumLineBytes > Int.max / 2 ? Int.max : limits.maximumLineBytes * 2
+        return DetectionInput(
+            content: content,
+            limits: ScanInputLimits(maximumFileBytes: content.utf8.count, maximumLineBytes: expandedLineLimit),
+            latin1Bytes: data
+        )
+    }
+
+    // WO-662@v3: validate raw bytes before any encoding expansion changes their measured size.
+    private static func validateRawScanData(_ data: Data, limits: ScanInputLimits) throws {
+        guard data.count <= limits.maximumFileBytes else {
+            throw ScanInputLimitError.fileBytes(actual: data.count, maximum: limits.maximumFileBytes)
+        }
+        var line = 1
+        var count = 0
+        var carriageReturn = false
+        for byte in data {
+            if byte == 0x0A || byte == 0x0D {
+                if byte != 0x0A || !carriageReturn { line += 1 }
+                count = 0
+                carriageReturn = byte == 0x0D
+            } else {
+                carriageReturn = false
+                count += 1
+                if count > limits.maximumLineBytes {
+                    throw ScanInputLimitError.lineBytes(line: line, actual: count, maximum: limits.maximumLineBytes)
+                }
+            }
+        }
+    }
 
     /// Directories to skip.
     public static let skipDirectories: Set<String> = [
@@ -62,6 +180,7 @@ public struct DirectoryScanner {
         ".swiftpm", "__pycache__", "dist", "build", ".tox"
     ]
 
+    // WO-662@v3: preserve the findings-only return contract for existing callers.
     /// Scan all files in a directory recursively.
     public static func scan(
         directory: String,
@@ -71,9 +190,25 @@ public struct DirectoryScanner {
         bail: Bool = false,
         limits: ScanInputLimits = .current()
     ) throws -> [FileScanResult] {
+        try scanWithStatistics(
+            directory: directory, config: config, ignoreFile: ignoreFile,
+            extraIgnorePatterns: extraIgnorePatterns, bail: bail, limits: limits
+        ).files
+    }
+
+    // WO-662@v3: traversal measures actual scans even when a file has no findings.
+    public static func scanWithStatistics(
+        directory: String,
+        config: PastewatchConfig,
+        ignoreFile: IgnoreFile? = nil,
+        extraIgnorePatterns: [String] = [],
+        bail: Bool = false,
+        limits: ScanInputLimits = .current()
+    ) throws -> DirectoryScanReport {
         let dirURL = URL(fileURLWithPath: directory).standardizedFileURL
         let dirPath = dirURL.path
         var results: [FileScanResult] = []
+        var statistics = DirectoryScanStatistics()
 
         let mergedIgnore = mergedIgnoreFile(
             ignoreFile,
@@ -85,7 +220,7 @@ public struct DirectoryScanner {
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
             options: []
         ) else {
-            return results
+            return DirectoryScanReport(files: results, statistics: statistics)
         }
 
         while let fileURL = enumerator.nextObject() as? URL {
@@ -93,6 +228,8 @@ public struct DirectoryScanner {
 
             // Skip directories in skiplist
             if skipDirectories.contains(fileName) {
+                // WO-662@v3: pruned subtrees are counted as directories, never guessed file totals.
+                statistics.skippedDirectories += 1
                 enumerator.skipDescendants()
                 continue
             }
@@ -110,6 +247,8 @@ public struct DirectoryScanner {
             let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
 
             guard isEnvFile || allowedExtensions.contains(ext) else {
+                // WO-662@v3: unsupported text must not disappear from coverage reporting.
+                statistics.skippedUnsupported += 1
                 continue
             }
 
@@ -123,42 +262,31 @@ public struct DirectoryScanner {
 
             // Skip files matching ignore patterns
             if let ignore = mergedIgnore, ignore.shouldIgnore(relativePath) {
+                // WO-662@v3: explicit file ignores have a separate count from extension skips.
+                statistics.skippedIgnored += 1
                 continue
             }
 
-            // Skip binary files (check first 8192 bytes for null bytes)
-            guard !isBinaryFile(at: fileURL) else {
-                continue
-            }
-
-            // Read and scan
-            let data: Data
-            do {
-                data = try DetectionRules.readBoundedFileData(
-                    atPath: fileURL.path,
-                    limits: limits
-                )
-            } catch let error as ScanInputLimitError {
-                throw error
-            } catch {
-                continue
-            }
-            // WO-602@v2: a supported text file cannot disappear from aggregate evidence.
-            guard let content = String(data: data, encoding: .utf8) else {
-                throw ScanInputTextError.invalidUTF8
-            }
-            guard !content.isEmpty else { continue }
-
-            // Format-aware scanning
+            // WO-662@v3: classify read skips without hiding invalid encoding or input-limit failures.
+            // WO-662@v3: a long line skips one member, while whole-file and original encoding failures still abort.
             let parsedExt = isEnvFile ? "env" : fileURL.pathExtension.lowercased()
-            var fileMatches = try scanFileContentOrThrow(
-                content: content, ext: parsedExt,
-                relativePath: relativePath, config: config,
-                limits: limits
-            )
+            let input: DetectionInput
+            var fileMatches: [DetectedMatch]
+            do {
+                guard let decoded = try readScanContent(at: fileURL, limits: limits, statistics: &statistics) else { continue }
+                input = decoded
+                fileMatches = try input.scan(ext: parsedExt, path: relativePath, config: config)
+            } catch let error as ScanInputLimitError {
+                guard case .lineBytes = error else { throw error }
+                statistics.recordOverLimit(path: relativePath, error: error)
+                continue
+            }
+            let content = input.content
 
             fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
             fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
+            // WO-662@v3: count successful scans, not only files that contribute findings.
+            statistics.filesScanned += 1
 
             if !fileMatches.isEmpty {
                 results.append(FileScanResult(
@@ -166,7 +294,8 @@ public struct DirectoryScanner {
                     matches: fileMatches,
                     content: content
                 ))
-                if bail { return results }
+                // WO-662@v3: bail reports only work actually performed before the first finding.
+                if bail { return DirectoryScanReport(files: results, statistics: statistics) }
             }
         }
 
@@ -179,9 +308,11 @@ public struct DirectoryScanner {
             limits: limits
         )
         if ignoredSet.isEmpty {
-            return sorted
+            // WO-662@v3: coverage accompanies the unchanged findings list.
+            return DirectoryScanReport(files: sorted, statistics: statistics)
         }
-        return sorted.map { result in
+        // WO-662@v3: gitignored tagging does not change whether a file was inspected.
+        let tagged = sorted.map { result in
             if ignoredSet.contains(result.filePath) {
                 return FileScanResult(
                     filePath: result.filePath,
@@ -191,6 +322,35 @@ public struct DirectoryScanner {
                 )
             }
             return result
+        }
+        // WO-662@v3: retain traversal evidence after findings metadata is tagged.
+        return DirectoryScanReport(files: tagged, statistics: statistics)
+    }
+
+    // WO-662@v3: count binary, empty and unreadable skips while preserving fail-closed text validation.
+    private static func readScanContent(
+        at url: URL, limits: ScanInputLimits, statistics: inout DirectoryScanStatistics
+    ) throws -> DetectionInput? {
+        do {
+            if try isBinaryFile(at: url) {
+                statistics.skippedBinary += 1
+                return nil
+            }
+            let data = try DetectionRules.readBoundedFileData(atPath: url.path, limits: limits)
+            // WO-662@v3: only newly supported source extensions accept detection-only Latin-1.
+            let input = try decodeScanData(data, ext: url.pathExtension, limits: limits)
+            guard !input.content.isEmpty else {
+                statistics.skippedEmpty += 1
+                return nil
+            }
+            return input
+        } catch let error as ScanInputLimitError {
+            throw error
+        } catch let error as ScanInputTextError {
+            throw error
+        } catch {
+            statistics.skippedUnreadable += 1
+            return nil
         }
     }
 
@@ -565,11 +725,10 @@ public struct DirectoryScanner {
         }
     }
 
+    // WO-662@v3: failure to open a file is unreadable, not evidence that its bytes are binary.
     /// Check if a file appears to be binary by looking for null bytes.
-    private static func isBinaryFile(at url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return true
-        }
+    private static func isBinaryFile(at url: URL) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
         defer { handle.closeFile() }
 
         let data = handle.readData(ofLength: 8192)

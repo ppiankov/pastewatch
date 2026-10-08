@@ -645,6 +645,7 @@ final class MCPServer {
         return successResult(id: id, matches: reportable, filePath: path)
     }
 
+    // WO-662@v3: directory diagnostics report scan coverage independently of findings.
     private func handleScanDir(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
@@ -655,7 +656,9 @@ final class MCPServer {
         }
 
         do {
-            let fileResults = try DirectoryScanner.scan(directory: path, config: config)
+            // WO-662@v3: clean files are included in the scan count, not in the findings list.
+            let report = try DirectoryScanner.scanWithStatistics(directory: path, config: config)
+            let fileResults = report.files
             // WO-577@v3: directory diagnostics apply the same policy per trusted file.
             let reportableResults = fileResults.compactMap { result -> FileScanResult? in
                 let matches = GuardDecision.evaluate(
@@ -676,7 +679,8 @@ final class MCPServer {
                 )
             }
             let allMatches = reportableResults.flatMap { $0.matches }
-            let filesScanned = fileResults.count
+            // WO-662@v3: findings-only result length is not the number of files inspected.
+            let filesScanned = report.statistics.filesScanned
             let totalFindings = allMatches.count
 
             var findingsArray: [JSONValue] = []
@@ -692,7 +696,8 @@ final class MCPServer {
             }
 
             auditLogger?.log("SCAN  \(path)  files=\(filesScanned) findings=\(totalFindings)")
-            let resultText = "Scanned \(filesScanned) files. Found \(totalFindings) findings."
+            // WO-662@v3: disclose skipped files and explicitly qualify a zero-scan result.
+            let resultText = report.statistics.summary(findings: totalFindings)
 
             let content: JSONValue = .array([
                 .object([

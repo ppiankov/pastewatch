@@ -292,6 +292,7 @@ final class StdinFilenameTests: XCTestCase {
     }
 
     // WO-598@v2: git-diff limit failures preserve the operational exit contract.
+    // WO-662@v3: member line limits are counted skips; whole-file failures remain operational errors.
     func testGitDiffInputLimitReturnsOperationalFailure() throws {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -309,12 +310,16 @@ final class StdinFilenameTests: XCTestCase {
             environmentOverrides: [ScanInputLimits.lineBytesEnvironmentKey: "8"]
         )
 
-        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        // WO-662@v3: the scan continues and identifies the skipped member without its content.
+        XCTAssertEqual(result.status, ScanExitContract.clean)
+        XCTAssertTrue(result.stderr.contains("skippedOverLimit=1"))
+        XCTAssertTrue(result.stderr.contains("fixture.txt"))
         XCTAssertTrue(result.stderr.contains("exceeds scan limit 8 bytes"))
         XCTAssertFalse(result.stderr.contains("line-exceeds-limit"))
     }
 
     // WO-598@v2: history limit failures preserve the operational exit contract.
+    // WO-662@v3: history member line limits share the counted skip contract.
     func testGitHistoryInputLimitReturnsOperationalFailure() throws {
         let tempDir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -331,7 +336,10 @@ final class StdinFilenameTests: XCTestCase {
             environmentOverrides: [ScanInputLimits.lineBytesEnvironmentKey: "8"]
         )
 
-        XCTAssertEqual(result.status, ScanExitContract.operationalFailure)
+        // WO-662@v3: the scan continues and identifies the skipped member without its content.
+        XCTAssertEqual(result.status, ScanExitContract.clean)
+        XCTAssertTrue(result.stderr.contains("skippedOverLimit=1"))
+        XCTAssertTrue(result.stderr.contains("fixture.txt"))
         XCTAssertTrue(result.stderr.contains("exceeds scan limit 8 bytes"))
         XCTAssertFalse(result.stderr.contains("line-exceeds-limit"))
     }

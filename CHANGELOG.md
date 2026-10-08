@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Exclude canonical UUID fragments from Phone findings while retaining independently formatted phone numbers on the same line. (WO-661)
 - Exclude decimal timing literals from Phone findings while retaining formatted telephone numbers. (WO-667)
+- Report scanned and skipped directory counts on stderr without changing CLI JSON arrays or clean stdout; support detection-only Latin-1 for newly admitted source formats and named, counted overlong-file skips, including MCP and git scan members. Earlier versions skipped Kotlin, Gradle, JSONL/NDJSON and additional text source extensions in directory, git-diff/pre-commit, history and watch scans. (WO-662)
 
 ## [0.40.0] - 2026-10-07
 

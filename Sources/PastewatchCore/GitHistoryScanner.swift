@@ -28,11 +28,15 @@ public struct GitLogScanResult {
     public let findings: [CommitFinding]
     public let commitsScanned: Int
     public let filesScanned: Int
+    // WO-662@v3: line-limit skips remain visible without changing existing history fields.
+    public let skippedOverLimit: Int
 
-    public init(findings: [CommitFinding], commitsScanned: Int, filesScanned: Int) {
+    // WO-662@v3: existing construction defaults to zero skips.
+    public init(findings: [CommitFinding], commitsScanned: Int, filesScanned: Int, skippedOverLimit: Int = 0) {
         self.findings = findings
         self.commitsScanned = commitsScanned
         self.filesScanned = filesScanned
+        self.skippedOverLimit = skippedOverLimit
     }
 }
 
@@ -50,7 +54,7 @@ public struct GitHistoryScanner {
     /// Marker prefix used in git log --format to delimit commits.
     static let commitMarker = "PWCOMMIT "
 
-    // WO-599@v2: history scans enforce the shared Git output boundary.
+    // WO-662@v3: history shares source decoding and counts individual line-limit skips.
     /// Scan git history for secrets.
     ///
     /// - Parameters:
@@ -78,7 +82,8 @@ public struct GitHistoryScanner {
 
         var findings: [CommitFinding] = []
         var seenFingerprints = Set<String>()
-        var filesScanned = 0
+        // WO-662@v3: successful scans and line-limit skips are distinct measurements.
+        var statistics = DirectoryScanStatistics()
 
         for chunk in chunks {
             let diffFiles = GitDiffScanner.parseDiff(chunk.diffContent)
@@ -86,11 +91,10 @@ public struct GitHistoryScanner {
             for df in diffFiles {
                 // WO-562@v3: history scanning shares the canonical file classifier.
                 guard GitScanHelpers.shouldScanFile(df.path) else { continue }
-                filesScanned += 1
-
-                let content: String
+                // WO-662@v3: retain raw blob bytes until the file's source extension selects decoding.
+                let data: Data
                 do {
-                    content = try GitDiffScanner.runGit(
+                    data = try GitDiffScanner.runGitData(
                         ["show", "\(chunk.hash):\(df.path)"],
                         limits: limits
                     )
@@ -103,17 +107,21 @@ public struct GitHistoryScanner {
                 } catch {
                     continue
                 }
-                guard !content.isEmpty else { continue }
-
-                // WO-562@v3: share classification only; trust-policy filtering remains
-                // explicit at this caller.
-                var fileMatches = try DirectoryScanner.scanFileContentOrThrow(
-                    content: content,
-                    ext: GitScanHelpers.scanExtension(for: df.path),
-                    relativePath: df.path,
-                    config: config,
-                    limits: limits
-                )
+                // WO-662@v3: only a long-line member is skipped; whole-file limits retain their error contract.
+                let input: DirectoryScanner.DetectionInput
+                var fileMatches: [DetectedMatch]
+                do {
+                    let ext = GitScanHelpers.scanExtension(for: df.path)
+                    input = try DirectoryScanner.decodeScanData(data, ext: ext, limits: limits)
+                    guard !input.content.isEmpty else { continue }
+                    fileMatches = try input.scan(ext: ext, path: df.path, config: config)
+                } catch let error as ScanInputLimitError {
+                    guard case .lineBytes = error else { throw error }
+                    statistics.recordOverLimit(path: df.path, error: error)
+                    continue
+                }
+                let content = input.content
+                statistics.recordScanned()
                 fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
                 fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
@@ -141,7 +149,8 @@ public struct GitHistoryScanner {
                     if bail { return GitLogScanResult(
                         findings: findings,
                         commitsScanned: chunks.count,
-                        filesScanned: filesScanned
+                        // WO-662@v3: early return retains actual scan and skip counts.
+                        filesScanned: statistics.filesScanned, skippedOverLimit: statistics.skippedOverLimit
                     )}
                 }
             }
@@ -150,12 +159,14 @@ public struct GitHistoryScanner {
         return GitLogScanResult(
             findings: findings,
             commitsScanned: chunks.count,
-            filesScanned: filesScanned
+            // WO-662@v3: skipped blobs never inflate the successful scan count.
+            filesScanned: statistics.filesScanned, skippedOverLimit: statistics.skippedOverLimit
         )
     }
 
     // MARK: - Git log command
 
+    // WO-662@v3: history patch hunks use extension-scoped legacy decoding, not metadata-wide fallback.
     static func runGitLog(
         range: String?,
         since: String?,
@@ -177,7 +188,8 @@ public struct GitHistoryScanner {
         } else {
             args.append("--all")
         }
-        return try GitDiffScanner.runGit(args, limits: limits)
+        // WO-662@v3: preserve invalid-encoding failures outside newly admitted source hunks.
+        return try GitDiffScanner.runGitPatch(args, limits: limits)
     }
 
     // MARK: - Parsing

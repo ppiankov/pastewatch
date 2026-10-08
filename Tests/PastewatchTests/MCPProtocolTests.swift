@@ -784,6 +784,7 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     // WO-595@v2: MCP scan_dir propagates member limits instead of reporting a partial clean scan.
+    // WO-662@v3: directory member line limits now produce explicit counted skips instead of aborting.
     func testScanDirectoryRejectsMemberOverDefaultLineLimit() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("pastewatch-mcp-dir-limit-\(UUID().uuidString)", isDirectory: true)
@@ -801,8 +802,9 @@ final class MCPProtocolTests: XCTestCase {
         )
         let text = try joinedMCPContentText(response)
 
-        XCTAssertTrue(text.contains("Scan limit exceeded"), text)
-        XCTAssertTrue(text.contains(ScanInputLimits.lineBytesEnvironmentKey), text)
+        // WO-662@v3: zero findings is accompanied by the unscanned member count.
+        XCTAssertTrue(text.contains("Found 0 findings."), text)
+        XCTAssertTrue(text.contains("skippedOverLimit=1"), text)
         XCTAssertFalse(text.contains(String(repeating: "x", count: 64)), text)
     }
 
