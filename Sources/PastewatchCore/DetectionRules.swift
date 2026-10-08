@@ -2135,6 +2135,7 @@ public struct DetectionRules {
         return true
     }
 
+    // WO-667@v1: contextual numeric rejection retains the existing UUID and phone digit cutsets.
     // WO-661@v2: contextual UUID rejection preserves the existing phone digit cutsets.
     private static func isValidPhone(_ value: String, following: Substring?, preceding: Substring?) -> Bool {
         let digitsOnly = value.filter { $0.isNumber }
@@ -2153,7 +2154,21 @@ public struct DetectionRules {
         if isDegenerateDigitRun(digitsOnly) { return false }
         // WO-661@v2: reject identifier fragments without suppressing another phone on the same line.
         if isPhoneFragmentOfCanonicalUUID(value, following: following, preceding: preceding) { return false }
+        // WO-667@v1: local-number regexes can also claim only the fractional digits of a decimal.
+        if isPhoneFragmentOfDecimal(value, following: following, preceding: preceding) { return false }
         return true
+    }
+
+    // WO-667@v1: one decimal point distinguishes numeric literals from multi-group dotted phones.
+    private static func isPhoneFragmentOfDecimal(
+        _ value: String, following: Substring?, preceding: Substring?
+    ) -> Bool {
+        let numeric: (Character) -> Bool = { $0 == "." || ("0"..."9").contains($0) }
+        guard value.allSatisfy(numeric) else { return false }
+        let before = preceding.map { String($0.reversed().prefix(while: numeric).reversed()) } ?? ""
+        let after = following.map { String($0.prefix(while: numeric)) } ?? ""
+        let parts = (before + value + after).split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }
     }
 
     // WO-661@v2: UUIDs have 36 ASCII characters; retain one additional character to test word boundaries.

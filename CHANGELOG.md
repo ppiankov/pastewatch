@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Exclude canonical UUID fragments from Phone findings while retaining independently formatted phone numbers on the same line. (WO-661)
+- Exclude decimal timing literals from Phone findings while retaining formatted telephone numbers. (WO-667)
 
 ## [0.40.0] - 2026-10-07
 
