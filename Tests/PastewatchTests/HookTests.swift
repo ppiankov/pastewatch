@@ -1099,15 +1099,17 @@ final class HookTests: XCTestCase {
             .appendingPathComponent(".build/debug/PastewatchCLI")
     }
 
+    // WO-672@v1: hook child environments preserve the fixture-only global config path.
     private func testEnvironment(pathPrefix: String? = nil) -> [String: String] {
         // WO-604: subprocess tests control PATH without changing the executable under test.
         let basePath = "/usr/bin:/bin"
         let path = pathPrefix.map { "\($0):\(basePath)" } ?? basePath
-        return [
+        // WO-672@v1: replacing the inherited environment must not reach operator policy.
+        return TestConfigHelper.subprocessEnvironment([
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
             "HOME": testDir ?? NSTemporaryDirectory(),
             "PATH": path
-        ]
+        ])
     }
 }

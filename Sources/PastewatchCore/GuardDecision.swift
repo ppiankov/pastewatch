@@ -11,9 +11,20 @@ public struct GuardDecision {
     public let reportableMatches: [DetectedMatch]
     public let actionableMatches: [DetectedMatch]
 
+    // WO-672@v1: agent mutation cannot create or change its own policy files.
+    public static let operatorOwnedFileMessage = "operator-owned file: edit it yourself"
+
+    // WO-672@v1: ownership checks apply before nonexistent-file and empty-content shortcuts.
+    public static func isOperatorOwnedPath(_ path: String) -> Bool {
+        // WO-672@v1: policy names remain operator-owned under filesystem-equivalent spelling.
+        let name = URL(fileURLWithPath: path).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
+        return [".pastewatch.json", ".pastewatch-allow"].contains(name)
+    }
+
     // WO-635: classify by the supplied path only, never by content or directory names.
     private static let documentationExtensions: Set<String> = ["md", "mdx", "markdown", "rst", "adoc"]
 
+    // WO-670@v1: every file decision shares target-root allow-file loading; rootless decisions load none.
     // WO-635: one decision owns documentation classification and protects independently authorized secrets.
     public static func evaluate(
         matches: [DetectedMatch],
@@ -21,7 +32,9 @@ public struct GuardDecision {
         config: PastewatchConfig,
         contentTrust: GuardContentTrust,
         minimumSeverity: Severity?,
-        filePath: String? = nil
+        // WO-670@v1: non-git multi-file scans supply their explicit root, not an inferred ancestor.
+        filePath: String? = nil,
+        scanRoot: String? = nil
     ) -> GuardDecision {
         let nonTestMatches = matches.filter {
             !DetectionRules.isTestCredential($0.value)
@@ -40,7 +53,10 @@ public struct GuardDecision {
         let isDocumentation = filePath.map {
             documentationExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased())
         } ?? false
-        let reportable = Allowlist.fromConfig(config).filter(inlineFiltered).map { match in
+        // WO-672@v1: allow-file accounting sees the same effective custom rules as the guard.
+        let allowlist = Allowlist.fromConfig(config).merged(with:
+            Allowlist.projectFile(for: filePath, scanRoot: scanRoot, config: config).allowlist)
+        let reportable = allowlist.filter(inlineFiltered).map { match in
             guard config.documentationPolicy == .advisory, isDocumentation,
                   match.type.isAmbiguousClass,
                   match.mutationAuthorizationSources.isDisjoint(with: [.intrinsicFormat, .exactKnownSecret, .customRule]),

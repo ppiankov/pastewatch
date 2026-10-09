@@ -18,6 +18,7 @@ final class ConfigIsolationTests: XCTestCase {
         }
     }
 
+    // WO-672@v1: project policy cannot discard enabled operator detectors.
     // WO-634: exercise load, validated resolution, and save using only fixture-owned files.
     func testInjectedGlobalConfigIsUsedAndProjectStillTakesPrecedence() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -33,7 +34,8 @@ final class ConfigIsolationTests: XCTestCase {
             XCTAssertTrue(ConfigValidator.validate().isValid)
 
             try TestConfigHelper.ensureProjectConfig(in: root)
-            try assertDefaults(PastewatchConfig.resolve())
+            // WO-672@v1: the project contributes restrictions instead of replacing the global fixture.
+            XCTAssertTrue(PastewatchConfig.resolve().isTypeEnabled(.dbConnectionString))
             XCTAssertEqual(try ConfigValidator.resolveValidated().source, .project)
         }
     }
@@ -58,6 +60,7 @@ final class ConfigIsolationTests: XCTestCase {
         XCTAssertEqual(FileManager.default.currentDirectoryPath, originalDirectory)
     }
 
+    // WO-672@v1: the real release config-path source ignores the DEBUG subprocess channel too.
     // WO-634: compile the actual config source without DEBUG; the probe never opens config files.
     func testReleaseConfigPathIgnoresEnvironmentOverrides() throws {
         let root = FileManager.default.temporaryDirectory
@@ -65,7 +68,8 @@ final class ConfigIsolationTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let main = root.appendingPathComponent("main.swift")
-        try "import Foundation\nprint(PastewatchConfig.configPath.path)\n".write(
+        // WO-672@v1: the actual release source ignores both DEBUG policy-path channels.
+        try "import Foundation\nprint(PastewatchConfig.configPath.path)\nprint(PastewatchConfig.systemConfigPath)\n".write(
             to: main, atomically: true, encoding: .utf8
         )
         let repository = URL(fileURLWithPath: #filePath)
@@ -82,13 +86,17 @@ final class ConfigIsolationTests: XCTestCase {
         )
         let baseline = try runProcess(binary, environment: environment)
         let expected = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/pastewatch/config.json").path + "\n"
+            .appendingPathComponent(".config/pastewatch/config.json").path + "\n/etc/pastewatch/config.json\n"
         XCTAssertEqual(baseline, Data(expected.utf8))
 
         var redirected = environment
         let variables = Set(environment.keys.filter { $0.hasPrefix("PASTEWATCH_") }).union([
             "HOME", "XDG_CONFIG_HOME", "PASTEWATCH_CONFIG", "PASTEWATCH_CONFIG_PATH",
             "PASTEWATCH_HOME", "PASTEWATCH_GLOBAL_CONFIG_PATH",
+            // WO-672@v1: the literal is test-only, absent from the release Types.swift binary.
+            "PASTEWATCH_TEST_GLOBAL_CONFIG",
+            // WO-672@v1: administrator policy cannot be redirected by an agent in release mode.
+            "PASTEWATCH_TEST_SYSTEM_CONFIG",
         ])
         for variable in variables { redirected[variable] = root.path }
         XCTAssertEqual(try runProcess(binary, environment: redirected), baseline)

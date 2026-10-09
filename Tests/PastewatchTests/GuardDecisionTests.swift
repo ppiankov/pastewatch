@@ -19,12 +19,15 @@ final class GuardDecisionTests: XCTestCase {
         XCTAssertTrue(decision.actionableMatches.isEmpty)
     }
 
+    // WO-672@v1: operator exact values remain effective; inline directives cannot hide intrinsic evidence.
     func testConfigAndInlineAllowlistsUseTheSameDecisionPipeline() {
         let allowed = "AKIA" + "QWERTYUIOPASDFGH"
         let inline = "AKIA" + "ZXCVBNMASDFGHJKL"
         let content = "first=\(allowed)\nsecond=\(inline) # pastewatch:allow"
         var config = PastewatchConfig.defaultConfig
         config.allowedValues = [allowed]
+        // WO-672@v1: this entry represents a validated user-tier contribution.
+        config.allowedValueSources[allowed] = [.user]
 
         let decision = GuardDecision.evaluate(
             matches: DetectionRules.scan(content, config: config),
@@ -34,8 +37,9 @@ final class GuardDecisionTests: XCTestCase {
             minimumSeverity: .critical
         )
 
-        XCTAssertTrue(decision.reportableMatches.isEmpty)
-        XCTAssertTrue(decision.actionableMatches.isEmpty)
+        // WO-672@v1: the inline-only intrinsic match remains reportable and blocking.
+        XCTAssertEqual(decision.reportableMatches.count, 1)
+        XCTAssertEqual(decision.actionableMatches.count, 1)
     }
 
     func testBelowThresholdMatchRemainsReportableButNotActionable() {

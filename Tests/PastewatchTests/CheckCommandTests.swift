@@ -165,13 +165,17 @@ final class CheckCommandTests: XCTestCase {
         }
     }
 
+    // WO-672@v1: pattern exemptions require operator-tier policy rather than project relaxation.
     // WO-637: expose actual allowlist differences without claiming the proxy shares MCP filtering.
     func testAllowlistSuppressionsAndProxyParity() throws {
         for pattern in [false, true] {
             var config = fixtureConfig()
             if pattern { config.allowedPatterns = [custom()] } else { config.allowedValues = [custom()] }
-            try withFixture(config: config) { _, explanation in
-                let report = try ValueVerdict(content: custom(), filePath: nil, explanation: explanation)
+            try withFixture(config: config) { _, _ in
+                // WO-672@v1: retain the same suppression control under the user tier.
+                try JSONEncoder().encode(config).write(to: PastewatchConfig.configPath)
+                let operatorExplanation = ConfigExplanation(userConfigPath: PastewatchConfig.configPath.path)
+                let report = try ValueVerdict(content: custom(), filePath: nil, explanation: operatorExplanation)
                 let finding = try XCTUnwrap(report.findings.first)
                 XCTAssertEqual(finding.allowlistSuppression, [pattern ? "allowedPatterns" : "allowedValues"])
                 XCTAssertEqual(finding.guardVerdict, "not reported")

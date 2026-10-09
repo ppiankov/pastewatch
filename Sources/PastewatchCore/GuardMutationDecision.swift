@@ -2,6 +2,8 @@ import Foundation
 
 /// WO-526@v3: classify a proposed file mutation without exposing matched values.
 public enum GuardMutationBlockReason: String, Equatable {
+    // WO-672@v1: operator-owned policy cannot be changed by an agent-controlled mutation.
+    case operatorOwnedFile
     case invalidInput
     case touchesExistingFinding
     case changesFindingSet
@@ -15,6 +17,7 @@ public enum GuardMutationDecision: Equatable {
 
 /// WO-526@v3: compare actionable findings before and after a proposed mutation.
 public enum GuardMutationEvaluator {
+    // WO-672@v1: refuse operator-owned paths before evaluating existing or proposed content.
     // WO-526@v3: Edit authorization accounts for every replaced range.
     // swiftlint:disable:next function_parameter_count
     public static func evaluateEdit(
@@ -26,6 +29,8 @@ public enum GuardMutationEvaluator {
         config: PastewatchConfig,
         minimumSeverity: Severity
     ) throws -> GuardMutationDecision {
+        // WO-672@v1: ownership does not depend on whether the target exists or contains findings.
+        if GuardDecision.isOperatorOwnedPath(filePath) { return .block(.operatorOwnedFile) }
         guard !oldString.isEmpty else { return .block(.invalidInput) }
 
         let replacementRanges = ranges(of: oldString, in: currentContent)
@@ -65,6 +70,7 @@ public enum GuardMutationEvaluator {
         )
     }
 
+    // WO-672@v1: ownership protects clean creation as well as modifications.
     // WO-526@v3: Write authorization preserves the actionable finding multiset.
     public static func evaluateWrite(
         currentContent: String,
@@ -73,6 +79,8 @@ public enum GuardMutationEvaluator {
         config: PastewatchConfig,
         minimumSeverity: Severity
     ) throws -> GuardMutationDecision {
+        // WO-672@v1: check ownership before any content-based admission.
+        if GuardDecision.isOperatorOwnedPath(filePath) { return .block(.operatorOwnedFile) }
         let currentMatches = try actionableMatches(
             in: currentContent,
             filePath: filePath,

@@ -31,10 +31,20 @@ brew install ppiankov/tap/pastewatch
 | `.pastewatchignore` | Project root | Path exclusion patterns (glob, like `.gitignore`) | Manual |
 | `.pastewatch-baseline.json` | Project root | Known findings baseline (SHA256 fingerprints) | `pastewatch-cli baseline create` |
 
+<!-- WO-670@v1: file exemptions follow the target root while raw text remains pathless. -->
+File targets automatically load one `.pastewatch-allow` from their Git toplevel,
+or the explicit non-Git scan/watch root (single-file operations use the parent).
+<!-- WO-672@v1: subordinate exact exemptions cannot remove independent authorization evidence. -->
+Its exact entries suppress advisory classes only, never non-ambiguous types,
+custom rules or intrinsic/exact-known-secret evidence. The same restriction
+applies to project config and tighten-only user entries. Stdin and raw MCP text load no project allow file. `doctor --explain`
+reports the resolved path, loading status and effective/ignored entry counts.
+
 ### Resolution cascade
 
 <!-- WO-640: Prevent agents from assuming project and user rules are merged. -->
-`/etc/pastewatch/config.json` > CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults. First existing config wins, with no merge. A project config can shadow user custom rules, opt-in detectors, allowlists, and shared pattern files. Run `pastewatch-cli doctor --explain` when rules seem inactive; follow [Troubleshooting](troubleshooting.md#my-rules-are-not-applied).
+<!-- WO-672@v1: project policy adds protection without replacing operator tiers. -->
+Administrator policy, or user policy when no system config exists, merges with tighten-only subordinate contributions; defaults apply when operator policy is absent. Types, rules, obfuscation and protected paths accumulate, rule severities cannot decrease, and subordinate suppression patterns are ignored. Subordinate `mcpMinSeverity` may only decrease to report more advisories. Intrinsic exemptions require exact whole values in the authoritative operator tier, never project files or patterns. Agents cannot create or modify `.pastewatch.json` or `.pastewatch-allow`. Run `pastewatch-cli doctor --explain` for per-field tier attribution; follow [Troubleshooting](troubleshooting.md#my-rules-are-not-applied).
 
 ### `.pastewatch.json` schema
 
@@ -297,8 +307,8 @@ Check installation health and show active configuration. Reports CLI version, PA
 - `--json` — output results as JSON
 - `--explain` - read-only config resolution, validation, and per-surface rule coverage instead of installation checks
 
-<!-- WO-640: Use the shared resolution explanation when rules appear inactive. -->
-Run `doctor --explain` when rules seem inactive. It reports Resolution (winner/shadowed candidates and contribution counts), Config in use (compiled rule count), policy/thresholds, Detectors, Custom rules, Shared pattern files, Allowlists, and a rule-coverage Summary. WARNs include lost opt-in type names and counts of shadowed custom rules, allowlist entries, or shared files. Pattern/value summaries contain only byte length and character classes, never literal values, positional masks, or hashes.
+<!-- WO-672@v1: diagnostics show merged contributions rather than replaced configurations. -->
+Run `doctor --explain` when rules seem inactive. It reports Resolution (contributing tiers and counts), per-field attribution, Config in use (compiled-rule count), policy/thresholds, Detectors, Custom rules, Shared pattern files, Allowlists, and a rule-coverage Summary. WARNs include ignored subordinate patterns and invalid contributions. Pattern/value summaries contain only byte length and character classes, never literal values, positional masks, or hashes.
 
 ```bash
 pastewatch-cli doctor --explain
@@ -313,9 +323,11 @@ Use the [complete output-field reference](cli-reference.md#doctor---explain) to 
 |-------|----------------|
 | cli | Version and binary path |
 | path | Whether pastewatch-cli is on PATH |
-| config | Which config file is active (administrator > project > user > defaults), validation warnings |
+<!-- WO-672@v1: the health report identifies merged tiers rather than a replacement winner. -->
+| config | Merged administrator/user/project contributions, field attribution, validation warnings |
 | hook | Pre-commit hook installation status |
-| allowlist | `.pastewatch-allow` file presence |
+<!-- WO-670@v1: health status proves actual file loading and reports ineffective entries. -->
+| allowlist | Target-root `.pastewatch-allow` path, loaded status, effective count and ignored intrinsic count |
 | ignore | `.pastewatchignore` file presence |
 | baseline | `.pastewatch-baseline.json` file presence |
 | mcp | Running MCP server processes and PIDs |
@@ -577,7 +589,10 @@ pastewatch-cli scan --file .env --format json | jq -r '.findings[].type'
 cat debug.log | pastewatch-cli scan --format json | jq -r '.obfuscated'
 
 # Scan directory, check mode
-pastewatch-cli scan --dir . --check --format json | jq '.count'
+pastewatch-cli scan --dir . --check --format json | jq '[.[].count] | add // 0'
+
+# Directory JSON is a per-file array; clean scans emit no stdout.
+# Coverage and named skippedOverLimit paths go to stderr in every format.
 
 # Fast gate check (bail at first finding)
 pastewatch-cli scan --dir . --check --bail --fail-on-severity high

@@ -882,6 +882,7 @@ public struct DetectionRules {
         return next.map { !$0.isLetter && !$0.isNumber && $0 != "_" } ?? true
     }
 
+    // WO-668@v1: a retained constructor literal must remain inside the matched range, including spaced calls.
     // WO-648@v2: retain a whole angle placeholder even when its text contains spaces.
     // WO-651@v2: a keyword match ends at value syntax, not the rest of its source literal.
     private static func credentialMatchRange(
@@ -889,6 +890,11 @@ public struct DetectionRules {
     ) -> Range<String.Index> {
         guard let separator = content[range].range(of: #"(?::=|[=:])\s*"#, options: .regularExpression),
               separator.upperBound < range.upperBound else { return range }
+        // WO-668@v1: extend only validated non-reference literals, never arbitrary following expressions.
+        if let literal = credentialCallLiteral(in: content[separator.upperBound...]),
+           !isCredentialArgumentReference(literal.value), isValidCredentialValue(literal.value) {
+            return range.lowerBound..<max(range.upperBound, literal.upperBound)
+        }
         var index = separator.upperBound
         let first = content[index]
         let valueQuote: Character? = first == "\"" || first == "'" ? first : nil
@@ -1763,6 +1769,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-668@v1: quote syntax separates literal credential values from assigned code expressions.
     // WO-651@v2: an escape-terminated source value excludes its unmatched opening quote before validation.
     // WO-652@v2: declarations carry types rather than assigned values, without changing parsed config values.
     /// Validate credential key=value matches.
@@ -1780,6 +1787,16 @@ public struct DetectionRules {
         // WO-651@v2: a quote is syntax even when extraction ends before its closing delimiter.
         var value = String(fullMatch[separatorRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
+        // WO-668@v1: retain quoting before normalizing a truncated source literal.
+        let isQuoted = value.first == "\"" || value.first == "'" || value.first == "`"
+        // WO-668@v1: first-literal shape, not the callee name, distinguishes reference calls from stored values.
+        if !isQuoted, let literal = credentialCallLiteral(in: (value + String(following ?? ""))[...]) {
+            return !isCredentialArgumentReference(literal.value) && isValidCredentialValue(literal.value)
+        }
+        // WO-668@v1: calls need only their opening delimiter; capture may stop before arguments close.
+        if !isQuoted && isCredentialCodeExpression(value, separator: separator, following: following) {
+            return false
+        }
         // WO-652@v2: check before quote normalization so actual quoted literals stay eligible.
         if isCredentialTypeReference(value, separator: separator, following: following, preceding: preceding) {
             return false
@@ -1790,11 +1807,79 @@ public struct DetectionRules {
 
         // WO-390@v2: source assignments and schema labels can carry code references,
         // while values with deterministic secret evidence must remain detectable.
-        if isLikelyStructFieldReference(key: key, separator: separator, value: value) {
+        // WO-668@v1: stripping quotes must not turn a real literal into a source reference.
+        if !isQuoted && isLikelyStructFieldReference(key: key, separator: separator, value: value) {
             return false
         }
 
         return isValidCredentialValue(value)
+    }
+
+    // WO-668@v1: only assignment syntax and an identifier path/call justify the source-expression exclusion.
+    private static func isCredentialCodeExpression(
+        _ value: String, separator: String, following: Substring?
+    ) -> Bool {
+        guard ["=", ":="].contains(separator.trimmingCharacters(in: .whitespaces)),
+              let identifier = value.range(
+                of: #"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"#,
+                options: .regularExpression
+              ) else { return false }
+        let suffix = value[identifier.upperBound...]
+        let tail = suffix.isEmpty ? following ?? "" : suffix
+        if tail.drop(while: { $0.isWhitespace && !$0.isNewline }).first == "(" { return true }
+        // Namespace paths without a call are references; punctuation is restricted to statement boundaries.
+        return value[identifier].contains("::") && suffix.allSatisfy { ",;)]}".contains($0) }
+    }
+
+    // WO-668@v1: retain the first quoted argument's value and original source boundary.
+    private struct CredentialCallLiteral {
+        let value: String
+        let upperBound: String.Index
+    }
+
+    // WO-668@v1: recognize calls structurally and inspect their first literal without a callee vocabulary.
+    private static func credentialCallLiteral(in expression: Substring) -> CredentialCallLiteral? {
+        let pattern = #"^(?:new[ \t]+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*[ \t\r\n]*\("#
+        guard let call = expression.range(of: pattern, options: .regularExpression) else { return nil }
+        var depth = 1
+        var index = call.upperBound
+        while index < expression.endIndex {
+            let character = expression[index]
+            if character == "\"" || character == "'" {
+                return credentialArgumentLiteral(in: expression, quoteAt: index)
+            }
+            if character == "(" { depth += 1 }
+            if character == ")" { depth -= 1 }
+            if depth == 0 { return nil }
+            index = expression.index(after: index)
+        }
+        return nil
+    }
+
+    // WO-668@v1: escaped delimiters do not terminate the first argument or extend it across a source line.
+    private static func credentialArgumentLiteral(in expression: Substring, quoteAt start: String.Index) -> CredentialCallLiteral? {
+        let quote = expression[start]
+        let lower = expression.index(after: start)
+        var index = lower
+        var escaped = false
+        while index < expression.endIndex {
+            let character = expression[index]
+            if character.isNewline { return nil }
+            if escaped { escaped = false } else if character == "\\" { escaped = true } else if character == quote {
+                return CredentialCallLiteral(value: String(expression[lower..<index]), upperBound: expression.index(after: index))
+            }
+            index = expression.index(after: index)
+        }
+        return nil
+    }
+
+    // WO-668@v1: path-shaped and all-caps literals are accepted false negatives under the pinned reference rule.
+    private static func isCredentialArgumentReference(_ value: String) -> Bool {
+        if ["/", "./", "../", "~/"].contains(where: value.hasPrefix) { return true }
+        if value.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil { return true }
+        if value.contains("/") || value.contains("\\"),
+           value.range(of: #"\.[A-Za-z0-9]{1,5}$"#, options: .regularExpression) != nil { return true }
+        return value.range(of: #"^[A-Z][A-Z0-9_]*$"#, options: .regularExpression) != nil
     }
 
     // WO-652@v2: colon identifiers are types only under the pinned C/builtin or same-line declaration rules.
@@ -2135,6 +2220,7 @@ public struct DetectionRules {
         return true
     }
 
+    // WO-667@v1: contextual numeric rejection retains the existing UUID and phone digit cutsets.
     // WO-661@v2: contextual UUID rejection preserves the existing phone digit cutsets.
     private static func isValidPhone(_ value: String, following: Substring?, preceding: Substring?) -> Bool {
         let digitsOnly = value.filter { $0.isNumber }
@@ -2153,7 +2239,21 @@ public struct DetectionRules {
         if isDegenerateDigitRun(digitsOnly) { return false }
         // WO-661@v2: reject identifier fragments without suppressing another phone on the same line.
         if isPhoneFragmentOfCanonicalUUID(value, following: following, preceding: preceding) { return false }
+        // WO-667@v1: local-number regexes can also claim only the fractional digits of a decimal.
+        if isPhoneFragmentOfDecimal(value, following: following, preceding: preceding) { return false }
         return true
+    }
+
+    // WO-667@v1: one decimal point distinguishes numeric literals from multi-group dotted phones.
+    private static func isPhoneFragmentOfDecimal(
+        _ value: String, following: Substring?, preceding: Substring?
+    ) -> Bool {
+        let numeric: (Character) -> Bool = { $0 == "." || ("0"..."9").contains($0) }
+        guard value.allSatisfy(numeric) else { return false }
+        let before = preceding.map { String($0.reversed().prefix(while: numeric).reversed()) } ?? ""
+        let after = following.map { String($0.prefix(while: numeric)) } ?? ""
+        let parts = (before + value + after).split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }
     }
 
     // WO-661@v2: UUIDs have 36 ASCII characters; retain one additional character to test word boundaries.

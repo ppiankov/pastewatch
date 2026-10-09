@@ -35,6 +35,21 @@ public struct MutationOutcome {
     public let advisoryBelowThreshold: [DetectedMatch]
 }
 
+// WO-672@v1: tighten-only tiers exempt advisory classes without independently authorized evidence.
+public func permitsAllowlistSuppression(
+    of match: DetectedMatch, source: AllowlistSource, exactValue: Bool
+) -> Bool {
+    if source == .project || source == .projectFile || source == .restrictedUser {
+        return match.type.isAmbiguousClass && match.customRuleName == nil &&
+            match.mutationAuthorizationSources.isDisjoint(with: [.customRule, .intrinsicFormat, .exactKnownSecret])
+    }
+    // WO-672@v1: authoritative, inline and remedy sources retain their existing suppression contract.
+    guard match.mutationAuthorizationSources.contains(.intrinsicFormat) else {
+        return true
+    }
+    return exactValue && (source == .system || source == .user)
+}
+
 /// WO-454/WO-488: evidence authorizes mutation; the required site label classifies
 /// callers for exhaustive tests but cannot silently widen or narrow authorization.
 public func partitionMutationMatches(

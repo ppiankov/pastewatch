@@ -464,6 +464,7 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     // WO-577@v3: guard policy suppresses explicit allowlist values on every scan surface.
+    // WO-672@v1: legitimate custom-rule exemptions originate in isolated user policy.
     func testDiagnosticScanEndpointsHonorConfiguredAllowlist() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pastewatch-mcp-allowlist-\(UUID().uuidString)", isDirectory: true)
@@ -475,26 +476,30 @@ final class MCPProtocolTests: XCTestCase {
         config.customRules = [
             CustomRuleConfig(name: "Allowlist fixture", pattern: "PWALLOW-[A-F0-9]{12}")
         ]
-        config.allowedValues = [value]
         try JSONEncoder().encode(config).write(
             to: tempDir.appendingPathComponent(".pastewatch.json")
         )
         let fileURL = tempDir.appendingPathComponent("fixture.txt")
         try value.write(to: fileURL, atomically: true, encoding: .utf8)
 
-        for (name, arguments) in [
-            ("pastewatch_scan", ["text": JSONValue.string(value)]),
-            ("pastewatch_scan_file", ["path": JSONValue.string(fileURL.path)]),
-            ("pastewatch_scan_dir", ["path": JSONValue.string(tempDir.path)]),
-            ("pastewatch_check_output", ["text": JSONValue.string(value)])
-        ] {
-            let response = try callMCPTool(
-                name: name,
-                arguments: arguments,
-                currentDirectory: tempDir
-            )
-            let text = try joinedMCPContentText(response)
-            XCTAssertFalse(text.contains("Allowlist fixture"), "\(name): \(text)")
+        try PastewatchConfig.withTestGlobalConfigPath(tempDir.appendingPathComponent("user-fixture.json")) {
+            var user = PastewatchConfig.defaultConfig
+            user.allowedValues = [value]
+            try JSONEncoder().encode(user).write(to: PastewatchConfig.configPath)
+            for (name, arguments) in [
+                ("pastewatch_scan", ["text": JSONValue.string(value)]),
+                ("pastewatch_scan_file", ["path": JSONValue.string(fileURL.path)]),
+                ("pastewatch_scan_dir", ["path": JSONValue.string(tempDir.path)]),
+                ("pastewatch_check_output", ["text": JSONValue.string(value)])
+            ] {
+                let response = try callMCPTool(
+                    name: name,
+                    arguments: arguments,
+                    currentDirectory: tempDir
+                )
+                let text = try joinedMCPContentText(response)
+                XCTAssertFalse(text.contains("Allowlist fixture"), "\(name): \(text)")
+            }
         }
     }
 
@@ -784,6 +789,7 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     // WO-595@v2: MCP scan_dir propagates member limits instead of reporting a partial clean scan.
+    // WO-662@v3: directory member line limits now produce explicit counted skips instead of aborting.
     func testScanDirectoryRejectsMemberOverDefaultLineLimit() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("pastewatch-mcp-dir-limit-\(UUID().uuidString)", isDirectory: true)
@@ -801,8 +807,9 @@ final class MCPProtocolTests: XCTestCase {
         )
         let text = try joinedMCPContentText(response)
 
-        XCTAssertTrue(text.contains("Scan limit exceeded"), text)
-        XCTAssertTrue(text.contains(ScanInputLimits.lineBytesEnvironmentKey), text)
+        // WO-662@v3: zero findings is accompanied by the unscanned member count.
+        XCTAssertTrue(text.contains("Found 0 findings."), text)
+        XCTAssertTrue(text.contains("skippedOverLimit=1"), text)
         XCTAssertFalse(text.contains(String(repeating: "x", count: 64)), text)
     }
 
@@ -885,6 +892,7 @@ final class MCPProtocolTests: XCTestCase {
 
         // WO-654@v1: retain syscall failures before session cleanup runs.
         // WO-627@v2: configure read caps and explicit rules before the subprocess loads policy.
+        // WO-672@v1: persistent subprocess sessions use the DEBUG-only global fixture channel.
         init(
             executableURL: URL,
             maximumLineBytes: Int = 256,
@@ -902,11 +910,12 @@ final class MCPProtocolTests: XCTestCase {
             process.arguments = ["mcp"]
             process.currentDirectoryURL = directory
             // WO-634: no HOME or CFFIXED_USER_HOME channel is needed for config isolation.
-            process.environment = [
+            // WO-672@v1: custom transport environments retain the DEBUG config fixture boundary.
+            process.environment = TestConfigHelper.subprocessEnvironment([
                 ScanInputLimits.lineBytesEnvironmentKey: String(maximumLineBytes),
                 // WO-627@v2: a small cap proves oversized range lengths are clamped.
                 ScanInputLimits.fileBytesEnvironmentKey: String(maximumFileBytes),
-            ]
+            ])
             process.standardInput = stdin
             process.standardOutput = stdout
             process.standardError = FileHandle.nullDevice

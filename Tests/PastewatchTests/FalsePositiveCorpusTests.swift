@@ -72,6 +72,13 @@ final class FalsePositiveCorpusTests: XCTestCase {
             "id: 1234567890",
             "00000000-0000-0000-0000-000000000000",
         ],
+        // WO-667@v1: curl timing output is decimal data, not a telephone number.
+        "decimal-phone-timings": [
+            "http=200 t=245.014848", "time_total=12.345678", "latency=0.004512",
+            "245.014848", "0.123456789", "1234.5",
+            "t=8123.456789", "time_total=0.81234567890", "latency=001.234567890",
+            "curl -w 'http=%{http_code} t=%{time_total}' output: http=200 t=8123.456789"
+        ],
         "config-keys-benign-values": [
             "timeout: 3600", "retries: 3", "enabled: true", "level: debug",
             "port: 8443", "workers: 4", "mode: strict",
@@ -92,7 +99,68 @@ final class FalsePositiveCorpusTests: XCTestCase {
         "credential-literal-prose": ["true", "false", "null", "\"true\""].map {
             "- Credential regex: exclude literal values (`" + ["pass", "word", "="].joined() + $0 + "`)."
         },
-    ]
+    // WO-668@v1: the golden corpus includes the focused language fixtures without duplicating them.
+    ].merging(CredentialCodeExpressionFixtures.rowsByLanguage) { existing, _ in existing }
+
+    // WO-668@v1: enabling Credential makes code-expression false positives measurable, not hidden by defaults.
+    func testCodeExpressionCorpusAndCredentialControls() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let enabled = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let falsePositives = Self.benignCorpus.values.flatMap { $0 }.reduce(0) { count, row in
+                count + DetectionRules.scan(row, config: enabled).filter { $0.effectiveSeverity >= .high }.count
+            }
+            var falseNegatives = 0
+            // WO-668@v1: accepted reference-shaped misses are named, not hidden from the corpus count.
+            let controls = CredentialCodeExpressionFixtures.literalControls + CredentialCodeExpressionFixtures.documentedFalseNegatives
+            for control in controls
+            where try control.matches(config: enabled).isEmpty {
+                falseNegatives += 1
+            }
+            print("WO-668 corpus FP=\(falsePositives) FN=\(falseNegatives)")
+            XCTAssertEqual(falsePositives, 0, "Corpus high-severity false-positive count")
+            // WO-668@v1: only the pinned reference/default misses remain after constructor coverage is restored.
+            XCTAssertEqual(falseNegatives, CredentialCodeExpressionFixtures.documentedFalseNegatives.count,
+                           "Credential literal control false-negative count")
+            XCTAssertEqual(CredentialCodeExpressionFixtures.rowsByLanguage.count, 7)
+            for rows in CredentialCodeExpressionFixtures.rowsByLanguage.values {
+                XCTAssertGreaterThanOrEqual(rows.count, 2)
+            }
+        }
+    }
+
+    // WO-667@v1: report corpus precision with Phone enabled so default-off cannot conceal a false positive.
+    func testDecimalCorpusAndPhoneControls() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let enabled = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
+            var falsePositives = 0
+            for lines in Self.benignCorpus.values {
+                for row in lines {
+                    falsePositives += DetectionRules.scan(row, config: enabled)
+                        .filter { $0.effectiveSeverity >= .high }.count
+                }
+            }
+            let controls: [String] = [
+                ["+1", "415", "555", "0132"].joined(separator: " "),
+                ["(", "415", ") ", "555", "-0132"].joined(),
+                ["+65", "6123", "4567"].joined(separator: " "),
+                ["+1", "415", "555", "0132"].joined(separator: ".")
+            ]
+            let falseNegatives = controls.filter {
+                !DetectionRules.scan($0, config: enabled).contains { $0.type == .phone }
+            }.count
+            print("WO-667 corpus FP=\(falsePositives) FN=\(falseNegatives)")
+            XCTAssertEqual(falsePositives, 0, "Corpus high-severity false-positive count")
+            XCTAssertEqual(falseNegatives, 0, "Phone control false-negative count")
+            for row in try XCTUnwrap(Self.benignCorpus["decimal-phone-timings"]) {
+                XCTAssertFalse(DetectionRules.scan(row, config: config).contains { $0.type == .phone })
+                for control in controls.prefix(3) {
+                    let phones = DetectionRules.scan(row + " contact=" + control, config: enabled)
+                        .filter { $0.type == .phone }
+                    XCTAssertEqual(phones.count, 1, "Phone count beside a decimal token")
+                }
+            }
+        }
+    }
 
     // WO-661@v2: default-off Phone must not mask a golden-corpus precision regression.
     func testUUIDCorpusWithPhoneEnabledProducesNoPhoneFindings() throws {

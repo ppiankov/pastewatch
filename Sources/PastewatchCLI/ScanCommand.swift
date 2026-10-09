@@ -46,6 +46,10 @@ struct Scan: ParsableCommand {
     @Flag(name: .long, help: "Scan git diff changes (staged by default)")
     var gitDiff = false
 
+    // WO-662@v3: expose the existing staged default explicitly for pre-commit coverage checks.
+    @Flag(name: .long, help: "Scan staged changes (the default; requires --git-diff)")
+    var staged = false
+
     @Flag(name: .long, help: "Include unstaged changes (requires --git-diff)")
     var unstaged = false
 
@@ -64,6 +68,7 @@ struct Scan: ParsableCommand {
     @Option(name: .long, help: "Write report to file instead of stdout")
     var output: String?
 
+    // WO-662@v3: the explicit staged spelling uses only the existing Git diff surface.
     func validate() throws {
         if file != nil && dir != nil {
             throw ValidationError("--file and --dir are mutually exclusive")
@@ -79,6 +84,10 @@ struct Scan: ParsableCommand {
         }
         if unstaged && !gitDiff {
             throw ValidationError("--unstaged requires --git-diff")
+        }
+        // WO-662@v3: a redundant staged flag must not silently select a non-Git scan.
+        if staged && !gitDiff {
+            throw ValidationError("--staged requires --git-diff")
         }
         if (range != nil || since != nil || branch != nil) && !gitLog {
             throw ValidationError("--range, --since, and --branch require --git-log")
@@ -351,6 +360,8 @@ struct Scan: ParsableCommand {
 
     // MARK: - Directory scanning
 
+    // WO-662@v3: directory scans emit coverage even when no file contributes a finding.
+    // WO-670@v1: file decisions retain the explicitly scanned directory context.
     private func runDirectoryScan(
         dirPath: String,
         config: PastewatchConfig,
@@ -359,9 +370,11 @@ struct Scan: ParsableCommand {
         baseline: BaselineFile? = nil
     ) throws {
         let ignoreFile = IgnoreFile.load(from: dirPath)
-        let fileResults: [FileScanResult]
+        // WO-662@v3: retain counts separately from the findings-only list.
+        let report: DirectoryScanReport
         do {
-            fileResults = try DirectoryScanner.scan(
+            // WO-662@v3: share measured coverage with the MCP directory tool.
+            report = try DirectoryScanner.scanWithStatistics(
                 directory: dirPath, config: config,
                 ignoreFile: ignoreFile, extraIgnorePatterns: ignore,
                 bail: bail
@@ -383,7 +396,8 @@ struct Scan: ParsableCommand {
 
         // Apply allowlist and custom rules to each file's matches
         var filteredResults: [FileScanResult] = []
-        for fr in fileResults {
+        // WO-662@v3: policy filtering must not alter the number of files that were scanned.
+        for fr in report.files {
             var allMatches: [DetectedMatch] = fr.matches
 
             // Re-scan with allowlist/custom rules if either is provided
@@ -398,8 +412,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .trustedFile,
                 minimumSeverity: nil,
-                // WO-635: directory findings retain their file-level policy context.
-                filePath: fr.filePath
+                // WO-670@v1: relative report paths are bound to the scan root, never the process CWD.
+                filePath: URL(fileURLWithPath: dirPath).appendingPathComponent(fr.filePath).path,
+                scanRoot: dirPath
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -417,15 +432,17 @@ struct Scan: ParsableCommand {
             filteredResults = bl.filterNewResults(results: filteredResults)
         }
 
-        if filteredResults.isEmpty {
-            return
-        }
-
+        // WO-662@v3: coverage goes to stderr in every format; empty stdout retains the original contract.
+        let summary = report.statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count })
+        FileHandle.standardError.write(Data((summary + "\n").utf8))
+        guard !filteredResults.isEmpty else { return }
         try redirectStdoutIfNeeded()
 
         if check {
+            // WO-662@v3: preserve check-mode findings diagnostics alongside scan coverage.
             outputDirCheckMode(results: filteredResults)
         } else {
+            // WO-662@v3: normal directory output uses the same scan evidence.
             outputDirFindings(results: filteredResults)
         }
 
@@ -442,6 +459,8 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git diff scanning
 
+    // WO-662@v3: Git diff coverage includes named line-limit skips without changing finding output.
+    // WO-670@v1: Git-relative result paths retain their actual repository root for policy loading.
     private func runGitDiffScan(
         config: PastewatchConfig,
         allowlist: Allowlist,
@@ -450,10 +469,15 @@ struct Scan: ParsableCommand {
     ) throws {
         let fileResults: [FileScanResult]
         do {
-            fileResults = try GitDiffScanner.scan(
+            // WO-662@v3: retain the findings-only rendering while exposing counted skips on stderr.
+            let report = try GitDiffScanner.scanWithStatistics(
                 staged: !unstaged, unstaged: unstaged,
                 config: config, bail: bail
             )
+            fileResults = report.files
+            if report.statistics.skippedOverLimit > 0 {
+                FileHandle.standardError.write(Data("skippedOverLimit=\(report.statistics.skippedOverLimit)\n".utf8))
+            }
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
             // WO-580@v3: git scan failures use the stable operational exit.
@@ -474,6 +498,8 @@ struct Scan: ParsableCommand {
 
         // Apply allowlist filtering
         var filteredResults: [FileScanResult] = []
+        // WO-670@v1: resolve repository-relative paths once per Git scan.
+        let targetRoot = projectScanRoot()
         for fr in fileResults {
             var allMatches = fr.matches
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
@@ -486,8 +512,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .trustedFile,
                 minimumSeverity: nil,
-                // WO-635: diff findings are classified by the changed file's path.
-                filePath: fr.filePath
+                // WO-670@v1: deleted targets retain the explicitly scanned Git root.
+                filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(fr.filePath).path,
+                scanRoot: targetRoot
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -523,6 +550,8 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git log scanning
 
+    // WO-662@v3: history line-limit skips are visible without replacing the legacy result schema.
+    // WO-670@v1: historical file findings share target-root exact exemptions with staged findings.
     private func runGitLogScan(
         config: PastewatchConfig,
         allowlist: Allowlist,
@@ -553,8 +582,14 @@ struct Scan: ParsableCommand {
             throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         }
 
+        // WO-662@v3: cumulative history skips accompany individual path-only diagnostics.
+        if result.skippedOverLimit > 0 {
+            FileHandle.standardError.write(Data("skippedOverLimit=\(result.skippedOverLimit)\n".utf8))
+        }
         // Apply allowlist filtering
         var filteredFindings: [CommitFinding] = []
+        // WO-670@v1: historical paths retain the same repository context as staged files.
+        let targetRoot = projectScanRoot()
         for cf in result.findings {
             var allMatches = cf.matches
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
@@ -568,8 +603,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .agentControlled,
                 minimumSeverity: nil,
-                // WO-635: history findings carry a path even without current working-tree content.
-                filePath: cf.filePath
+                // WO-670@v1: deleted historical directories retain the explicitly scanned Git root.
+                filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(cf.filePath).path,
+                scanRoot: targetRoot
             ).reportableMatches
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(
@@ -605,6 +641,13 @@ struct Scan: ParsableCommand {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
+    }
+
+    // WO-670@v1: Git modes explicitly scan the current repository, including nested invocations.
+    private func projectScanRoot() -> String {
+        let cwd = FileManager.default.currentDirectoryPath
+        guard let path = Allowlist.projectFile(for: cwd).path else { return cwd }
+        return URL(fileURLWithPath: path).deletingLastPathComponent().path
     }
 
     private func outputGitLogFindings(findings: [CommitFinding], result: GitLogScanResult) {
@@ -713,7 +756,8 @@ struct Scan: ParsableCommand {
         fr.gitignored ? "[gitignored] " : ""
     }
 
-    private func outputDirCheckMode(results: [FileScanResult]) {
+    // WO-662@v3: check output discloses coverage without printing matched values in text mode.
+    private func outputDirCheckMode(results: [FileScanResult], statistics: DirectoryScanStatistics? = nil) {
         switch format {
         case .text:
             for fr in results {
@@ -724,20 +768,14 @@ struct Scan: ParsableCommand {
                     .joined(separator: ", ")
                 FileHandle.standardError.write(Data("\(prefix)\(fr.filePath): \(summary)\n".utf8))
             }
+            // WO-662@v3: zero findings is not a substitute for scan evidence.
+            if let statistics {
+                let summary = statistics.summary(findings: results.reduce(0) { $0 + $1.matches.count })
+                FileHandle.standardError.write(Data((summary + "\n").utf8))
+            }
         case .json:
-            let output = results.map { fr in
-                DirScanFileOutput(
-                    file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
-                    count: fr.matches.count,
-                    gitignored: fr.gitignored
-                )
-            }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if let data = try? encoder.encode(output) {
-                print(String(data: data, encoding: .utf8)!)
-            }
+            // WO-662@v3: retain the legacy per-file array; coverage is reported separately on stderr.
+            outputDirectoryJSON(results: results, statistics: statistics)
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
             let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: AppVersion.current)
@@ -747,7 +785,8 @@ struct Scan: ParsableCommand {
         }
     }
 
-    private func outputDirFindings(results: [FileScanResult]) {
+    // WO-662@v3: normal directory output includes scans of clean files and skipped-file counts.
+    private func outputDirFindings(results: [FileScanResult], statistics: DirectoryScanStatistics? = nil) {
         switch format {
         case .text:
             for fr in results {
@@ -757,26 +796,36 @@ struct Scan: ParsableCommand {
                     print("  line \(match.line): \(match.displayName): \(match.value)")
                 }
             }
+            // WO-662@v3: unsupported-only directories never appear as an empty clean result.
+            if let statistics { print(statistics.summary(findings: results.reduce(0) { $0 + $1.matches.count })) }
         case .json:
-            let output = results.map { fr in
-                DirScanFileOutput(
-                    file: fr.filePath,
-                    findings: fr.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
-                    count: fr.matches.count,
-                    gitignored: fr.gitignored
-                )
-            }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if let data = try? encoder.encode(output) {
-                print(String(data: data, encoding: .utf8)!)
-            }
+            // WO-662@v3: both directory JSON modes retain the same per-file array.
+            outputDirectoryJSON(results: results, statistics: statistics)
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
             let data = SarifFormatter.formatMultiFile(fileResults: pairs, version: AppVersion.current)
             print(String(data: data, encoding: .utf8)!)
         case .markdown:
             print(MarkdownFormatter.formatDirectory(results: results), terminator: "")
+        }
+    }
+
+    // WO-662@v3: encode the legacy per-file array once for both directory JSON modes.
+    private func outputDirectoryJSON(results: [FileScanResult], statistics: DirectoryScanStatistics?) {
+        let findings = results.map { result in
+            DirScanFileOutput(
+                file: result.filePath,
+                findings: result.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                count: result.matches.count,
+                gitignored: result.gitignored
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // WO-662@v3: CLI JSON remains the exact legacy top-level per-file array.
+        let data = try? encoder.encode(findings)
+        if let data, let text = String(data: data, encoding: .utf8) {
+            print(text)
         }
     }
 

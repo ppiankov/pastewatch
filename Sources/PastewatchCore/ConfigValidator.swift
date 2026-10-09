@@ -1,5 +1,13 @@
 import Foundation
 
+// WO-672@v1: keep the legacy type API attached to the shared strict resolution implementation.
+extension PastewatchConfig {
+    // WO-672@v1: all configuration resolution uses the same validated, tightening-only merge.
+    public static func resolve() -> PastewatchConfig {
+        (try? ConfigValidator.resolveValidated().config) ?? defaultConfig
+    }
+}
+
 public struct ConfigValidationResult {
     public let errors: [String]
     public var isValid: Bool { errors.isEmpty }
@@ -18,6 +26,15 @@ public struct ResolvedPastewatchConfig {
     public let config: PastewatchConfig
     public let source: PastewatchConfigSource
     public let path: String?
+    // WO-672@v1: diagnostics use the same validated tier contributions as enforcement.
+    let contributions: [ConfigContribution]
+}
+
+// WO-672@v1: private policy values never enter diagnostic serialization.
+struct ConfigContribution {
+    let source: PastewatchConfigSource
+    let path: String
+    let config: PastewatchConfig
 }
 
 // WO-574@v4: enforcement diagnostics disclose the failing path, never config values.
@@ -37,9 +54,19 @@ public struct PastewatchConfigResolutionError: Error, Equatable, LocalizedError 
 }
 
 public enum ConfigValidator {
+    // WO-672@v1: validating effective policy must validate every participating tier.
     // WO-574@v4: all enforcement commands share this strict config boundary.
     /// Validate a config file at the given path, or the resolved config if nil.
     public static func validate(path: String? = nil) -> ConfigValidationResult {
+        // WO-672@v1: explicit-file checks retain their detailed validation behavior.
+        if path == nil {
+            do {
+                _ = try resolveValidated()
+                return ConfigValidationResult(errors: [])
+            } catch {
+                return ConfigValidationResult(errors: [error.localizedDescription])
+            }
+        }
         let loaded = loadConfigData(path: path)
         guard let (data, configPath) = loaded.value else {
             return ConfigValidationResult(errors: loaded.errors)
@@ -49,7 +76,8 @@ public enum ConfigValidator {
         return ConfigValidationResult(errors: decoded.errors)
     }
 
-    // WO-636@v2: diagnostics and enforcement share the same first-wins candidate order.
+    // WO-672@v1: operator policy survives project contributions at the strict resolver boundary.
+    // WO-636@v2: diagnostics and enforcement share candidate discovery.
     // WO-574@v4: present invalid config is an enforcement failure, not a fallback signal.
     public static func resolveValidated(
         fileManager: FileManager = .default,
@@ -62,28 +90,145 @@ public enum ConfigValidator {
             currentDirectory: currentDirectory, systemConfigPath: systemConfigPath, userConfigPath: userConfigPath
         )
 
-        guard let (source, path) = candidates.first(where: {
-            pathExistsIncludingDanglingSymlink($0.1, fileManager: fileManager)
-        }) else {
-            return ResolvedPastewatchConfig(
-                config: .defaultConfig,
-                source: .defaults,
-                path: nil
-            )
+        // WO-672@v1: present invalid policy at any tier fails closed rather than disappearing.
+        var contributions: [ConfigContribution] = []
+        for (source, path) in candidates where pathExistsIncludingDanglingSymlink(path, fileManager: fileManager) {
+            let data: Data
+            do {
+                data = try Data(contentsOf: URL(fileURLWithPath: path))
+            } catch {
+                throw PastewatchConfigResolutionError(path: path, kind: .unreadable)
+            }
+            let decoded = decodeAndValidate(data: data, configPath: path)
+            guard let config = decoded.config, decoded.errors.isEmpty else {
+                throw PastewatchConfigResolutionError(path: path, kind: .invalid)
+            }
+            contributions.append(ConfigContribution(source: source, path: path, config: config))
         }
+        return ResolvedPastewatchConfig(config: merge(contributions), source: contributions.first?.source ?? .defaults,
+                                       path: contributions.first?.path, contributions: contributions)
+    }
 
-        let data: Data
-        do {
-            data = try Data(contentsOf: URL(fileURLWithPath: path))
-        } catch {
-            throw PastewatchConfigResolutionError(path: path, kind: .unreadable)
+    // WO-672@v1: arrays only accumulate protection; operator scalar choices remain authoritative.
+    private static func merge(_ contributions: [ConfigContribution]) -> PastewatchConfig {
+        let operatorPolicy = contributions.first { $0.source == .system } ??
+            contributions.first { $0.source == .user }
+        var result = operatorPolicy?.config ?? .defaultConfig
+        let baseSource = operatorPolicy.map { tierName($0.source) } ?? "defaults"
+        let fields = ["enabled", "enabledTypes", "customRules", "obfuscate", "protectedPaths", "sharedPatternFiles",
+                      "allowedValues", "allowedPatterns", "mcpMinSeverity", "documentationPolicy", "safeHosts",
+                      "sensitiveHosts", "sensitiveIPPrefixes", "xmlSensitiveTags", "placeholderPrefix",
+                      "responseStreamingRedactionMode", "operatorRedactionNotices"]
+        result.fieldSources = Dictionary(uniqueKeysWithValues: fields.map { ($0, [baseSource]) })
+        result.allowedValues = []
+        result.allowedValueSources = [:]
+        // WO-672@v1: project patterns cannot extend the operator's suppression policy.
+        result.allowedPatterns = []
+        result.allowedPatternSources = [:]
+        for contribution in contributions {
+            // WO-672@v1: system policy makes both lower tiers tighten-only.
+            let tightenOnly = contribution.source == .project ||
+                (operatorPolicy?.source == .system && contribution.source == .user)
+            mergeRestrictions(contribution, tightenOnly: tightenOnly, into: &result)
+            let source = tierName(contribution.source)
+            // WO-672@v1: subordinate user entries retain their tier but lose intrinsic exemption authority.
+            let entrySource: AllowlistSource
+            switch contribution.source {
+            case .system: entrySource = .system
+            case .user: entrySource = tightenOnly ? .restrictedUser : .user
+            default: entrySource = .project
+            }
+            for value in contribution.config.allowedValues {
+                if !result.allowedValues.contains(value) { result.allowedValues.append(value) }
+                result.allowedValueSources[value, default: []].insert(entrySource)
+            }
+            if !contribution.config.allowedValues.isEmpty { record("allowedValues", source: source, in: &result) }
+            // WO-672@v1: only the authoritative operator tier contributes suppression patterns.
+            if !tightenOnly {
+                appendUnique(contribution.config.allowedPatterns, to: &result.allowedPatterns)
+                for pattern in contribution.config.allowedPatterns {
+                    result.allowedPatternSources[pattern, default: []].insert(entrySource)
+                }
+                if !contribution.config.allowedPatterns.isEmpty { record("allowedPatterns", source: source, in: &result) }
+            }
         }
+        return result
+    }
 
-        let decoded = decodeAndValidate(data: data, configPath: path)
-        guard let config = decoded.config, decoded.errors.isEmpty else {
-            throw PastewatchConfigResolutionError(path: path, kind: .invalid)
+    // WO-672@v1: subordinate policy accumulates protection and may only increase advisory visibility.
+    private static func mergeRestrictions(_ contribution: ConfigContribution, tightenOnly: Bool,
+                                          into result: inout PastewatchConfig) {
+        let config = contribution.config
+        let source = tierName(contribution.source)
+        let arrays: [(String, WritableKeyPath<PastewatchConfig, [String]>)] = [
+            ("enabledTypes", \.enabledTypes), ("protectedPaths", \.protectedPaths),
+            ("sharedPatternFiles", \.sharedPatternFiles), ("sensitiveHosts", \.sensitiveHosts),
+            ("sensitiveIPPrefixes", \.sensitiveIPPrefixes), ("xmlSensitiveTags", \.xmlSensitiveTags),
+        ]
+        for (field, keyPath) in arrays where !config[keyPath: keyPath].isEmpty {
+            appendUnique(config[keyPath: keyPath], to: &result[keyPath: keyPath])
+            record(field, source: source, in: &result)
         }
-        return ResolvedPastewatchConfig(config: config, source: source, path: path)
+        appendUnique(config.obfuscate, to: &result.obfuscate)
+        if !config.obfuscate.isEmpty { record("obfuscate", source: source, in: &result) }
+        for rule in config.customRules {
+            if let index = result.customRules.firstIndex(where: { $0.name == rule.name && $0.pattern == rule.pattern }) {
+                let existingSeverity = Severity(rawValue: result.customRules[index].severity ?? "high") ?? .high
+                let addedSeverity = Severity(rawValue: rule.severity ?? "high") ?? .high
+                if addedSeverity > existingSeverity {
+                    result.customRules[index] = CustomRuleConfig(name: rule.name, pattern: rule.pattern,
+                                                                severity: addedSeverity.rawValue)
+                }
+            } else {
+                result.customRules.append(rule)
+            }
+            record("customRules", source: source, in: &result)
+        }
+        // WO-672@v1: user scalar choices are subordinate whenever system policy exists.
+        if tightenOnly {
+            // WO-672@v1: a project may add placeholder formatting but cannot replace an operator prefix.
+            if result.placeholderPrefix == nil, let prefix = config.placeholderPrefix {
+                result.placeholderPrefix = prefix
+                record("placeholderPrefix", source: source, in: &result)
+            }
+            // WO-672@v1: project notices may add visibility, never disable operator notices.
+            if config.operatorRedactionNotices {
+                result.operatorRedactionNotices = true
+                record("operatorRedactionNotices", source: source, in: &result)
+            }
+            let existing = Severity(rawValue: result.mcpMinSeverity) ?? .high
+            let added = Severity(rawValue: config.mcpMinSeverity) ?? .high
+            // WO-672@v1: a lower threshold exposes more advisories without granting mutation authority.
+            if added < existing {
+                result.mcpMinSeverity = added.rawValue
+                record("mcpMinSeverity", source: source, in: &result)
+            }
+            if config.documentationPolicy == .enforce {
+                result.documentationPolicy = .enforce
+                record("documentationPolicy", source: source, in: &result)
+            }
+        }
+    }
+
+    // WO-672@v1: deterministic union preserves rule and pattern order across tiers.
+    private static func appendUnique<T: Equatable>(_ values: [T], to result: inout [T]) {
+        for value in values where !result.contains(value) { result.append(value) }
+    }
+
+    // WO-672@v1: field attribution exposes tier names only, never policy values.
+    private static func record(_ field: String, source: String, in config: inout PastewatchConfig) {
+        if config.fieldSources[field] == ["defaults"] { config.fieldSources[field] = [] }
+        if config.fieldSources[field]?.contains(source) != true { config.fieldSources[field, default: []].append(source) }
+    }
+
+    // WO-672@v1: stable labels make merged policy attribution usable by diagnostics.
+    private static func tierName(_ source: PastewatchConfigSource) -> String {
+        switch source {
+        case .system: return "system"
+        case .user: return "user"
+        case .project: return "project"
+        case .defaults: return "defaults"
+        }
     }
 
     // WO-636@v2: the read-only walkthrough uses the enforcement resolver's exact order.

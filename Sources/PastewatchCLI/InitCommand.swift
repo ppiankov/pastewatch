@@ -13,6 +13,7 @@ struct Init: ParsableCommand {
     @Option(name: .long, help: "Configuration profile (default, banking)")
     var profile: String?
 
+    // WO-670@v1: generated exact-value files describe the shared file-target contract.
     func run() throws {
         let fm = FileManager.default
         let cwd = fm.currentDirectoryPath
@@ -45,11 +46,13 @@ struct Init: ParsableCommand {
 
         try configTemplate.write(toFile: configPath, atomically: true, encoding: .utf8)
 
-        // Write .pastewatch-allow
+        // WO-670@v1: project files grant advisory exemptions, never intrinsic or custom-rule exemptions.
         let allowTemplate = """
         # Pastewatch allowlist
         # One value per line. Lines starting with # are comments.
-        # Values listed here will be excluded from scan results.
+        # Advisory values only; intrinsic secrets and custom rules are never exempted.
+        # Automatically loaded at the target's git root, otherwise the scan root.
+        # Pathless input does not load this file.
         #
         # Examples:
         # test@example.com

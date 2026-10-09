@@ -360,6 +360,7 @@ final class MCPServer {
 
     // WO-630@v2: advertise mutually exclusive text line windows beside existing byte windows.
     // WO-647@v2: expose partial edits beside the whole-file read/write surface.
+    // WO-665@v1: advertise automatic default windows and the existing byte continuation arguments.
     private func toolsListResponse(id: JSONRPCId?) -> JSONRPCResponse {
         let tools: JSONValue = .object([
             "tools": .array([
@@ -407,7 +408,8 @@ final class MCPServer {
                 ]),
                 .object([
                     "name": .string("pastewatch_read_file"),
-                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored."),
+                    // WO-665@v1: default large reads are bounded after replacement, never on raw file bytes.
+                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored. Unranged output over \(MCPReadDecision.unrangedResponseLimitDescription) returns a plain-text window of whole lines, start_line, end_line, total_lines, has_more and continuation_hint naming the next start_line. A first line over \(MCPReadDecision.unrangedResponseLimitDescription) falls back to a Base64 byte window. Explicit byte ranges always return Base64."),
                     "inputSchema": .object([
                         "type": .string("object"),
                         "properties": .object([
@@ -424,7 +426,8 @@ final class MCPServer {
                             "byte_length": .object([
                                 "type": .string("integer"),
                                 "minimum": .number(1),
-                                "description": .string("Maximum redacted bytes to return, capped at the existing file-read limit (also the default). Omit both byte arguments for the unchanged plain-text response.")
+                                // WO-665@v1: automatic text windows improve token efficiency without changing explicit bytes.
+                                "description": .string("Maximum redacted bytes to return as Base64, capped at the existing file-read limit (also the explicit-range default). Omit all range arguments for unchanged plain text at or below \(MCPReadDecision.unrangedResponseLimitDescription); larger output returns whole lines and continuation_hint, with a byte-window fallback for an overlong first line.")
                             ]),
                             // WO-630@v2: text line windows are an alternative, never a raw-file bypass.
                             "start_line": .object([
@@ -645,6 +648,8 @@ final class MCPServer {
         return successResult(id: id, matches: reportable, filePath: path)
     }
 
+    // WO-662@v3: directory diagnostics report scan coverage independently of findings.
+    // WO-670@v1: each directory finding uses its target path and explicit scan root.
     private func handleScanDir(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
@@ -655,7 +660,9 @@ final class MCPServer {
         }
 
         do {
-            let fileResults = try DirectoryScanner.scan(directory: path, config: config)
+            // WO-662@v3: clean files are included in the scan count, not in the findings list.
+            let report = try DirectoryScanner.scanWithStatistics(directory: path, config: config)
+            let fileResults = report.files
             // WO-577@v3: directory diagnostics apply the same policy per trusted file.
             let reportableResults = fileResults.compactMap { result -> FileScanResult? in
                 let matches = GuardDecision.evaluate(
@@ -664,8 +671,9 @@ final class MCPServer {
                     config: config,
                     contentTrust: .trustedFile,
                     minimumSeverity: nil,
-                    // WO-635: apply the same path-based policy per directory result.
-                    filePath: result.filePath
+                    // WO-670@v1: report paths are relative to the target directory, never the MCP CWD.
+                    filePath: URL(fileURLWithPath: path).appendingPathComponent(result.filePath).path,
+                    scanRoot: path
                 ).reportableMatches
                 guard !matches.isEmpty else { return nil }
                 return FileScanResult(
@@ -676,7 +684,8 @@ final class MCPServer {
                 )
             }
             let allMatches = reportableResults.flatMap { $0.matches }
-            let filesScanned = fileResults.count
+            // WO-662@v3: findings-only result length is not the number of files inspected.
+            let filesScanned = report.statistics.filesScanned
             let totalFindings = allMatches.count
 
             var findingsArray: [JSONValue] = []
@@ -692,7 +701,8 @@ final class MCPServer {
             }
 
             auditLogger?.log("SCAN  \(path)  files=\(filesScanned) findings=\(totalFindings)")
-            let resultText = "Scanned \(filesScanned) files. Found \(totalFindings) findings."
+            // WO-662@v3: disclose skipped files and explicitly qualify a zero-scan result.
+            let resultText = report.statistics.summary(findings: totalFindings)
 
             let content: JSONValue = .array([
                 .object([
@@ -853,13 +863,32 @@ final class MCPServer {
         }
     }
 
+    // WO-665@v1: automatic windows prefer whole lines after whole-file replacement.
     // WO-630@v2: preserve unranged fields while line windows use text and byte windows remain Base64.
     private func encodeReadPayload(
         content: String, range: MCPReadRange?, lineRange: MCPLineReadRange?,
         metadata: [String: JSONValue], decision: MCPReadDecision
     ) throws -> String {
         var payload = metadata
-        if let range {
+        // WO-665@v1: explicit ranges remain unchanged; only large default responses select a window.
+        let automatic = range == nil && lineRange == nil && content.utf8.count > MCPReadDecision.unrangedResponseLimitBytes
+        var byteRange = range
+        // WO-665@v1: one over-threshold first line uses bytes; all other automatic windows reuse line slicing.
+        var selectedLines = lineRange
+        if automatic {
+            let lines = automaticLineCount(content)
+            if lines > 0 {
+                selectedLines = try MCPLineReadRange(arguments: ["start_line": .number(1), "line_count": .number(Double(lines))])
+                payload["end_line"] = .number(Double(lines))
+                payload["continuation_hint"] = .string("Continue with start_line=\(lines + 1) and line_count=\(lines).")
+            } else {
+                byteRange = try MCPReadRange(arguments: [
+                    "byte_offset": .number(0), "byte_length": .number(Double(MCPReadDecision.unrangedResponseLimitBytes))
+                ])
+            }
+        }
+        // WO-665@v1: both explicit and automatic byte windows share the existing lossless encoding.
+        if let range = byteRange {
             let bytes = Data(content.utf8)
             let start = range.offset >= Double(bytes.count) ? bytes.count : Int(range.offset)
             let length = min(range.length, bytes.count - start)
@@ -869,14 +898,28 @@ final class MCPServer {
             payload["byte_offset"] = .number(range.offset)
             payload["byte_length"] = .number(Double(length))
             payload["has_more"] = .bool(start + length < bytes.count)
-        } else if let lineRange {
-            // WO-630@v2: the line slicer receives only the fully redacted string.
-            try lineRange.apply(to: content, payload: &payload)
+            // WO-665@v1: use the actual clamped window end, not the nominal size, for continuation.
+            if automatic {
+                payload["continuation_hint"] = .string(
+                    "Continue with byte_offset=\(start + length) and byte_length=\(range.length); "
+                        + "decode Base64 windows and concatenate redacted bytes before UTF-8 decoding."
+                )
+            }
+        } else if let selectedLines {
+            // WO-665@v1: explicit line ranges and automatic whole-line windows share the existing slicer.
+            try selectedLines.apply(to: content, payload: &payload)
         } else {
             payload["content"] = .string(content)
         }
         // WO-630@v2: never mask an encoding failure with an apparently successful empty array.
         return try decision.encodePayload(.object(payload))
+    }
+
+    // WO-665@v1: count complete lines within the bounded output prefix without splitting UTF-8 characters.
+    private func automaticLineCount(_ content: String) -> Int {
+        var lines = 0
+        for byte in content.utf8.prefix(MCPReadDecision.unrangedResponseLimitBytes) where byte == 0x0A { lines += 1 }
+        return lines
     }
 
     // WO-549@v2: MCP writes reject agent-authored plaintext before restoring placeholders.

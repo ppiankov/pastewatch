@@ -209,19 +209,16 @@ final class DirectoryScannerTests: XCTestCase {
         }
     }
 
-    // WO-595@v2: directory scans reject pathological lines even below the file cap.
+    // WO-662@v3: directory scans now count pathological lines as skips below the unchanged file cap.
     func testDirectoryScanRejectsLineLengthOverLimit() throws {
         try "123456".write(toFile: testDir + "/long-line.txt", atomically: true, encoding: .utf8)
         let limits = ScanInputLimits(maximumFileBytes: 64, maximumLineBytes: 5)
 
-        XCTAssertThrowsError(
-            try DirectoryScanner.scan(directory: testDir, config: config, limits: limits)
-        ) { error in
-            XCTAssertEqual(
-                error as? ScanInputLimitError,
-                .lineBytes(line: 1, actual: 6, maximum: 5)
-            )
-        }
+        // WO-662@v3: the fixture is unchanged; the operator-approved directory contract is a counted skip.
+        let report = try DirectoryScanner.scanWithStatistics(directory: testDir, config: config, limits: limits)
+        XCTAssertTrue(report.files.isEmpty)
+        XCTAssertEqual(report.statistics.filesScanned, 0)
+        XCTAssertEqual(report.statistics.skippedOverLimit, 1)
     }
 
     // WO-602@v2: supported malformed text cannot be omitted from directory evidence.

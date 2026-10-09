@@ -36,6 +36,7 @@ struct Doctor: ParsableCommand {
 
     // WO-649@v1: inject lookup through execution without adding a command or environment override.
     // WO-636@v2: return before legacy checks only when the walkthrough was requested.
+    // WO-670@v1: allow-file health reflects actual target-root loading, not mere presence.
     func run(curlLookup: () -> String?) throws {
         if explain {
             try printExplanation(ConfigExplanation())
@@ -57,15 +58,19 @@ struct Doctor: ParsableCommand {
         checks.append(CheckResult(check: "curl", status: curlResult.status, detail: curlResult.detail))
         #endif
 
-        // 3. Config resolution
-        checks.append(contentsOf: checkConfig())
+        // WO-672@v1: configuration and allow-file diagnostics share one validated effective policy.
+        let explanation = ConfigExplanation()
+        checks.append(contentsOf: checkConfig(explanation))
 
         // 4. Pre-commit hook
         let hookResult = checkHook()
         checks.append(CheckResult(check: "hook", status: hookResult.status, detail: hookResult.detail))
 
-        // 5. Allowlist file
-        checks.append(checkFile(".pastewatch-allow", label: "allowlist"))
+        // WO-672@v1: ignored entries reflect effective custom rules, not only built-in recognition.
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath,
+                                              config: try? explanation.validatedConfiguration())
+        checks.append(CheckResult(check: "allowlist", status: allowFile.loaded ? allowFile.status : "warn",
+                                  detail: projectAllowlistDetail(allowFile)))
 
         // 6. Ignore file
         checks.append(checkFile(".pastewatchignore", label: "ignore"))
@@ -87,14 +92,30 @@ struct Doctor: ParsableCommand {
         }
     }
 
+    // WO-672@v1: the walkthrough accounts for exemptions against its validated effective rules.
     // WO-636@v2: CLI and tests render the same metadata-only representation.
+    // WO-670@v1: the walkthrough includes the same safe allow-file evidence as plain doctor.
     func printExplanation(_ explanation: ConfigExplanation) throws {
+        // WO-672@v1: invalid policy cannot yield an active allow-file diagnostic.
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath,
+                                              config: try? explanation.validatedConfiguration())
         if json {
-            FileHandle.standardOutput.write(try explanation.jsonData())
+            var payload = try JSONSerialization.jsonObject(with: explanation.jsonData()) as? [String: Any] ?? [:]
+            // WO-670@v1: explicit encoding excludes allow-file contents from diagnostics.
+            payload["projectAllowlist"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(allowFile))
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
             FileHandle.standardOutput.write(Data("\n".utf8))
         } else {
             print(explanation.text())
+            // WO-670@v1: an unloaded or ineffective file is never presented as active.
+            print("Project allow file\n[\(allowFile.loaded ? allowFile.status : "warn")] \(projectAllowlistDetail(allowFile))")
         }
+    }
+
+    // WO-670@v1: only path, loading status and entry counts are public.
+    private func projectAllowlistDetail(_ report: ProjectAllowlistResolution) -> String {
+        "\(report.path ?? "none"); loaded=\(report.loaded), effectiveEntries=\(report.effectiveEntries), " +
+            "ignoredIntrinsicEntries=\(report.ignoredIntrinsicEntries); file targets only"
     }
 
     private func checkOnPath() -> CheckResult {
@@ -117,67 +138,19 @@ struct Doctor: ParsableCommand {
         return CheckResult(check: "path", status: "warn", detail: "pastewatch-cli not found on PATH")
     }
 
-    private func checkConfig() -> [CheckResult] {
-        var results: [CheckResult] = []
-        let fm = FileManager.default
-        let cwd = fm.currentDirectoryPath
-
-        let systemPath = PastewatchConfig.systemConfigPath
-        let projectPath = cwd + "/.pastewatch.json"
-        let userPath = PastewatchConfig.configPath.path
-
-        let systemExists = fm.fileExists(atPath: systemPath)
-        let projectExists = fm.fileExists(atPath: projectPath)
-        let userExists = fm.fileExists(atPath: userPath)
-
-        if systemExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "system (admin): \(systemPath)"))
-            let validation = ConfigValidator.validate(path: systemPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-            if projectExists {
-                results.append(CheckResult(
-                    check: "config", status: "info",
-                    detail: "project config exists but overridden by system: \(projectPath)"
-                ))
-            }
-            if userExists {
-                results.append(CheckResult(
-                    check: "config", status: "info",
-                    detail: "user config exists but overridden by system: \(userPath)"
-                ))
-            }
-        } else if projectExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "project: \(projectPath)"))
-            let validation = ConfigValidator.validate(path: projectPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-        } else if userExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "user: \(userPath)"))
-            let validation = ConfigValidator.validate(path: userPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-        } else {
-            results.append(CheckResult(check: "config", status: "ok", detail: "defaults (no config file found)"))
+    // WO-672@v1: health checks report the same merged, metadata-only policy as the walkthrough.
+    private func checkConfig(_ report: ConfigExplanation) -> [CheckResult] {
+        var results = [CheckResult(check: "config", status: report.valid ? "ok" : "warn",
+                                   detail: "\(report.source); \(report.customRules.count) custom rules loaded")]
+        results += report.resolution.filter(\.exists).map {
+            CheckResult(check: "config", status: $0.parseOK && $0.validationErrors == 0 ? "info" : "warn",
+                        detail: "\($0.source): \($0.path) [\($0.disposition)]")
         }
-
-        if !systemExists && projectExists && userExists {
-            results.append(CheckResult(check: "config", status: "info", detail: "user config exists but overridden: \(userPath)"))
+        results += report.fieldSources.keys.sorted().map {
+            CheckResult(check: "config", status: "info", detail: "\($0): \(report.fieldSources[$0, default: []].joined(separator: ", "))")
         }
-
-        // Show mcpMinSeverity from resolved config
-        let config = PastewatchConfig.resolve()
-        results.append(CheckResult(check: "config", status: "info", detail: "mcpMinSeverity: \(config.mcpMinSeverity)"))
-
+        results += report.warnings.map { CheckResult(check: "config", status: "warn", detail: $0) }
+        results.append(CheckResult(check: "config", status: "info", detail: "mcpMinSeverity: \(report.mcpMinSeverity)"))
         return results
     }
 

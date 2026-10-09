@@ -9,6 +9,8 @@ public final class FileWatcher {
     private var timer: DispatchSourceTimer?
     private var knownModDates: [String: Date] = [:]
     private let queue = DispatchQueue(label: "com.pastewatch.watcher")
+    // WO-662@v3: watcher line-limit skips are counted separately from reported findings.
+    private var scanStatistics = DirectoryScanStatistics()
 
     public init(directory: String, config: PastewatchConfig, severity: Severity? = nil, jsonOutput: Bool = false) {
         self.directory = (directory as NSString).standardizingPath
@@ -96,27 +98,33 @@ public final class FileWatcher {
         }
     }
 
-    // WO-598@v2: watcher scans report bounded-input failures as operational errors.
+    // WO-662@v3: watcher scans share detection-only encoding and counted per-file line skips.
+    // WO-670@v1: changed-file decisions retain the explicitly watched root.
     private func scanFile(relativePath: String) {
         let fullPath = (directory as NSString).appendingPathComponent(relativePath)
-        let content: String
+        let input: DirectoryScanner.DetectionInput
         do {
             // WO-598@v2: reject bounded watcher inputs before allocating their contents.
             let data = try DetectionRules.readBoundedFileData(atPath: fullPath)
-            // WO-602@v2: malformed supported text is a visible watcher error.
-            guard let decoded = String(data: data, encoding: .utf8) else {
-                let timestamp = ISO8601DateFormatter().string(from: Date())
-                outputInvalidTextError(relativePath: relativePath, timestamp: timestamp)
+            // WO-662@v3: original extensions still reject invalid UTF-8.
+            input = try DirectoryScanner.decodeScanData(data, ext: (relativePath as NSString).pathExtension, limits: .current())
+        } catch is ScanInputTextError {
+            outputInvalidTextError(relativePath: relativePath, timestamp: ISO8601DateFormatter().string(from: Date()))
+            return
+        } catch let error as ScanInputLimitError {
+            // WO-662@v3: decoding a Latin-1 source can expose a raw-byte line overrun.
+            if case .lineBytes = error {
+                reportOverLimit(relativePath: relativePath, error: error)
                 return
             }
-            content = decoded
-        } catch let error as ScanInputLimitError {
             let timestamp = ISO8601DateFormatter().string(from: Date())
             outputScanLimitError(relativePath: relativePath, error: error, timestamp: timestamp)
             return
         } catch {
             return
         }
+        // WO-662@v3: retain the exact decoded view used by detection and inline policy.
+        let content = input.content
         guard !content.isEmpty else { return }
 
         let ext = (relativePath as NSString).pathExtension.lowercased()
@@ -125,17 +133,19 @@ public final class FileWatcher {
 
         let matchesBeforeSeverity: [DetectedMatch]
         do {
-            matchesBeforeSeverity = try DirectoryScanner.scanFileContentOrThrow(
-                content: content, ext: parsedExt,
-                relativePath: relativePath, config: config
-            )
+            // WO-662@v3: shared input scanning retains byte-based line numbers for Latin-1.
+            matchesBeforeSeverity = try input.scan(ext: parsedExt, path: relativePath, config: config)
         } catch let error as SharedSecretPatternLoadError {
             // WO-128: watch mode must surface broken shared-pattern coverage instead of reporting clean.
             let timestamp = ISO8601DateFormatter().string(from: Date())
             outputSharedPatternError(relativePath: relativePath, error: error, timestamp: timestamp)
             return
         } catch let error as ScanInputLimitError {
-            // WO-598@v2: scanner limits are visible watcher errors, never silent clean results.
+            // WO-662@v3: skip and name an overlong member rather than treating the whole watch as failed.
+            if case .lineBytes = error {
+                reportOverLimit(relativePath: relativePath, error: error)
+                return
+            }
             let timestamp = ISO8601DateFormatter().string(from: Date())
             outputScanLimitError(relativePath: relativePath, error: error, timestamp: timestamp)
             return
@@ -143,16 +153,8 @@ public final class FileWatcher {
             return
         }
 
-        // WO-502: watch reporting honors the same examples and allowlists as guards.
-        let matches = GuardDecision.evaluate(
-            matches: matchesBeforeSeverity,
-            content: content,
-            config: config,
-            contentTrust: .trustedFile,
-            minimumSeverity: severity,
-            // WO-635: supply the watched file's path to the shared guard policy.
-            filePath: fullPath
-        ).actionableMatches
+        // WO-670@v1: the watch root, not the changed file's parent, selects non-git allow files.
+        let matches = fileDecision(matches: matchesBeforeSeverity, content: content, filePath: fullPath).actionableMatches
 
         guard !matches.isEmpty else { return }
 
@@ -165,12 +167,24 @@ public final class FileWatcher {
         }
     }
 
+    // WO-662@v3: path-only watcher diagnostics expose cumulative skipped coverage.
+    private func reportOverLimit(relativePath: String, error: ScanInputLimitError) {
+        scanStatistics.recordOverLimit(path: relativePath, error: error)
+        FileHandle.standardError.write(Data("skippedOverLimit=\(scanStatistics.skippedOverLimit)\n".utf8))
+    }
+
     private func outputText(relativePath: String, matches: [DetectedMatch], timestamp: String) {
         for match in matches {
             let severity = match.effectiveSeverity.rawValue.uppercased()
             let line = "[\(timestamp)] \(severity) \(relativePath):\(match.line) \(match.displayName): \(match.value)"
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
+    }
+
+    // WO-670@v1: the production watch decision is directly testable without polling or hidden root state.
+    func fileDecision(matches: [DetectedMatch], content: String, filePath: String) -> GuardDecision {
+        GuardDecision.evaluate(matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                               minimumSeverity: severity, filePath: filePath, scanRoot: directory)
     }
 
     private func outputJSON(relativePath: String, matches: [DetectedMatch], timestamp: String) {
