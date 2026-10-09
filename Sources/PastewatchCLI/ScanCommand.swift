@@ -774,7 +774,7 @@ struct Scan: ParsableCommand {
                 FileHandle.standardError.write(Data((summary + "\n").utf8))
             }
         case .json:
-            // WO-662@v3: one JSON envelope reports counts and the existing per-file findings.
+            // WO-662@v3: retain the legacy per-file array; coverage is reported separately on stderr.
             outputDirectoryJSON(results: results, statistics: statistics)
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
@@ -799,7 +799,7 @@ struct Scan: ParsableCommand {
             // WO-662@v3: unsupported-only directories never appear as an empty clean result.
             if let statistics { print(statistics.summary(findings: results.reduce(0) { $0 + $1.matches.count })) }
         case .json:
-            // WO-662@v3: both check and normal modes expose the same measured coverage.
+            // WO-662@v3: both directory JSON modes retain the same per-file array.
             outputDirectoryJSON(results: results, statistics: statistics)
         case .sarif:
             let pairs = results.map { ($0.filePath, $0.matches) }
@@ -810,7 +810,7 @@ struct Scan: ParsableCommand {
         }
     }
 
-    // WO-662@v3: encode aggregate coverage and findings once for both directory JSON modes.
+    // WO-662@v3: encode the legacy per-file array once for both directory JSON modes.
     private func outputDirectoryJSON(results: [FileScanResult], statistics: DirectoryScanStatistics?) {
         let findings = results.map { result in
             DirScanFileOutput(
@@ -912,27 +912,6 @@ struct DirScanFileOutput: Codable {
     let findings: [Finding]
     let count: Int
     let gitignored: Bool
-}
-
-// WO-662@v3: the JSON report exposes measured coverage beside its per-file findings.
-struct DirScanOutput: Encodable {
-    let statistics: DirectoryScanStatistics
-    let findings: [DirScanFileOutput]
-
-    // WO-662@v3: flatten coverage fields so callers can directly inspect scanned and skipped counts.
-    func encode(to encoder: Encoder) throws {
-        try statistics.encode(to: encoder)
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        let count = findings.reduce(0) { $0 + $1.count }
-        try container.encode(findings, forKey: .findings)
-        try container.encode(count, forKey: .count)
-        try container.encode(statistics.summary(findings: count), forKey: .summary)
-    }
-
-    // WO-662@v3: aggregate fields extend the shared coverage encoding without replacing it.
-    private enum CodingKeys: String, CodingKey {
-        case findings, count, summary
-    }
 }
 
 struct GitLogOutput: Codable {
