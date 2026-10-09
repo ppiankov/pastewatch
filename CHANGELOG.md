@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report scanned and skipped directory counts on stderr without changing CLI JSON arrays or clean stdout; support detection-only Latin-1 for newly admitted source formats and named, counted overlong-file skips, including MCP and git scan members. Earlier versions skipped Kotlin, Gradle, JSONL/NDJSON and additional text source extensions in directory, git-diff/pre-commit, history and watch scans. (WO-662)
 - Bound oversized default MCP file reads to 24 KiB whole-line text windows with line continuation guidance, falling back to Base64 for an overlong first line; preserve small-file responses and explicit byte ranges that reconstruct the complete view. The client cap is measured in tokens, so plain text avoids Base64 inflation. (WO-665)
 - Reject pull-request additions to previously released changelog sections since the merge base, with a version-scoped release exemption and deterministic placement fixtures; later main-branch edits are not attributed to stale branches. (WO-664)
+- Exclude assigned source-code references by argument shape while retaining literal constructors, quoted values and YAML/ENV detection at the same severity; path-shaped and all-caps reference literals remain documented recognition limits. (WO-668)
 
 ## [0.40.0] - 2026-10-07
 

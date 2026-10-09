@@ -99,7 +99,34 @@ final class FalsePositiveCorpusTests: XCTestCase {
         "credential-literal-prose": ["true", "false", "null", "\"true\""].map {
             "- Credential regex: exclude literal values (`" + ["pass", "word", "="].joined() + $0 + "`)."
         },
-    ]
+    // WO-668@v1: the golden corpus includes the focused language fixtures without duplicating them.
+    ].merging(CredentialCodeExpressionFixtures.rowsByLanguage) { existing, _ in existing }
+
+    // WO-668@v1: enabling Credential makes code-expression false positives measurable, not hidden by defaults.
+    func testCodeExpressionCorpusAndCredentialControls() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let enabled = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let falsePositives = Self.benignCorpus.values.flatMap { $0 }.reduce(0) { count, row in
+                count + DetectionRules.scan(row, config: enabled).filter { $0.effectiveSeverity >= .high }.count
+            }
+            var falseNegatives = 0
+            // WO-668@v1: accepted reference-shaped misses are named, not hidden from the corpus count.
+            let controls = CredentialCodeExpressionFixtures.literalControls + CredentialCodeExpressionFixtures.documentedFalseNegatives
+            for control in controls
+            where try control.matches(config: enabled).isEmpty {
+                falseNegatives += 1
+            }
+            print("WO-668 corpus FP=\(falsePositives) FN=\(falseNegatives)")
+            XCTAssertEqual(falsePositives, 0, "Corpus high-severity false-positive count")
+            // WO-668@v1: only the pinned reference/default misses remain after constructor coverage is restored.
+            XCTAssertEqual(falseNegatives, CredentialCodeExpressionFixtures.documentedFalseNegatives.count,
+                           "Credential literal control false-negative count")
+            XCTAssertEqual(CredentialCodeExpressionFixtures.rowsByLanguage.count, 7)
+            for rows in CredentialCodeExpressionFixtures.rowsByLanguage.values {
+                XCTAssertGreaterThanOrEqual(rows.count, 2)
+            }
+        }
+    }
 
     // WO-667@v1: report corpus precision with Phone enabled so default-off cannot conceal a false positive.
     func testDecimalCorpusAndPhoneControls() throws {
