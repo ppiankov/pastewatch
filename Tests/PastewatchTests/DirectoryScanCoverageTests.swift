@@ -196,6 +196,7 @@ final class DirectoryScanCoverageTests: XCTestCase {
     }
 
     // WO-662@v3: capture command output without emitting fixture contents or inheriting a guard bypass.
+    // WO-672@v1: CLI coverage probes retain DEBUG global-config isolation.
     private func runCLI(_ arguments: [String], root: URL) throws -> CLIResponse {
         let process = Process()
         let output = Pipe()
@@ -203,7 +204,8 @@ final class DirectoryScanCoverageTests: XCTestCase {
         process.executableURL = executable()
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = ["PATH": "/usr/bin:/bin", "PW_GUARD": "1"]
+        // WO-672@v1: coverage probes must not consume operator global policy.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
         process.standardOutput = output
         process.standardError = errors
         try process.run()

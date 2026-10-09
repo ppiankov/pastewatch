@@ -117,67 +117,20 @@ struct Doctor: ParsableCommand {
         return CheckResult(check: "path", status: "warn", detail: "pastewatch-cli not found on PATH")
     }
 
+    // WO-672@v1: health checks report the same merged, metadata-only policy as the walkthrough.
     private func checkConfig() -> [CheckResult] {
-        var results: [CheckResult] = []
-        let fm = FileManager.default
-        let cwd = fm.currentDirectoryPath
-
-        let systemPath = PastewatchConfig.systemConfigPath
-        let projectPath = cwd + "/.pastewatch.json"
-        let userPath = PastewatchConfig.configPath.path
-
-        let systemExists = fm.fileExists(atPath: systemPath)
-        let projectExists = fm.fileExists(atPath: projectPath)
-        let userExists = fm.fileExists(atPath: userPath)
-
-        if systemExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "system (admin): \(systemPath)"))
-            let validation = ConfigValidator.validate(path: systemPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-            if projectExists {
-                results.append(CheckResult(
-                    check: "config", status: "info",
-                    detail: "project config exists but overridden by system: \(projectPath)"
-                ))
-            }
-            if userExists {
-                results.append(CheckResult(
-                    check: "config", status: "info",
-                    detail: "user config exists but overridden by system: \(userPath)"
-                ))
-            }
-        } else if projectExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "project: \(projectPath)"))
-            let validation = ConfigValidator.validate(path: projectPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-        } else if userExists {
-            results.append(CheckResult(check: "config", status: "ok", detail: "user: \(userPath)"))
-            let validation = ConfigValidator.validate(path: userPath)
-            if !validation.isValid {
-                for err in validation.errors {
-                    results.append(CheckResult(check: "config", status: "warn", detail: err))
-                }
-            }
-        } else {
-            results.append(CheckResult(check: "config", status: "ok", detail: "defaults (no config file found)"))
+        let report = ConfigExplanation()
+        var results = [CheckResult(check: "config", status: report.valid ? "ok" : "warn",
+                                   detail: "\(report.source); \(report.customRules.count) custom rules loaded")]
+        results += report.resolution.filter(\.exists).map {
+            CheckResult(check: "config", status: $0.parseOK && $0.validationErrors == 0 ? "info" : "warn",
+                        detail: "\($0.source): \($0.path) [\($0.disposition)]")
         }
-
-        if !systemExists && projectExists && userExists {
-            results.append(CheckResult(check: "config", status: "info", detail: "user config exists but overridden: \(userPath)"))
+        results += report.fieldSources.keys.sorted().map {
+            CheckResult(check: "config", status: "info", detail: "\($0): \(report.fieldSources[$0, default: []].joined(separator: ", "))")
         }
-
-        // Show mcpMinSeverity from resolved config
-        let config = PastewatchConfig.resolve()
-        results.append(CheckResult(check: "config", status: "info", detail: "mcpMinSeverity: \(config.mcpMinSeverity)"))
-
+        results += report.warnings.map { CheckResult(check: "config", status: "warn", detail: $0) }
+        results.append(CheckResult(check: "config", status: "info", detail: "mcpMinSeverity: \(report.mcpMinSeverity)"))
         return results
     }
 

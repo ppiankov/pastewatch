@@ -35,6 +35,17 @@ public struct MutationOutcome {
     public let advisoryBelowThreshold: [DetectedMatch]
 }
 
+// WO-672@v1: only operator-owned exact whole values can exempt intrinsic evidence.
+public func permitsAllowlistSuppression(
+    of match: DetectedMatch, source: AllowlistSource, exactValue: Bool
+) -> Bool {
+    guard match.mutationAuthorizationSources.contains(.intrinsicFormat) else {
+        return source != .projectFile || match.customRuleName == nil &&
+            !match.mutationAuthorizationSources.contains(.customRule)
+    }
+    return exactValue && (source == .system || source == .user)
+}
+
 /// WO-454/WO-488: evidence authorizes mutation; the required site label classifies
 /// callers for exhaustive tests but cannot silently widen or narrow authorization.
 public func partitionMutationMatches(

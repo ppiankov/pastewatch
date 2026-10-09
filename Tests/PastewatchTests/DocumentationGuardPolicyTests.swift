@@ -9,7 +9,8 @@ import Glibc
 
 // WO-635: exercise documentation policy through real entrypoints without operator config.
 final class DocumentationGuardPolicyTests: XCTestCase {
-    // WO-639: the real guard keeps whole-value allowlists rather than adopting password-only matching.
+    // WO-672@v1: whole-value exemptions belong to the user tier, not the project tier.
+    // WO-639: the real guard compares whole values rather than adopting password-only matching.
     func testDSNWholeValueAllowlistPreservesGuardExitCodes() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             let password = ["Q7m", "N4r", "Z9T", "2xV", "6k"].joined()
@@ -18,7 +19,9 @@ final class DocumentationGuardPolicyTests: XCTestCase {
             for (allowed, expected): (String, Int32) in [(content, 0), (password, 2)] {
                 var config = fixtureConfig()
                 config.allowedValues = [allowed]
-                try writeConfig(config, to: root)
+                // WO-672@v1: operator-owned fixture policy retains its exact DSN exemption.
+                try JSONEncoder().encode(config).write(to: PastewatchConfig.configPath)
+                try TestConfigHelper.ensureProjectConfig(in: root)
                 XCTAssertEqual(try runCLI(cliURL(), ["guard-read", path], in: root).status, expected)
             }
         }
@@ -160,6 +163,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
 
     // WO-635: pathless input and non-document extensions retain existing blocking behavior.
     // WO-659@v1: advisory-only native Read remains allowed while stdin scan enforcement is unchanged.
+    // WO-672@v1: process isolation must not depend on project replacement semantics.
     func testNonDocumentAndStdinRemainBlocking() throws {
         let binary = cliURL()
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -172,7 +176,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
                 process.executableURL = binary
                 process.arguments = ["guard-read", path]
                 process.currentDirectoryURL = root
-                process.environment = ["PW_GUARD": "1"]
+                // WO-672@v1: the subprocess guard shares only the DEBUG fixture path.
+                process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = stderr
                 try process.run()
@@ -379,6 +384,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
     }
 
     // WO-635: capture command output without ever including matched values in assertions.
+    // WO-672@v1: private child environments retain the fixture global policy channel.
     private func runCLI(_ binary: URL, _ arguments: [String], in root: URL, input: String = "") throws -> (status: Int32, output: Data) {
         let process = Process()
         let stdin = Pipe()
@@ -386,7 +392,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         process.executableURL = binary
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = ["PW_GUARD": "1"]
+        // WO-672@v1: global configuration remains isolated after tier merging.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
@@ -420,6 +427,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
     }
 
     // WO-635: an intrinsic event proves the watcher scanned the mixed document; no blind sleep assertion.
+    // WO-672@v1: watch probes never load operator configuration at startup.
     private func watchMixedFixture(_ binary: URL, in root: URL) throws -> String {
         let watched = root.appendingPathComponent("watched")
         try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
@@ -429,7 +437,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         process.executableURL = binary
         process.arguments = ["watch", "--dir", watched.path]
         process.currentDirectoryURL = root
-        process.environment = ["PW_GUARD": "1"]
+        // WO-672@v1: custom child environments retain fixture global policy.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         try process.run()

@@ -63,6 +63,7 @@ final class ConfigEnforcementTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: auditLog.path))
     }
 
+    // WO-672@v1: malformed-policy probes never fall through to operator-owned global files.
     // WO-574@v4: subprocess coverage proves every enforcement entry point fails closed.
     private func runCLI(
         arguments: [String],
@@ -76,7 +77,8 @@ final class ConfigEnforcementTests: XCTestCase {
 
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "PW_GUARD")
-        process.environment = environment
+        // WO-672@v1: child environment replacement retains DEBUG-only global isolation.
+        process.environment = TestConfigHelper.subprocessEnvironment(environment)
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()

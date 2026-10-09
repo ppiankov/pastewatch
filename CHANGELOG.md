@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Project configuration could weaken intrinsic protection; it can now only tighten operator policy, with authoritative-tier exact exemptions, increased advisory visibility, operator-owned policy files and tier-attributed diagnostics. (WO-672)
+
 ### Added
 
 - Verify signed Obsta Labs license coverage across guard, MCP and proxy, including billing-format fixtures and boundary negatives. (WO-657)

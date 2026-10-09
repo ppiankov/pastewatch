@@ -404,14 +404,18 @@ final class GuardCommandTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    // WO-672@v1: operator-tier exact values retain command and referenced-file parity.
     func testGuardHonorsConfigAllowlistForInlineAndReferencedFile() throws {
+        // WO-672@v1: select this case's private global path before writing its operator-tier fixture.
+        try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
         let key = "AKIA" + "QWERTYUIOPASDFGH"
         let testFile = testDir + "/config.env"
         try "AWS_KEY=\(key)".write(toFile: testFile, atomically: true, encoding: .utf8)
         var allowedConfig = config
         allowedConfig.allowedValues = [key]
         let configData = try JSONEncoder().encode(allowedConfig)
-        try configData.write(to: URL(fileURLWithPath: testDir + "/.pastewatch.json"))
+        // WO-672@v1: write only the fixture-owned global policy selected by the test helper.
+        try configData.write(to: PastewatchConfig.configPath)
 
         let result = try runGuardCLI(arguments: ["guard", "--json", "cat \(testFile) && echo \(key)"])
         let payload = try guardJSON(from: result.stdout)

@@ -186,6 +186,7 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         XCTAssertTrue(Data(store.resolve(content: redacted, filePath: "guide.md").content.utf8) == Data(content.utf8))
     }
 
+    // WO-672@v1: the guard probe uses fixture-owned project and global tiers.
     // WO-639: the published README must remain readable under explicit Credential and DB Connection policy.
     func testREADMEPassesGuardReadWithOptedInDetectors() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -207,7 +208,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             process.executableURL = cliURL()
             process.arguments = ["guard-read", path.path]
             process.currentDirectoryURL = root
-            process.environment = ["PW_GUARD": "1"]
+            // WO-672@v1: isolate the child global policy independently of project policy.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
@@ -216,6 +218,7 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         }
     }
 
+    // WO-672@v1: user-tier whole-value exemptions retain the original DSN comparison contract.
     // WO-639: exact allowlists continue to compare with the entire detected connection.
     func testWholeConnectionAllowlistSuppressesButPasswordAloneDoesNot() throws {
         let password = fixturePassword()
@@ -223,6 +226,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         for (allowed, expected) in [(connection, 0), (password, 1)] {
             var config = fixtureConfig()
             config.allowedValues = [allowed]
+            // WO-672@v1: this control represents an operator-owned exact entry.
+            config.allowedValueSources[allowed] = [.user]
             let decision = GuardDecision.evaluate(
                 matches: DetectionRules.scan(connection, config: config), content: connection, config: config,
                 contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
@@ -231,15 +236,21 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         }
     }
 
-    // WO-639: anchored patterns retain their whole-DSN interpretation before mutation.
+    // WO-672@v1: patterns and inline directives suppress advisory DSNs, never intrinsic passwords.
+    // WO-639: anchored patterns retain their whole-DSN comparison semantics.
     func testAllowlistPatternsAndInlineAllowKeepWholeMatchSemantics() {
         let password = fixturePassword()
         let connection = fixtureConnection(password)
-        for (pattern, expected) in [(connection, 0), (password, 1)] {
+        // WO-672@v1: both whole and partial patterns leave intrinsic evidence intact.
+        for pattern in [connection, password] {
             var config = fixtureConfig()
             config.allowedPatterns = [NSRegularExpression.escapedPattern(for: pattern)]
             let matches = DetectionRules.scan(connection, config: config)
-            XCTAssertEqual(Allowlist.fromConfig(config).filter(matches).count, expected)
+            // WO-672@v1: pattern-based authority never exempts an intrinsic password.
+            XCTAssertEqual(Allowlist.fromConfig(config).filter(matches).count, 1)
+            let advisoryConnection = fixtureConnection("pass" + "word")
+            config.allowedPatterns = [NSRegularExpression.escapedPattern(for: advisoryConnection)]
+            XCTAssertTrue(Allowlist.fromConfig(config).filter(DetectionRules.scan(advisoryConnection, config: config)).isEmpty)
         }
         let content = connection + " # pastewatch:allow\n"
         let config = fixtureConfig()
@@ -247,7 +258,22 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config), content: content, config: config,
             contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
         )
-        XCTAssertTrue(decision.reportableMatches.isEmpty)
+        // WO-672@v1: the same directive still suppresses the advisory-only placeholder form.
+        XCTAssertEqual(decision.reportableMatches.count, 1)
+        let advisoryContent = fixtureConnection("pass" + "word") + " # pastewatch:allow\n"
+        XCTAssertTrue(Allowlist.filterInlineAllow(matches: DetectionRules.scan(advisoryContent, config: config),
+                                                 content: advisoryContent).isEmpty)
+    }
+
+    // WO-672@v1: project exact entries do not gain the user-tier DSN exemption.
+    func testProjectWholeConnectionAllowlistCannotSuppressIntrinsicPassword() {
+        let connection = fixtureConnection(fixturePassword())
+        var config = fixtureConfig()
+        config.allowedValues = [connection]
+        config.allowedValueSources[connection] = [.project]
+        XCTAssertEqual(GuardDecision.evaluate(matches: DetectionRules.scan(connection, config: config),
+                                             content: connection, config: config, contentTrust: .trustedFile,
+                                             minimumSeverity: .high, filePath: "guide.md").actionableMatches.count, 1)
     }
 
     // WO-639: origin/main fingerprints the whole type/value pair, irrespective of mutation evidence.

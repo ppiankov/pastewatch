@@ -11,6 +11,16 @@ public struct GuardDecision {
     public let reportableMatches: [DetectedMatch]
     public let actionableMatches: [DetectedMatch]
 
+    // WO-672@v1: agent mutation cannot create or change its own policy files.
+    public static let operatorOwnedFileMessage = "operator-owned file: edit it yourself"
+
+    // WO-672@v1: ownership checks apply before nonexistent-file and empty-content shortcuts.
+    public static func isOperatorOwnedPath(_ path: String) -> Bool {
+        // WO-672@v1: policy names remain operator-owned under filesystem-equivalent spelling.
+        let name = URL(fileURLWithPath: path).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
+        return [".pastewatch.json", ".pastewatch-allow"].contains(name)
+    }
+
     // WO-635: classify by the supplied path only, never by content or directory names.
     private static let documentationExtensions: Set<String> = ["md", "mdx", "markdown", "rst", "adoc"]
 

@@ -100,6 +100,7 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
     }
 
     // WO-662@v3: repeated timestamp advances avoid racing the watcher's initial snapshot.
+    // WO-672@v1: watcher subprocesses use only fixture-owned global policy.
     func testWatcherReportsKotlinChange() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
@@ -112,7 +113,8 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             process.executableURL = executable()
             process.arguments = ["watch", "--dir", input.path]
             process.currentDirectoryURL = root
-            process.environment = ["PATH": "/usr/bin:/bin", "PW_GUARD": "1"]
+            // WO-672@v1: child scans cannot load the operator's global configuration.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
             process.standardOutput = FileHandle.nullDevice
             process.standardError = diagnostics
             let reported = expectation(description: "Kotlin change produces an intrinsic finding")
@@ -204,6 +206,7 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
     }
 
     // WO-662@v3: command capture keeps all fixture content out of test output.
+    // WO-672@v1: environment pinning cannot discard the DEBUG configuration seam.
     private func command(_ executable: URL, _ arguments: [String], root: URL) throws -> CommandResult {
         let process = Process()
         let output = Pipe()
@@ -211,11 +214,12 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = [
+        // WO-672@v1: preserve the fixture global path when pinning subprocess environment.
+        process.environment = TestConfigHelper.subprocessEnvironment([
             "PATH": "/usr/bin:/bin", "PW_GUARD": "1",
             "GIT_AUTHOR_NAME": "ppiankov", "GIT_AUTHOR_EMAIL": "103106369+ppiankov@users.noreply.github.com",
             "GIT_COMMITTER_NAME": "ppiankov", "GIT_COMMITTER_EMAIL": "103106369+ppiankov@users.noreply.github.com"
-        ]
+        ])
         process.standardOutput = output
         process.standardError = errors
         try process.run()

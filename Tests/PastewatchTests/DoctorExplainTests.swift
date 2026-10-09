@@ -66,33 +66,41 @@ final class DoctorExplainTests: XCTestCase {
         XCTAssertFalse(doctor.json)
     }
 
-    // WO-636@v2: first-wins must name the exact lost count and project-config remedy.
+    // WO-672@v1: the legacy shadowing regression now requires retained operator rules.
+    // WO-636@v2: configuration diagnostics expose counts, not private rule values.
     func testProjectShadowsUserRulesWithoutMerging() throws {
         var user = PastewatchConfig.defaultConfig
         user.customRules = [rule("alpha", .high), rule("beta", .medium), rule("gamma", nil)]
         user.allowedPatterns = ["allowed" + "-fixture"]
         try withFixture(project: .defaultConfig, user: user) { report, root in
-            XCTAssertEqual(report.source, "project")
-            XCTAssertTrue(report.customRules.isEmpty)
-            XCTAssertTrue(report.warnings.contains { $0.contains("3 customRules") && $0.contains("Fix:") })
-            XCTAssertTrue(report.warnings.contains { $0.contains(root.appendingPathComponent(".pastewatch.json").path) })
-            XCTAssertEqual(report.resolution.first { $0.source == "user" }?.disposition, "SHADOWED")
-            XCTAssertEqual(try report.validatedConfiguration().customRules.count, 0)
+            // WO-672@v1: both tiers contribute and field attribution identifies retained rules.
+            XCTAssertEqual(report.source, "merged")
+            XCTAssertEqual(report.customRules.count, 3)
+            XCTAssertTrue(report.warnings.isEmpty)
+            XCTAssertEqual(report.path, root.appendingPathComponent(".pastewatch.json").path)
+            XCTAssertEqual(report.resolution.first { $0.source == "user" }?.disposition, "contributing")
+            XCTAssertEqual(try report.validatedConfiguration().customRules.count, 3)
+            XCTAssertEqual(report.fieldSources["customRules"], ["user"])
+            XCTAssertFalse(report.text().contains("SHADOWED"))
+            XCTAssertFalse(report.text().contains("WINNER"))
         }
     }
 
-    // WO-636@v2: opt-in coverage can disappear even when the user has no custom rules.
+    // WO-672@v1: user opt-in coverage survives an otherwise default project config.
+    // WO-636@v2: detector-only policy is covered independently of custom rules.
     func testShadowedCredentialOptInProducesWarning() throws {
         let user = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
         try withFixture(project: .defaultConfig, user: user) { report, _ in
             XCTAssertTrue(report.customRules.isEmpty)
-            XCTAssertTrue(report.warnings.contains {
-                $0.contains("Credential") && $0.contains("1 detector types") && $0.contains("Fix:")
-            })
+            // WO-672@v1: merged metadata agrees with effective recognition.
+            XCTAssertTrue(report.warnings.isEmpty)
+            XCTAssertTrue(report.detectors.first { $0.type == SensitiveDataType.credential.rawValue }?.enabled == true)
+            XCTAssertTrue(try report.validatedConfiguration().isTypeEnabled(.credential))
         }
     }
 
-    // WO-636@v2: warn on policy missing from the winner, without ever naming allowed values.
+    // WO-672@v1: invalid user coverage now fails the complete merged configuration closed.
+    // WO-636@v2: warnings never name allowed values.
     func testShadowedAllowlistAndSharedFilesProduceCountOnlyWarning() throws {
         var project = PastewatchConfig.defaultConfig
         let privateValue = ["private", "-fixture-", "7139"].joined()
@@ -102,30 +110,39 @@ final class DoctorExplainTests: XCTestCase {
         user.allowedPatterns = [privateValue]
         user.sharedPatternFiles = ["nonexistent-" + "shared-fixture.json"]
         try withFixture(project: project, user: user) { report, _ in
-            XCTAssertTrue(report.warnings.contains {
-                $0.contains("2 allowlist entries") && $0.contains("1 sharedPatternFiles")
-            })
+            // WO-672@v1: invalid contributions cannot disappear behind valid project defaults.
+            XCTAssertFalse(report.valid)
+            XCTAssertThrowsError(try report.validatedConfiguration())
+            XCTAssertEqual(report.resolution.first { $0.source == "user" }?.sharedPatternFiles, 1)
+            XCTAssertTrue(report.warnings.contains { $0.contains("fails closed") })
             XCTAssertFalse(report.text().contains(privateValue))
             XCTAssertFalse(String(data: try report.jsonData(), encoding: .utf8)?.contains(privateValue) == true)
         }
     }
 
-    // WO-636@v2: equivalent non-rule policy is not lost just because its source is shadowed.
+    // WO-672@v1: identical restrictions remain active; ignored project patterns are still diagnosed.
+    // WO-636@v2: equivalent detector and exact-value contributions do not lose coverage.
     func testIdenticalDetectorAndAllowlistPolicyDoesNotWarn() throws {
         var config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
         config.allowedValues = ["retained"]
         config.allowedPatterns = ["retained" + "-pattern"]
         try withFixture(project: config, user: config) { report, _ in
-            XCTAssertTrue(report.warnings.isEmpty)
+            // WO-672@v1: the same operator pattern remains, but project patterns never add authority.
+            XCTAssertEqual(report.warnings.count, 1)
+            XCTAssertTrue(report.warnings[0].contains("project allowedPatterns ignored"))
+            XCTAssertEqual(report.allowedPatterns.count, 1)
         }
     }
 
+    // WO-672@v1: operator obfuscation entries remain active after project restrictions merge.
     // WO-636@v2: obfuscate entries activate detectors even when enabledTypes omits them.
     func testShadowedObfuscateEntryCountsEffectiveDetector() throws {
         var config = PastewatchConfig.defaultConfig
         config.obfuscate = [ObfuscateEntry(type: "email", pattern: "@fixture.example")]
         try withFixture(project: .defaultConfig, user: config) { report, _ in
-            XCTAssertTrue(report.warnings.contains { $0.contains("1 detector types [Email]") })
+            // WO-672@v1: retained obfuscation is reflected in detector metadata.
+            XCTAssertTrue(report.warnings.isEmpty)
+            XCTAssertTrue(report.detectors.first { $0.type == SensitiveDataType.email.rawValue }?.enabled == true)
         }
     }
 
@@ -214,13 +231,15 @@ final class DoctorExplainTests: XCTestCase {
         }
     }
 
+    // WO-672@v1: effective suppression patterns come from an operator-owned tier.
     // WO-636@v2: duplicates and a rule-name suppression probe are separate diagnostics.
     func testDuplicatesAndPossibleAllowlistSuppression() throws {
         var config = PastewatchConfig.defaultConfig
         config.customRules = [CustomRuleConfig(name: "probe", pattern: "pro" + "be"),
                               CustomRuleConfig(name: "probe", pattern: "other" + "-probe")]
         config.allowedPatterns = ["pro" + "be"]
-        try withFixture(project: config) { report, _ in
+        // WO-672@v1: retain the pattern diagnostic control under valid user-tier authority.
+        try withFixture(user: config) { report, _ in
             XCTAssertTrue(report.customRules.allSatisfy(\.duplicateName))
             XCTAssertEqual(report.possibleSuppression.count, 1)
         }

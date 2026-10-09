@@ -49,6 +49,7 @@ final class InlineAllowlistTests: XCTestCase {
         XCTAssertTrue(filtered.allSatisfy { $0.value != "test@example.com" })
     }
 
+    // WO-672@v1: inline filtering cannot drop format-proven matches even in mixed input.
     func testMultiLineMixedAllowAndDetect() {
         let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
         let content = """
@@ -62,8 +63,13 @@ final class InlineAllowlistTests: XCTestCase {
         for m in filtered {
             let lines = content.components(separatedBy: "\n")
             let lineContent = lines[m.line - 1]
-            XCTAssertFalse(lineContent.contains("pastewatch:allow"))
+            // WO-672@v1: retained intrinsic matches are exempt from the advisory directive assertion.
+            if !m.mutationAuthorizationSources.contains(.intrinsicFormat) {
+                XCTAssertFalse(lineContent.contains("pastewatch:allow"))
+            }
         }
+        // WO-672@v1: explicitly pin retention rather than merely allowing an empty result.
+        XCTAssertTrue(filtered.contains { $0.line == 1 && $0.mutationAuthorizationSources.contains(.intrinsicFormat) })
     }
 
     func testEmptyContentReturnsEmptyMatches() {

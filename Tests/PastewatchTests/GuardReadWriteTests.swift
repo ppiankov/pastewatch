@@ -207,12 +207,15 @@ final class GuardReadWriteTests: XCTestCase {
         XCTAssertTrue(findings.isEmpty, "Inline allow should suppress the finding")
     }
 
+    // WO-672@v1: an operator-owned exact value retains its intrinsic exemption.
     func testConfigAllowlistSuppressesFinding() throws {
         let path = testDir + "/config.env"
         let key = "AKIA" + "QWERTYUIOPASDFGH"
         try "AWS_KEY=\(key)".write(toFile: path, atomically: true, encoding: .utf8)
         var allowedConfig = config
         allowedConfig.allowedValues = [key]
+        // WO-672@v1: source authority is explicit for direct-config controls.
+        allowedConfig.allowedValueSources[key] = [.user]
 
         let findings = try scanFile(at: path, config: allowedConfig)
 

@@ -69,6 +69,7 @@ struct GuardMutation: ParsableCommand {
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
     var failOnSeverity: Severity = .defaultGuardThreshold
 
+    // WO-672@v1: operator-owned targets are refused before target I/O or evaluation.
     // WO-526@v3: stdin content is evaluated without copying secrets into argv.
     func run() throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
@@ -86,6 +87,9 @@ struct GuardMutation: ParsableCommand {
             try deny("invalid structured mutation input")
             return
         }
+
+        // WO-672@v1: clean creation cannot grant the agent control over guard policy.
+        try checkOperatorOwnership(input.filePath)
 
         let config: PastewatchConfig
         do {
@@ -165,6 +169,11 @@ struct GuardMutation: ParsableCommand {
         try deny(reason == .touchesExistingFinding
             ? "proposed edit overlaps protected content"
             : "proposed mutation changes protected content")
+    }
+
+    // WO-672@v1: ownership refusal occurs before resolving policy or opening the mutation target.
+    private func checkOperatorOwnership(_ path: String) throws {
+        if GuardDecision.isOperatorOwnedPath(path) { try deny(GuardDecision.operatorOwnedFileMessage) }
     }
 
     // WO-526@v3: resolve only after the highest-priority active config validates.

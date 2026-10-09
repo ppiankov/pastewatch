@@ -148,12 +148,14 @@ final class RedactedCLITests: XCTestCase {
     }
 
     // WO-658@v2: child processes always select an init-generated fixture config before user policy.
+    // WO-672@v1: edit and read child environments preserve fixture-owned global policy.
     private func run(_ arguments: [String], root: URL, executable: URL) throws -> CLIResult {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PW_GUARD": "1"]
+        // WO-672@v1: mutation probes cannot consume operator policy through the global tier.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PW_GUARD": "1"])
         let stdout = Pipe()
         let stderr = Pipe()
         let stdin = Pipe()

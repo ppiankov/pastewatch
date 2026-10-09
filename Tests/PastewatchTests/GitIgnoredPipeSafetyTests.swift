@@ -46,6 +46,7 @@ final class GitIgnoredPipeSafetyTests: XCTestCase {
     }
 
     // WO-669@v1: the actual CLI and one persistent MCP session repeatedly scan non-git finding directories.
+    // WO-672@v1: transport-liveness fixtures isolate both configuration tiers.
     func testNonGitFindingScansKeepCLIAndMCPAlive() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
@@ -64,7 +65,8 @@ final class GitIgnoredPipeSafetyTests: XCTestCase {
                 process.executableURL = executable
                 process.arguments = ["scan", "--dir", input.path, "--check"]
                 process.currentDirectoryURL = root
-                process.environment = ["PATH": "/usr/bin:/bin", "PW_GUARD": "1"]
+                // WO-672@v1: process-liveness probes keep all configuration fixture-owned.
+                process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
                 try process.run()

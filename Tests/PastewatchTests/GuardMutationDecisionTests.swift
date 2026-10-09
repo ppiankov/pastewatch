@@ -123,11 +123,14 @@ final class GuardMutationDecisionTests: XCTestCase {
         XCTAssertEqual(write, .allow)
     }
 
+    // WO-672@v1: explicit intrinsic exemptions retain user-tier authority.
     // WO-527@v2: operator config and known test suppression remain authoritative.
     func testOperatorAndKnownTestAllowlistsRemainEffective() throws {
         let token = providerToken("M")
         var allowedConfig = config
         allowedConfig.allowedValues = [token]
+        // WO-672@v1: this fixture models an operator-owned exact whole value.
+        allowedConfig.allowedValueSources[token] = [.user]
         let knownTestToken = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
 
         let configured = try GuardMutationEvaluator.evaluateWrite(
@@ -444,6 +447,7 @@ final class GuardMutationDecisionTests: XCTestCase {
         XCTAssertFalse((result.stdout + result.stderr).contains(oversizedContent))
     }
 
+    // WO-672@v1: structured mutation probes isolate both project and global policy.
     // WO-526@v3: exercise the executable boundary with structured stdin.
     private func runGuardMutation(
         _ payload: [String: Any],
@@ -455,10 +459,11 @@ final class GuardMutationDecisionTests: XCTestCase {
         let process = Process()
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["guard-mutation", "--fail-on-severity", "high"]
-        process.environment = [
+        // WO-672@v1: global isolation is explicit even when the child supplies a complete environment.
+        process.environment = TestConfigHelper.subprocessEnvironment([
             "HOME": home.path,
             "PATH": "/usr/bin:/bin",
-        ].merging(environmentOverrides) { _, new in new }
+        ].merging(environmentOverrides) { _, new in new })
         process.currentDirectoryURL = home
 
         let input = Pipe()

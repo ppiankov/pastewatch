@@ -551,8 +551,15 @@ public enum DocumentationPolicy: String, Codable {
     case enforce
 }
 
-/// Configuration for Pastewatch.
-/// Loaded from ~/.config/pastewatch/config.json if present.
+// WO-672@v1: suppression authority is derived from the loader, never decoded from policy files.
+public enum AllowlistSource: String, Hashable {
+    case system, user, project, projectFile, remedy, inlineDirective
+    // WO-672@v1: system policy removes intrinsic exemption authority from user contributions.
+    case restrictedUser
+}
+
+// WO-672@v1: resolved configuration retains non-serialized provenance for exact exemptions.
+/// Configuration for Pastewatch, including loader-derived, non-serialized provenance.
 public struct PastewatchConfig: Codable {
     public var enabled: Bool
     public var enabledTypes: [String]
@@ -580,6 +587,19 @@ public struct PastewatchConfig: Codable {
     public var obfuscate: [ObfuscateEntry]
     // WO-635: documentation examples are advisory unless the selected config enforces them.
     public var documentationPolicy: DocumentationPolicy
+
+    // WO-672@v1: wire data cannot grant itself operator-tier authority.
+    public internal(set) var allowedValueSources: [String: Set<AllowlistSource>] = [:]
+    public internal(set) var allowedPatternSources: [String: Set<AllowlistSource>] = [:]
+    public internal(set) var fieldSources: [String: [String]] = [:]
+
+    // WO-672@v1: provenance is runtime evidence, not a configurable field.
+    private enum CodingKeys: String, CodingKey {
+        case enabled, enabledTypes, showNotifications, soundEnabled, allowedValues, customRules
+        case safeHosts, sensitiveHosts, allowedPatterns, sensitiveIPPrefixes, mcpMinSeverity
+        case operatorRedactionNotices, xmlSensitiveTags, placeholderPrefix, protectedPaths, sharedPatternFiles
+        case responseStreamingRedactionMode, obfuscate, documentationPolicy
+    }
 
     public init(
         enabled: Bool,
@@ -689,8 +709,16 @@ public struct PastewatchConfig: Codable {
     // WO-634: scoped test state is serialized and never compiled into release builds.
     private static let configTestLock = NSRecursiveLock()
     private static var configTestPath: URL?
+    // WO-672@v1: system fixture state cannot reach administrator policy in DEBUG tests.
+    private static var systemConfigTestPath: URL?
 
-    // WO-634: in-process injection only; no environment, argument, or file can enable it.
+    // WO-672@v1: only DEBUG subprocesses may select fixture-owned global policy.
+    public static let testGlobalConfigEnvironmentKey = "PASTEWATCH_TEST_GLOBAL_CONFIG"
+    // WO-672@v1: the administrator fixture channel is absent from release builds.
+    public static let testSystemConfigEnvironmentKey = "PASTEWATCH_TEST_SYSTEM_CONFIG"
+
+    // WO-672@v1: scoped injection takes priority over the DEBUG-only subprocess seam.
+    // WO-634: serialize in-process fixture state and restore it on every exit.
     static func withTestGlobalConfigPath<T>(_ path: URL, body: () throws -> T) rethrows -> T {
         configTestLock.lock()
         let previous = configTestPath
@@ -701,14 +729,31 @@ public struct PastewatchConfig: Codable {
         }
         return try body()
     }
+
+    // WO-672@v1: scoped system fixtures share the existing lock and restore on every exit.
+    static func withTestSystemConfigPath<T>(_ path: URL, body: () throws -> T) rethrows -> T {
+        configTestLock.lock()
+        let previous = systemConfigTestPath
+        systemConfigTestPath = path
+        defer {
+            systemConfigTestPath = previous
+            configTestLock.unlock()
+        }
+        return try body()
+    }
     #endif
 
+    // WO-672@v1: the subprocess override is absent from release config resolution.
     // WO-634: all global config readers/writers share the debug-only fixture boundary.
     public static var configPath: URL {
         #if DEBUG
         configTestLock.lock()
         defer { configTestLock.unlock() }
         if let path = configTestPath { return path }
+        // WO-672@v1: fixture paths must be absolute so test CWD changes cannot reach operator policy.
+        if let path = ProcessInfo.processInfo.environment[testGlobalConfigEnvironmentKey], path.hasPrefix("/") {
+            return URL(fileURLWithPath: path)
+        }
         #endif
         return globalConfigPath
     }
@@ -719,6 +764,7 @@ public struct PastewatchConfig: Codable {
         return home.appendingPathComponent(".config/pastewatch/config.json")
     }()
 
+    // WO-672@v1: global-only consumers retain operator provenance on exact values.
     public static func load() -> PastewatchConfig {
         guard FileManager.default.fileExists(atPath: configPath.path) else {
             return defaultConfig
@@ -726,35 +772,28 @@ public struct PastewatchConfig: Codable {
 
         do {
             let data = try Data(contentsOf: configPath)
-            return try JSONDecoder().decode(PastewatchConfig.self, from: data)
+            // WO-672@v1: authority comes from this user-path read, not from serialized metadata.
+            var config = try JSONDecoder().decode(PastewatchConfig.self, from: data)
+            for value in config.allowedValues { config.allowedValueSources[value] = [.user] }
+            for pattern in config.allowedPatterns { config.allowedPatternSources[pattern] = [.user] }
+            return config
         } catch {
             return defaultConfig
         }
     }
 
+    // WO-672@v1: release resolution never accepts an environment-selected administrator policy path.
     /// System-wide admin config path. If present, takes highest priority (cannot be overridden).
-    public static let systemConfigPath = "/etc/pastewatch/config.json"
-
-    /// Resolve config with cascade: /etc/pastewatch -> CWD .pastewatch.json -> ~/.config/pastewatch -> defaults.
-    public static func resolve() -> PastewatchConfig {
-        // 1. Admin-enforced config (highest priority)
-        if FileManager.default.fileExists(atPath: systemConfigPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: systemConfigPath)),
-           let config = try? JSONDecoder().decode(PastewatchConfig.self, from: data) {
-            return config
+    public static var systemConfigPath: String {
+        #if DEBUG
+        configTestLock.lock()
+        defer { configTestLock.unlock() }
+        if let path = systemConfigTestPath { return path.path }
+        if let path = ProcessInfo.processInfo.environment[testSystemConfigEnvironmentKey], path.hasPrefix("/") {
+            return path
         }
-
-        // 2. Project config
-        let cwd = FileManager.default.currentDirectoryPath
-        let projectPath = cwd + "/.pastewatch.json"
-        if FileManager.default.fileExists(atPath: projectPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: projectPath)),
-           let config = try? JSONDecoder().decode(PastewatchConfig.self, from: data) {
-            return config
-        }
-
-        // 3. User config / defaults
-        return load()
+        #endif
+        return "/etc/pastewatch/config.json"
     }
 
     public func save() throws {

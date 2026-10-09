@@ -100,6 +100,7 @@ final class MCPAutomaticReadWindowTests: XCTestCase {
     }
 
     // WO-665@v1: large-file guard guidance names the real MCP arguments without exposing file bytes.
+    // WO-672@v1: the release-independent guard probe cannot consume operator policy.
     func testLargeGuardBlockNamesByteArguments() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
@@ -112,7 +113,8 @@ final class MCPAutomaticReadWindowTests: XCTestCase {
             process.executableURL = executable()
             process.arguments = ["guard-read", path.path]
             process.currentDirectoryURL = root
-            process.environment = ["PATH": "/usr/bin:/bin", "PW_GUARD": "1"]
+            // WO-672@v1: read-window probes use only fixture configuration at both tiers.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
             process.standardOutput = output
             process.standardError = errors
             try process.run()

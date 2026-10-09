@@ -602,12 +602,15 @@ pastewatch-cli doctor --explain
 pastewatch-cli doctor --explain --json
 ```
 
-This read-only walkthrough uses the same config resolution, validation, and rule compilation as scanning. Plain `doctor` remains the installation health check above. Resolution is **first-wins, with no merge**: `/etc/pastewatch/config.json` (administrator), `.pastewatch.json` in the current working directory, the user config, then defaults. A project file can shadow the user's custom rules, opt-in detector types, allowlists, and shared pattern files. A WARN names lost detector types and contribution counts, not allowlist values, and explains how to move the intended settings into the winning config or remove the shadowing project config if appropriate. Administrator policy still takes precedence.
+<!-- WO-672@v1: explain the same tightening-only merge used by enforcement. -->
+This read-only walkthrough uses the same config resolution, validation, and rule compilation as scanning. Plain `doctor` remains the installation health check above. Operator policy comes from `/etc/pastewatch/config.json` (administrator), or the user config when system policy is absent; `.pastewatch.json` in the current working directory adds restrictions rather than replacing those tiers. Detector types, custom rules, obfuscation entries, protected paths and shared patterns accumulate. Identical custom rules retain the higher severity. Subordinate tiers may lower `mcpMinSeverity` to report more advisories, never raise it; their suppression patterns are ignored. When administrator policy exists, user policy is also tighten-only. Any present invalid tier fails enforcement closed.
 
 | Text block | What to check |
 |------------|---------------|
-| Resolution | Candidate paths, presence, parse status, validation-error counts, winner/shadowed status, and contribution counts; WARNs explain lost coverage |
-| Config in use | Winning source/path and compiled custom-rule count |
+<!-- WO-672@v1: report contributing tiers and field provenance, not replacement precedence. -->
+| Resolution | Candidate paths, presence, parse status, validation-error counts, contribution status and counts |
+| Field contributions | Source tiers for each security-relevant field |
+| Config in use | Merged source summary and compiled custom-rule count |
 | Policy and thresholds | `documentationPolicy` and `mcpMinSeverity` |
 | Detectors | Type, classification, enabled state, and whether enabled by default |
 | Custom rules | Name, safe pattern metadata, compile status, effective severity (default `high` if omitted), duplicate names, and guard/scan/MCP/proxy outcomes when matched and not allowlisted |
@@ -622,8 +625,10 @@ This read-only walkthrough uses the same config resolution, validation, and rule
 | Field | Meaning |
 |-------|---------|
 | `resolution` | Candidate objects with `source`, `path`, `exists`, `parseOK`, `validationErrors` (count), `disposition`, and contribution counts `customRules`, `enabledTypes`, `allowlistEntries`, `sharedPatternFiles` |
-| `source`, `path`, `valid` | Winning source, optional path, and effective configuration validity |
-| `warnings` | Resolution and validation warnings, including shadowed contributions |
+<!-- WO-672@v1: merged metadata never exposes policy values. -->
+| `source`, `path`, `valid` | Source summary (`merged` for multiple tiers), representative path, and effective configuration validity |
+| `fieldSources` | Per-field arrays of contributing tier names |
+| `warnings` | Resolution and validation warnings, including ignored project patterns |
 | `detectors` | Objects with `type`, `classification`, `enabled`, `enabledByDefault` |
 | `customRules` | Objects with `name`, `pattern` (safe summary only), `compileStatus`, `severity`, `severityDefaulted`, `duplicateName`, `guardHook`, `scan`, `mcp`, `proxy` |
 | `sharedPatterns` | Objects with `path`, `status`, `patternCount` |
@@ -633,6 +638,9 @@ This read-only walkthrough uses the same config resolution, validation, and rule
 | `summary` | Custom-rule coverage summary shown in the text report |
 
 All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`. For a step-by-step diagnosis, see [My rules are not applied](troubleshooting.md#my-rules-are-not-applied).
+
+<!-- WO-672@v1: intrinsic exemptions require exact whole values from operator-owned policy. -->
+Intrinsic secrets can be exempted only by exact whole `allowedValues` in the administrator config, or the user config when no system policy exists, never by patterns, project entries, inline comments or a remedy allowlist. Advisory matches retain ordinary suppression from permitted sources. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
 
 ## Watch Mode
 
@@ -751,8 +759,8 @@ pastewatch-cli init --force            # overwrite existing files
 
 **Banking profile** sets `mcpMinSeverity: medium` (catches IPs and internal hostnames), enables JDBC URL detection, adds example `customRules` for service accounts and internal URIs, and pre-fills `sensitiveIPPrefixes` with all RFC 1918 ranges. Replace `YOURBANK` in `sensitiveHosts` with your domain.
 
-<!-- WO-640: Document administrator precedence and the shared documentation policy. -->
-Config resolution cascade: `/etc/pastewatch/config.json` > CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > defaults. First existing config wins; settings are not merged. See [Doctor --explain](#doctor---explain) to inspect the winner and shadowed contributions.
+<!-- WO-672@v1: initialization uses the same tightening-only merge as guards and diagnostics. -->
+Config resolution merges administrator, user and CWD project contributions. Administrator policy is authoritative when present; otherwise user policy is authoritative. Subordinate tiers may only tighten protection. Defaults apply without operator policy. See [Doctor --explain](#doctor---explain) for contributing tiers and per-field attribution.
 
 ### Documentation Policy
 
@@ -765,7 +773,8 @@ The `documentationPolicy` config key accepts `advisory` (default) or `enforce`. 
 <!-- WO-659@v1: Document enforcement does not override the MCP-authorized native Read policy. -->
 With `advisory`, ambiguous findings in `.md`, `.mdx`, `.markdown`, `.rst`, and `.adoc` files are reported without blocking. Extensions are case-insensitive and determined by the source path, not content. Intrinsic-format secrets, exact-known-secret evidence, and custom rules retain their protection; a database password outside the supported placeholder forms supplies intrinsic evidence. With `enforce`, document findings use the ordinary severity threshold for scan/CI and Edit; native Read instead follows the MCP redaction decision and never blocks advisory-only findings. Inputs without a file path do not receive the document exception.
 
-An administrator can pin `enforce` in `/etc/pastewatch/config.json`; a project or user config cannot override that winner. An invalid policy value makes configuration invalid and enforcement fails closed, rather than falling back to `advisory`. Check a config with:
+<!-- WO-672@v1: subordinate documentation policy cannot loosen an administrator requirement. -->
+An administrator can pin `enforce` in `/etc/pastewatch/config.json`; a project or user config cannot loosen that requirement. An invalid policy value makes configuration invalid and enforcement fails closed, rather than falling back to `advisory`. Check a config with:
 
 ```bash
 pastewatch-cli config check --file .pastewatch.json

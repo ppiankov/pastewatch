@@ -313,11 +313,14 @@ pastewatch-cli doctor --explain
 pastewatch-cli doctor --explain --json
 ```
 
-Configuration is **first-wins, no merge**: system administrator, current directory's
-`.pastewatch.json`, user config, then defaults. A project config therefore shadows
-the entire user config, including its custom rules. The walkthrough shows each
-candidate, lost rule counts, and where to move those rules (or which project config
-to remove/rename). It never changes policy.
+<!-- WO-672@v1: project restrictions accumulate without replacing operator policy. -->
+Configuration **merges protection** from administrator and user policy with the
+current directory's `.pastewatch.json`. A project can add detectors, rules,
+protected paths and obfuscation, or raise rule severities; it cannot discard
+operator entries or add suppression patterns. Lowering `mcpMinSeverity` reports
+more advisories; raising it cannot hide existing reports. When administrator
+policy exists, user policy is also tighten-only. The walkthrough shows each contributing tier
+and per-field attribution. It never changes policy.
 
 The report includes enabled detectors, compiled custom rules and their effective
 severity, shared pattern loading, allowlist counts, `documentationPolicy`, and
@@ -389,8 +392,13 @@ Verify a line before committing it, supplying the value through stdin:
 printf '%s\n' '<line>' | pastewatch-cli check
 ```
 
-For one specific known-safe example, put the **whole DSN** in `allowedValues`.
-Allowlisting only its password does not suppress the connection finding.
+<!-- WO-672@v1: only operator-owned exact whole values can exempt intrinsic evidence. -->
+For one specific known-safe example, put the **whole DSN** in `allowedValues` in
+your **user config** (`~/.config/pastewatch/config.json`), or have an administrator
+add it to system policy. When system policy exists, only that tier grants this
+exemption. Password-only entries do not suppress the connection.
+Patterns, project entries and inline comments never exempt intrinsic secrets.
+Agents cannot create or modify `.pastewatch.json` or `.pastewatch-allow`.
 
 ## Agent Integration
 

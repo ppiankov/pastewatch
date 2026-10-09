@@ -216,6 +216,7 @@ final class StartupSweepTests: XCTestCase {
         XCTAssertEqual(dirtyReport.warnedFiles.count, 1)
     }
 
+    // WO-672@v1: operator exact values retain their exemption in startup scanning.
     // WO-551@v2: startup sweep applies the configured allowlist before reporting.
     func testConfigAllowlistSuppressesStartupFinding() throws {
         let home = try makeTempDirectory()
@@ -223,6 +224,8 @@ final class StartupSweepTests: XCTestCase {
         try write("ACCESS_KEY=\(value)\n", to: home.appendingPathComponent(".zshrc"))
         var config = PastewatchConfig.defaultConfig
         config.allowedValues = [value]
+        // WO-672@v1: a direct-config fixture explicitly models the user tier.
+        config.allowedValueSources[value] = [.user]
 
         let report = StartupSweep(
             homeDirectory: home,
@@ -253,7 +256,8 @@ final class StartupSweepTests: XCTestCase {
         XCTAssertEqual(report.warnedFiles.first?.findingCount, 1)
     }
 
-    // WO-578@v2: trusted startup files honor explicit inline allow directives.
+    // WO-672@v1: inline directives cannot exempt intrinsic evidence in startup files.
+    // WO-578@v2: trusted startup files retain advisory directive handling.
     func testInlineAllowSuppressesStartupFinding() throws {
         let home = try makeTempDirectory()
         let value = firstDatabaseURL
@@ -264,8 +268,9 @@ final class StartupSweepTests: XCTestCase {
 
         let report = StartupSweep(homeDirectory: home, currentDirectory: home).run()
 
-        XCTAssertTrue(report.warnedFiles.isEmpty)
-        XCTAssertEqual(report.cleanFiles.count, 1)
+        // WO-672@v1: intrinsic evidence remains present despite the directive.
+        XCTAssertEqual(report.warnedFiles.count, 1)
+        XCTAssertTrue(report.cleanFiles.isEmpty)
     }
 
     // WO-578@v2: known test credentials follow the trusted-file guard policy.

@@ -887,6 +887,7 @@ final class MCPProtocolTests: XCTestCase {
 
         // WO-654@v1: retain syscall failures before session cleanup runs.
         // WO-627@v2: configure read caps and explicit rules before the subprocess loads policy.
+        // WO-672@v1: persistent subprocess sessions use the DEBUG-only global fixture channel.
         init(
             executableURL: URL,
             maximumLineBytes: Int = 256,
@@ -904,11 +905,12 @@ final class MCPProtocolTests: XCTestCase {
             process.arguments = ["mcp"]
             process.currentDirectoryURL = directory
             // WO-634: no HOME or CFFIXED_USER_HOME channel is needed for config isolation.
-            process.environment = [
+            // WO-672@v1: custom transport environments retain the DEBUG config fixture boundary.
+            process.environment = TestConfigHelper.subprocessEnvironment([
                 ScanInputLimits.lineBytesEnvironmentKey: String(maximumLineBytes),
                 // WO-627@v2: a small cap proves oversized range lengths are clamped.
                 ScanInputLimits.fileBytesEnvironmentKey: String(maximumFileBytes),
-            ]
+            ])
             process.standardInput = stdin
             process.standardOutput = stdout
             process.standardError = FileHandle.nullDevice

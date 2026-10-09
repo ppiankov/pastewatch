@@ -16,12 +16,19 @@ enum FileGuard {
         }
     }
 
+    // WO-672@v1: write ownership checks precede all target I/O and clean-file shortcuts.
     // WO-665@v1: blocked large reads name the bounded MCP continuation arguments.
     // WO-659@v1: Read enforces MCP mutation authorization; Write retains its existing policy.
     /// Throws `ExitCode(2)` on block or shared-pattern error.
     /// Returns normally when the file is clean (no actionable secrets).
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
         if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
+
+        // WO-672@v1: policy ownership is independent of file existence and content.
+        if operation == .write, GuardDecision.isOperatorOwnedPath(filePath) {
+            FileHandle.standardError.write(Data((GuardDecision.operatorOwnedFileMessage + "\n").utf8))
+            throw ExitCode(rawValue: GuardExitContract.blocked)
+        }
 
         // WO-574@v4: guard decisions cannot use fallback defaults after config corruption.
         let config = try requireValidatedConfig()
