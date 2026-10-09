@@ -36,6 +36,7 @@ struct Doctor: ParsableCommand {
 
     // WO-649@v1: inject lookup through execution without adding a command or environment override.
     // WO-636@v2: return before legacy checks only when the walkthrough was requested.
+    // WO-670@v1: allow-file health reflects actual target-root loading, not mere presence.
     func run(curlLookup: () -> String?) throws {
         if explain {
             try printExplanation(ConfigExplanation())
@@ -64,8 +65,10 @@ struct Doctor: ParsableCommand {
         let hookResult = checkHook()
         checks.append(CheckResult(check: "hook", status: hookResult.status, detail: hookResult.detail))
 
-        // 5. Allowlist file
-        checks.append(checkFile(".pastewatch-allow", label: "allowlist"))
+        // WO-670@v1: the diagnostic directory is an explicit target context.
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath)
+        checks.append(CheckResult(check: "allowlist", status: allowFile.loaded ? allowFile.status : "warn",
+                                  detail: projectAllowlistDetail(allowFile)))
 
         // 6. Ignore file
         checks.append(checkFile(".pastewatchignore", label: "ignore"))
@@ -88,13 +91,26 @@ struct Doctor: ParsableCommand {
     }
 
     // WO-636@v2: CLI and tests render the same metadata-only representation.
+    // WO-670@v1: the walkthrough includes the same safe allow-file evidence as plain doctor.
     func printExplanation(_ explanation: ConfigExplanation) throws {
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath)
         if json {
-            FileHandle.standardOutput.write(try explanation.jsonData())
+            var payload = try JSONSerialization.jsonObject(with: explanation.jsonData()) as? [String: Any] ?? [:]
+            // WO-670@v1: explicit encoding excludes allow-file contents from diagnostics.
+            payload["projectAllowlist"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(allowFile))
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
             FileHandle.standardOutput.write(Data("\n".utf8))
         } else {
             print(explanation.text())
+            // WO-670@v1: an unloaded or ineffective file is never presented as active.
+            print("Project allow file\n[\(allowFile.loaded ? allowFile.status : "warn")] \(projectAllowlistDetail(allowFile))")
         }
+    }
+
+    // WO-670@v1: only path, loading status and entry counts are public.
+    private func projectAllowlistDetail(_ report: ProjectAllowlistResolution) -> String {
+        "\(report.path ?? "none"); loaded=\(report.loaded), effectiveEntries=\(report.effectiveEntries), " +
+            "ignoredIntrinsicEntries=\(report.ignoredIntrinsicEntries); file targets only"
     }
 
     private func checkOnPath() -> CheckResult {

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject pull-request additions to previously released changelog sections since the merge base, with a version-scoped release exemption and deterministic placement fixtures; later main-branch edits are not attributed to stale branches. (WO-664)
 - Exclude assigned source-code references by argument shape while retaining literal constructors, quoted values and YAML/ENV detection at the same severity; path-shaped and all-caps reference literals remain documented recognition limits. (WO-668)
 - Keep directory scans and MCP sessions alive when Git closes its input pipe, probe non-repository targets before writing, and retain normal CLI stdout pipeline behavior. (WO-669)
+- Load exact advisory exemptions from the target's project allow file across file guards, MCP, scans and watch mode, retaining Git context for deleted history paths; keep pathless input unaffected and report effective and ignored entries in doctor. (WO-670)
 
 ## [0.40.0] - 2026-10-07
 

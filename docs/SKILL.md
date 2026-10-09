@@ -31,6 +31,13 @@ brew install ppiankov/tap/pastewatch
 | `.pastewatchignore` | Project root | Path exclusion patterns (glob, like `.gitignore`) | Manual |
 | `.pastewatch-baseline.json` | Project root | Known findings baseline (SHA256 fingerprints) | `pastewatch-cli baseline create` |
 
+<!-- WO-670@v1: file exemptions follow the target root while raw text remains pathless. -->
+File targets automatically load one `.pastewatch-allow` from their Git toplevel,
+or the explicit non-Git scan/watch root (single-file operations use the parent).
+Its exact entries suppress advisories only, never intrinsic secrets or custom
+rules. Stdin and raw MCP text load no project allow file. `doctor --explain`
+reports the resolved path, loading status and effective/ignored entry counts.
+
 ### Resolution cascade
 
 <!-- WO-640: Prevent agents from assuming project and user rules are merged. -->
@@ -317,7 +324,8 @@ Use the [complete output-field reference](cli-reference.md#doctor---explain) to 
 <!-- WO-672@v1: the health report identifies merged tiers rather than a replacement winner. -->
 | config | Merged administrator/user/project contributions, field attribution, validation warnings |
 | hook | Pre-commit hook installation status |
-| allowlist | `.pastewatch-allow` file presence |
+<!-- WO-670@v1: health status proves actual file loading and reports ineffective entries. -->
+| allowlist | Target-root `.pastewatch-allow` path, loaded status, effective count and ignored intrinsic count |
 | ignore | `.pastewatchignore` file presence |
 | baseline | `.pastewatch-baseline.json` file presence |
 | mcp | Running MCP server processes and PIDs |

@@ -1,5 +1,21 @@
 import Foundation
 
+// WO-670@v1: diagnostics serialize loading evidence without any allow-file values.
+public struct ProjectAllowlistResolution: Encodable {
+    public let path: String?
+    public let loaded: Bool
+    public let effectiveEntries: Int
+    public let ignoredIntrinsicEntries: Int
+    public let status: String
+    // WO-670@v1: raw entries are available only to filtering, never diagnostic encoding.
+    public let allowlist: Allowlist
+
+    // WO-670@v1: an explicit wire projection excludes the private exact values.
+    private enum CodingKeys: String, CodingKey {
+        case path, loaded, effectiveEntries, ignoredIntrinsicEntries, status
+    }
+}
+
 /// Manages allowed values that should be excluded from scan results.
 public struct Allowlist {
     public let values: Set<String>
@@ -26,14 +42,78 @@ public struct Allowlist {
         self.patternSources = patternSources
     }
 
+    // WO-670@v1: explicit files and discovered files share exact-value parsing, never patterns.
     /// Load allowlist from a file (one value per line, # comments).
     public static func load(from path: String) throws -> Allowlist {
         let content = try String(contentsOfFile: path, encoding: .utf8)
-        let values = content
+        return Allowlist(values: parsedValues(content))
+    }
+
+    // WO-670@v1: rootless text never selects a project through process-directory state.
+    public static func projectFile(for targetPath: String?, scanRoot: String? = nil) -> ProjectAllowlistResolution {
+        guard let targetPath else {
+            return ProjectAllowlistResolution(path: nil, loaded: false, effectiveEntries: 0,
+                    ignoredIntrinsicEntries: 0, status: "pathless", allowlist: Allowlist(source: .projectFile))
+        }
+        let target = URL(fileURLWithPath: targetPath).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory)
+        let directory = isDirectory.boolValue ? target : target.deletingLastPathComponent()
+        let root = gitRoot(for: directory.path) ?? scanRoot.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? directory.path
+        let path = URL(fileURLWithPath: root).appendingPathComponent(".pastewatch-allow").path
+        guard ConfigValidator.pathExistsIncludingDanglingSymlink(path, fileManager: .default) else {
+            return ProjectAllowlistResolution(path: path, loaded: false, effectiveEntries: 0,
+                    ignoredIntrinsicEntries: 0, status: "absent", allowlist: Allowlist(source: .projectFile))
+        }
+        do {
+            let bytes = try DetectionRules.readBoundedFileData(atPath: path)
+            guard let content = String(data: bytes, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            let values = parsedValues(content)
+            // WO-670@v1: intrinsic evidence in opt-in built-ins is ineffective here as well.
+            var recognitionConfig = PastewatchConfig.defaultConfig
+            recognitionConfig.enabledTypes = SensitiveDataType.allCases.map(\.rawValue)
+            let ignored = values.filter { value in
+                DetectionRules.scan(value, config: recognitionConfig).contains {
+                    $0.value == value && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+                }
+            }
+            let effective = values.subtracting(ignored)
+            return ProjectAllowlistResolution(path: path, loaded: true, effectiveEntries: effective.count,
+                    ignoredIntrinsicEntries: ignored.count, status: ignored.isEmpty ? "ok" : "warn",
+                    allowlist: Allowlist(values: effective, source: .projectFile))
+        } catch {
+            // WO-670@v1: an unreadable file grants no exemptions and can never be reported active.
+            return ProjectAllowlistResolution(path: path, loaded: false, effectiveEntries: 0,
+                    ignoredIntrinsicEntries: 0, status: "warn", allowlist: Allowlist(source: .projectFile))
+        }
+    }
+
+    // WO-670@v1: a single line syntax is shared by explicit and automatic exact-value files.
+    private static func parsedValues(_ content: String) -> Set<String> {
+        Set(content
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        return Allowlist(values: Set(values))
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") })
+    }
+
+    // WO-670@v1: target-local Git discovery consumes no stdin and ignores ambient repository overrides.
+    private static func gitRoot(for directory: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory, "rev-parse", "--show-toplevel"]
+        process.environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("GIT_") }
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0, var path = String(data: data, encoding: .utf8), path.hasPrefix("/") else { return nil }
+            if path.hasSuffix("\n") { path.removeLast() }
+            return path
+        } catch { return nil }
     }
 
     // WO-672@v1: union source evidence as well as values when multiple tiers share an entry.

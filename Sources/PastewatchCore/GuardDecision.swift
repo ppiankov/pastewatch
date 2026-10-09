@@ -24,6 +24,7 @@ public struct GuardDecision {
     // WO-635: classify by the supplied path only, never by content or directory names.
     private static let documentationExtensions: Set<String> = ["md", "mdx", "markdown", "rst", "adoc"]
 
+    // WO-670@v1: every file decision shares target-root allow-file loading; rootless decisions load none.
     // WO-635: one decision owns documentation classification and protects independently authorized secrets.
     public static func evaluate(
         matches: [DetectedMatch],
@@ -31,7 +32,9 @@ public struct GuardDecision {
         config: PastewatchConfig,
         contentTrust: GuardContentTrust,
         minimumSeverity: Severity?,
-        filePath: String? = nil
+        // WO-670@v1: non-git multi-file scans supply their explicit root, not an inferred ancestor.
+        filePath: String? = nil,
+        scanRoot: String? = nil
     ) -> GuardDecision {
         let nonTestMatches = matches.filter {
             !DetectionRules.isTestCredential($0.value)
@@ -50,7 +53,9 @@ public struct GuardDecision {
         let isDocumentation = filePath.map {
             documentationExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased())
         } ?? false
-        let reportable = Allowlist.fromConfig(config).filter(inlineFiltered).map { match in
+        // WO-670@v1: project-file authority remains limited by the shared suppression predicate.
+        let allowlist = Allowlist.fromConfig(config).merged(with: Allowlist.projectFile(for: filePath, scanRoot: scanRoot).allowlist)
+        let reportable = allowlist.filter(inlineFiltered).map { match in
             guard config.documentationPolicy == .advisory, isDocumentation,
                   match.type.isAmbiguousClass,
                   match.mutationAuthorizationSources.isDisjoint(with: [.intrinsicFormat, .exactKnownSecret, .customRule]),

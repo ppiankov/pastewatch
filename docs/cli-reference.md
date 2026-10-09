@@ -616,6 +616,8 @@ This read-only walkthrough uses the same config resolution, validation, and rule
 | Custom rules | Name, safe pattern metadata, compile status, effective severity (default `high` if omitted), duplicate names, and guard/scan/MCP/proxy outcomes when matched and not allowlisted |
 | Shared pattern files | Path, load status, and pattern count |
 | Allowlists | Counts of configured allowed values and patterns; possible-suppression warnings are hints, not a match test |
+<!-- WO-670@v1: diagnostics distinguish actual project-file loading from configuration values. -->
+| Project allow file | Resolved target-root path, loaded status, effective entries and ignored intrinsic entries; WARN for an unloaded or ineffective file |
 | Summary | Rules capable of blocking the high-threshold guard, invalid rules, and rules below the threshold |
 
 `--explain` exits 0 when it produces the diagnosis, even for invalid configuration. Inspect `valid` in JSON, or use `config check` to validate with an exit code. Enforcement commands fail closed on invalid configuration; a successful diagnostic is not permission to proceed.
@@ -636,6 +638,8 @@ This read-only walkthrough uses the same config resolution, validation, and rule
 | `possibleSuppression` | Warnings about potential rule suppression by configured allowed patterns; use `check` to test a value |
 | `documentationPolicy`, `mcpMinSeverity` | Effective document policy and MCP advisory threshold |
 | `summary` | Custom-rule coverage summary shown in the text report |
+<!-- WO-670@v1: allow-file metadata excludes all raw entries. -->
+| `projectAllowlist` | `path`, `loaded`, `status`, `effectiveEntries`, `ignoredIntrinsicEntries`; no entry values |
 
 All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`. For a step-by-step diagnosis, see [My rules are not applied](troubleshooting.md#my-rules-are-not-applied).
 
@@ -840,6 +844,22 @@ When scanning `.env`, `.json`, `.yml`/`.yaml`, `.properties`/`.cfg`/`.ini`, or `
 For XML files, pastewatch extracts values from sensitive tags (`<password>`, `<host>`, `<user>`, etc.) covering ClickHouse, Hadoop, and other XML-based configs. Custom tags can be added via the `xmlSensitiveTags` config field.
 
 ## Allowlist
+
+<!-- WO-670@v1: automatic exact exemptions are bound to file targets rather than process CWD. -->
+File-bearing scan, guard, MCP and watch operations automatically load one
+`.pastewatch-allow`: the target's Git toplevel, otherwise the explicit scan root.
+A non-Git single-file operation uses its parent directory; a nested file in a
+non-Git watched tree uses the watch root. There is no ancestor search. A hook's
+outside CWD does not change the selected file.
+
+Only exact advisory values can be suppressed here, never intrinsic-format
+secrets or custom-rule hits. `doctor` and `doctor --explain` report the resolved
+path, loaded status and effective/ignored counts; intrinsic-equal entries produce
+a WARN. Agents cannot create or modify this operator-owned file.
+
+Stdin (including `--stdin-filename`), MCP `pastewatch_scan` raw text and the guard's
+command-string pass have no file target and load no project allow file. Explicit
+`scan --allowlist` remains available for advisory suppression.
 
 Create a file with one value per line to suppress known-safe findings:
 

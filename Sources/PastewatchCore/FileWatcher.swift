@@ -99,6 +99,7 @@ public final class FileWatcher {
     }
 
     // WO-662@v3: watcher scans share detection-only encoding and counted per-file line skips.
+    // WO-670@v1: changed-file decisions retain the explicitly watched root.
     private func scanFile(relativePath: String) {
         let fullPath = (directory as NSString).appendingPathComponent(relativePath)
         let input: DirectoryScanner.DetectionInput
@@ -152,16 +153,8 @@ public final class FileWatcher {
             return
         }
 
-        // WO-502: watch reporting honors the same examples and allowlists as guards.
-        let matches = GuardDecision.evaluate(
-            matches: matchesBeforeSeverity,
-            content: content,
-            config: config,
-            contentTrust: .trustedFile,
-            minimumSeverity: severity,
-            // WO-635: supply the watched file's path to the shared guard policy.
-            filePath: fullPath
-        ).actionableMatches
+        // WO-670@v1: the watch root, not the changed file's parent, selects non-git allow files.
+        let matches = fileDecision(matches: matchesBeforeSeverity, content: content, filePath: fullPath).actionableMatches
 
         guard !matches.isEmpty else { return }
 
@@ -186,6 +179,12 @@ public final class FileWatcher {
             let line = "[\(timestamp)] \(severity) \(relativePath):\(match.line) \(match.displayName): \(match.value)"
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
+    }
+
+    // WO-670@v1: the production watch decision is directly testable without polling or hidden root state.
+    func fileDecision(matches: [DetectedMatch], content: String, filePath: String) -> GuardDecision {
+        GuardDecision.evaluate(matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                               minimumSeverity: severity, filePath: filePath, scanRoot: directory)
     }
 
     private func outputJSON(relativePath: String, matches: [DetectedMatch], timestamp: String) {

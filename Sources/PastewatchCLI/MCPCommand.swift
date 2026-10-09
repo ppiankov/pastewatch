@@ -649,6 +649,7 @@ final class MCPServer {
     }
 
     // WO-662@v3: directory diagnostics report scan coverage independently of findings.
+    // WO-670@v1: each directory finding uses its target path and explicit scan root.
     private func handleScanDir(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
@@ -670,8 +671,9 @@ final class MCPServer {
                     config: config,
                     contentTrust: .trustedFile,
                     minimumSeverity: nil,
-                    // WO-635: apply the same path-based policy per directory result.
-                    filePath: result.filePath
+                    // WO-670@v1: report paths are relative to the target directory, never the MCP CWD.
+                    filePath: URL(fileURLWithPath: path).appendingPathComponent(result.filePath).path,
+                    scanRoot: path
                 ).reportableMatches
                 guard !matches.isEmpty else { return nil }
                 return FileScanResult(

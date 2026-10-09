@@ -465,7 +465,14 @@ Agents: read [`docs/SKILL.md`](docs/SKILL.md) for commands, flags, config files,
 | `.pastewatchignore` | Project root | Path exclusion patterns (glob, like `.gitignore`) | Manual |
 | `.pastewatch-baseline.json` | Project root | Known findings baseline | `pastewatch-cli baseline create` |
 
-Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` > built-in defaults.
+<!-- WO-670@v1: allow-file discovery uses target context independently of the config merge. -->
+Configuration merges administrator, user and project contributions with tighten-only
+subordinate tiers. For file targets, `.pastewatch-allow` is loaded automatically
+from the target's Git toplevel; outside Git, use the explicit scan/watch root
+(a single-file scan uses its parent). Entries are exact advisory exemptions only,
+never intrinsic-secret or custom-rule exemptions. Stdin, raw MCP text and the
+guard's command-string pass load no project allow file. `doctor --explain` shows
+the resolved path, loaded status, effective entries and ignored intrinsic entries.
 
 ### `.pastewatch.json` schema
 
@@ -501,7 +508,8 @@ Resolution cascade: CWD `.pastewatch.json` > `~/.config/pastewatch/config.json` 
 | `enabledTypes` | string[] | Detection types to activate (default: intrinsic detectors only) |
 | `showNotifications` | bool | System notifications on GUI obfuscation |
 | `soundEnabled` | bool | Sound on GUI obfuscation |
-| `allowedValues` | string[] | Exact values to suppress (merged with `.pastewatch-allow`) |
+<!-- WO-670@v1: project exact values affect file targets, never intrinsic or custom evidence. -->
+| `allowedValues` | string[] | Exact values to suppress; file targets also load advisory exemptions from `.pastewatch-allow` |
 | `allowedPatterns` | string[] | Regex patterns for value suppression (wrapped in `^(...)$`) |
 | `customRules` | object[] | Additional regex patterns with name, pattern, optional severity |
 | `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |

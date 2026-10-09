@@ -361,6 +361,7 @@ struct Scan: ParsableCommand {
     // MARK: - Directory scanning
 
     // WO-662@v3: directory scans emit coverage even when no file contributes a finding.
+    // WO-670@v1: file decisions retain the explicitly scanned directory context.
     private func runDirectoryScan(
         dirPath: String,
         config: PastewatchConfig,
@@ -411,8 +412,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .trustedFile,
                 minimumSeverity: nil,
-                // WO-635: directory findings retain their file-level policy context.
-                filePath: fr.filePath
+                // WO-670@v1: relative report paths are bound to the scan root, never the process CWD.
+                filePath: URL(fileURLWithPath: dirPath).appendingPathComponent(fr.filePath).path,
+                scanRoot: dirPath
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -458,6 +460,7 @@ struct Scan: ParsableCommand {
     // MARK: - Git diff scanning
 
     // WO-662@v3: Git diff coverage includes named line-limit skips without changing finding output.
+    // WO-670@v1: Git-relative result paths retain their actual repository root for policy loading.
     private func runGitDiffScan(
         config: PastewatchConfig,
         allowlist: Allowlist,
@@ -495,6 +498,8 @@ struct Scan: ParsableCommand {
 
         // Apply allowlist filtering
         var filteredResults: [FileScanResult] = []
+        // WO-670@v1: resolve repository-relative paths once per Git scan.
+        let targetRoot = projectScanRoot()
         for fr in fileResults {
             var allMatches = fr.matches
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
@@ -507,8 +512,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .trustedFile,
                 minimumSeverity: nil,
-                // WO-635: diff findings are classified by the changed file's path.
-                filePath: fr.filePath
+                // WO-670@v1: deleted targets retain the explicitly scanned Git root.
+                filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(fr.filePath).path,
+                scanRoot: targetRoot
             ).reportableMatches
 
             if !allMatches.isEmpty {
@@ -545,6 +551,7 @@ struct Scan: ParsableCommand {
     // MARK: - Git log scanning
 
     // WO-662@v3: history line-limit skips are visible without replacing the legacy result schema.
+    // WO-670@v1: historical file findings share target-root exact exemptions with staged findings.
     private func runGitLogScan(
         config: PastewatchConfig,
         allowlist: Allowlist,
@@ -581,6 +588,8 @@ struct Scan: ParsableCommand {
         }
         // Apply allowlist filtering
         var filteredFindings: [CommitFinding] = []
+        // WO-670@v1: historical paths retain the same repository context as staged files.
+        let targetRoot = projectScanRoot()
         for cf in result.findings {
             var allMatches = cf.matches
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
@@ -594,8 +603,9 @@ struct Scan: ParsableCommand {
                 config: config,
                 contentTrust: .agentControlled,
                 minimumSeverity: nil,
-                // WO-635: history findings carry a path even without current working-tree content.
-                filePath: cf.filePath
+                // WO-670@v1: deleted historical directories retain the explicitly scanned Git root.
+                filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(cf.filePath).path,
+                scanRoot: targetRoot
             ).reportableMatches
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(
@@ -631,6 +641,13 @@ struct Scan: ParsableCommand {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)
         }
+    }
+
+    // WO-670@v1: Git modes explicitly scan the current repository, including nested invocations.
+    private func projectScanRoot() -> String {
+        let cwd = FileManager.default.currentDirectoryPath
+        guard let path = Allowlist.projectFile(for: cwd).path else { return cwd }
+        return URL(fileURLWithPath: path).deletingLastPathComponent().path
     }
 
     private func outputGitLogFindings(findings: [CommitFinding], result: GitLogScanResult) {
