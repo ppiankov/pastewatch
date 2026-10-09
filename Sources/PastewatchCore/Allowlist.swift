@@ -49,8 +49,10 @@ public struct Allowlist {
         return Allowlist(values: parsedValues(content))
     }
 
+    // WO-672@v1: loading and diagnostics apply the shared exemption predicate to effective rules.
     // WO-670@v1: rootless text never selects a project through process-directory state.
-    public static func projectFile(for targetPath: String?, scanRoot: String? = nil) -> ProjectAllowlistResolution {
+    public static func projectFile(for targetPath: String?, scanRoot: String? = nil,
+                                   config: PastewatchConfig? = .defaultConfig) -> ProjectAllowlistResolution {
         guard let targetPath else {
             return ProjectAllowlistResolution(path: nil, loaded: false, effectiveEntries: 0,
                     ignoredIntrinsicEntries: 0, status: "pathless", allowlist: Allowlist(source: .projectFile))
@@ -69,12 +71,14 @@ public struct Allowlist {
             let bytes = try DetectionRules.readBoundedFileData(atPath: path)
             guard let content = String(data: bytes, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
             let values = parsedValues(content)
-            // WO-670@v1: intrinsic evidence in opt-in built-ins is ineffective here as well.
-            var recognitionConfig = PastewatchConfig.defaultConfig
+            // WO-672@v1: invalid active policy grants no exemptions; opt-in built-ins are recognized too.
+            guard var recognitionConfig = config else { throw CocoaError(.fileReadUnknown) }
             recognitionConfig.enabledTypes = SensitiveDataType.allCases.map(\.rawValue)
-            let ignored = values.filter { value in
-                DetectionRules.scan(value, config: recognitionConfig).contains {
-                    $0.value == value && $0.mutationAuthorizationSources.contains(.intrinsicFormat)
+            // WO-672@v1: custom-rule evidence and ignored counts use the same predicate as filtering.
+            let rules = try CustomRule.compile(recognitionConfig.customRules)
+            let ignored = try values.filter { value in
+                try DetectionRules.scanFileIOOrThrow(value, config: recognitionConfig, customRules: rules).contains {
+                    $0.value == value && !permitsAllowlistSuppression(of: $0, source: .projectFile, exactValue: true)
                 }
             }
             let effective = values.subtracting(ignored)

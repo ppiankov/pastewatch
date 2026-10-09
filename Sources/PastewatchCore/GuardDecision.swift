@@ -53,8 +53,9 @@ public struct GuardDecision {
         let isDocumentation = filePath.map {
             documentationExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased())
         } ?? false
-        // WO-670@v1: project-file authority remains limited by the shared suppression predicate.
-        let allowlist = Allowlist.fromConfig(config).merged(with: Allowlist.projectFile(for: filePath, scanRoot: scanRoot).allowlist)
+        // WO-672@v1: allow-file accounting sees the same effective custom rules as the guard.
+        let allowlist = Allowlist.fromConfig(config).merged(with:
+            Allowlist.projectFile(for: filePath, scanRoot: scanRoot, config: config).allowlist)
         let reportable = allowlist.filter(inlineFiltered).map { match in
             guard config.documentationPolicy == .advisory, isDocumentation,
                   match.type.isAmbiguousClass,

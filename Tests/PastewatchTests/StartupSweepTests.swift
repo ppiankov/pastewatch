@@ -99,6 +99,7 @@ final class StartupSweepTests: XCTestCase {
     }
 
     // WO-590@v2: equal count/severity findings with different identities warn independently.
+    // WO-672@v1: alternating cache exemptions retain authoritative user-tier provenance.
     func testCacheRewarnsWhenPolicyChangesWhichFindingIsReportable() throws {
         let home = try makeTempDirectory()
         let path = home.appendingPathComponent(".zshrc")
@@ -112,6 +113,7 @@ final class StartupSweepTests: XCTestCase {
             CustomRuleConfig(name: "cache fixture", pattern: "PW-CACHE-[A-Z]+")
         ]
         firstConfig.allowedValues = [secondValue]
+        firstConfig.allowedValueSources = [secondValue: [.user]]
         let firstReport = StartupSweep(
             homeDirectory: home,
             currentDirectory: home,
@@ -120,6 +122,7 @@ final class StartupSweepTests: XCTestCase {
 
         var secondConfig = firstConfig
         secondConfig.allowedValues = [firstValue]
+        secondConfig.allowedValueSources = [firstValue: [.user]]
         let secondReport = StartupSweep(
             homeDirectory: home,
             currentDirectory: home,

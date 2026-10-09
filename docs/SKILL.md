@@ -34,8 +34,10 @@ brew install ppiankov/tap/pastewatch
 <!-- WO-670@v1: file exemptions follow the target root while raw text remains pathless. -->
 File targets automatically load one `.pastewatch-allow` from their Git toplevel,
 or the explicit non-Git scan/watch root (single-file operations use the parent).
-Its exact entries suppress advisories only, never intrinsic secrets or custom
-rules. Stdin and raw MCP text load no project allow file. `doctor --explain`
+<!-- WO-672@v1: subordinate exact exemptions cannot remove independent authorization evidence. -->
+Its exact entries suppress advisory classes only, never non-ambiguous types,
+custom rules or intrinsic/exact-known-secret evidence. The same restriction
+applies to project config and tighten-only user entries. Stdin and raw MCP text load no project allow file. `doctor --explain`
 reports the resolved path, loading status and effective/ignored entry counts.
 
 ### Resolution cascade

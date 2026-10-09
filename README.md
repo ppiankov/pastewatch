@@ -319,7 +319,11 @@ current directory's `.pastewatch.json`. A project can add detectors, rules,
 protected paths and obfuscation, or raise rule severities; it cannot discard
 operator entries or add suppression patterns. Lowering `mcpMinSeverity` reports
 more advisories; raising it cannot hide existing reports. When administrator
-policy exists, user policy is also tighten-only. The walkthrough shows each contributing tier
+policy exists, user policy is also tighten-only.
+<!-- WO-672@v1: subordinate exact exemptions cannot remove non-advisory or custom-rule protection. -->
+Project and tighten-only user entries exempt advisory classes only, never
+non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence.
+The walkthrough shows each contributing tier
 and per-field attribution. It never changes policy.
 
 The report includes enabled detectors, compiled custom rules and their effective
@@ -470,9 +474,11 @@ Configuration merges administrator, user and project contributions with tighten-
 subordinate tiers. For file targets, `.pastewatch-allow` is loaded automatically
 from the target's Git toplevel; outside Git, use the explicit scan/watch root
 (a single-file scan uses its parent). Entries are exact advisory exemptions only,
-never intrinsic-secret or custom-rule exemptions. Stdin, raw MCP text and the
+<!-- WO-672@v1: project files cannot exempt non-ambiguous or independently authorized findings. -->
+never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Stdin, raw MCP text and the
 guard's command-string pass load no project allow file. `doctor --explain` shows
-the resolved path, loaded status, effective entries and ignored intrinsic entries.
+<!-- WO-672@v1: retain the count field while describing all ineffective entry classes. -->
+the resolved path, loaded status, effective entries and ignored non-advisory/custom-rule entries.
 
 ### `.pastewatch.json` schema
 
@@ -509,7 +515,8 @@ the resolved path, loaded status, effective entries and ignored intrinsic entrie
 | `showNotifications` | bool | System notifications on GUI obfuscation |
 | `soundEnabled` | bool | Sound on GUI obfuscation |
 <!-- WO-670@v1: project exact values affect file targets, never intrinsic or custom evidence. -->
-| `allowedValues` | string[] | Exact values to suppress; file targets also load advisory exemptions from `.pastewatch-allow` |
+<!-- WO-672@v1: project exact entries grant advisory exemptions only. -->
+| `allowedValues` | string[] | Exact exemptions; project/tighten-only tiers exempt advisory classes only, including file-target entries from `.pastewatch-allow` |
 | `allowedPatterns` | string[] | Regex patterns for value suppression (wrapped in `^(...)$`) |
 | `customRules` | object[] | Additional regex patterns with name, pattern, optional severity |
 | `safeHosts` | string[] | Hostnames excluded from detection (leading dot = suffix match) |

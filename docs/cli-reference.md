@@ -639,12 +639,17 @@ This read-only walkthrough uses the same config resolution, validation, and rule
 | `documentationPolicy`, `mcpMinSeverity` | Effective document policy and MCP advisory threshold |
 | `summary` | Custom-rule coverage summary shown in the text report |
 <!-- WO-670@v1: allow-file metadata excludes all raw entries. -->
-| `projectAllowlist` | `path`, `loaded`, `status`, `effectiveEntries`, `ignoredIntrinsicEntries`; no entry values |
+<!-- WO-672@v1: the compatibility count covers every non-advisory or custom-rule exemption refused. -->
+| `projectAllowlist` | `path`, `loaded`, `status`, `effectiveEntries`, `ignoredIntrinsicEntries` (non-advisory/custom-rule entries ignored); no entry values |
 
 All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`. For a step-by-step diagnosis, see [My rules are not applied](troubleshooting.md#my-rules-are-not-applied).
 
 <!-- WO-672@v1: intrinsic exemptions require exact whole values from operator-owned policy. -->
-Intrinsic secrets can be exempted only by exact whole `allowedValues` in the administrator config, or the user config when no system policy exists, never by patterns, project entries, inline comments or a remedy allowlist. Advisory matches retain ordinary suppression from permitted sources. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
+Intrinsic secrets can be exempted only by exact whole `allowedValues` in the administrator config, or the user config when no system policy exists, never by patterns, project entries, inline comments or a remedy allowlist.
+<!-- WO-672@v1: tighten-only tiers exempt advisory classes without independent authorization evidence. -->
+Project and tighten-only user entries exempt advisory classes only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Inline directives and remedy allowlists retain their existing non-intrinsic behavior. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
+<!-- WO-672@v1: a project rule does not authorize its own exemption. -->
+A project config cannot exempt hits of its own custom rules; those exemptions require operator-tier policy.
 
 ## Watch Mode
 
@@ -852,9 +857,11 @@ A non-Git single-file operation uses its parent directory; a nested file in a
 non-Git watched tree uses the watch root. There is no ancestor search. A hook's
 outside CWD does not change the selected file.
 
-Only exact advisory values can be suppressed here, never intrinsic-format
-secrets or custom-rule hits. `doctor` and `doctor --explain` report the resolved
-path, loaded status and effective/ignored counts; intrinsic-equal entries produce
+<!-- WO-672@v1: project allow-file accounting follows the shared suppression decision. -->
+Only exact advisory-class values can be suppressed here, never non-ambiguous
+types, custom rules or intrinsic/exact-known-secret evidence.
+`doctor` and `doctor --explain` report the resolved
+path, loaded status and effective/ignored counts; non-advisory/custom-rule entries produce
 a WARN. Agents cannot create or modify this operator-owned file.
 
 Stdin (including `--stdin-filename`), MCP `pastewatch_scan` raw text and the guard's

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Project configuration could weaken intrinsic protection; it can now only tighten operator policy, with authoritative-tier exact exemptions, increased advisory visibility, operator-owned policy files and tier-attributed diagnostics. (WO-672)
+- Project configuration could weaken intrinsic protection; it can now only tighten operator policy, with authoritative-tier exact exemptions, increased advisory visibility, operator-owned policy files and tier-attributed diagnostics. Project exemptions are limited to advisory classes. (WO-672)
 
 ### Added
 

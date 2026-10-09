@@ -464,6 +464,7 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     // WO-577@v3: guard policy suppresses explicit allowlist values on every scan surface.
+    // WO-672@v1: legitimate custom-rule exemptions originate in isolated user policy.
     func testDiagnosticScanEndpointsHonorConfiguredAllowlist() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pastewatch-mcp-allowlist-\(UUID().uuidString)", isDirectory: true)
@@ -475,26 +476,30 @@ final class MCPProtocolTests: XCTestCase {
         config.customRules = [
             CustomRuleConfig(name: "Allowlist fixture", pattern: "PWALLOW-[A-F0-9]{12}")
         ]
-        config.allowedValues = [value]
         try JSONEncoder().encode(config).write(
             to: tempDir.appendingPathComponent(".pastewatch.json")
         )
         let fileURL = tempDir.appendingPathComponent("fixture.txt")
         try value.write(to: fileURL, atomically: true, encoding: .utf8)
 
-        for (name, arguments) in [
-            ("pastewatch_scan", ["text": JSONValue.string(value)]),
-            ("pastewatch_scan_file", ["path": JSONValue.string(fileURL.path)]),
-            ("pastewatch_scan_dir", ["path": JSONValue.string(tempDir.path)]),
-            ("pastewatch_check_output", ["text": JSONValue.string(value)])
-        ] {
-            let response = try callMCPTool(
-                name: name,
-                arguments: arguments,
-                currentDirectory: tempDir
-            )
-            let text = try joinedMCPContentText(response)
-            XCTAssertFalse(text.contains("Allowlist fixture"), "\(name): \(text)")
+        try PastewatchConfig.withTestGlobalConfigPath(tempDir.appendingPathComponent("user-fixture.json")) {
+            var user = PastewatchConfig.defaultConfig
+            user.allowedValues = [value]
+            try JSONEncoder().encode(user).write(to: PastewatchConfig.configPath)
+            for (name, arguments) in [
+                ("pastewatch_scan", ["text": JSONValue.string(value)]),
+                ("pastewatch_scan_file", ["path": JSONValue.string(fileURL.path)]),
+                ("pastewatch_scan_dir", ["path": JSONValue.string(tempDir.path)]),
+                ("pastewatch_check_output", ["text": JSONValue.string(value)])
+            ] {
+                let response = try callMCPTool(
+                    name: name,
+                    arguments: arguments,
+                    currentDirectory: tempDir
+                )
+                let text = try joinedMCPContentText(response)
+                XCTAssertFalse(text.contains("Allowlist fixture"), "\(name): \(text)")
+            }
         }
     }
 

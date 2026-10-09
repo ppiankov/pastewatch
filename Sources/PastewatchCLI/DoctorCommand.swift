@@ -58,15 +58,17 @@ struct Doctor: ParsableCommand {
         checks.append(CheckResult(check: "curl", status: curlResult.status, detail: curlResult.detail))
         #endif
 
-        // 3. Config resolution
-        checks.append(contentsOf: checkConfig())
+        // WO-672@v1: configuration and allow-file diagnostics share one validated effective policy.
+        let explanation = ConfigExplanation()
+        checks.append(contentsOf: checkConfig(explanation))
 
         // 4. Pre-commit hook
         let hookResult = checkHook()
         checks.append(CheckResult(check: "hook", status: hookResult.status, detail: hookResult.detail))
 
-        // WO-670@v1: the diagnostic directory is an explicit target context.
-        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath)
+        // WO-672@v1: ignored entries reflect effective custom rules, not only built-in recognition.
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath,
+                                              config: try? explanation.validatedConfiguration())
         checks.append(CheckResult(check: "allowlist", status: allowFile.loaded ? allowFile.status : "warn",
                                   detail: projectAllowlistDetail(allowFile)))
 
@@ -90,10 +92,13 @@ struct Doctor: ParsableCommand {
         }
     }
 
+    // WO-672@v1: the walkthrough accounts for exemptions against its validated effective rules.
     // WO-636@v2: CLI and tests render the same metadata-only representation.
     // WO-670@v1: the walkthrough includes the same safe allow-file evidence as plain doctor.
     func printExplanation(_ explanation: ConfigExplanation) throws {
-        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath)
+        // WO-672@v1: invalid policy cannot yield an active allow-file diagnostic.
+        let allowFile = Allowlist.projectFile(for: FileManager.default.currentDirectoryPath,
+                                              config: try? explanation.validatedConfiguration())
         if json {
             var payload = try JSONSerialization.jsonObject(with: explanation.jsonData()) as? [String: Any] ?? [:]
             // WO-670@v1: explicit encoding excludes allow-file contents from diagnostics.
@@ -134,8 +139,7 @@ struct Doctor: ParsableCommand {
     }
 
     // WO-672@v1: health checks report the same merged, metadata-only policy as the walkthrough.
-    private func checkConfig() -> [CheckResult] {
-        let report = ConfigExplanation()
+    private func checkConfig(_ report: ConfigExplanation) -> [CheckResult] {
         var results = [CheckResult(check: "config", status: report.valid ? "ok" : "warn",
                                    detail: "\(report.source); \(report.customRules.count) custom rules loaded")]
         results += report.resolution.filter(\.exists).map {
