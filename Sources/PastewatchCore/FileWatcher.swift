@@ -19,10 +19,13 @@ public final class FileWatcher {
         self.jsonOutput = jsonOutput
     }
 
+    // WO-674@v2: readiness follows the initial snapshot so a first change cannot be lost during startup.
     /// Start watching. Blocks until stop() is called or the process is interrupted.
     public func start() {
         // Initial snapshot
         knownModDates = snapshotModDates()
+        // WO-674@v2: smoke clients can synchronize on completed startup instead of repeatedly touching files.
+        FileHandle.standardError.write(Data("watching \(directory) ready\n".utf8))
 
         // Poll every 2 seconds for changes (portable, works on macOS + Linux)
         let timer = DispatchSource.makeTimerSource(queue: queue)

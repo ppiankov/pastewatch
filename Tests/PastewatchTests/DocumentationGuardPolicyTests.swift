@@ -108,6 +108,7 @@ final class DocumentationGuardPolicyTests: XCTestCase {
     }
 
     // WO-635: one fixture must have the same protection boundary on every file surface.
+    // WO-674@v2: the watcher row evaluates the production event decision without polling or timing assumptions.
     func testDocumentationPolicyAcrossEntrypoints() throws {
         let binary = cliURL()
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -138,9 +139,10 @@ final class DocumentationGuardPolicyTests: XCTestCase {
                     XCTAssertEqual((payload["redactions"] as? [[String: Any]])?.count, 0)
                     XCTAssertTrue(payload["content"] as? String == example())
                 case .watcher:
-                    let output = try watchMixedFixture(binary, in: root)
-                    XCTAssertGreaterThanOrEqual(output.components(separatedBy: "AWS Key:").count - 1, 1)
-                    XCTAssertEqual(output.components(separatedBy: "Credential:").count - 1, 0)
+                    // WO-674@v2: an intrinsic control proves the event was evaluated while documentation stays advisory.
+                    let decision = try watchMixedFixture(in: root)
+                    XCTAssertEqual(decision.actionableMatches.filter { $0.type == .awsKey }.count, 1)
+                    XCTAssertEqual(decision.actionableMatches.filter { $0.type == .credential }.count, 0)
                 }
             }
         }
@@ -426,40 +428,15 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    // WO-635: an intrinsic event proves the watcher scanned the mixed document; no blind sleep assertion.
-    // WO-672@v1: watch probes never load operator configuration at startup.
-    private func watchMixedFixture(_ binary: URL, in root: URL) throws -> String {
+    // WO-674@v2: exercise the real path-aware watch decision with isolated mixed-document inputs.
+    private func watchMixedFixture(in root: URL) throws -> GuardDecision {
         let watched = root.appendingPathComponent("watched")
         try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
-        let path = try writeFixture(example() + "\n" + intrinsic(), name: "guide.md", in: watched)
-        let process = Process()
-        let stderr = Pipe()
-        process.executableURL = binary
-        process.arguments = ["watch", "--dir", watched.path]
-        process.currentDirectoryURL = root
-        // WO-672@v1: custom child environments retain fixture global policy.
-        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderr
-        try process.run()
-        defer {
-            if process.isRunning { process.terminate() }
-            process.waitUntilExit()
-        }
-        let deadline = ProcessInfo.processInfo.systemUptime + 15
-        var output = Data()
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: path)
-            var descriptor = pollfd(fd: stderr.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            if poll(&descriptor, 1, 100) > 0 {
-                let chunk = stderr.fileHandleForReading.availableData
-                if chunk.isEmpty { break }
-                output.append(chunk)
-                let text = String(data: output, encoding: .utf8) ?? ""
-                if text.contains("AWS Key:") { return text }
-            }
-        }
-        XCTFail("Watcher did not report the intrinsic control before the deadline")
-        return ""
+        let content = example() + "\n" + intrinsic()
+        let path = try writeFixture(content, name: "guide.md", in: watched)
+        let config = fixtureConfig()
+        let watcher = FileWatcher(directory: watched.path, config: config)
+        let matches = DetectionRules.scanFileIO(content, config: config)
+        return watcher.fileDecision(matches: matches, content: content, filePath: path)
     }
 }

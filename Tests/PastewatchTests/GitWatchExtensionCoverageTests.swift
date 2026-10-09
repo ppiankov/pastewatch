@@ -99,8 +99,7 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
         }
     }
 
-    // WO-662@v3: repeated timestamp advances avoid racing the watcher's initial snapshot.
-    // WO-672@v1: watcher subprocesses use only fixture-owned global policy.
+    // WO-674@v2: the sole live watch smoke changes its fixture only after snapshot readiness.
     func testWatcherReportsKotlinChange() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
@@ -117,47 +116,45 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
             process.standardOutput = FileHandle.nullDevice
             process.standardError = diagnostics
+            // WO-674@v2: distinguish completed initialization from a subsequent reported event.
+            let ready = expectation(description: "Watcher completed the initial snapshot")
             let reported = expectation(description: "Kotlin change produces an intrinsic finding")
-            let observation = WatchObservation(reported: reported)
+            let observation = WatchObservation(ready: ready, reported: reported)
             diagnostics.fileHandleForReading.readabilityHandler = { handle in observation.receive(handle.availableData) }
             try process.run()
-            let queue = DispatchQueue(label: "pastewatch.test.kotlin-watch")
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            let content = kotlinContent()
-            var revision = 0
-            let fixtureEpoch: TimeInterval = 2_000_000_000
-            timer.schedule(deadline: .now(), repeating: .milliseconds(100))
-            timer.setEventHandler {
-                revision += 1
-                try? content.write(to: file, atomically: true, encoding: .utf8)
-                try? FileManager.default.setAttributes(
-                    [.modificationDate: Date(timeIntervalSince1970: fixtureEpoch + Double(revision))], ofItemAtPath: file.path
-                )
-            }
-            timer.resume()
+            // WO-674@v2: fixture cleanup and process shutdown run even if readiness fails.
             defer {
-                timer.cancel()
-                queue.sync {}
                 if process.isRunning { process.terminate() }
                 process.waitUntilExit()
                 diagnostics.fileHandleForReading.readabilityHandler = nil
                 try? diagnostics.fileHandleForReading.close()
             }
+            // WO-674@v2: the timeout is a smoke-test watchdog, not a repeated-touch scheduling assumption.
+            wait(for: [ready], timeout: 20)
+            try kotlinContent().write(to: file, atomically: true, encoding: .utf8)
+            let fixtureEpoch: TimeInterval = 2_000_000_000
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: fixtureEpoch)],
+                                                  ofItemAtPath: file.path)
             wait(for: [reported], timeout: 20)
         }
     }
 
-    // WO-662@v3: watcher assertions retain metadata only and never emit a matched value.
+    // WO-674@v2: readiness and finding observations retain metadata only across fragmented reads.
     private final class WatchObservation {
         private let reported: XCTestExpectation
+        private let ready: XCTestExpectation // WO-674@v2: initialization must precede the fixture edit.
         private let lock = NSLock()
         private var pending = Data()
         private var found = false
+        private var isReady = false // WO-674@v2: fragmented readiness diagnostics fulfill once.
 
-        // WO-662@v3: a single expectation identifies the real watcher finding.
-        init(reported: XCTestExpectation) { self.reported = reported }
+        // WO-674@v2: the smoke test separates startup synchronization from event delivery.
+        init(ready: XCTestExpectation, reported: XCTestExpectation) {
+            self.ready = ready
+            self.reported = reported
+        }
 
-        // WO-662@v3: fragmented pipe reads must not make a complete diagnostic invisible.
+        // WO-674@v2: recognize complete readiness and type-only finding lines without elapsed-time polling.
         func receive(_ data: Data) {
             lock.lock()
             defer { lock.unlock() }
@@ -166,6 +163,11 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             while let newline = pending.firstIndex(of: 0x0A) {
                 let line = String(data: pending[..<newline], encoding: .utf8)
                 pending.removeSubrange(...newline)
+                // WO-674@v2: the earlier CLI banner is not the snapshot-completion handshake.
+                if !isReady, line?.hasPrefix("watching ") == true, line?.hasSuffix(" ready") == true {
+                    isReady = true
+                    ready.fulfill()
+                }
                 if line?.contains("Main.kt:1 AWS Key:") == true {
                     found = true
                     reported.fulfill()

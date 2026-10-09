@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Make documentation-policy watch checks deterministic and synchronize the sole live watch smoke on completed startup. (WO-674)
+
 ## [0.41.0] - 2026-10-09
 
 Security hardening for project-level configuration, broader scan coverage (Kotlin, Gradle, JSONL and more source formats across directory, pre-commit, history and watch scans), bounded MCP reads for large files, and fewer phone and credential false positives.
