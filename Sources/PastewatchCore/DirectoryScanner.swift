@@ -1,4 +1,10 @@
 import Foundation
+// WO-669@v1: child-pipe protection uses descriptor-local or thread-scoped POSIX signal handling.
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 /// WO-549@v2: callers must fail closed when a parsed secret cannot be mapped back
 /// to the original bytes without risking mutation of a different occurrence.
@@ -379,6 +385,7 @@ public struct DirectoryScanner {
     }
 
     // WO-600@v2: drain git output while paths are written so neither pipe can block the other.
+    // WO-669@v1: contain broken child pipes without changing the caller's stdout signal behavior.
     /// Check which paths are gitignored using `git check-ignore`.
     /// Returns empty set if not in a git repo or git is not available.
     public static func gitIgnoredFiles(
@@ -386,10 +393,18 @@ public struct DirectoryScanner {
         paths: [String],
         limits: ScanInputLimits = .current()
     ) -> Set<String> {
-        guard !paths.isEmpty else { return [] }
+        gitIgnoredFiles(in: directory, paths: paths, limits: limits, gitExecutable: URL(fileURLWithPath: "/usr/bin/git"))
+    }
+
+    // WO-669@v1: injection exercises an early-exit child without modifying system executables.
+    static func gitIgnoredFiles(
+        in directory: String, paths: [String], limits: ScanInputLimits, gitExecutable: URL
+    ) -> Set<String> {
+        guard !paths.isEmpty, isGitWorkTree(directory, executable: gitExecutable, limits: limits) else { return [] }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        // WO-669@v1: membership and classification use the same executable.
+        process.executableURL = gitExecutable
         process.arguments = ["-C", directory, "check-ignore", "--stdin"]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
 
@@ -413,14 +428,8 @@ public struct DirectoryScanner {
                 try? inputHandle.close()
                 writerGroup.leave()
             }
-            // WO-600@v2: stream paths so the deadlock fix does not duplicate the full input.
-            for path in paths {
-                do {
-                    try inputHandle.write(contentsOf: Data((path + "\n").utf8))
-                } catch {
-                    break
-                }
-            }
+            // WO-669@v1: even a repository child may exit before its parent finishes writing.
+            writeGitPaths(paths, to: inputHandle)
         }
 
         let data: Data
@@ -448,6 +457,76 @@ public struct DirectoryScanner {
                 .filter { !$0.isEmpty }
         )
     }
+
+    // WO-669@v1: a non-repository probe has no stdin writer and cannot raise a child-pipe SIGPIPE.
+    private static func isGitWorkTree(_ directory: String, executable: URL, limits: ScanInputLimits) -> Bool {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = ["-C", directory, "rev-parse", "--is-inside-work-tree"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = try DetectionRules.readBoundedInputData(from: output.fileHandleForReading, limits: limits)
+            process.waitUntilExit()
+            return process.terminationStatus == 0 && String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        } catch {
+            if process.isRunning { process.terminate() }
+            if process.processIdentifier > 0 { process.waitUntilExit() }
+            return false
+        }
+    }
+
+    // WO-669@v1: restrict SIGPIPE suppression to this child descriptor or the writer thread.
+    private static func writeGitPaths(_ paths: [String], to handle: FileHandle) {
+        #if os(Linux)
+        var blocked = sigset_t()
+        var previous = sigset_t()
+        sigemptyset(&blocked)
+        sigaddset(&blocked, SIGPIPE)
+        guard pthread_sigmask(SIG_BLOCK, &blocked, &previous) == 0 else { return }
+        var pending = sigset_t()
+        // WO-669@v1: do not write if existing signal state cannot be preserved.
+        guard sigpending(&pending) == 0 else {
+            pthread_sigmask(SIG_SETMASK, &previous, nil)
+            return
+        }
+        let alreadyPending = sigismember(&pending, SIGPIPE) == 1
+        defer { restorePipeSignalMask(blocked: &blocked, previous: &previous, alreadyPending: alreadyPending) }
+        #else
+        guard fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { return }
+        #endif
+        // WO-600@v2: stream paths so the deadlock fix does not duplicate the full input.
+        for path in paths {
+            guard writePipeData(Data((path + "\n").utf8), descriptor: handle.fileDescriptor) else { return }
+        }
+    }
+
+    // WO-669@v1: partial and interrupted writes are retried; EPIPE is returned rather than delivered as a signal.
+    private static func writePipeData(_ data: Data, descriptor: Int32) -> Bool {
+        data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return true }
+            var offset = 0
+            while offset < bytes.count {
+                let count = write(descriptor, base.advanced(by: offset), bytes.count - offset)
+                if count > 0 { offset += count } else if count < 0 && errno == EINTR { continue } else { return false }
+            }
+            return true
+        }
+    }
+
+    #if os(Linux)
+    // WO-669@v1: consume only a newly pending pipe signal before restoring the original thread mask.
+    private static func restorePipeSignalMask(blocked: inout sigset_t, previous: inout sigset_t, alreadyPending: Bool) {
+        if !alreadyPending {
+            var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+            while sigtimedwait(&blocked, nil, &timeout) < 0 && errno == EINTR {}
+        }
+        pthread_sigmask(SIG_SETMASK, &previous, nil)
+    }
+    #endif
 
     /// Scan file content using format-aware parsing when available.
     public static func scanFileContent(

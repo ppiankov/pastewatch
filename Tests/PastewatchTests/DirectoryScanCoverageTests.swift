@@ -175,20 +175,11 @@ final class DirectoryScanCoverageTests: XCTestCase {
         }
     }
 
-    // WO-662@v3: subprocess fixtures select test-owned policy before global fallback.
+    // WO-669@v1: non-git coverage fixtures must exercise repository absence instead of hiding child-pipe failures.
     private func withFixture(_ files: [String: String], body: (URL, URL) throws -> Void) throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
-            // WO-662@v3: the tracked-file coverage contract needs a repository for Git-ignore classification.
-            let git = Process()
-            git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            git.arguments = ["init", "--quiet", root.path]
-            git.environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
-            git.standardOutput = FileHandle.nullDevice
-            git.standardError = FileHandle.nullDevice
-            try git.run()
-            git.waitUntilExit()
-            XCTAssertEqual(git.terminationStatus, 0)
+            // WO-669@v1: no repository is created; findings must survive the non-git path.
             let input = root.appendingPathComponent("input", isDirectory: true)
             try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
             for (name, content) in files {
