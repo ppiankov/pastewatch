@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-09
+
+Security hardening for project-level configuration, broader scan coverage (Kotlin, Gradle, JSONL and more source formats across directory, pre-commit, history and watch scans), bounded MCP reads for large files, and fewer phone and credential false positives.
+
 ### Security
 
 - Project configuration could weaken intrinsic protection; it can now only tighten operator policy, with authoritative-tier exact exemptions, increased advisory visibility, operator-owned policy files and tier-attributed diagnostics. Project exemptions are limited to advisory classes. (WO-672)
@@ -20,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exclude canonical UUID fragments from Phone findings while retaining independently formatted phone numbers on the same line. (WO-661)
 - Exclude decimal timing literals from Phone findings while retaining formatted telephone numbers. (WO-667)
 - Report scanned and skipped directory counts on stderr without changing CLI JSON arrays or clean stdout; support detection-only Latin-1 for newly admitted source formats and named, counted overlong-file skips, including MCP and git scan members. Earlier versions skipped Kotlin, Gradle, JSONL/NDJSON and additional text source extensions in directory, git-diff/pre-commit, history and watch scans. Remove an unused directory output wrapper without changing the JSON array. (WO-662)
-- Bound oversized default MCP file reads to whole-line text windows within the shared output limit, with line continuation guidance and a Base64 fallback for an overlong first line; preserve small-file responses and explicit byte ranges that reconstruct the complete view. The client cap is measured in tokens, so plain text avoids Base64 inflation. Runtime size guidance derives from the enforced limit. (WO-665)
+- Bound oversized default MCP file reads to whole-line text windows within the shared output limit (24 KiB), with line continuation guidance and a Base64 fallback for an overlong first line; preserve small-file responses and explicit byte ranges that reconstruct the complete view. The client cap is measured in tokens, so plain text avoids Base64 inflation. Runtime size guidance derives from the enforced limit. (WO-665)
 - Reject pull-request additions to previously released changelog sections since the merge base, with a version-scoped release exemption and deterministic placement fixtures; later main-branch edits are not attributed to stale branches. (WO-664)
 - Exclude assigned source-code references by argument shape while retaining literal constructors, quoted values and YAML/ENV detection at the same severity; path-shaped and all-caps reference literals remain documented recognition limits. (WO-668)
 - Keep directory scans and MCP sessions alive when Git closes its input pipe, probe non-repository targets before writing, and retain normal CLI stdout pipeline behavior. (WO-669)
