@@ -409,7 +409,7 @@ final class MCPServer {
                 .object([
                     "name": .string("pastewatch_read_file"),
                     // WO-665@v1: default large reads are bounded after replacement, never on raw file bytes.
-                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored. Unranged output over 24 KiB returns a plain-text window of whole lines, start_line, end_line, total_lines, has_more and continuation_hint naming the next start_line. A first line over 24 KiB falls back to a Base64 byte window. Explicit byte ranges always return Base64."),
+                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored. Unranged output over \(MCPReadDecision.unrangedResponseLimitDescription) returns a plain-text window of whole lines, start_line, end_line, total_lines, has_more and continuation_hint naming the next start_line. A first line over \(MCPReadDecision.unrangedResponseLimitDescription) falls back to a Base64 byte window. Explicit byte ranges always return Base64."),
                     "inputSchema": .object([
                         "type": .string("object"),
                         "properties": .object([
@@ -427,7 +427,7 @@ final class MCPServer {
                                 "type": .string("integer"),
                                 "minimum": .number(1),
                                 // WO-665@v1: automatic text windows improve token efficiency without changing explicit bytes.
-                                "description": .string("Maximum redacted bytes to return as Base64, capped at the existing file-read limit (also the explicit-range default). Omit all range arguments for unchanged plain text at or below 24 KiB; larger output returns whole lines and continuation_hint, with a byte-window fallback for an overlong first line.")
+                                "description": .string("Maximum redacted bytes to return as Base64, capped at the existing file-read limit (also the explicit-range default). Omit all range arguments for unchanged plain text at or below \(MCPReadDecision.unrangedResponseLimitDescription); larger output returns whole lines and continuation_hint, with a byte-window fallback for an overlong first line.")
                             ]),
                             // WO-630@v2: text line windows are an alternative, never a raw-file bypass.
                             "start_line": .object([

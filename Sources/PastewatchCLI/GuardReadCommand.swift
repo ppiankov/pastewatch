@@ -141,8 +141,8 @@ enum FileGuard {
         guard operation == .read else { return }
         let size = byteCount ?? ((try? FileManager.default.attributesOfItem(atPath: filePath))?[.size] as? NSNumber)?.intValue ?? 0
         guard size > MCPReadDecision.unrangedResponseLimitBytes else { return }
-        // WO-665@v1: default line windows use the token-efficient 24 KiB cap; explicit bytes remain available.
-        print("For large files, pastewatch_read_file returns whole lines up to 24 KiB; continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
+        // WO-665@v1: size guidance uses the same limit as automatic line windows; explicit bytes remain available.
+        print("For large files, pastewatch_read_file returns whole lines up to \(MCPReadDecision.unrangedResponseLimitDescription); continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
     }
 
     // WO-665@v1: oversized refusals name byte arguments without suggesting an input-limit bypass.

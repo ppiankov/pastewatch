@@ -2,8 +2,17 @@ import Foundation
 
 // WO-637: MCP and diagnostics share the exact read authorization and advisory selection.
 public struct MCPReadDecision {
-    // WO-665@v1: the client cap is in tokens; 24 KiB of plain text is cheaper than equivalent Base64.
+    // WO-665@v1: the client cap is in tokens; bounded plain text is cheaper than equivalent Base64.
     public static let unrangedResponseLimitBytes = 24 * 1_024
+
+    // WO-665@v1: size guidance derives from the enforced limit without rounding away bytes.
+    public static var unrangedResponseLimitDescription: String {
+        let bytesPerKibibyte = 1_024
+        if unrangedResponseLimitBytes.isMultiple(of: bytesPerKibibyte) {
+            return "\(unrangedResponseLimitBytes / bytesPerKibibyte) KiB"
+        }
+        return "\(unrangedResponseLimitBytes) bytes"
+    }
 
     public let authorized: [DetectedMatch]
     public let reportedAdvisories: [DetectedMatch]
