@@ -2,10 +2,20 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-private struct CheckResult {
+// WO-671@v2: process-health fixtures inspect the same metadata-only rows printed by doctor.
+struct CheckResult {
     let check: String
     let status: String
     let detail: String
+}
+
+// WO-671@v2: process age and optional reported version identify sessions that survived an upgrade.
+struct MCPProcessSnapshot {
+    let pid: Int
+    let startedAt: Date?
+    var serverVersion: String?
+    var minimumSeverity = "high (default)"
+    var auditLog = "none"
 }
 
 // WO-649@v1: doctor reports the same dependency selection used by startup and execution.
@@ -196,52 +206,91 @@ struct Doctor: ParsableCommand {
         return CheckResult(check: label, status: "info", detail: "not found")
     }
 
-    private func checkMCPProcesses() -> [CheckResult] {
-        var results: [CheckResult] = []
+    // WO-671@v2: injected process and clock snapshots exercise the production stale-session diagnosis.
+    func checkMCPProcesses(
+        processList: (() throws -> [MCPProcessSnapshot])? = nil,
+        binaryModifiedAt: () -> Date? = Doctor.installedBinaryModificationDate,
+        clock: () -> Date = { Date() }
+    ) -> [CheckResult] {
+        do {
+            let processes = try processList?() ?? runningMCPProcesses()
+            guard !processes.isEmpty else {
+                return [CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found")]
+            }
+            let modifiedAt = binaryModifiedAt()
+            let now = clock()
+            let rows = processes.map { checkMCPProcess($0, binaryModifiedAt: modifiedAt, now: now) }
+            let status = rows.contains { $0.status == "warn" } ? "warn" : "ok"
+            return [CheckResult(check: "mcp", status: status, detail: "\(processes.count) running")] + rows
+        } catch {
+            return [CheckResult(check: "mcp", status: "warn", detail: "unable to inspect MCP server processes")]
+        }
+    }
+
+    // WO-671@v2: warnings identify stale or unverifiable servers without probing their executable or stdin.
+    private func checkMCPProcess(_ snapshot: MCPProcessSnapshot, binaryModifiedAt: Date?, now: Date) -> CheckResult {
+        var detail = "PID \(snapshot.pid): min-severity=\(snapshot.minimumSeverity), audit-log=\(snapshot.auditLog)"
+        var reasons: [String] = []
+        if let version = snapshot.serverVersion, version != AppVersion.current {
+            reasons.append("server version \(version) differs from installed \(AppVersion.current)")
+        }
+        if let startedAt = snapshot.startedAt {
+            detail += ", age-seconds=\(Int(max(0, now.timeIntervalSince(startedAt))))"
+            if let binaryModifiedAt, startedAt < binaryModifiedAt {
+                reasons.append("started before the installed binary was updated")
+            }
+        } else if snapshot.serverVersion == nil {
+            reasons.append("server start time and version are unavailable; freshness cannot be verified")
+        }
+        guard !reasons.isEmpty else { return CheckResult(check: "mcp", status: "info", detail: detail) }
+        detail += "; " + reasons.joined(separator: "; ") + "; reconnect MCP or restart the agent session"
+        return CheckResult(check: "mcp", status: "warn", detail: detail)
+    }
+
+    // WO-671@v2: compare process start time with the installed target, not a Homebrew symlink timestamp.
+    private static func installedBinaryModificationDate() -> Date? {
+        guard let argument = ProcessInfo.processInfo.arguments.first else { return nil }
+        let path = URL(fileURLWithPath: argument).resolvingSymlinksInPath().path
+        return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+    }
+
+    // WO-671@v2: one process snapshot supplies real start times on Darwin and Linux without running old binaries.
+    private func runningMCPProcesses() throws -> [MCPProcessSnapshot] {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-fl", "pastewatch-cli.*mcp"]
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,lstart=,command="]
+        process.environment = ["LC_ALL": "C"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
-                return results
-            }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let lines = output.split(separator: "\n")
-                .filter { $0.contains("pastewatch-cli mcp") }
-
-            if lines.isEmpty {
-                results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
-                return results
-            }
-
-            results.append(CheckResult(check: "mcp", status: "ok", detail: "\(lines.count) running"))
-
-            for line in lines {
-                let parts = line.split(separator: " ", maxSplits: 1)
-                let pid = parts.first.map(String.init) ?? "?"
-                let cmdLine = parts.count > 1 ? String(parts[1]) : ""
-
-                let severity = extractFlag(cmdLine, flag: "--min-severity") ?? "high (default)"
-                let auditLog = extractFlag(cmdLine, flag: "--audit-log") ?? "none"
-
-                results.append(CheckResult(
-                    check: "mcp",
-                    status: "info",
-                    detail: "PID \(pid): min-severity=\(severity), audit-log=\(auditLog)"
-                ))
-            }
-        } catch {
-            results.append(CheckResult(check: "mcp", status: "info", detail: "no MCP server processes found"))
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw CocoaError(.fileReadUnknown) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        guard let output = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+        return output.split(separator: "\n").compactMap {
+            parseMCPProcess(String($0), dateFormatter: formatter)
         }
-        return results
+    }
+
+    // WO-671@v2: accept only an actual MCP executable/subcommand pair, not matching text in a shell command.
+    func parseMCPProcess(_ line: String, dateFormatter: DateFormatter) -> MCPProcessSnapshot? {
+        let fields = line.split(maxSplits: 6, whereSeparator: { $0.isWhitespace })
+        guard fields.count == 7, let pid = Int(fields[0]) else { return nil }
+        let command = String(fields[6])
+        let words = command.split(whereSeparator: { $0.isWhitespace })
+        guard words.count >= 2, words[1] == "mcp",
+              ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(words[0])).lastPathComponent.lowercased()) else {
+            return nil
+        }
+        let startedAt = dateFormatter.date(from: fields[1...5].joined(separator: " "))
+        return MCPProcessSnapshot(pid: pid, startedAt: startedAt,
+                                  minimumSeverity: extractFlag(command, flag: "--min-severity") ?? "high (default)",
+                                  auditLog: extractFlag(command, flag: "--audit-log") ?? "none")
     }
 
     private func extractFlag(_ cmdLine: String, flag: String) -> String? {

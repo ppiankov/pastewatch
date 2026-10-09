@@ -320,6 +320,7 @@ final class MCPServer {
 
     // MARK: - Request dispatch
 
+    // WO-671@v2: tool metadata identifies the running server without changing individual tool payloads.
     private func handleRequest(_ request: JSONRPCRequest) -> JSONRPCResponse? {
         switch request.method {
         case "initialize":
@@ -329,7 +330,8 @@ final class MCPServer {
         case "tools/list":
             return toolsListResponse(id: request.id)
         case "tools/call":
-            return toolsCallResponse(id: request.id, params: request.params)
+            // WO-671@v2: success and tool-error results share the same version attachment point.
+            return withServerVersion(toolsCallResponse(id: request.id, params: request.params))
         default:
             if request.method.hasPrefix("notifications/") {
                 return nil
@@ -343,6 +345,16 @@ final class MCPServer {
     }
 
     // MARK: - Handlers
+
+    // WO-671@v2: preserve content, errors and existing metadata while exposing the serving build.
+    private func withServerVersion(_ response: JSONRPCResponse) -> JSONRPCResponse {
+        guard case .object(var result) = response.result else { return response }
+        var metadata: [String: JSONValue] = [:]
+        if case .object(let existing) = result["_meta"] { metadata = existing }
+        metadata["server_version"] = .string(AppVersion.current)
+        result["_meta"] = .object(metadata)
+        return JSONRPCResponse(jsonrpc: response.jsonrpc, id: response.id, result: .object(result), error: response.error)
+    }
 
     private func initializeResponse(id: JSONRPCId?) -> JSONRPCResponse {
         let result: JSONValue = .object([

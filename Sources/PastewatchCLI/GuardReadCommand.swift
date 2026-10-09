@@ -16,6 +16,7 @@ enum FileGuard {
         }
     }
 
+    // WO-671@v2: refusals prefer span edits rather than whole-file reconstruction.
     // WO-672@v1: write ownership checks precede all target I/O and clean-file shortcuts.
     // WO-665@v1: blocked large reads name the bounded MCP continuation arguments.
     // WO-659@v1: Read enforces MCP mutation authorization; Write retains its existing policy.
@@ -35,7 +36,8 @@ enum FileGuard {
         if config.isPathProtected(filePath) {
             let msg = "BLOCKED: \(filePath) is inside a protected directory\n"
             FileHandle.standardError.write(Data(msg.utf8))
-            print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files in protected directories.")
+            // WO-671@v2: protected writes lead with the narrow remedy; reads still require a placeholder view.
+            printFileRemedies(operation: operation, location: "in protected directories")
             // WO-665@v1: inspect only size metadata when protected paths refuse content access.
             printReadWindowHint(filePath: filePath, operation: operation)
             throw ExitCode(rawValue: GuardExitContract.blocked)
@@ -129,11 +131,25 @@ enum FileGuard {
         let msg = "BLOCKED: \(filePath) contains \(filtered.count) secret(s) (\(counts.joined(separator: ", ")))\n"
         FileHandle.standardError.write(Data(msg.utf8))
 
-        print("You MUST use pastewatch_\(operation == .read ? "read" : "write")_file instead of \(operation.toolName) for files containing secrets.")
+        // WO-671@v2: small edits do not require retyping opaque or unrelated content.
+        printFileRemedies(operation: operation, location: "containing secrets")
         // WO-665@v1: the already-read byte count avoids extra I/O on the ordinary block path.
         printReadWindowHint(filePath: filePath, operation: operation, byteCount: data.count)
 
         throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-671@v2: keep operation-specific read advice outside the shared scan/decision function.
+    private static func printFileRemedies(operation: Operation, location: String) {
+        if operation == .read { print("You MUST use pastewatch_read_file instead of Read for files \(location).") }
+        printEditRemedies()
+    }
+
+    // WO-671@v2: all mutation block messages share one span-first remedy and stale-server instruction.
+    static func printEditRemedies() {
+        print("For a small change, use pastewatch_edit_file with old_string/new_string from the pastewatch_read_file placeholder view, or pastewatch-cli edit.")
+        print("if pastewatch_edit_file is missing, reconnect your MCP server or restart the agent session; servers predating 0.40.0 do not advertise span edits.")
+        print("Use pastewatch_write_file only as a last resort for whole-file replacement.")
     }
 
     // WO-665@v1: large-file guidance uses one shared threshold and never prints file content.
@@ -145,6 +161,7 @@ enum FileGuard {
         print("For large files, pastewatch_read_file returns whole lines up to \(MCPReadDecision.unrangedResponseLimitDescription); continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
     }
 
+    // WO-671@v2: unreadable targets retain their refusal and name the narrow remedy without suggesting a bypass.
     // WO-665@v1: oversized refusals name byte arguments without suggesting an input-limit bypass.
     // WO-588@v2: diagnostics identify the failed file without echoing its bytes.
     private static func blockUnscannableFile(
@@ -154,7 +171,9 @@ enum FileGuard {
     ) throws -> Never {
         let message = "BLOCKED: \(filePath) \(reason)\n"
         FileHandle.standardError.write(Data(message.utf8))
-        print("Use pastewatch_\(operation == .read ? "read" : "write")_file only after the file is readable UTF-8.")
+        // WO-671@v2: no edit or write remedy can bypass the readable UTF-8 requirement.
+        print("The file must be readable UTF-8 before using the MCP file tools.")
+        printEditRemedies()
         // WO-665@v1: metadata-only size lookup does not inspect an unscannable file's bytes.
         printReadWindowHint(filePath: filePath, operation: operation)
         throw ExitCode(rawValue: GuardExitContract.blocked)

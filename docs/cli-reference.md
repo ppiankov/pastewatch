@@ -593,6 +593,14 @@ pastewatch-cli doctor --json # programmatic output
 
 Shows CLI version, config status, hook status, MCP server processes (with per-process `--min-severity` and `--audit-log`), and Homebrew version.
 
+<!-- WO-671@v2: an upgraded binary does not refresh a server already attached to an agent session. -->
+MCP processes started before the installed binary's modification time, or with a
+different reported version, receive a warning to reconnect MCP or restart the
+agent session. Initialization reports `serverInfo.version`; every tool result,
+including a refused tool call, includes `_meta.server_version` without changing
+the tool's content payload. If process inspection fails, doctor reports that it
+could not inspect servers rather than claiming that none is running.
+
 <!-- WO-640: Explain all configuration diagnostic blocks and JSON fields. -->
 ### Doctor --explain
 

@@ -204,10 +204,12 @@ struct GuardMutation: ParsableCommand {
         return customRegex.firstMatch(in: content, range: fullRange) != nil
     }
 
+    // WO-671@v2: protected edits use the same narrow-first remedy as file guards.
     // WO-526@v3: denial messages disclose policy class, never matched values.
     private func deny(_ reason: String) throws {
         FileHandle.standardError.write(Data("BLOCKED: \(reason)\n".utf8))
-        print("Use pastewatch_read_file and pastewatch_write_file for protected mutations.")
+        // WO-671@v2: operator-owned policy files never receive an agent-edit remedy.
+        if reason != GuardDecision.operatorOwnedFileMessage { FileGuard.printEditRemedies() }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }
