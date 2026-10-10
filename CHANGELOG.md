@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add operator-only binary transfer grants bound to canonical paths, current content and expiry, with a private separate store and grant diagnostics. Refuse indirect grant invocations through shell expansions and command-wide markers, preserve unrelated leading assignments and document the guardrail's limits. (WO-673)
+
 ### Fixed
 
 - Make documentation-policy watch checks deterministic and synchronize the sole live watch smoke on completed startup. (WO-674)

@@ -41,12 +41,17 @@ public struct RedactedEditRequest {
 
 // WO-647@v2: refusal messages discard file content, snippets and underlying filesystem error details.
 public enum RedactedEditError: LocalizedError {
+    // WO-673@v2: operator-owned policy refuses before an edit can inspect or replace it.
+    case operatorOwned
     case inspectionFailed, invalidLineRange, notFound, partialPlaceholder, writeFailed, changedSinceRead
     case ambiguous(Int), unresolved(Int), plaintextSecrets([String])
 
+    // WO-673@v2: ownership refusal uses the same fixed message as native and MCP writes.
     // WO-647@v2: error payloads carry only fixed messages, counts, and type/line summaries.
     public var errorDescription: String? {
         switch self {
+        // WO-673@v2: no content-bearing diagnostic is needed to refuse a policy edit.
+        case .operatorOwned: return GuardDecision.operatorOwnedFileMessage
         case .inspectionFailed: return "Edit refused: could not inspect a regular UTF-8 file"
         case .invalidLineRange: return "Read refused: line ranges must be positive"
         case .notFound: return "Edit refused: old_string not found"
@@ -97,12 +102,15 @@ public enum RedactedEdit {
         try edit(request, store: store, config: config, replace: atomicReplace)
     }
 
+    // WO-673@v2: both CLI and MCP edits enforce policy ownership at the shared engine entry.
     // WO-647@v2: an internal replacement seam proves failure leaves the original bytes intact.
     static func edit(
         _ request: RedactedEditRequest, store: RedactionStore, config: PastewatchConfig,
         replace: (URL, URL) throws -> Void
     ) throws -> RedactedEditSummary {
         let filePath = request.filePath
+        // WO-673@v2: protect nonexistent stores and canonical aliases before target I/O.
+        guard !GuardDecision.isOperatorOwnedPath(filePath) else { throw RedactedEditError.operatorOwned }
         let oldString = request.oldString
         let newString = request.newString
         let snapshot = try inspect(filePath: filePath, store: store, config: config)

@@ -44,6 +44,7 @@ struct Doctor: ParsableCommand {
         try run(curlLookup: { CurlExecutable.resolve() })
     }
 
+    // WO-673@v2: plain doctor lists active, expired and malformed grants as their own health rows.
     // WO-649@v1: inject lookup through execution without adding a command or environment override.
     // WO-636@v2: return before legacy checks only when the walkthrough was requested.
     // WO-670@v1: allow-file health reflects actual target-root loading, not mere presence.
@@ -90,6 +91,8 @@ struct Doctor: ParsableCommand {
 
         // 8. MCP server processes
         checks.append(contentsOf: checkMCPProcesses())
+        // WO-673@v2: grant diagnostics share the user-store validation used by admission.
+        checks.append(contentsOf: checkBinaryGrants())
 
         // 9. Homebrew
         let brewResult = checkHomebrew(currentVersion: version)
@@ -102,6 +105,7 @@ struct Doctor: ParsableCommand {
         }
     }
 
+    // WO-673@v2: the walkthrough exposes only grant paths, short hashes, expiry and fixed store warnings.
     // WO-672@v1: the walkthrough accounts for exemptions against its validated effective rules.
     // WO-636@v2: CLI and tests render the same metadata-only representation.
     // WO-670@v1: the walkthrough includes the same safe allow-file evidence as plain doctor.
@@ -113,13 +117,35 @@ struct Doctor: ParsableCommand {
             var payload = try JSONSerialization.jsonObject(with: explanation.jsonData()) as? [String: Any] ?? [:]
             // WO-670@v1: explicit encoding excludes allow-file contents from diagnostics.
             payload["projectAllowlist"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(allowFile))
+            // WO-673@v2: never encode the grant store or a file's content into a diagnostic response.
+            payload["binaryGrants"] = checkBinaryGrants().map { ["check": $0.check, "status": $0.status, "detail": $0.detail] }
             FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
             FileHandle.standardOutput.write(Data("\n".utf8))
         } else {
             print(explanation.text())
             // WO-670@v1: an unloaded or ineffective file is never presented as active.
             print("Project allow file\n[\(allowFile.loaded ? allowFile.status : "warn")] \(projectAllowlistDetail(allowFile))")
+            // WO-673@v2: every grant row states whether its expiry still permits admission.
+            print("Binary transfer grants")
+            for row in checkBinaryGrants() { print("[\(row.status)] \(row.detail)") }
         }
+    }
+
+    // WO-673@v2: an injected clock makes active and expired diagnostics deterministic without reading file bytes.
+    func checkBinaryGrants(clock: () -> Date = { Date() }) -> [CheckResult] {
+        let loaded = BinaryTransferGrants.load()
+        if let warning = loaded.warning { return [CheckResult(check: "binary-grants", status: "warn", detail: warning)] }
+        let now = clock()
+        let formatter = ISO8601DateFormatter()
+        let active = loaded.grants.filter { $0.expiresAt > now }.count
+        var rows = [CheckResult(check: "binary-grants", status: "info",
+                                detail: "\(active) active, \(loaded.grants.count - active) expired; operator-only transfers")]
+        rows += loaded.grants.map { grant in
+            CheckResult(check: "binary-grants", status: "info",
+                        detail: "\(grant.expiresAt > now ? "active" : "expired"): \(grant.realpath); " +
+                            "sha256-prefix=\(grant.sha256.prefix(8)); expiresAt=\(formatter.string(from: grant.expiresAt))")
+        }
+        return rows
     }
 
     // WO-670@v1: only path, loading status and entry counts are public.

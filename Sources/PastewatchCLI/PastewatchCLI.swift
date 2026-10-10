@@ -22,7 +22,8 @@ struct PastewatchCLI: ParsableCommand {
         abstract: "Scan text for sensitive data patterns",
         version: AppVersion.current,
         // WO-658@v2: read/edit share the core engine; the default scanner and other dispatch remain unchanged.
-        subcommands: [Scan.self, Fix.self, Version.self, Init.self, BaselineGroup.self, HookGroup.self, MCP.self, Explain.self, ConfigGroup.self, Guard.self, GuardRead.self, GuardWrite.self, GuardMutation.self, Inventory.self, Doctor.self, Check.self, RedactedRead.self, RedactedEditCommand.self, Setup.self, Report.self, CanaryGroup.self, VaultGroup.self, Posture.self, Watch.self, DashboardCommand.self, Proxy.self, Launch.self],
+        // WO-673@v2: the operator valve is distinct from scanner policy configuration.
+        subcommands: [Scan.self, Fix.self, Version.self, Init.self, BaselineGroup.self, HookGroup.self, MCP.self, Explain.self, ConfigGroup.self, Guard.self, GuardRead.self, GuardWrite.self, GuardMutation.self, Inventory.self, Doctor.self, Check.self, RedactedRead.self, RedactedEditCommand.self, Setup.self, Report.self, CanaryGroup.self, VaultGroup.self, Posture.self, Watch.self, DashboardCommand.self, Proxy.self, Launch.self, AllowBinary.self],
         defaultSubcommand: Scan.self
     )
 

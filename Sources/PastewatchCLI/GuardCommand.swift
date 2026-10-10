@@ -21,6 +21,7 @@ struct Guard: ParsableCommand {
     @Flag(name: .long, help: "Exit code only, no output")
     var quiet = false
 
+    // WO-673@v2: grants admit only individual transfer reads, never other readers of the same path.
     // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
     // WO-658@v2: unresolved redacted-tool paths do not bypass guarded file access.
     func run() throws {
@@ -32,7 +33,6 @@ struct Guard: ParsableCommand {
         let access = CommandParser.fileAccess(from: command)
         // WO-658@v2: refuse only the recognized remedy's unresolved syntax, without echoing its operands.
         try requireLiteralRedactedAccess(access)
-        let paths = access.paths
         if !access.unsupportedCommands.isEmpty {
             let names = access.unsupportedCommands.joined(separator: ", ")
             FileHandle.standardError.write(Data("Unsupported source scanning for: \(names).\n".utf8))
@@ -83,11 +83,14 @@ struct Guard: ParsableCommand {
         }
 
         // Scan referenced files
-        for path in paths {
+        // WO-673@v2: role is scoped to each operand occurrence, including repeated paths in another segment.
+        for read in access.reads {
+            let path = read.path
             guard FileManager.default.fileExists(atPath: path) else { continue }
 
             // WO-550@v2: use format-aware scanning for referenced files, matching guard-read behavior.
-            let scan = try scanReferencedFile(path: path, config: config)
+            // WO-673@v2: a successful binary grant produces no findings but does not skip inline command scanning.
+            let scan = try scanReferencedFile(path: path, config: config, role: read.role)
             let content = scan.content
             let matches = scan.matches
             // WO-502: files REFERENCED by an agent-controlled command are themselves
@@ -153,8 +156,18 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-673@v2: the command preflight rejects self-grant invocations without disclosing operands.
     // WO-658@v2: unresolved remedy paths refuse without disclosing command operands.
     private func requireLiteralRedactedAccess(_ access: CommandParser.FileAccess) throws {
+        // WO-673@v2: agents cannot invoke the operator's binary valve through wrappers or shell aliases.
+        guard !access.invokesBinaryGrant else {
+            // WO-673@v2: retain literal-argument guidance for existing read/edit refusal callers.
+            if !quiet {
+                FileHandle.standardError.write(Data(("Operator-only binary transfer grant; agents cannot grant this. " +
+                    "Use literal arguments for other Pastewatch commands.\n").utf8))
+            }
+            throw ExitCode(rawValue: GuardExitContract.blocked)
+        }
         guard access.hasUnsafeRedactedCommand else { return }
         if !quiet {
             FileHandle.standardError.write(Data("Redacted file access requires a literal path and no command substitution.\n".utf8))
@@ -162,15 +175,21 @@ struct Guard: ParsableCommand {
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 
+    // WO-673@v2: only transfer sources with a live content-bound grant may pass the opaque-file boundary.
     // WO-601@v2: one fail-closed boundary owns referenced-file decoding and scanning.
     private func scanReferencedFile(
         path: String,
-        config: PastewatchConfig
+        config: PastewatchConfig,
+        role: CommandParser.ReadRole
     ) throws -> ReferencedFileScan {
         do {
             // WO-598@v2: reject bounded referenced files before allocating their contents.
             let data = try DetectionRules.readBoundedFileData(atPath: path)
             guard let content = String(data: data, encoding: .utf8) else {
+                // WO-673@v2: use the exact inspected bytes; missing, changed and expired grants retain the block.
+                if role == .transferSource, BinaryTransferGrants.permitsTransfer(path: path, bytes: data) {
+                    return ReferencedFileScan(content: "", matches: [])
+                }
                 try blockUnscannableFile(path)
             }
             let refExt = (path as NSString).pathExtension.lowercased()
@@ -201,12 +220,15 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-673@v2: the binary block names an operator-only remedy without offering a guard bypass.
     // WO-601@v2: diagnostics identify the evidence boundary without file bytes.
     private func blockUnscannableFile(_ path: String) throws -> Never {
         if !quiet {
             FileHandle.standardError.write(
                 Data("BLOCKED: \(path) cannot be scanned safely\n".utf8)
             )
+            // WO-673@v2: admission remains the operator's explicit decision, never an agent action.
+            FileHandle.standardError.write(Data("Operator: run pastewatch-cli allow-binary \(path) yourself; agents cannot grant this.\n".utf8))
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }

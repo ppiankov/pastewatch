@@ -201,6 +201,11 @@ swift build -c release
 
 ## Detection Scope
 
+<!-- WO-673@v2: binary admission is an operator valve, never a default relaxation. -->
+Binary transfers stay blocked unless the operator issues an exact path-and-hash
+grant with `pastewatch-cli allow-binary <file>` in their own terminal. See
+[binary transfer grants](docs/cli-reference.md#binary-transfer-grants).
+
 Pastewatch detects only **deterministic, high-confidence patterns**:
 
 | Type | Examples |

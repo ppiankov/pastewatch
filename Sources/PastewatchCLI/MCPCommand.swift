@@ -934,12 +934,17 @@ final class MCPServer {
         return lines
     }
 
+    // WO-673@v2: MCP writes refuse operator-owned policy before inspecting any supplied content.
     // WO-549@v2: MCP writes reject agent-authored plaintext before restoring placeholders.
     private func handleWriteFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
             return errorResult(id: id, text: "Missing required parameter: path")
         }
 
+        // WO-673@v2: policy ownership cannot be bypassed by placeholder restoration or creating an empty file.
+        guard !GuardDecision.isOperatorOwnedPath(path) else {
+            return errorResult(id: id, text: GuardDecision.operatorOwnedFileMessage)
+        }
         let content: String
         switch resolveWritePayload(arguments: arguments, targetPath: path) {
         case .content(let resolvedContent):

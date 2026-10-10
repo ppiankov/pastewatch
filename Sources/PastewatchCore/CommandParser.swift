@@ -4,11 +4,22 @@ import Foundation
 /// Used by the `guard` subcommand to determine which files a Bash command would access.
 public struct CommandParser {
 
+    // WO-673@v2: grant authority belongs to an operand occurrence, never to a path globally.
+    public enum ReadRole { case rawReader, transferSource }
+
+    // WO-673@v2: preserve independent readers of the same path in different command segments.
+    public struct FileRead {
+        public let path: String // WO-673@v2: this occurrence keeps its own resolved file identity.
+        public let role: ReadRole // WO-673@v2: only transfer sources may use an operator grant.
+    }
+
     // WO-644@v2: paths and unsupported command names come from the same source-role parse.
     public struct FileAccess {
         public let paths: [String]
         public let unsupportedCommands: [String]
         public let hasUnsafeRedactedCommand: Bool // WO-658@v2: unresolved remedy paths cannot acquire a guard exemption.
+        public let reads: [FileRead] // WO-673@v2: roles do not change the compatibility path list.
+        public let invokesBinaryGrant: Bool // WO-673@v2: self-grant commands are refused before file I/O.
     }
 
     // WO-638: source reads are guarded before a copy can change the destination's policy context.
@@ -101,62 +112,215 @@ public struct CommandParser {
         fileAccess(from: command, workingDirectory: workingDirectory).paths
     }
 
+    // WO-673@v2: one parser retains operand roles and recognizes operator-only grant invocations.
     // WO-644@v2: unsupported copy syntax is reported without including any operand values.
     // WO-658@v2: sanctioned redacted segments never hide readers in other chain or substitution segments.
     public static func fileAccess(
         from command: String,
         workingDirectory: String = FileManager.default.currentDirectoryPath
     ) -> FileAccess {
-        var allPaths: [String] = []
+        var reads: [FileRead] = []
         var unsupportedCommands: Set<String> = []
         var hasUnsafeRedactedCommand = false
-
-        // Process main command segments
-        let segments = splitCommandChain(command)
-        for segment in segments {
-            // WO-658@v2: a redefined executable name cannot earn the redacted-reader exemption.
-            hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || definesRedactedRemedy(segment)
-            let (cleaned, inputFiles) = stripRedirects(segment)
-            allPaths.append(contentsOf: inputFiles.flatMap {
-                expandAndResolve($0, workingDirectory: workingDirectory)
-            })
-            // WO-658@v2: only a literal target and substitution-free remedy segment may bypass raw file reads.
-            if let safe = redactedRemedyIsSafe(segment) {
-                hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || !safe
-                continue
-            }
-            allPaths.append(contentsOf: extractFilePathsSingle(
-                from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
-            ))
+        let commands = [command] + extractSubshellCommands(command)
+        for part in commands {
+            reads += fileReads(from: part, workingDirectory: workingDirectory,
+                               unsupported: &unsupportedCommands, unsafeRemedy: &hasUnsafeRedactedCommand)
         }
-
-        // Extract and process subshell commands (one level deep)
-        let subshellCommands = extractSubshellCommands(command)
-        for subCmd in subshellCommands {
-            let subSegments = splitCommandChain(subCmd)
-            for segment in subSegments {
-                // WO-658@v2: definitions in substitutions retain the same fail-closed shadowing rule.
-                hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || definesRedactedRemedy(segment)
-                let (cleaned, inputFiles) = stripRedirects(segment)
-                allPaths.append(contentsOf: inputFiles.flatMap {
-                    expandAndResolve($0, workingDirectory: workingDirectory)
-                })
-                // WO-658@v2: nested segments retain the same literal-path contract.
-                if let safe = redactedRemedyIsSafe(segment) {
-                    hasUnsafeRedactedCommand = hasUnsafeRedactedCommand || !safe
-                    continue
-                }
-                allPaths.append(contentsOf: extractFilePathsSingle(
-                    from: cleaned, workingDirectory: workingDirectory, unsupportedCommands: &unsupportedCommands
-                ))
-            }
-        }
-
-        // WO-658@v2: return unresolved remedy state without exposing any operands.
-        return FileAccess(paths: allPaths, unsupportedCommands: unsupportedCommands.sorted(),
-                          hasUnsafeRedactedCommand: hasUnsafeRedactedCommand)
+        // WO-673@v2: aliases declared in the command cannot conceal a later grant subcommand.
+        let segments = commands.flatMap { splitCommandChain($0) }
+        let aliases = binaryExecutableAliases(segments)
+        // WO-673@v2: indirect command words retain mentions outside their own chain or nested shell.
+        let mentionsPastewatch = command.localizedCaseInsensitiveContains("pastewatch")
+        return FileAccess(paths: reads.map(\.path), unsupportedCommands: unsupportedCommands.sorted(),
+                          hasUnsafeRedactedCommand: hasUnsafeRedactedCommand, reads: reads,
+                          // WO-673@v2: command-wide grant markers cannot hide behind an unknown argv wrapper.
+                          invokesBinaryGrant: commandMentionsBinaryGrant(command, segments: segments) || segments.contains {
+                              invokesBinaryGrant($0, aliases: aliases, mentionsPastewatch: mentionsPastewatch)
+                          })
     }
 
+    // WO-673@v2: only pure printing chains exempt normalized grant markers, independent of wrappers.
+    private static func commandMentionsBinaryGrant(_ command: String, segments: [String]) -> Bool {
+        var normalized = command
+        while true {
+            let next = tokenize(normalized).joined(separator: " ")
+            if next == normalized { break }
+            normalized = next
+        }
+        guard normalized.localizedCaseInsensitiveContains("pastewatch"),
+              normalized.range(of: #"(?<![A-Za-z0-9_-])allow-binary(?![A-Za-z0-9_-])"#,
+                               options: [.regularExpression, .caseInsensitive]) != nil else { return false }
+        return !segments.allSatisfy { segment in
+            guard let tokens = tokenizeArguments(segment, requiringLiteralArguments: true),
+                  let executable = tokens.first, executable.isLiteral else { return false }
+            let spacing = segment.replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+            return ["echo", "printf"].contains(executable.value) && stripRedirects(segment).command == spacing
+        }
+    }
+
+    // WO-673@v2: classify each segment while keeping redirect and raw-reader fallbacks unchanged.
+    private static func fileReads(
+        from command: String, workingDirectory: String, unsupported: inout Set<String>, unsafeRemedy: inout Bool
+    ) -> [FileRead] {
+        let segments = splitCommandChain(command)
+        var reads: [FileRead] = []
+        var position = command.startIndex
+        for (index, segment) in segments.enumerated() {
+            let range = command.range(of: segment, range: position..<command.endIndex)
+            let next = index + 1 < segments.count ? segments[index + 1] : nil
+            let transferCat = isCatTransfer(segment, next: next, command: command, after: range?.upperBound)
+            if let range { position = range.upperBound }
+            unsafeRemedy = unsafeRemedy || definesRedactedRemedy(segment)
+            let (cleaned, inputFiles) = stripRedirects(segment)
+            reads += inputFiles.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }.map {
+                FileRead(path: $0, role: transferCat ? .transferSource : .rawReader)
+            }
+            if let safe = redactedRemedyIsSafe(segment) {
+                unsafeRemedy = unsafeRemedy || !safe
+                continue
+            }
+            reads += segmentReads(cleaned, workingDirectory: workingDirectory, transferCat: transferCat,
+                                  unsupported: &unsupported)
+        }
+        return reads
+    }
+
+    // WO-673@v2: only an actual pipe to ssh makes cat a transfer, not a chained or fallback command.
+    private static func isCatTransfer(_ segment: String, next: String?, command: String, after: String.Index?) -> Bool {
+        guard let next, let after, (tokenize(stripRedirects(segment).command).first as NSString?)?.lastPathComponent == "cat",
+              (tokenize(next).first as NSString?)?.lastPathComponent == "ssh",
+              let nextRange = command.range(of: next, range: after..<command.endIndex) else { return false }
+        return command[after..<nextRange.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines) == "|"
+    }
+
+    // WO-673@v2: credential-file flags and destinations never inherit source-transfer authority.
+    private static func segmentReads(
+        _ command: String, workingDirectory: String, transferCat: Bool, unsupported: inout Set<String>
+    ) -> [FileRead] {
+        let tokens = tokenize(command)
+        let name = (tokens.first as NSString?)?.lastPathComponent ?? ""
+        if copyCommands.contains(name), let reads = copySourceReads(from: command, commandName: name,
+                                                                   workingDirectory: workingDirectory) { return reads }
+        let paths = extractFilePathsSingle(from: command, workingDirectory: workingDirectory, unsupportedCommands: &unsupported)
+        if transferCat { return paths.map { FileRead(path: $0, role: .transferSource) } }
+        if name == "scp", let reads = scpReads(command, workingDirectory: workingDirectory) { return reads }
+        return paths.map { FileRead(path: $0, role: .rawReader) }
+    }
+
+    // WO-673@v2: scp option values and the final destination are not binary transfer sources.
+    private static func scpReads(_ command: String, workingDirectory: String) -> [FileRead]? {
+        guard let tokens = tokenizeArguments(command, requiringLiteralArguments: true) else { return nil }
+        let valueFlags: Set<String> = ["-P", "-i", "-F", "-S", "-J", "-o", "-c", "-l", "-D"]
+        var sources: [Int] = []
+        var skipNext = false
+        var endOptions = false
+        for index in tokens.indices.dropFirst() {
+            let token = tokens[index]
+            if skipNext { skipNext = false; continue }
+            if token.value == "--" { endOptions = true; continue }
+            if !endOptions && token.value.hasPrefix("-") {
+                skipNext = valueFlags.contains(token.value)
+            } else { sources.append(index) }
+        }
+        let eligible = Set(sources.dropLast())
+        return tokens.indices.dropFirst().flatMap { index -> [FileRead] in
+            let token = tokens[index]
+            guard !token.value.hasPrefix("-"), !token.value.contains(":") else { return [] }
+            let transfer = eligible.contains(index) && token.isLiteral && !token.hasWordExpansion
+            return expandAndResolve(token.value, workingDirectory: workingDirectory).map {
+                FileRead(path: $0, role: transfer ? .transferSource : .rawReader)
+            }
+        }
+    }
+
+    // WO-673@v2: wrappers, shell strings and alias definitions retain the operator-only command boundary.
+    private static func invokesBinaryGrant(_ segment: String, aliases: Set<String>, mentionsPastewatch: Bool) -> Bool {
+        let cleaned = stripRedirects(segment).command
+        let tokens = tokenize(cleaned)
+        guard !tokens.isEmpty else { return false }
+        // WO-673@v2: reuse the shell lexer's expansion metadata before literal subcommand matching.
+        if let arguments = tokenizeArguments(cleaned, requiringLiteralArguments: true),
+           binaryGrantHeadIsUnsafe(arguments, aliases: aliases, mentionsPastewatch: mentionsPastewatch) { return true }
+        if tokens[0] == "alias" {
+            return tokens.dropFirst().contains {
+                let value = $0.split(separator: "=", maxSplits: 1)
+                // WO-673@v2: executable aliases inherit the full command's indirect-invocation boundary.
+                return value.count == 2 && splitCommandChain(String(value[1])).contains {
+                    invokesBinaryGrant($0, aliases: aliases, mentionsPastewatch: mentionsPastewatch)
+                }
+            }
+        }
+        let head = tokens.drop {
+            $0.contains("=") || ["env", "command", "sudo", "nohup"].contains(($0 as NSString).lastPathComponent) || $0.hasPrefix("-")
+        }
+        guard let executable = head.first else { return false }
+        let name = (executable as NSString).lastPathComponent
+        if ["pastewatch-cli", "PastewatchCLI"].contains(name) || aliases.contains(name) {
+            return head.dropFirst().first == "allow-binary"
+        }
+        if ["sh", "bash", "zsh", "dash", "ksh"].contains(name),
+           let index = tokens.firstIndex(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.dropFirst().contains("c") }),
+           tokens.indices.contains(index + 1) {
+            let commands = splitCommandChain(tokens[index + 1])
+            let nestedAliases = aliases.union(binaryExecutableAliases(commands))
+            // WO-673@v2: shell strings retain outer mentions while their own tokens determine execution.
+            return commands.contains {
+                invokesBinaryGrant($0, aliases: nestedAliases, mentionsPastewatch: mentionsPastewatch)
+            }
+        }
+        if let body = declaredFunctionBody(segment) {
+            // WO-673@v2: a function body has the same indirect-command boundary as a shell string.
+            return splitCommandChain(body).contains {
+                invokesBinaryGrant($0, aliases: aliases, mentionsPastewatch: mentionsPastewatch)
+            }
+        }
+        return false
+    }
+
+    // WO-673@v2: only executable-position expansions or expanded pastewatch arguments deny grant authority.
+    private static func binaryGrantHeadIsUnsafe(
+        _ tokens: [CommandToken], aliases: Set<String>, mentionsPastewatch: Bool
+    ) -> Bool {
+        let head = tokens.drop { token in
+            // WO-673@v2: shell bindings are not command words even when their assigned values expand.
+            let assignment = token.value.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil
+            return assignment || (token.isLiteral && (token.value.hasPrefix("-") ||
+                ["env", "command", "sudo", "nohup"].contains((token.value as NSString).lastPathComponent)))
+        }
+        guard let executable = head.first else { return false }
+        if !executable.isLiteral { return mentionsPastewatch }
+        let name = (executable.value as NSString).lastPathComponent
+        guard ["pastewatch-cli", "PastewatchCLI"].contains(name) || aliases.contains(name) else { return false }
+        let arguments = head.dropFirst()
+        return arguments.contains { !$0.isLiteral } || arguments.first?.value == "allow-binary"
+    }
+
+    // WO-673@v2: quoted function-like text is not executable; inspect only an anchored shell declaration.
+    private static func declaredFunctionBody(_ segment: String) -> String? {
+        let text = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:function\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\(\s*\))?|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*\{"#
+        guard let header = text.range(of: pattern, options: .regularExpression) else { return nil }
+        return String(text[header.upperBound...])
+    }
+
+    // WO-673@v2: a literal executable alias preserves the grant subcommand's operator-only identity.
+    private static func binaryExecutableAliases(_ segments: [String]) -> Set<String> {
+        var aliases: Set<String> = []
+        for segment in segments {
+            let tokens = tokenize(segment)
+            guard tokens.first == "alias" else { continue }
+            for definition in tokens.dropFirst() {
+                let parts = definition.split(separator: "=", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                let target = tokenize(String(parts[1]))
+                if target.count == 1, ["pastewatch-cli", "PastewatchCLI"].contains((target[0] as NSString).lastPathComponent) {
+                    aliases.insert(String(parts[0]))
+                }
+            }
+        }
+        return aliases
+    }
     // WO-658@v2: inspect executable definitions through the existing lexer, not quoted mentions in ordinary arguments.
     private static func definesRedactedRemedy(_ segment: String) -> Bool {
         let command = segment.drop { $0.isWhitespace || "({".contains($0) }
@@ -264,21 +428,31 @@ public struct CommandParser {
         return rawPaths.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }
     }
 
-    // WO-644@v2: strict copy tokenization preserves the existing directory and expansion policy.
+    // WO-673@v2: the compatibility API projects paths from the same role-preserving copy parse.
     private static func copySourcePaths(
         from command: String, commandName: String, workingDirectory: String
     ) -> [String]? {
+        copySourceReads(from: command, commandName: commandName, workingDirectory: workingDirectory)?.map(\.path)
+    }
+
+    // WO-673@v2: each resolved copy operand retains whether it is a source or a credential-file flag.
+    private static func copySourceReads(
+        from command: String, commandName: String, workingDirectory: String
+    ) -> [FileRead]? {
         guard let tokens = tokenizeArguments(command, requiringLiteralArguments: true),
               !tokens.isEmpty,
               let sources = extractCopySourceArgs(commandName, args: Array(tokens.dropFirst())) else { return nil }
-        return sources.flatMap { expandAndResolve($0, workingDirectory: workingDirectory) }.filter { path in
+        return sources.flatMap { operand in
+            expandAndResolve(operand.value, workingDirectory: workingDirectory).map { FileRead(path: $0, role: operand.role) }
+        }.filter { read in
             var isDirectory: ObjCBool = false
-            return !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) || !isDirectory.boolValue
+            return !FileManager.default.fileExists(atPath: read.path, isDirectory: &isDirectory) || !isDirectory.boolValue
         }
     }
 
     // MARK: - Command chain splitting
 
+    // WO-673@v2: background and newline execution cannot masquerade as arguments of a preceding printer.
     /// Split a command string on pipes (|) and chain operators (&&, ||, ;).
     /// Respects quotes — operators inside quotes are not split on.
     static func splitCommandChain(_ command: String) -> [String] {
@@ -344,8 +518,10 @@ public struct CommandParser {
                     continue
                 }
 
-                // Semicolon
-                if char == ";" {
+                // WO-673@v2: preserve descriptor redirects while separating independent background commands.
+                let background = char == "&" && (i + 1 == chars.count || chars[i + 1] != ">") &&
+                    (i == 0 || !"<>".contains(chars[i - 1]))
+                if char == ";" || char == "\n" || background {
                     let trimmed = current.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty { segments.append(trimmed) }
                     current = ""
@@ -784,8 +960,14 @@ public struct CommandParser {
         return (.flag, nil)
     }
 
-    // WO-644@v2: options retain source roles even when their spelling is not in a flag table.
-    private static func extractCopySourceArgs(_ command: String, args: [CommandToken]) -> [String]? {
+    // WO-673@v2: raw operands carry role before expansion can produce multiple filesystem paths.
+    private struct CopySource {
+        let value: String
+        let role: ReadRole
+    }
+
+    // WO-673@v2: input-file flags retain their original guarded-reader role beside transfer sources.
+    private static func extractCopySourceArgs(_ command: String, args: [CommandToken]) -> [CopySource]? {
         var sources: [CommandToken] = []
         var inputFiles: [CommandToken] = []
         var targetDirectory = false
@@ -820,10 +1002,13 @@ public struct CommandParser {
         }
         guard sources.count >= (targetDirectory ? 1 : 2) else { return nil }
         if !targetDirectory { sources.removeLast() }
-        // WO-638: filtering after role classification prevents an unknown destination from shifting sources.
-        return inputFiles.filter { $0.isLiteral }.map { $0.value } + sources.filter {
+        // WO-673@v2: a flag source is never admitted by the transfer grant for a matching positional operand.
+        return inputFiles.filter { $0.isLiteral }.map { CopySource(value: $0.value, role: .rawReader) } + sources.filter {
             $0.isLiteral && (command != "rsync" || !$0.value.contains(":"))
-        }.map { $0.value }
+        }.map {
+            CopySource(value: $0.value, role: ["cp", "rsync"].contains(command) && !$0.hasWordExpansion
+                       ? .transferSource : .rawReader)
+        }
     }
 
     /// Extract positional (non-flag) arguments — used for cat, head, tail, etc.
