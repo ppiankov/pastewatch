@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-10
+
+Operator-only binary transfer grants (`pastewatch-cli allow-binary`), stale MCP session detection with span-edit-first remedies, a deterministic watcher test, and hardened changelog and scan-coverage diagnostics.
+
 ### Added
 
 - Add operator-only binary transfer grants bound to canonical paths, current content and expiry, with a private separate store and grant diagnostics. Refuse indirect grant invocations through shell expansions and command-wide markers, preserve unrelated leading assignments and document the guardrail's limits. (WO-673)
