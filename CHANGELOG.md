@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- New `docs/exemptions.md`: every path that lets a finding through, who may author it, whether it reaches intrinsic secrets, and its scope and lifetime.
+- README states two more non-goals (not an approval system, not a sandbox) and adds "Where Pastewatch stops".
+
 ## [0.42.0] - 2026-10-10
 
 Operator-only binary transfer grants (`pastewatch-cli allow-binary`), stale MCP session detection with span-edit-first remedies, a deterministic watcher test, and hardened changelog and scan-coverage diagnostics.
