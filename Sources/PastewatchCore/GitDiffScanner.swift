@@ -140,6 +140,7 @@ public struct GitDiffScanner {
         try scanWithStatistics(staged: staged, unstaged: unstaged, config: config, bail: bail, limits: limits).files
     }
 
+    // WO-675@v2: staged scans own diagnostics rather than emitting them through a value accumulator.
     // WO-662@v3: Git diff consumers receive the same measured coverage as directory scans.
     public static func scanWithStatistics(
         staged: Bool = true, unstaged: Bool = false, config: PastewatchConfig,
@@ -202,6 +203,8 @@ public struct GitDiffScanner {
             } catch let error as ScanInputLimitError {
                 guard case .lineBytes = error else { throw error }
                 statistics.recordOverLimit(path: df.path, error: error)
+                // WO-675@v2: retain exactly one path-only diagnostic at the scanning caller.
+                FileHandle.standardError.write(Data("Skipped over-limit file \(df.path): \(error.localizedDescription)\n".utf8))
                 continue
             }
             let content = input.content

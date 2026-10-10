@@ -54,6 +54,7 @@ public struct GitHistoryScanner {
     /// Marker prefix used in git log --format to delimit commits.
     static let commitMarker = "PWCOMMIT "
 
+    // WO-675@v2: history scans own their skip diagnostics independently of accumulated coverage.
     // WO-662@v3: history shares source decoding and counts individual line-limit skips.
     /// Scan git history for secrets.
     ///
@@ -118,6 +119,8 @@ public struct GitHistoryScanner {
                 } catch let error as ScanInputLimitError {
                     guard case .lineBytes = error else { throw error }
                     statistics.recordOverLimit(path: df.path, error: error)
+                    // WO-675@v2: retain exactly one path-only diagnostic for the skipped historical blob.
+                    FileHandle.standardError.write(Data("Skipped over-limit file \(df.path): \(error.localizedDescription)\n".utf8))
                     continue
                 }
                 let content = input.content

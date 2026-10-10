@@ -1,5 +1,21 @@
 # Troubleshooting
 
+<!-- WO-671@v2: prefer a narrow edit and reconnect a stale server rather than rebuilding an opaque file. -->
+## MCP tools are missing after an upgrade
+
+Run `pastewatch-cli doctor`. A running server can outlive an upgrade: warnings
+identify processes started before the installed binary was updated, or reporting
+a different version. Reconnect MCP or restart the agent session to load the new
+server. Initialization exposes `serverInfo.version`; tool results expose
+`_meta.server_version`.
+
+For a small change to a protected file, use `pastewatch_edit_file` with
+`old_string`/`new_string` copied from the `pastewatch_read_file` placeholder view,
+or use [`pastewatch-cli edit`](cli-reference.md#redacted-cli-readedit). If
+`pastewatch_edit_file` is missing, reconnect your MCP server. Use
+`pastewatch_write_file` only as a last resort for a full-file replacement; do not
+retype large data URIs or unrelated content to apply a small edit.
+
 <!-- WO-640: Diagnose inactive rules through the production diagnostic commands. -->
 ## My rules are not applied
 

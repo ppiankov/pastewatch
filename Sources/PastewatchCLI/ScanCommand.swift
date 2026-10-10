@@ -459,6 +459,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git diff scanning
 
+    // WO-675@v2: report Git diff coverage in every format, including findings-free staged scans.
     // WO-662@v3: Git diff coverage includes named line-limit skips without changing finding output.
     // WO-670@v1: Git-relative result paths retain their actual repository root for policy loading.
     private func runGitDiffScan(
@@ -468,6 +469,8 @@ struct Scan: ParsableCommand {
         baseline: BaselineFile? = nil
     ) throws {
         let fileResults: [FileScanResult]
+        // WO-675@v2: retain measured counts through policy and baseline filtering.
+        let statistics: DirectoryScanStatistics
         do {
             // WO-662@v3: retain the findings-only rendering while exposing counted skips on stderr.
             let report = try GitDiffScanner.scanWithStatistics(
@@ -475,9 +478,8 @@ struct Scan: ParsableCommand {
                 config: config, bail: bail
             )
             fileResults = report.files
-            if report.statistics.skippedOverLimit > 0 {
-                FileHandle.standardError.write(Data("skippedOverLimit=\(report.statistics.skippedOverLimit)\n".utf8))
-            }
+            // WO-675@v2: a full summary below replaces the partial over-limit-only count.
+            statistics = report.statistics
         } catch let error as GitDiffError {
             FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
             // WO-580@v3: git scan failures use the stable operational exit.
@@ -532,6 +534,9 @@ struct Scan: ParsableCommand {
             filteredResults = bl.filterNewResults(results: filteredResults)
         }
 
+        // WO-675@v2: stderr coverage must be visible before the findings-only stdout early return.
+        let summary = statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count })
+        FileHandle.standardError.write(Data((summary + "\n").utf8))
         guard !filteredResults.isEmpty else { return }
 
         try redirectStdoutIfNeeded()

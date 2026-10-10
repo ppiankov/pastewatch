@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add operator-only binary transfer grants bound to canonical paths, current content and expiry, with a private separate store and grant diagnostics. Refuse indirect grant invocations through shell expansions and command-wide markers, preserve unrelated leading assignments and document the guardrail's limits. (WO-673)
+
+### Fixed
+
+- Make documentation-policy watch checks deterministic and synchronize the sole live watch smoke on completed startup. (WO-674)
+- Identify stale MCP sessions with serving-version metadata and process-age warnings; prefer span edits in guard remedies. (WO-671)
+- Protect published changelog sections at the base tip, scope release exceptions and explicit corrections, preserve caller-owned skip diagnostics, distinguish binary skips, surface staged coverage and clarify raw-size read hints. (WO-675)
+
 ## [0.41.0] - 2026-10-09
 
 Security hardening for project-level configuration, broader scan coverage (Kotlin, Gradle, JSONL and more source formats across directory, pre-commit, history and watch scans), bounded MCP reads for large files, and fewer phone and credential false positives.

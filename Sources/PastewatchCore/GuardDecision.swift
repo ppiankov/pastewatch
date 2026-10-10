@@ -14,11 +14,17 @@ public struct GuardDecision {
     // WO-672@v1: agent mutation cannot create or change its own policy files.
     public static let operatorOwnedFileMessage = "operator-owned file: edit it yourself"
 
+    // WO-673@v2: canonical user policy paths are protected on every agent mutation surface.
     // WO-672@v1: ownership checks apply before nonexistent-file and empty-content shortcuts.
     public static func isOperatorOwnedPath(_ path: String) -> Bool {
         // WO-672@v1: policy names remain operator-owned under filesystem-equivalent spelling.
         let name = URL(fileURLWithPath: path).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
-        return [".pastewatch.json", ".pastewatch-allow"].contains(name)
+        // WO-673@v2: aliases to the user policy and binary grant store cannot become writable remedies.
+        let canonical = BinaryTransferGrants.canonicalPath(path)
+        return [".pastewatch.json", ".pastewatch-allow"].contains(name) ||
+            [PastewatchConfig.configPath.path, BinaryTransferGrants.storeURL.path].contains {
+                BinaryTransferGrants.canonicalPath($0) == canonical
+            }
     }
 
     // WO-635: classify by the supplied path only, never by content or directory names.

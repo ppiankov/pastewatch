@@ -277,6 +277,50 @@ are not exempt; other commands in a chain or pipeline remain guarded.
 Defining `pastewatch-cli` as a function or alias anywhere in the command,
 including a nested segment, refuses the command rather than exempting its calls.
 
+<!-- WO-673@v2: opaque transfers remain blocked unless the operator authorizes that exact source. -->
+## Binary Transfer Grants
+
+The binary block stays the default. An operator who has inspected a binary may
+run this in their own terminal, outside the agent:
+
+```bash
+pastewatch-cli allow-binary bundle.dat --ttl 1h
+```
+
+TTL accepts a positive integer with `s`, `m` or `h`; it defaults to one hour and
+cannot exceed 24 hours. Grants bind the canonical realpath and current SHA-256
+to an expiry. Changed bytes, an expired or missing grant, a retargeted symlink,
+or unreadable input still blocks. Only transfer-source operands of `scp`,
+`rsync`, `cp`, and `cat | ssh` can use a grant. Credential-file flags and a
+separate raw reader in the same command remain guarded. Text transfers are
+unchanged; archives are not scanned internally by this valve.
+
+<!-- WO-673@v2: grant persistence never rewrites the operator's policy and is not project authority. -->
+Grants coexist in the user config directory's separate `binary-grants.json`,
+written atomically with mode `0600`. The command never writes `config.json`.
+Malformed grant stores load no grants and produce a doctor warning. Project
+configuration and project-local grant files cannot contribute grants.
+`doctor` and `doctor --explain` list active and expired grants by path, short
+hash prefix and expiry, never content. Agents cannot invoke `allow-binary` or
+write/edit either the user config or grant store through guarded or MCP tools.
+Successful grant creation exits 0; invalid duration or failed recording exits 64.
+
+<!-- WO-673@v2: shell guardrails cannot provide same-user isolation or make a transfer atomic. -->
+When a command contains the normalized `allow-binary` token and mentions
+Pastewatch anywhere (both case-insensitive), it is refused regardless of wrappers.
+Only commands whose every segment is a pure `echo` or `printf` are exempt from
+this marker check; assignments and function declarations are not printing segments.
+Parameter expansion or command substitution in a Pastewatch argument is refused
+with the operator-only message. An expanded command word is also refused when
+the full command mentions Pastewatch. Unrelated shell expansions and prose
+mentions are unaffected.
+
+The guard is a guardrail, not a sandbox. A same-user agent could still write
+`binary-grants.json` directly with an interpreter. There is also a check-then-use
+window between the guard's hash check and `scp` reading the file. The short TTL
+limits the exposure to both risks; it does not eliminate either one. Base64- or
+interpreter-obfuscated invocations remain outside command-string recognition.
+
 ## MCP Server - Redacted Read/Write
 
 AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
@@ -592,6 +636,14 @@ pastewatch-cli doctor --json # programmatic output
 ```
 
 Shows CLI version, config status, hook status, MCP server processes (with per-process `--min-severity` and `--audit-log`), and Homebrew version.
+
+<!-- WO-671@v2: an upgraded binary does not refresh a server already attached to an agent session. -->
+MCP processes started before the installed binary's modification time, or with a
+different reported version, receive a warning to reconnect MCP or restart the
+agent session. Initialization reports `serverInfo.version`; every tool result,
+including a refused tool call, includes `_meta.server_version` without changing
+the tool's content payload. If process inspection fails, doctor reports that it
+could not inspect servers rather than claiming that none is running.
 
 <!-- WO-640: Explain all configuration diagnostic blocks and JSON fields. -->
 ### Doctor --explain

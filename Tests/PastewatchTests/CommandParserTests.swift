@@ -2,6 +2,82 @@ import XCTest
 @testable import PastewatchCore
 
 final class CommandParserTests: XCTestCase {
+    // WO-673@v2: grant checks retain expansion metadata for wrappers, aliases and quoted operands.
+    func testBinaryGrantArgumentExpansionUsesExistingTokenMetadata() {
+        for command in ["pastewatch-cli ${x} file.dat", "command /opt/bin/PastewatchCLI $(echo allow-binary) file.dat",
+                        "alias pw=pastewatch-cli; pw `echo allow-binary` file.dat",
+                        "env MODE=test pastewatch-cli \"$x\" file.dat",
+                        "MODE=$HOME pastewatch-cli $x file.dat", "${pw:=pastewatch-cli} allow-binary file.dat"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+        for command in ["pastewatch-cli '$x' file.dat", "pastewatch-cli \\$x file.dat",
+                        "pastewatch-cli read '*.env'", "echo '$pw pastewatch-cli allow-binary'",
+                        "MODE=$HOME pastewatch-cli check --help", "env MODE=$HOME /opt/bin/PastewatchCLI check --help"] {
+            XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+        // WO-673@v2: mixed assignment and printing segments do not satisfy the sole exception.
+        XCTAssertTrue(CommandParser.fileAccess(from: "pw=$HOME; echo pastewatch-cli allow-binary is operator only")
+            .invokesBinaryGrant)
+    }
+
+    // WO-673@v2: the command-wide marker check does not depend on recognizing argv wrappers.
+    func testBinaryGrantMarkersAreWrapperIndependent() {
+        for command in ["eval 'pastewatch-cli allow-binary file.dat'",
+                        "xargs pastewatch-cli allow-binary <<< file.dat",
+                        "find . -name x -exec pastewatch-cli allow-binary {} \\;",
+                        "timeout 5 pastewatch-cli allow-binary file.dat",
+                        "nohup pastewatch-cli allow-binary file.dat", "sudo pastewatch-cli allow-binary file.dat",
+                        "env -S 'pastewatch-cli allow-binary file.dat'", "eval 'PaStEwAtCh-cli ALLOW-BINARY file.dat'",
+                        "eval 'pastewatch-cli al\"low\"-binary file.dat'",
+                        "eval 'pastewatch-cli al\\low-binary file.dat'",
+                        "pas\\tewatch-cli al\\low-binary file.dat"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+    }
+
+    // WO-673@v2: only all-printing segments bypass markers, never executable substitutions or mixed chains.
+    func testBinaryGrantMarkersExemptOnlyPurePrintingSegments() {
+        for command in ["echo pastewatch-cli allow-binary is operator only",
+                        "printf '%s\\n' 'pastewatch-cli allow-binary'",
+                        "echo pastewatch-cli allow-binary; printf '%s' 'pastewatch-cli allow-binary'",
+                        "echo '$(pastewatch-cli allow-binary file.dat)'",
+                        "grep -r allow-binary docs/", "pastewatch-cli version",
+                        "pastewatch-cli disallow-binary file.dat", "pastewatch-cli allow-binary-suffix file.dat"] {
+            XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+        for command in ["echo $(pastewatch-cli allow-binary file.dat)",
+                        "printf '%s' `pastewatch-cli allow-binary file.dat`",
+                        "echo pastewatch-cli allow-binary; true", "pwd; echo pastewatch-cli allow-binary",
+                        "/tmp/echo pastewatch-cli allow-binary file.dat",
+                        "echo pastewatch-cli allow-binary <(pastewatch-cli allow-binary file.dat)"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+    }
+
+    // WO-673@v2: background and newline commands are not arguments of a preceding printer.
+    func testBinaryGrantPrintingExceptionRespectsCommandBoundaries() {
+        for command in ["echo hello\npastewatch-cli allow-binary file.dat",
+                        "echo hello & pastewatch-cli allow-binary file.dat",
+                        "printf '%s' hello & pastewatch-cli allow-binary file.dat"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+        for command in ["echo 'pastewatch-cli allow-binary & words'",
+                        "printf '%s' 'pastewatch-cli\nallow-binary'",
+                        "echo pastewatch-cli allow-binary & printf '%s' 'pastewatch-cli allow-binary'"] {
+            XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+    }
+
+    // WO-673@v2: indirect command words use the full command's product mention, including nested shells.
+    func testIndirectBinaryGrantCommandsUseWholeCommandContext() {
+        for command in ["$pw file.dat; echo pastewatch-cli", "sh -c '$pw file.dat'; echo pastewatch-cli",
+                        "pw=pastewatch-cli; env \"$pw\" allow-binary file.dat",
+                        "pw=pastewatch-cli; ${pw} allow-binary file.dat"] {
+            XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+        }
+        XCTAssertFalse(CommandParser.fileAccess(from: "$pw allow-binary file.dat").invokesBinaryGrant)
+    }
+
     // WO-658@v2: remedy definitions in chains, groups or substitutions cannot authorize a raw reader.
     func testRedactedRemedyShadowingFailsClosed() {
         let definitions = [

@@ -19,10 +19,13 @@ public final class FileWatcher {
         self.jsonOutput = jsonOutput
     }
 
+    // WO-674@v2: readiness follows the initial snapshot so a first change cannot be lost during startup.
     /// Start watching. Blocks until stop() is called or the process is interrupted.
     public func start() {
         // Initial snapshot
         knownModDates = snapshotModDates()
+        // WO-674@v2: smoke clients can synchronize on completed startup instead of repeatedly touching files.
+        FileHandle.standardError.write(Data("watching \(directory) ready\n".utf8))
 
         // Poll every 2 seconds for changes (portable, works on macOS + Linux)
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -167,9 +170,11 @@ public final class FileWatcher {
         }
     }
 
-    // WO-662@v3: path-only watcher diagnostics expose cumulative skipped coverage.
-    private func reportOverLimit(relativePath: String, error: ScanInputLimitError) {
+    // WO-675@v2: caller-owned diagnostics are testable in-process without an additional live watch smoke.
+    func reportOverLimit(relativePath: String, error: ScanInputLimitError) {
         scanStatistics.recordOverLimit(path: relativePath, error: error)
+        // WO-675@v2: emit the skipped path exactly once, followed by the unchanged cumulative count.
+        FileHandle.standardError.write(Data("Skipped over-limit file \(relativePath): \(error.localizedDescription)\n".utf8))
         FileHandle.standardError.write(Data("skippedOverLimit=\(scanStatistics.skippedOverLimit)\n".utf8))
     }
 
