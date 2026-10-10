@@ -152,13 +152,14 @@ enum FileGuard {
         print("Use pastewatch_write_file only as a last resort for whole-file replacement.")
     }
 
+    // WO-675@v2: advice states that this preflight measures raw bytes while MCP windows the placeholder view.
     // WO-665@v1: large-file guidance uses one shared threshold and never prints file content.
     private static func printReadWindowHint(filePath: String, operation: Operation, byteCount: Int? = nil) {
         guard operation == .read else { return }
         let size = byteCount ?? ((try? FileManager.default.attributesOfItem(atPath: filePath))?[.size] as? NSNumber)?.intValue ?? 0
         guard size > MCPReadDecision.unrangedResponseLimitBytes else { return }
-        // WO-665@v1: size guidance uses the same limit as automatic line windows; explicit bytes remain available.
-        print("For large files, pastewatch_read_file returns whole lines up to \(MCPReadDecision.unrangedResponseLimitDescription); continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
+        // WO-675@v2: raw size is only a hint; the MCP limit applies after whole-file placeholder replacement.
+        print("This hint uses raw file bytes. pastewatch_read_file windows the placeholder view after scanning, returning whole lines up to \(MCPReadDecision.unrangedResponseLimitDescription); continue at the next start_line named in its response, optionally with line_count. An overlong first line uses Base64 byte_offset/byte_length windows. Windows do not bypass whole-file input limits.")
     }
 
     // WO-671@v2: unreadable targets retain their refusal and name the narrow remedy without suggesting a bypass.

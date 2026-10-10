@@ -170,9 +170,11 @@ public final class FileWatcher {
         }
     }
 
-    // WO-662@v3: path-only watcher diagnostics expose cumulative skipped coverage.
-    private func reportOverLimit(relativePath: String, error: ScanInputLimitError) {
+    // WO-675@v2: caller-owned diagnostics are testable in-process without an additional live watch smoke.
+    func reportOverLimit(relativePath: String, error: ScanInputLimitError) {
         scanStatistics.recordOverLimit(path: relativePath, error: error)
+        // WO-675@v2: emit the skipped path exactly once, followed by the unchanged cumulative count.
+        FileHandle.standardError.write(Data("Skipped over-limit file \(relativePath): \(error.localizedDescription)\n".utf8))
         FileHandle.standardError.write(Data("skippedOverLimit=\(scanStatistics.skippedOverLimit)\n".utf8))
     }
 

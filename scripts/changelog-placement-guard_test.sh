@@ -78,6 +78,26 @@ accepts release-can-edit-named-section "$BASE_TEXT"$'- Release correction.\n' 'c
 rejects near-miss-release-subject "$BASE_TEXT"$'- misplaced fixture text\n' 'chore: release v1.2.3 later' 12
 accepts unchanged "$BASE_TEXT" 'fix: unrelated change'
 
+# WO-675@v2: only an explicit operator correction subject permits edits to published notes.
+accepts operator-typo-correction "${BASE_TEXT/Published change./Published correction.}" 'chore: fix changelog'
+rejects near-miss-typo-subject "$BASE_TEXT"$'- misplaced fixture text\n' 'chore: fix changelog later' 12
+
+# WO-675@v2: a release must not delete or rewrite any other published section.
+rejects release-cannot-delete-older \
+    $'# Changelog\n\n## [Unreleased]\n\n## [1.2.4] - 2026-10-08\n\n- Release change.\n\n## [1.2.3] - 2026-10-01\n' \
+    'chore: release v1.2.4' 10
+
+# WO-675@v2: protect a version published at the base tip even if the branch fork predates it.
+TIP_TEXT=$'# Changelog\n\n## [Unreleased]\n\n## [1.2.4] - 2026-10-08\n\n- Released on main.\n\n## [1.2.3] - 2026-10-01\n\n- Published change.\n'
+PUBLISHED_TIP="$(commit_fixture "$TIP_TEXT" 'chore: release v1.2.4' "$BASE")"
+FORK_HEAD="$(commit_fixture "${TIP_TEXT/Released on main./Ordinary branch change.}" 'fix: new change' "$BASE")"
+if GIT_DIR="$REPO" bash "$GUARD" "$PUBLISHED_TIP" "$FORK_HEAD" > "$FIXTURE_DIR/output" 2> "$FIXTURE_DIR/error"; then
+    printf 'FAIL: section published after the fork was not protected\n' >&2
+    exit 1
+fi
+grep -Fq 'previously released section [1.2.4]' "$FIXTURE_DIR/error"
+CASES=$((CASES + 1))
+
 # WO-664@v1: later base-branch edits are not additions made by a stale pull-request branch.
 MAIN_TIP="$(commit_fixture "${BASE_TEXT/Published change./Corrected published change.}" 'docs: fix published notes' "$BASE")"
 STALE_HEAD="$(commit_fixture "$BASE_TEXT" 'fix: unrelated stale branch' "$BASE")"

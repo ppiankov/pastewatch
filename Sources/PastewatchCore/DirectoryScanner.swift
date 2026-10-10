@@ -47,10 +47,9 @@ public struct DirectoryScanStatistics: Codable {
     // WO-662@v3: shared scanners count inspected files independently of their findings.
     mutating func recordScanned() { filesScanned += 1 }
 
-    // WO-662@v3: report only the affected path and limit, never its contents.
-    mutating func recordOverLimit(path: String, error: ScanInputLimitError) {
+    // WO-675@v2: retain caller compatibility while the value accumulator only records coverage.
+    mutating func recordOverLimit(path _: String, error _: ScanInputLimitError) {
         skippedOverLimit += 1
-        FileHandle.standardError.write(Data("Skipped over-limit file \(path): \(error.localizedDescription)\n".utf8))
     }
 
     // WO-662@v3: a zero scan cannot be presented as evidence of a clean directory.
@@ -202,6 +201,7 @@ public struct DirectoryScanner {
         ).files
     }
 
+    // WO-675@v2: scan callers own skip diagnostics and distinguish unsupported text from binary assets.
     // WO-662@v3: traversal measures actual scans even when a file has no findings.
     public static func scanWithStatistics(
         directory: String,
@@ -253,8 +253,12 @@ public struct DirectoryScanner {
             let isEnvFile = DotenvClassifier.isDotenvFile(fileName)
 
             guard isEnvFile || allowedExtensions.contains(ext) else {
-                // WO-662@v3: unsupported text must not disappear from coverage reporting.
-                statistics.skippedUnsupported += 1
+                // WO-675@v2: the bounded null-byte probe separates binary assets from unsupported text.
+                if (try? isBinaryFile(at: fileURL)) == true {
+                    statistics.skippedBinary += 1
+                } else {
+                    statistics.skippedUnsupported += 1
+                }
                 continue
             }
 
@@ -285,6 +289,8 @@ public struct DirectoryScanner {
             } catch let error as ScanInputLimitError {
                 guard case .lineBytes = error else { throw error }
                 statistics.recordOverLimit(path: relativePath, error: error)
+                // WO-675@v2: one caller-owned path-only diagnostic accompanies the counted skip.
+                FileHandle.standardError.write(Data("Skipped over-limit file \(relativePath): \(error.localizedDescription)\n".utf8))
                 continue
             }
             let content = input.content

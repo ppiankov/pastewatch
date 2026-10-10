@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Make documentation-policy watch checks deterministic and synchronize the sole live watch smoke on completed startup. (WO-674)
 - Identify stale MCP sessions with serving-version metadata and process-age warnings; prefer span edits in guard remedies. (WO-671)
+- Protect published changelog sections at the base tip, scope release exceptions and explicit corrections, preserve caller-owned skip diagnostics, distinguish binary skips, surface staged coverage and clarify raw-size read hints. (WO-675)
 
 ## [0.41.0] - 2026-10-09
 
