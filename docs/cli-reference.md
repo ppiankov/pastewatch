@@ -507,6 +507,8 @@ Handles pipe chains (`|`), command chaining (`&&`, `||`, `;`), redirect operator
 
 Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [agent-setup.md](agent-setup.md) for hook configuration.
 
+Every way a guarded finding can be let through, and who may author each one: [exemptions.md](exemptions.md).
+
 <!-- WO-640: Explain source-path decisions without promising a shell sandbox. -->
 Recognized `cp`, `mv`, `install`, `rsync`, and `ditto` source operands are read targets. This also covers file content fed through `cat` or input redirection into `tee`, `>`, or `>>`. Each source is evaluated using its own path; a Markdown destination does not make a non-document source advisory. Destination-only operands are not newly scanned as sources. Scripts, obfuscated commands, unsupported options, and recursive directory copies remain limitations; see [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
 
@@ -920,6 +922,7 @@ a WARN. Agents cannot create or modify this operator-owned file.
 Stdin (including `--stdin-filename`), MCP `pastewatch_scan` raw text and the guard's
 command-string pass have no file target and load no project allow file. Explicit
 `scan --allowlist` remains available for advisory suppression.
+All exemption paths and their reach: [exemptions.md](exemptions.md).
 
 Create a file with one value per line to suppress known-safe findings:
 

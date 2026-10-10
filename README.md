@@ -92,6 +92,8 @@ The result: false negatives are preferred over false positives, and mutation fal
 - Not a compliance product — it does not certify, audit, or generate reports for regulators
 - Not an AI classifier — deterministic pattern matching only, no probabilistic scoring
 - Not a policy engine — it does not decide what you're allowed to do, it prevents structural leaks
+- Not an approval system — it does not collect, queue, or adjudicate approvals; exemptions stay narrow, scoped, and operator-authored ([every path](docs/exemptions.md))
+- Not a sandbox — the shell guard is a guardrail for cooperative agents, not containment for a hostile process running as you
 
 Pastewatch does not:
 
@@ -100,6 +102,14 @@ Pastewatch does not:
 - guess, infer, or act when uncertain
 - store clipboard history or file contents
 - make decisions — it presents evidence and lets you decide
+
+## Where Pastewatch stops
+
+Pastewatch is a blade, not a toolbox. On a single developer's machine it is complete: detect, decide, obfuscate. Free, offline, no account.
+
+It deliberately stops there. Team-wide policy, approving ambiguous matches in real time from one place, rules that approve on your behalf with a record of who signed them, and gateways for remote and multi-model traffic are a different job.
+
+That job is [NeuroRouter Pro](https://neurorouter.dev). It runs alongside Pastewatch; neither replaces the other.
 
 ---
 
@@ -485,6 +495,8 @@ guard's command-string pass load no project allow file. `doctor --explain` shows
 <!-- WO-672@v1: retain the count field while describing all ineffective entry classes. -->
 the resolved path, loaded status, effective entries and ignored non-advisory/custom-rule entries.
 
+Every way a finding can be let through, who may author it and how far it reaches: [docs/exemptions.md](docs/exemptions.md).
+
 ### `.pastewatch.json` schema
 
 ```json
@@ -608,6 +620,7 @@ The GUI (clipboard monitoring) is macOS-only. The CLI runs on macOS and Linux vi
 - [docs/hard-constraints.md](docs/hard-constraints.md) - Design philosophy and non-negotiable rules
 - [docs/status.md](docs/status.md) - Feature milestones, stability, current scope, and non-goals
 - [docs/cli-reference.md](docs/cli-reference.md) - Full CLI command reference (scan, proxy, guard, MCP, and all subcommands)
+- [docs/exemptions.md](docs/exemptions.md) - Every exemption path, who may author it, and its reach
 
 ---
 
