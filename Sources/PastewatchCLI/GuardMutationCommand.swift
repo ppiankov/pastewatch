@@ -138,6 +138,11 @@ struct GuardMutation: ParsableCommand {
             break
         }
 
+        // WO-676@v4: observe existing policy scans; migration advice must never initiate another scan.
+        var inlineMarkerNotices = 0
+        let onFindings: (String, [DetectedMatch]) -> Void = { content, matches in
+            inlineMarkerNotices = max(inlineMarkerNotices, FileGuard.inlineMarkerNoticeCount(matches: matches, content: content))
+        }
         let decision: GuardMutationDecision
         do {
             switch input.operation {
@@ -149,7 +154,8 @@ struct GuardMutation: ParsableCommand {
                     replaceAll: replaceAll,
                     filePath: input.filePath,
                     config: config,
-                    minimumSeverity: failOnSeverity
+                    // WO-676@v4: the evaluator supplies only findings already selected for its decision.
+                    minimumSeverity: failOnSeverity, onFindings: onFindings
                 )
             case let .write(content):
                 decision = try GuardMutationEvaluator.evaluateWrite(
@@ -157,7 +163,8 @@ struct GuardMutation: ParsableCommand {
                     proposedContent: content,
                     filePath: input.filePath,
                     config: config,
-                    minimumSeverity: failOnSeverity
+                    // WO-676@v4: proposed and existing snapshots share the same diagnostic observer.
+                    minimumSeverity: failOnSeverity, onFindings: onFindings
                 )
             }
         } catch {
@@ -166,9 +173,10 @@ struct GuardMutation: ParsableCommand {
         }
 
         guard case .block(let reason) = decision else { return }
+        // WO-676@v4: notices accompany a denial only, never a clean or admitted mutation.
         try deny(reason == .touchesExistingFinding
             ? "proposed edit overlaps protected content"
-            : "proposed mutation changes protected content")
+            : "proposed mutation changes protected content", inlineMarkerNotices: inlineMarkerNotices)
     }
 
     // WO-672@v1: ownership refusal occurs before resolving policy or opening the mutation target.
@@ -204,10 +212,13 @@ struct GuardMutation: ParsableCommand {
         return customRegex.firstMatch(in: content, range: fullRange) != nil
     }
 
+    // WO-676@v4: human-facing denials may attach the finding-bound migration notice.
     // WO-671@v2: protected edits use the same narrow-first remedy as file guards.
     // WO-526@v3: denial messages disclose policy class, never matched values.
-    private func deny(_ reason: String) throws {
+    private func deny(_ reason: String, inlineMarkerNotices: Int = 0) throws {
         FileHandle.standardError.write(Data("BLOCKED: \(reason)\n".utf8))
+        // WO-676@v4: policy evaluators never print migration messages themselves.
+        FileGuard.printInlineMarkerNotices(count: inlineMarkerNotices)
         // WO-671@v2: operator-owned policy files never receive an agent-edit remedy.
         if reason != GuardDecision.operatorOwnedFileMessage { FileGuard.printEditRemedies() }
         throw ExitCode(rawValue: GuardExitContract.blocked)

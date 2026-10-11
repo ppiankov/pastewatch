@@ -35,15 +35,18 @@ public struct MutationOutcome {
     public let advisoryBelowThreshold: [DetectedMatch]
 }
 
+// WO-676@v4: remedy files exempt only exact advisory values without mutation authorization.
 // WO-672@v1: tighten-only tiers exempt advisory classes without independently authorized evidence.
 public func permitsAllowlistSuppression(
     of match: DetectedMatch, source: AllowlistSource, exactValue: Bool
 ) -> Bool {
-    if source == .project || source == .projectFile || source == .restrictedUser {
+    // WO-676@v4: share advisory classification while preserving the existing project-tier contract.
+    if source == .project || source == .projectFile || source == .restrictedUser || source == .remedy {
+        if source == .remedy && (!exactValue || !match.mutationAuthorizationSources.isEmpty) { return false }
         return match.type.isAmbiguousClass && match.customRuleName == nil &&
             match.mutationAuthorizationSources.isDisjoint(with: [.customRule, .intrinsicFormat, .exactKnownSecret])
     }
-    // WO-672@v1: authoritative, inline and remedy sources retain their existing suppression contract.
+    // WO-676@v4: operator configuration keeps its existing exact-value and pattern authority.
     guard match.mutationAuthorizationSources.contains(.intrinsicFormat) else {
         return true
     }

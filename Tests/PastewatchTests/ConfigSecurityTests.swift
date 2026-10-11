@@ -78,7 +78,8 @@ final class ConfigSecurityTests: XCTestCase {
         let secret = intrinsicFixture()
         let match = try XCTUnwrap(DetectionRules.scanFileIO(secret, config: .defaultConfig).first)
         // WO-672@v1: subordinate user policy is another unprivileged allowlist source.
-        for source: AllowlistSource in [.system, .user, .restrictedUser, .project, .projectFile, .remedy, .inlineDirective] {
+        // WO-676@v4: removed inline sources cannot appear in the authorization inventory.
+        for source: AllowlistSource in [.system, .user, .restrictedUser, .project, .projectFile, .remedy] {
             let exact = Allowlist(values: [secret], source: source)
             XCTAssertEqual(exact.filter([match]).count, source == .system || source == .user ? 0 : 1)
             let patterns = Allowlist(patterns: [try NSRegularExpression(pattern: ".*")], source: source)
@@ -188,7 +189,8 @@ final class ConfigSecurityTests: XCTestCase {
             let matches = DetectionRules.scanFileIO(phone, config: config)
             XCTAssertEqual(matches.count, 1)
             XCTAssertTrue(GuardDecision.evaluate(matches: matches, content: phone, config: config,
-                                                contentTrust: .trustedFile, minimumSeverity: .high).reportableMatches.isEmpty)
+                                                // WO-676@v4: user-tier exact values retain their existing authority.
+                                                minimumSeverity: .high).reportableMatches.isEmpty)
         }
     }
 

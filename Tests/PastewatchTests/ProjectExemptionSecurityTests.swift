@@ -106,7 +106,7 @@ final class ProjectExemptionSecurityTests: XCTestCase {
         }
     }
 
-    // WO-672@v1: the ruling preserves inline XML exemptions; only tighten-only tiers change.
+    // WO-676@v4: former inline markers cannot suppress XML findings.
     func testInlineXMLCredentialSuppressionStaysUnchanged() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             let content = xmlFixture() + " // pastewatch:allow\n"
@@ -115,10 +115,10 @@ final class ProjectExemptionSecurityTests: XCTestCase {
             try Data(content.utf8).write(to: target)
             let matches = DetectionRules.scanFileIO(content, config: .defaultConfig)
             let match = try XCTUnwrap(matches.first { $0.type == .xmlCredential })
-            XCTAssertTrue(permitsAllowlistSuppression(of: match, source: .inlineDirective, exactValue: false))
-            XCTAssertTrue(Allowlist.filterInlineAllow(matches: matches, content: content).isEmpty)
-            XCTAssertEqual(try command(["scan", "--file", target.path, "--check"], root: root).status, 0)
-            XCTAssertEqual(try command(["guard-write", target.path], root: root).status, 0)
+            let decision = GuardDecision.evaluate(matches: matches, content: content, config: .defaultConfig, minimumSeverity: .high)
+            XCTAssertTrue(decision.reportableMatches.contains { $0.type == match.type })
+            XCTAssertEqual(try command(["scan", "--file", target.path, "--check"], root: root).status, 6)
+            XCTAssertEqual(try command(["guard-write", target.path], root: root).status, 2)
         }
     }
 
@@ -136,7 +136,9 @@ final class ProjectExemptionSecurityTests: XCTestCase {
             XCTAssertFalse(permitsAllowlistSuppression(of: namedRule, source: source, exactValue: true))
             let xml = try XCTUnwrap(DetectionRules.scanFileIO(xmlFixture(), config: .defaultConfig).first { $0.type == .xmlCredential })
             XCTAssertFalse(permitsAllowlistSuppression(of: xml, source: source, exactValue: true))
-            for unchanged: AllowlistSource in [.system, .user, .remedy, .inlineDirective] {
+            // WO-676@v4: operator tiers retain XML exemptions, but explicit remedy files do not.
+            XCTAssertFalse(permitsAllowlistSuppression(of: xml, source: .remedy, exactValue: true))
+            for unchanged: AllowlistSource in [.system, .user] {
                 XCTAssertTrue(permitsAllowlistSuppression(of: xml, source: unchanged, exactValue: true))
             }
         }

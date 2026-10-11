@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Remove the inline `pastewatch:allow` marker and its VS Code quick fix (extension 0.2.0); marked lines retain findings, with one counted CLI-only migration notice per output. Legitimate uses belong in operator-tier exact exemptions, advisory `.pastewatch-allow` entries, fixture-directory `.pastewatchignore` exclusions or canonical documentation placeholders. (WO-676)
+
+### Security
+- Limit `--allowlist` to exact advisory-class values so it cannot suppress custom rules, exact-known secrets, opted-in mutations or non-ambiguous findings. (WO-676)
+
 ### Documentation
 - New `docs/exemptions.md`: every path that lets a finding through, who may author it, whether it reaches intrinsic secrets, and its scope and lifetime.
 - README states two more non-goals (not an approval system, not a sandbox) and adds "Where Pastewatch stops".

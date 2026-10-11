@@ -66,7 +66,13 @@ Project and tighten-only user entries exempt advisory classes only, never non-am
 <!-- WO-672@v1: ineffective non-advisory and custom-rule entries contribute to the diagnostic warning. -->
 For `.pastewatch-allow`, inspect **Project allow file**: resolved path, loaded status, effective entries and ignored non-advisory/custom-rule entries (`ignoredIntrinsicEntries` in JSON). File targets load one file from their Git toplevel, or the explicit scan/watch root outside Git. A single non-Git file uses its parent directory. This file grants exact advisory-class exemptions only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Hooks running outside the repository still use the target's root. Stdin and raw MCP text have no target and do not load a project allow file.
 
-Trusted file reads can honor recognized comment markers such as `# pastewatch:allow` on a line. Agent-controlled text does not gain that trust merely by including the marker. Do not add blanket allow patterns to make a guard pass. For an intentional database example, use the canonical [Documenting credentials](../README.md#documenting-credentials) forms; an exact-value exception must allow the **whole connection string**, not just its password.
+<!-- WO-676@v4: removal applies equally to file content and agent-supplied text. -->
+The `pastewatch:allow` marker was removed in 0.43.0; it never suppresses a finding.
+Report a false positive to the operator rather than adding markers or blanket patterns.
+For a database example, use the canonical [Documenting credentials](../README.md#documenting-credentials)
+forms. An intrinsic exact-value exception belongs in operator user/system config and
+must cover the **whole connection string**, not just its password.
+See [migration routes](exemptions.md#removed-in-0430).
 
 ### 5. Fix invalid configuration
 

@@ -84,7 +84,7 @@ public struct StartupSweep {
                     matches: scannedMatches,
                     content: content,
                     config: config,
-                    contentTrust: .trustedFile,
+                    // WO-676@v4: startup findings use the same explicit exemption policy.
                     minimumSeverity: nil,
                     // WO-635: startup files retain their actual non-document paths.
                     filePath: normalizedPath

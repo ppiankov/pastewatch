@@ -6,7 +6,8 @@ Real-time secret detection in the editor. Catches secrets as you type — before
 
 - **Inline diagnostics** — red/yellow/blue squiggles on detected secrets
 - **Hover tooltips** — detection type and severity on hover
-- **Quick-fix actions** — add `// pastewatch:allow` inline or append to `.pastewatch-allow`
+<!-- WO-676@v4: retain only the operator-owned advisory exemption action. -->
+- **Quick-fix actions** — append an exact advisory-class value to `.pastewatch-allow`
 - **Status bar** — finding count for the active file
 - **Auto-refresh** — re-scans on file save (debounced, configurable)
 

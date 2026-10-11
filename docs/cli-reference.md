@@ -2,6 +2,7 @@
 
 Full command reference for `pastewatch-cli`. For an overview and quick start, see the [README](../README.md).
 
+<!-- WO-676@v4: link the removed feature's migration note alongside the command reference. -->
 <!-- WO-640: Make diagnostic and policy documentation discoverable. -->
 **Contents**
 
@@ -14,7 +15,7 @@ Full command reference for `pastewatch-cli`. For an overview and quick start, se
 | [Watch](#watch-mode) | [Dashboard](#dashboard) | [VS Code](#vs-code-extension) |
 | [Environment Variables](#environment-variables) | [Pre-commit Hook](#pre-commit-hook) | [Baseline Diff](#baseline-diff) |
 | [Config Init](#config-init) | [Exit Codes](#exit-codes) | [Stdin Filename](#stdin-filename-hint) |
-| [Inline Allowlist](#inline-allowlist) | [Pre-commit Framework](#pre-commit-framework-pre-commitcom) | [Manual Hook](#pre-commit-hook-manual) |
+| [No Inline Exemptions](#no-inline-exemptions) | [Pre-commit Framework](#pre-commit-framework-pre-commitcom) | [Manual Hook](#pre-commit-hook-manual) |
 | [Format-Aware Scanning](#format-aware-scanning) | [Allowlist](#allowlist) | [Custom Rules](#custom-rules) |
 | [Check](#check) | [Doctor --explain](#doctor---explain) | [Documentation Policy](#documentation-policy) |
 
@@ -702,7 +703,8 @@ All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`.
 <!-- WO-672@v1: intrinsic exemptions require exact whole values from operator-owned policy. -->
 Intrinsic secrets can be exempted only by exact whole `allowedValues` in the administrator config, or the user config when no system policy exists, never by patterns, project entries, inline comments or a remedy allowlist.
 <!-- WO-672@v1: tighten-only tiers exempt advisory classes without independent authorization evidence. -->
-Project and tighten-only user entries exempt advisory classes only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Inline directives and remedy allowlists retain their existing non-intrinsic behavior. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
+<!-- WO-676@v4: removed markers confer no trust, and remedy files cover only exact advisory values. -->
+Project and tighten-only user entries exempt advisory classes only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Inline markers have no effect. Remedy `--allowlist` files cover exact advisory values only, never custom rules, intrinsic/exact-known-secret evidence or `obfuscate` opt-ins. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
 <!-- WO-672@v1: a project rule does not authorize its own exemption. -->
 A project config cannot exempt hits of its own custom rules; those exemptions require operator-tier policy.
 
@@ -867,15 +869,12 @@ cat .env | pastewatch-cli scan --stdin-filename .env --check
 git show HEAD:config.yml | pastewatch-cli scan --stdin-filename config.yml
 ```
 
-## Inline Allowlist
+<!-- WO-676@v4: document removal without teaching an agent-authored exemption. -->
+## No Inline Exemptions
 
-Suppress findings on a specific line by adding a `pastewatch:allow` comment:
-
-```env
-SAFE_API_KEY=test_key_123  # pastewatch:allow
-```
-
-Works with any comment style (`#`, `//`, `/* */`).
+The `pastewatch:allow` marker was removed in 0.43.0 and no longer suppresses findings.
+CLI findings on a marked line include a migration notice; MCP results do not.
+Use the legitimate routes in [exemptions.md](exemptions.md#removed-in-0430).
 
 ## Pre-commit Framework (pre-commit.com)
 
@@ -921,7 +920,9 @@ a WARN. Agents cannot create or modify this operator-owned file.
 
 Stdin (including `--stdin-filename`), MCP `pastewatch_scan` raw text and the guard's
 command-string pass have no file target and load no project allow file. Explicit
-`scan --allowlist` remains available for advisory suppression.
+<!-- WO-676@v4: explicit remedy files must not remove independently authorized mutations. -->
+`scan --allowlist` accepts exact advisory-class values only, not patterns, custom-rule
+hits, non-ambiguous types, intrinsic/exact-known-secret evidence or `obfuscate` opt-ins.
 All exemption paths and their reach: [exemptions.md](exemptions.md).
 
 Create a file with one value per line to suppress known-safe findings:

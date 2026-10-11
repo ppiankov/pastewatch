@@ -295,7 +295,7 @@ public struct DirectoryScanner {
             }
             let content = input.content
 
-            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+            // WO-676@v4: directory members cannot exempt their own findings through file content.
             fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
             // WO-662@v3: count successful scans, not only files that contribute findings.
             statistics.filesScanned += 1

@@ -49,7 +49,8 @@ final class CheckCommandTests: XCTestCase {
             let matches = try DirectoryScanner.scanFileContentOrThrow(
                 content: content, ext: "md", relativePath: path, config: config)
             let guardDecision = GuardDecision.evaluate(matches: matches, content: content, config: config,
-                                                       contentTrust: .trustedFile, minimumSeverity: .high, filePath: path)
+                                                       // WO-676@v4: verdict parity uses the marker-free evaluator.
+                                                       minimumSeverity: .high, filePath: path)
             let mcp = MCPReadDecision.evaluate(matches: matches, content: content, config: config,
                                               minimumSeverity: .high, filePath: path)
             let proxy = ProxyServer(config: config, quietLog: true)
@@ -186,15 +187,15 @@ final class CheckCommandTests: XCTestCase {
         }
     }
 
-    // WO-637: stdin cannot authorize inline suppression for guard/scan, unlike a trusted file.
+    // WO-676@v4: a marker is inert on file and pathless diagnostic surfaces alike.
     func testInlineAllowTrustIsSurfaceSpecific() throws {
         try withFixture { root, explanation in
             let content = custom() + " # pastewatch:" + "allow"
             for path in [nil, root.appendingPathComponent("input.txt").path] {
                 let report = try ValueVerdict(content: content, filePath: path, explanation: explanation)
-                XCTAssertEqual(report.findings.first?.guardVerdict, path == nil ? "blocks" : "not reported")
-                XCTAssertEqual(report.findings.first?.allowlistSuppression, path == nil ? [] : ["inline allow"])
-                XCTAssertEqual(report.findings.first?.mcp, "unchanged, not reported")
+                XCTAssertEqual(report.findings.first?.guardVerdict, "blocks")
+                XCTAssertEqual(report.findings.first?.allowlistSuppression, [])
+                XCTAssertEqual(report.findings.first?.mcp, "placeholder, restored on write")
                 XCTAssertEqual(report.findings.first?.proxy, "redacted outbound")
             }
         }

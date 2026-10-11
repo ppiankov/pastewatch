@@ -199,7 +199,8 @@ final class ProjectAllowlistTests: XCTestCase {
             try Data((value + "\n").utf8).write(to: root.appendingPathComponent(".pastewatch-allow"))
             let matches = DetectionRules.scanFileIO(value, config: config)
             let decision = GuardDecision.evaluate(matches: matches, content: value, config: config,
-                               contentTrust: .trustedFile, minimumSeverity: nil, filePath: path)
+                               // WO-676@v4: project allow-file behavior is independent of inline content.
+                               minimumSeverity: nil, filePath: path)
             XCTAssertEqual(decision.actionableMatches.filter { $0.customRuleName == "fixture-rule" }.count, 1)
             let report = Allowlist.projectFile(for: path)
             XCTAssertTrue(report.loaded)

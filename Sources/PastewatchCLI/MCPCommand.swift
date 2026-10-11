@@ -587,7 +587,7 @@ final class MCPServer {
             matches: scanResult.matches,
             content: text,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: raw MCP text cannot invoke an inline exemption.
             minimumSeverity: nil,
             // WO-635: inline MCP text has no file-based policy exception.
             filePath: nil
@@ -651,7 +651,7 @@ final class MCPServer {
             matches: matches,
             content: content,
             config: config,
-            contentTrust: .trustedFile,
+            // WO-676@v4: MCP file findings use the marker-free decision policy.
             minimumSeverity: nil,
             // WO-635: file diagnostics retain the requested path.
             filePath: path
@@ -681,7 +681,7 @@ final class MCPServer {
                     matches: result.matches,
                     content: result.content,
                     config: config,
-                    contentTrust: .trustedFile,
+                    // WO-676@v4: directory findings cannot suppress themselves through content.
                     minimumSeverity: nil,
                     // WO-670@v1: report paths are relative to the target directory, never the MCP CWD.
                     filePath: URL(fileURLWithPath: path).appendingPathComponent(result.filePath).path,
@@ -975,7 +975,7 @@ final class MCPServer {
             matches: writeScan,
             content: content,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: placeholder writes share the explicit exemption policy.
             minimumSeverity: nil,
             // WO-635: write policy follows the target file path, not the source of its content.
             filePath: path
@@ -1132,7 +1132,7 @@ final class MCPServer {
             matches: scanResult.matches,
             content: text,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: MCP text verdicts never select a separate inline policy.
             minimumSeverity: nil,
             // WO-635: arbitrary model output is pathless, so existing enforcement is retained.
             filePath: nil

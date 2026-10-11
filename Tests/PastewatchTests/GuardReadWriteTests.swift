@@ -57,7 +57,7 @@ final class GuardReadWriteTests: XCTestCase {
             matches: matches,
             content: content,
             config: config,
-            contentTrust: .trustedFile,
+            // WO-676@v4: native file guards use the marker-free evaluator.
             minimumSeverity: failOnSeverity
         ).actionableMatches
     }
@@ -198,13 +198,19 @@ final class GuardReadWriteTests: XCTestCase {
         }
     }
 
+    // WO-676@v4: a marker cannot suppress a real key; avoid the separate documented-test-key exemption.
     func testInlineAllowSuppressesFinding() throws {
         let path = testDir + "/config.env"
-        let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+        let key = ["AKIA", "QWERTYUIOPASDFGH"].joined()
         try "AWS_KEY=\(key) # pastewatch:allow".write(
             toFile: path, atomically: true, encoding: .utf8)
         let findings = try scanFile(at: path)
-        XCTAssertTrue(findings.isEmpty, "Inline allow should suppress the finding")
+        // WO-676@v4: the former positive suppression test now pins retention and both file guards.
+        XCTAssertEqual(findings.count, 1)
+        XCTAssertTrue(findings.first?.mutationAuthorizationSources.contains(.intrinsicFormat) == true)
+        for operation in [FileGuard.Operation.read, .write] {
+            assertFileGuardBlocks(path: path, operation: operation)
+        }
     }
 
     // WO-672@v1: an operator-owned exact value retains its intrinsic exemption.

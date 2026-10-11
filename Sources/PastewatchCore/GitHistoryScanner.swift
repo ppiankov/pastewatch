@@ -12,14 +12,19 @@ public struct CommitFinding {
     public let date: String
     public let filePath: String
     public let matches: [DetectedMatch]
+    // WO-676@v4: retain only finding lines for CLI migration diagnostics, not entire historical files.
+    public let findingLines: [Int: String]
 
+    // WO-676@v4: default metadata preserves callers that construct historical findings directly.
     public init(commitHash: String, author: String, date: String,
-                filePath: String, matches: [DetectedMatch]) {
+                filePath: String, matches: [DetectedMatch], findingLines: [Int: String] = [:]) {
         self.commitHash = commitHash
         self.author = author
         self.date = date
         self.filePath = filePath
         self.matches = matches
+        // WO-676@v4: source lines are diagnostic metadata and never change detection.
+        self.findingLines = findingLines
     }
 }
 
@@ -125,7 +130,7 @@ public struct GitHistoryScanner {
                 }
                 let content = input.content
                 statistics.recordScanned()
-                fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+                // WO-676@v4: historical content cannot supply an inline exemption.
                 fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
                 // Filter to only added lines
@@ -147,7 +152,9 @@ public struct GitHistoryScanner {
                         author: chunk.author,
                         date: chunk.date,
                         filePath: df.path,
-                        matches: newMatches
+                        // WO-676@v4: only already-reported findings supply CLI migration context.
+                        matches: newMatches,
+                        findingLines: findingLines(matches: newMatches, content: content)
                     ))
                     if bail { return GitLogScanResult(
                         findings: findings,
@@ -165,6 +172,15 @@ public struct GitHistoryScanner {
             // WO-662@v3: skipped blobs never inflate the successful scan count.
             filesScanned: statistics.filesScanned, skippedOverLimit: statistics.skippedOverLimit
         )
+    }
+
+    // WO-676@v4: bounded finding-line metadata avoids a second historical scan or blob read.
+    private static func findingLines(matches: [DetectedMatch], content: String) -> [Int: String] {
+        let lines = content.components(separatedBy: "\n")
+        return Dictionary(uniqueKeysWithValues: Set(matches.map(\.line)).compactMap { line -> (Int, String)? in
+            guard line > 0, line <= lines.count else { return nil }
+            return (line, lines[line - 1])
+        })
     }
 
     // MARK: - Git log command

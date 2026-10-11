@@ -154,13 +154,12 @@ struct Scan: ParsableCommand {
             allowlist: mergedAllowlist,
             customRules: customRulesList
         )
-        // WO-577@v3: diagnostics share test/config/inline policy with file guards.
+        // WO-676@v4: diagnostics share marker-free test and configuration policy with file guards.
         matches = GuardDecision.evaluate(
             matches: matches,
             content: input,
             config: config,
-            // WO-577@v3: a filename selects parsing metadata, not caller trust.
-            contentTrust: file != nil ? .trustedFile : .agentControlled,
+            // WO-676@v4: a filename never enables a separate inline exemption policy.
             minimumSeverity: nil,
             // WO-635: stdin-filename is parser metadata, not a real file path.
             filePath: file
@@ -189,6 +188,8 @@ struct Scan: ParsableCommand {
             ).text
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
+        // WO-676@v4: CLI text diagnostics attach migration advice only to reported findings.
+        if format == .text { FileGuard.printInlineMarkerNotices(matches: matches, content: input) }
         if shouldFail(matches: matches) {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)
@@ -410,7 +411,7 @@ struct Scan: ParsableCommand {
                 matches: allMatches,
                 content: fr.content,
                 config: config,
-                contentTrust: .trustedFile,
+                // WO-676@v4: directory members share explicit configuration exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: relative report paths are bound to the scan root, never the process CWD.
                 filePath: URL(fileURLWithPath: dirPath).appendingPathComponent(fr.filePath).path,
@@ -512,7 +513,7 @@ struct Scan: ParsableCommand {
                 matches: allMatches,
                 content: fr.content,
                 config: config,
-                contentTrust: .trustedFile,
+                // WO-676@v4: Git diff findings do not honor inline exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: deleted targets retain the explicitly scanned Git root.
                 filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(fr.filePath).path,
@@ -600,13 +601,12 @@ struct Scan: ParsableCommand {
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
                 allMatches = allowlist.filter(allMatches)
             }
-            // WO-577@v3: history scanners already apply trusted inline allow; this
-            // decision adds test-credential parity without reclassifying content.
+            // WO-676@v4: history diagnostics share the same marker-free finding policy.
             allMatches = GuardDecision.evaluate(
                 matches: allMatches,
                 content: "",
                 config: config,
-                contentTrust: .agentControlled,
+                // WO-676@v4: history findings do not honor inline exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: deleted historical directories retain the explicitly scanned Git root.
                 filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(cf.filePath).path,
@@ -615,7 +615,8 @@ struct Scan: ParsableCommand {
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(
                     commitHash: cf.commitHash, author: cf.author,
-                    date: cf.date, filePath: cf.filePath, matches: allMatches
+                    // WO-676@v4: preserve the historical lines attached to selected findings.
+                    date: cf.date, filePath: cf.filePath, matches: allMatches, findingLines: cf.findingLines
                 ))
             }
         }
@@ -627,7 +628,8 @@ struct Scan: ParsableCommand {
                 guard !filtered.isEmpty else { return nil }
                 return CommitFinding(
                     commitHash: cf.commitHash, author: cf.author,
-                    date: cf.date, filePath: cf.filePath, matches: filtered
+                    // WO-676@v4: baseline filtering retains source-line context without rereading blobs.
+                    date: cf.date, filePath: cf.filePath, matches: filtered, findingLines: cf.findingLines
                 )
             }
         }
@@ -659,6 +661,10 @@ struct Scan: ParsableCommand {
         switch format {
         case .text:
             outputGitLogText(findings: findings, result: result)
+            // WO-676@v4: migration text uses finding lines from the same historical scan.
+            FileGuard.printInlineMarkerNotices(count: findings.reduce(0) {
+                $0 + FileGuard.inlineMarkerNoticeCount(matches: $1.matches, lines: $1.findingLines)
+            })
         case .json:
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
@@ -677,6 +683,10 @@ struct Scan: ParsableCommand {
             let commitCount = Set(findings.map { $0.commitHash }).count
             let msg = "\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits)\n"
             FileHandle.standardError.write(Data(msg.utf8))
+            // WO-676@v4: check-mode history output carries the same finding-bound notice.
+            FileGuard.printInlineMarkerNotices(count: findings.reduce(0) {
+                $0 + FileGuard.inlineMarkerNoticeCount(matches: $1.matches, lines: $1.findingLines)
+            })
         case .json:
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
@@ -772,6 +782,8 @@ struct Scan: ParsableCommand {
                     .map { "\($0.key.rawValue): \($0.value.count)" }
                     .joined(separator: ", ")
                 FileHandle.standardError.write(Data("\(prefix)\(fr.filePath): \(summary)\n".utf8))
+                // WO-676@v4: directory and Git-diff findings retain their own source text.
+                FileGuard.printInlineMarkerNotices(matches: fr.matches, content: fr.content)
             }
             // WO-662@v3: zero findings is not a substitute for scan evidence.
             if let statistics {
@@ -800,6 +812,8 @@ struct Scan: ParsableCommand {
                 for match in fr.matches {
                     print("  line \(match.line): \(match.displayName): \(match.value)")
                 }
+                // WO-676@v4: only reported text findings receive migration advice.
+                FileGuard.printInlineMarkerNotices(matches: fr.matches, content: fr.content)
             }
             // WO-662@v3: unsupported-only directories never appear as an empty clean result.
             if let statistics { print(statistics.summary(findings: results.reduce(0) { $0 + $1.matches.count })) }

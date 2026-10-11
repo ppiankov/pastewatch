@@ -553,7 +553,8 @@ public enum DocumentationPolicy: String, Codable {
 
 // WO-672@v1: suppression authority is derived from the loader, never decoded from policy files.
 public enum AllowlistSource: String, Hashable {
-    case system, user, project, projectFile, remedy, inlineDirective
+    // WO-676@v4: file content no longer supplies an allowlist source.
+    case system, user, project, projectFile, remedy
     // WO-672@v1: system policy removes intrinsic exemption authority from user contributions.
     case restrictedUser
 }

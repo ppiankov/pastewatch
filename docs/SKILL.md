@@ -554,14 +554,13 @@ Response: inventory report with severity breakdown, hot spots, type groups, and 
 
 SARIF maps: critical/high → `error`, medium → `warning`, low → `note`.
 
-## Inline allowlist
+<!-- WO-676@v4: agents must report false positives rather than creating exemptions. -->
+## No inline exemptions
 
-Add `pastewatch:allow` anywhere on a line to suppress findings on that line:
-
-```
-API_KEY=test_12345  # pastewatch:allow
-password = "dev"    // pastewatch:allow
-```
+The `pastewatch:allow` marker was removed in 0.43.0 and has no effect. Agents must
+never add markers or allow entries to silence findings. Report a false positive
+to the operator; use the canonical [documentation placeholder forms](../README.md#documenting-credentials)
+for examples. See [exemptions and migration](exemptions.md#removed-in-0430).
 
 ## What this does NOT do
 

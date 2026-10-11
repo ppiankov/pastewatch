@@ -65,7 +65,8 @@ public struct MCPReadDecision {
     ) -> MCPReadDecision {
         let decision = GuardDecision.evaluate(
             matches: matches, content: content, config: config,
-            contentTrust: .trustedFile, minimumSeverity: minimumSeverity, filePath: filePath
+            // WO-676@v4: MCP content cannot supply its own exemption.
+            minimumSeverity: minimumSeverity, filePath: filePath
         )
         let partition = partitionMutationMatches(
             decision.reportableMatches, site: .mcpRead, minAdvisorySeverity: minimumSeverity

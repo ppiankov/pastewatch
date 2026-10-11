@@ -201,7 +201,7 @@ final class GuardCommandTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config),
             content: content,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: referenced content never supplies an inline exemption.
             minimumSeverity: .high
         )
 

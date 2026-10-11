@@ -59,7 +59,7 @@ struct Guard: ParsableCommand {
             matches: commandMatches,
             content: command,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: command content cannot select an inline exemption policy.
             minimumSeverity: failOnSeverity,
             // WO-635: shell command text is not a documentation file.
             filePath: nil
@@ -69,9 +69,13 @@ struct Guard: ParsableCommand {
         let commandFiltered = commandDecision.actionableMatches
         // WO-138: JSON output must preserve command context without echoing inline credential values.
         let redactedCommand = Obfuscator.redactForDisplay(command, matches: commandDisplayMatches)
+        // WO-676@v4: notices reuse the policy-selected command and file findings.
+        var inlineMarkerNotices = 0
 
         if !commandFiltered.isEmpty {
             shouldBlock = true
+            // WO-676@v4: no finding means no migration notice.
+            inlineMarkerNotices += FileGuard.inlineMarkerNoticeCount(matches: commandFiltered, content: command)
             let bySeverity = Dictionary(grouping: commandFiltered, by: { $0.effectiveSeverity })
             let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
                 .sorted()
@@ -93,16 +97,11 @@ struct Guard: ParsableCommand {
             let scan = try scanReferencedFile(path: path, config: config, role: read.role)
             let content = scan.content
             let matches = scan.matches
-            // WO-502: files REFERENCED by an agent-controlled command are themselves
-            // agent-controllable — the agent can write `# pastewatch:allow` into a file it
-            // then `cat`s. Treat the referenced content as .agentControlled so inline allow
-            // comments cannot self-authorize a secret one layer over. Operator-named files
-            // (guard-read/guard-write, FileWatcher) remain .trustedFile.
+            // WO-676@v4: referenced files use the same explicit exemptions as all other surfaces.
             let filtered = GuardDecision.evaluate(
                 matches: matches,
                 content: content,
                 config: config,
-                contentTrust: .agentControlled,
                 minimumSeverity: failOnSeverity,
                 // WO-635: referenced file content has a real path, unlike the command string.
                 filePath: path
@@ -110,6 +109,8 @@ struct Guard: ParsableCommand {
 
             if !filtered.isEmpty {
                 shouldBlock = true
+                // WO-676@v4: inspect each finding's own file line for migration diagnostics only.
+                inlineMarkerNotices += FileGuard.inlineMarkerNoticeCount(matches: filtered, content: content)
                 let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
                 let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
                     .sorted()
@@ -144,6 +145,8 @@ struct Guard: ParsableCommand {
                     let msg = "BLOCKED: command contains inline secret(s) (\(ir.severityCounts): \(ir.types.joined(separator: ", ")))\n"
                     FileHandle.standardError.write(Data(msg.utf8))
                 }
+                // WO-676@v4: migration text is confined to human-facing block output.
+                FileGuard.printInlineMarkerNotices(count: inlineMarkerNotices)
                 // WO-658@v2: offer both sanctioned surfaces when referenced or inline findings block a command.
                 FileHandle.standardError.write(Data(("Use pastewatch_read_file / pastewatch_edit_file, or pastewatch-cli read <file> " +
                     "then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... .\n").utf8))

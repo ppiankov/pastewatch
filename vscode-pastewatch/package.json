@@ -2,7 +2,7 @@
   "name": "pastewatch",
   "displayName": "pastewatch",
   "description": "Real-time secret detection in the editor.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "ppiankov",
   "license": "MIT",
   "icon": "icon.png",
