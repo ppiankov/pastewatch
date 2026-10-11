@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Limit `--allowlist` to exact advisory-class values so it cannot suppress custom rules, exact-known secrets, opted-in mutations or non-ambiguous findings. (WO-676)
 
+### Fixed
+- Directory command-guard blocks now suggest a directory scan or an operator-run command; the binary-grant hint is reserved for regular non-UTF-8 files. (WO-677)
+
 ### Documentation
 - New `docs/exemptions.md`: every path that lets a finding through, who may author it, whether it reaches intrinsic secrets, and its scope and lifetime.
 - README states two more non-goals (not an approval system, not a sandbox) and adds "Where Pastewatch stops".

@@ -193,7 +193,8 @@ struct Guard: ParsableCommand {
                 if role == .transferSource, BinaryTransferGrants.permitsTransfer(path: path, bytes: data) {
                     return ReferencedFileScan(content: "", matches: [])
                 }
-                try blockUnscannableFile(path)
+                // WO-677@v1: only a proven non-UTF-8 regular file can use the binary-transfer remedy.
+                try blockUnscannableFile(path, isNonUTF8: true)
             }
             let refExt = (path as NSString).pathExtension.lowercased()
             let matches = try DirectoryScanner.scanFileContentOrThrow(
@@ -223,15 +224,27 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-677@v1: directory and I/O failures must not suggest a regular-file-only grant.
     // WO-673@v2: the binary block names an operator-only remedy without offering a guard bypass.
     // WO-601@v2: diagnostics identify the evidence boundary without file bytes.
-    private func blockUnscannableFile(_ path: String) throws -> Never {
+    private func blockUnscannableFile(_ path: String, isNonUTF8: Bool = false) throws -> Never {
         if !quiet {
-            FileHandle.standardError.write(
-                Data("BLOCKED: \(path) cannot be scanned safely\n".utf8)
-            )
-            // WO-673@v2: admission remains the operator's explicit decision, never an agent action.
-            FileHandle.standardError.write(Data("Operator: run pastewatch-cli allow-binary \(path) yourself; agents cannot grant this.\n".utf8))
+            // WO-677@v1: classify the real target, including symlinks, without opening its contents again.
+            let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            let type = (try? FileManager.default.attributesOfItem(atPath: resolvedPath))?[.type] as? FileAttributeType
+            if type == .typeDirectory {
+                FileHandle.standardError.write(Data("BLOCKED: \(path) is a directory and cannot be scanned safely as a file.\n".utf8))
+                FileHandle.standardError.write(Data("Scan it with pastewatch-cli scan --dir \(path), or run the command yourself.\n".utf8))
+            } else {
+                FileHandle.standardError.write(Data("BLOCKED: \(path) cannot be scanned safely\n".utf8))
+                // WO-677@v1: other non-regular or unreadable paths have no binary-grant remedy.
+                if isNonUTF8 && type == .typeRegular {
+                    // WO-673@v2: admission remains the operator's explicit decision, never an agent action.
+                    FileHandle.standardError.write(Data("Operator: run pastewatch-cli allow-binary \(path) yourself; agents cannot grant this.\n".utf8))
+                } else {
+                    FileHandle.standardError.write(Data("This target cannot be inspected as a regular text file; run the command yourself.\n".utf8))
+                }
+            }
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }

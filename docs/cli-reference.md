@@ -506,6 +506,13 @@ pastewatch-cli guard --json "cat config.yml"
 
 Handles pipe chains (`|`), command chaining (`&&`, `||`, `;`), redirect operators, subshell extraction (`$(...)`, backticks), scripting interpreters, file transfer tools, infrastructure tools (terraform, docker, kubectl), and database CLIs (psql, mysql, redis-cli) with inline value scanning.
 
+<!-- WO-677@v1: directory-reader blocks need a remedy that accepts directories, not a binary-file grant. -->
+The guard refuses directory operands in recursive readers such as `grep -r`, and
+`cat` on a directory: a directory cannot be inspected as one bounded text file.
+Scan it explicitly with `pastewatch-cli scan --dir <dir>`, or run the command
+yourself. `allow-binary` grants cover regular binary/non-UTF-8 files only, never
+directories or other non-regular targets.
+
 Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [agent-setup.md](agent-setup.md) for hook configuration.
 
 Every way a guarded finding can be let through, and who may author each one: [exemptions.md](exemptions.md).
