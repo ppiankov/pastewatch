@@ -34,6 +34,10 @@ Notes:
   `obfuscate`. See [Configuration](../README.md#configuration).
 - When a system config (`/etc`) exists, the user tier becomes tighten-only too,
   with the same advisory-only exemption reach as a project file.
+<!-- WO-685@v1: lower-tier exact entries cannot reverse an operator opt-in. -->
+- Project config, `.pastewatch-allow` and tighten-only user exemptions cannot
+  undo an operator's `obfuscate` opt-in. Exact advisory values without that
+  mutation evidence remain exemptible; global operator-tier behavior is unchanged.
 - **Tighten-only** means a project file can add rules and lower thresholds, but
   cannot loosen what the operator configured. Project `enabled`, `safeHosts` and
   similar loosening fields are ignored.

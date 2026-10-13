@@ -37,6 +37,7 @@ public struct MutationOutcome {
 
 // WO-676@v4: remedy files exempt only exact advisory values without mutation authorization.
 // WO-672@v1: tighten-only tiers exempt advisory classes without independently authorized evidence.
+// WO-685@v1: subordinate exemptions cannot undo operator-configured mutation evidence.
 public func permitsAllowlistSuppression(
     of match: DetectedMatch, source: AllowlistSource, exactValue: Bool
 ) -> Bool {
@@ -44,7 +45,8 @@ public func permitsAllowlistSuppression(
     if source == .project || source == .projectFile || source == .restrictedUser || source == .remedy {
         if source == .remedy && (!exactValue || !match.mutationAuthorizationSources.isEmpty) { return false }
         return match.type.isAmbiguousClass && match.customRuleName == nil &&
-            match.mutationAuthorizationSources.isDisjoint(with: [.customRule, .intrinsicFormat, .exactKnownSecret])
+            // WO-685@v1: explicit obfuscation remains protected at every subordinate exemption source.
+            match.mutationAuthorizationSources.isDisjoint(with: [.customRule, .intrinsicFormat, .exactKnownSecret, .configuredObfuscate])
     }
     // WO-676@v4: operator configuration keeps its existing exact-value and pattern authority.
     guard match.mutationAuthorizationSources.contains(.intrinsicFormat) else {

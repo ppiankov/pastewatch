@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Limit `--allowlist` to exact advisory-class values so it cannot suppress custom rules, exact-known secrets, opted-in mutations or non-ambiguous findings. (WO-676)
 - Offer VS Code project allow-file actions only for findings explicitly marked as exemptible by the CLI's shared policy; absent eligibility metadata disables the action. Fold the extension change into unreleased 0.2.0. (WO-682)
+- Keep project and tighten-only user exemptions from undoing operator-configured obfuscation, while retaining exact advisory and global operator-tier exemptions. (WO-685)
 
 ### Fixed
 - Directory command-guard blocks now suggest a directory scan or an operator-run command; the binary-grant hint is reserved for regular non-UTF-8 files. (WO-677)
