@@ -313,7 +313,8 @@ final class ProjectAllowlistTests: XCTestCase {
         process.executableURL = executable ?? repo.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: exact exemption probes preserve enforcement without environment toggles.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

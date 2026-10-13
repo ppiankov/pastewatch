@@ -180,7 +180,8 @@ final class MCPVersionAndRemedyTests: XCTestCase {
         process.executableURL = cliURL()
         process.arguments = arguments
         process.currentDirectoryURL = directory
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: remedy probes do not set the retired guard switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

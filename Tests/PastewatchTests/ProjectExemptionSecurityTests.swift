@@ -203,7 +203,8 @@ final class ProjectExemptionSecurityTests: XCTestCase {
         process.executableURL = repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: security probes cannot depend on an environment enable switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

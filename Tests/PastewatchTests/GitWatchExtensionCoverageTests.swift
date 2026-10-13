@@ -113,7 +113,8 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             process.arguments = ["watch", "--dir", input.path]
             process.currentDirectoryURL = root
             // WO-672@v1: child scans cannot load the operator's global configuration.
-            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+            // WO-687@v2: live watch fixtures need no guard environment switch.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
             process.standardOutput = FileHandle.nullDevice
             process.standardError = diagnostics
             // WO-674@v2: distinguish completed initialization from a subsequent reported event.
@@ -218,7 +219,8 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
         process.currentDirectoryURL = root
         // WO-672@v1: preserve the fixture global path when pinning subprocess environment.
         process.environment = TestConfigHelper.subprocessEnvironment([
-            "PATH": "/usr/bin:/bin", "PW_GUARD": "1",
+            // WO-687@v2: fixture Git identity remains unchanged without guard toggles.
+            "PATH": "/usr/bin:/bin",
             "GIT_AUTHOR_NAME": "ppiankov", "GIT_AUTHOR_EMAIL": "103106369+ppiankov@users.noreply.github.com",
             "GIT_COMMITTER_NAME": "ppiankov", "GIT_COMMITTER_EMAIL": "103106369+ppiankov@users.noreply.github.com"
         ])

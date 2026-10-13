@@ -114,7 +114,8 @@ final class MCPAutomaticReadWindowTests: XCTestCase {
             process.arguments = ["guard-read", path.path]
             process.currentDirectoryURL = root
             // WO-672@v1: read-window probes use only fixture configuration at both tiers.
-            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+            // WO-687@v2: child policy remains isolated without a retired guard toggle.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
             process.standardOutput = output
             process.standardError = errors
             try process.run()

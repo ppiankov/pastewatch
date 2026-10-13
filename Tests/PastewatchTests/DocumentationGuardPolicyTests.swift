@@ -179,7 +179,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
                 process.arguments = ["guard-read", path]
                 process.currentDirectoryURL = root
                 // WO-672@v1: the subprocess guard shares only the DEBUG fixture path.
-                process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+                // WO-687@v2: document policy remains active without an environment guard switch.
+                process.environment = TestConfigHelper.subprocessEnvironment()
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = stderr
                 try process.run()
@@ -401,7 +402,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = root
         // WO-672@v1: global configuration remains isolated after tier merging.
-        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+        // WO-687@v2: document subprocesses need only isolated configuration.
+        process.environment = TestConfigHelper.subprocessEnvironment()
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice

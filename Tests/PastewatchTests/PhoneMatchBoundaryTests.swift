@@ -104,7 +104,8 @@ final class PhoneMatchBoundaryTests: XCTestCase {
             ?? repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "HOME": root.path, "PW_GUARD": "1"])
+        // WO-687@v2: fixture processes need no guard environment switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "HOME": root.path])
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

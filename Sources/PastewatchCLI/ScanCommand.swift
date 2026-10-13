@@ -97,9 +97,9 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // WO-687@v2: check-mode scans have no environment-controlled bypass.
     func run() throws {
-        if check && ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: every scan loads and applies the same validated configuration.
         // WO-574@v4: a present invalid active config must block scanning.
         let config = try requireValidatedConfig()
         let mergedAllowlist: Allowlist
@@ -177,6 +177,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: a reported finding emits one stderr notice regardless of output format.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputCheckMode(matches: matches, filePath: file)
         } else {
@@ -361,6 +363,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Directory scanning
 
+    // WO-687@v2: directory findings share a single CLI environment notice.
     // WO-662@v3: directory scans emit coverage even when no file contributes a finding.
     // WO-670@v1: file decisions retain the explicitly scanned directory context.
     private func runDirectoryScan(
@@ -439,6 +442,8 @@ struct Scan: ParsableCommand {
         guard !filteredResults.isEmpty else { return }
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: collection output emits advice once, not once per member file.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             // WO-662@v3: preserve check-mode findings diagnostics alongside scan coverage.
             outputDirCheckMode(results: filteredResults)
@@ -460,6 +465,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git diff scanning
 
+    // WO-687@v2: staged findings retain policy enforcement and one CLI-only notice.
     // WO-675@v2: report Git diff coverage in every format, including findings-free staged scans.
     // WO-662@v3: Git diff coverage includes named line-limit skips without changing finding output.
     // WO-670@v1: Git-relative result paths retain their actual repository root for policy loading.
@@ -542,6 +548,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: Git-diff results trigger advice once after all policy filters.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputDirCheckMode(results: filteredResults)
         } else {
@@ -556,6 +564,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git log scanning
 
+    // WO-687@v2: historical findings use the same diagnostic-only environment handling.
     // WO-662@v3: history line-limit skips are visible without replacing the legacy result schema.
     // WO-670@v1: historical file findings share target-root exact exemptions with staged findings.
     private func runGitLogScan(
@@ -638,6 +647,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: historical findings never emit duplicate migration advice.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputGitLogCheckMode(findings: filteredFindings, result: result)
         } else {

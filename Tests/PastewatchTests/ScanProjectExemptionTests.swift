@@ -84,7 +84,8 @@ final class ScanProjectExemptionTests: XCTestCase {
         process.executableURL = repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: scanning runs under fixture policy without guard toggles.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout

@@ -752,9 +752,10 @@ Real-time secret detection in the editor with inline diagnostics, hover tooltips
 
 ## Environment Variables
 
+<!-- WO-687@v2: obsolete settings can request migration advice but never alter enforcement. -->
 | Variable | Effect |
 |----------|--------|
-| `PW_GUARD=0` | Disable `guard` and `scan --check` - all commands allowed, no scanning. Set before starting the agent session. |
+| `PW_GUARD` | Removed in 0.43.0. No value changes guard or scan decisions. If set, commands reporting findings print one migration notice on stderr; clean commands print none. To stop hook invocation, disable the hook in the agent's own settings. |
 
 ## Pre-commit Hook
 

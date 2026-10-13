@@ -8,26 +8,19 @@ import XCTest
 final class GuardReadWriteTests: XCTestCase {
 
     private var testDir: String!
-    private var originalGuardValue: String?
     private let config = PastewatchConfig.defaultConfig
 
+    // WO-687@v2: native file guards need no process-global enable switch.
     override func setUp() {
         super.setUp()
-        // WO-588@v2: exercise production guard behavior even under PW_GUARD=0 test shells.
-        originalGuardValue = ProcessInfo.processInfo.environment["PW_GUARD"]
-        setenv("PW_GUARD", "1", 1)
+        // WO-687@v2: fixture lifecycle changes no retired guard environment state.
         testDir = NSTemporaryDirectory() + "pastewatch-guard-rw-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 
-    // WO-588@v2: restore the guard environment after unreadable-input checks.
+    // WO-687@v2: teardown cleans only the fixture directory, not guard environment state.
     override func tearDown() {
         try? FileManager.default.removeItem(atPath: testDir)
-        if let originalGuardValue {
-            setenv("PW_GUARD", originalGuardValue, 1)
-        } else {
-            unsetenv("PW_GUARD")
-        }
         super.tearDown()
     }
 

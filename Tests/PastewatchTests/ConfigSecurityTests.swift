@@ -194,14 +194,11 @@ final class ConfigSecurityTests: XCTestCase {
         }
     }
 
+    // WO-687@v2: policy-file protection is unconditional without environment scaffolding.
     // WO-672@v1: protection applies to empty and nonexistent operator-owned targets.
     func testOperatorFileCreationIsRefused() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
-            let previous = ProcessInfo.processInfo.environment["PW_GUARD"]
-            setenv("PW_GUARD", "1", 1)
-            defer {
-                if let previous { setenv("PW_GUARD", previous, 1) } else { unsetenv("PW_GUARD") }
-            }
+            // WO-687@v2: fixture policy alone determines the expected refusal.
             for name in [".pastewatch.json", ".pastewatch-allow"] {
                 let path = root.appendingPathComponent(name).path
                 XCTAssertThrowsError(try FileGuard.check(filePath: path, failOnSeverity: .high, operation: .write))
@@ -314,7 +311,8 @@ final class ConfigSecurityTests: XCTestCase {
         process.executableURL = repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+        // WO-687@v2: security subprocesses need only isolated configuration.
+        process.environment = TestConfigHelper.subprocessEnvironment()
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

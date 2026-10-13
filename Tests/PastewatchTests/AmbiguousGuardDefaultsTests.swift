@@ -78,9 +78,8 @@ final class AmbiguousGuardDefaultsTests: XCTestCase {
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["guard-read", file.path]
         process.currentDirectoryURL = root
-        var environment = ProcessInfo.processInfo.environment
-        environment["PW_GUARD"] = "1"
-        process.environment = environment
+        // WO-687@v2: inherited settings cannot turn off native file guards.
+        process.environment = ProcessInfo.processInfo.environment
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
@@ -110,10 +109,9 @@ final class AmbiguousGuardDefaultsTests: XCTestCase {
             "--stdin-filename", "fixture.txt",
         ]
         process.currentDirectoryURL = home
-        var environment = ProcessInfo.processInfo.environment
+        // WO-687@v2: preserve the ordinary environment without a retired guard override.
         // WO-634: retain the ordinary process environment, not Foundation home redirection.
-        environment["PW_GUARD"] = "1"
-        process.environment = environment
+        process.environment = ProcessInfo.processInfo.environment
 
         let stdin = Pipe()
         let stdout = Pipe()

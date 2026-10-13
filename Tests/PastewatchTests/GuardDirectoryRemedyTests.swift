@@ -50,7 +50,8 @@ final class GuardDirectoryRemedyTests: XCTestCase {
         process.executableURL = repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = ["guard", command]
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: directory refusals always run without an enable switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         let stderr = Pipe()

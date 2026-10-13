@@ -66,7 +66,8 @@ final class GitIgnoredPipeSafetyTests: XCTestCase {
                 process.arguments = ["scan", "--dir", input.path, "--check"]
                 process.currentDirectoryURL = root
                 // WO-672@v1: process-liveness probes keep all configuration fixture-owned.
-                process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+                // WO-687@v2: pipe-safety probes use unconditional scanning.
+                process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
                 try process.run()

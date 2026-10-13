@@ -332,7 +332,8 @@ final class InlineAllowlistTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = ["PATH": "/usr/bin:/bin", "HOME": root.path, "PW_GUARD": "1"]
+        // WO-687@v2: fixture Git commands do not set retired guard controls.
+        process.environment = ["PATH": "/usr/bin:/bin", "HOME": root.path]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -403,14 +404,16 @@ final class InlineAllowlistTests: XCTestCase {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
     }
 
-    // WO-676@v4: executable regressions select fixture policy and explicitly enable the guard.
+    // WO-687@v2: executable regressions select fixture policy without an environment guard toggle.
+    // WO-676@v4: executable regressions select fixture policy.
     private func command(_ arguments: [String], root: URL, input: Data = Data()) throws -> CommandResult {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let process = Process()
         process.executableURL = repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: enforcement is unconditional for fixture subprocesses.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout

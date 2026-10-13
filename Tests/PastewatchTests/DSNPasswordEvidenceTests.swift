@@ -212,7 +212,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             process.arguments = ["guard-read", path.path]
             process.currentDirectoryURL = root
             // WO-672@v1: isolate the child global policy independently of project policy.
-            process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+            // WO-687@v2: password-evidence probes need isolated policy, not environment enablement.
+            process.environment = TestConfigHelper.subprocessEnvironment()
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()

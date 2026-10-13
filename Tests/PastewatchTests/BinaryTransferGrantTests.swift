@@ -354,7 +354,8 @@ final class BinaryTransferGrantTests: XCTestCase {
         process.currentDirectoryURL = root
         // WO-673@v2: expansion controls receive only named fixture variables, never the inherited environment.
         process.environment = TestConfigHelper.subprocessEnvironment(
-            ["PATH": "/usr/bin:/bin", "PW_GUARD": "1"].merging(environment) { _, value in value })
+            // WO-687@v2: named expansion fixtures do not need an environment guard switch.
+            ["PATH": "/usr/bin:/bin"].merging(environment) { _, value in value })
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

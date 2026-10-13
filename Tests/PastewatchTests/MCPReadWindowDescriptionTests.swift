@@ -41,7 +41,8 @@ final class MCPReadWindowDescriptionTests: XCTestCase {
             process.executableURL = executable()
             process.arguments = ["guard-read", target.path]
             process.currentDirectoryURL = root
-            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+            // WO-687@v2: fixture policy works without an environment guard toggle.
+            process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
             let output = Pipe()
             let errors = Pipe()
             process.standardOutput = output

@@ -141,7 +141,8 @@ final class ProjectExemptionMetadataTests: XCTestCase {
             ?? repository.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "HOME": root.path, "PW_GUARD": "1"])
+        // WO-687@v2: opt-in policy does not depend on an environment guard switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "HOME": root.path])
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout

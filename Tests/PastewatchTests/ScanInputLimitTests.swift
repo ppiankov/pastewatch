@@ -93,7 +93,7 @@ final class ScanInputLimitTests: XCTestCase {
         process.executableURL = pastewatchCLIURL()
         process.arguments = ["scan", "--check"] + (file.map { ["--file", $0.path] } ?? [])
         var environment = ProcessInfo.processInfo.environment
-        environment["PW_GUARD"] = "1"
+        // WO-687@v2: input limits do not depend on environment guard enablement.
         for (key, value) in overrides {
             environment[key] = value
         }

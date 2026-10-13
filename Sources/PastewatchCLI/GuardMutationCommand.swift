@@ -69,11 +69,11 @@ struct GuardMutation: ParsableCommand {
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
     var failOnSeverity: Severity = .defaultGuardThreshold
 
+    // WO-687@v2: structured mutations always reach ownership and policy evaluation.
     // WO-672@v1: operator-owned targets are refused before target I/O or evaluation.
     // WO-526@v3: stdin content is evaluated without copying secrets into argv.
     func run() throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: inherited settings cannot admit structured mutations.
         let limits = ScanInputLimits.current()
         let input: GuardMutationInput
         do {
@@ -140,7 +140,11 @@ struct GuardMutation: ParsableCommand {
 
         // WO-676@v4: observe existing policy scans; migration advice must never initiate another scan.
         var inlineMarkerNotices = 0
+        // WO-687@v2: remember only whether existing policy scans selected findings.
+        var hasFindings = false
         let onFindings: (String, [DetectedMatch]) -> Void = { content, matches in
+            // WO-687@v2: observers collect diagnostic metadata without altering the evaluator.
+            hasFindings = hasFindings || !matches.isEmpty
             inlineMarkerNotices = max(inlineMarkerNotices, FileGuard.inlineMarkerNoticeCount(matches: matches, content: content))
         }
         let decision: GuardMutationDecision
@@ -173,6 +177,8 @@ struct GuardMutation: ParsableCommand {
         }
 
         guard case .block(let reason) = decision else { return }
+        // WO-687@v2: only a finding-backed denial emits retirement advice, once per command.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: hasFindings)
         // WO-676@v4: notices accompany a denial only, never a clean or admitted mutation.
         try deny(reason == .touchesExistingFinding
             ? "proposed edit overlaps protected content"

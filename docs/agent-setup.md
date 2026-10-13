@@ -427,8 +427,9 @@ args = ["mcp", "--audit-log", "/tmp/pastewatch-audit.log"]
 enabled = true
 ```
 
-Toggle hooks: set `[features] hooks = false` in `config.toml`; set `PW_GUARD=0`
-in the shell to bypass for a session.
+<!-- WO-687@v2: the operator turns off hook invocation in the agent's settings. -->
+Toggle hooks: set `[features] hooks = false` in `config.toml`. Direct guard
+commands still enforce policy; there is no environment bypass.
 
 ---
 
@@ -535,18 +536,17 @@ fi
 
 The `guard` subcommand extracts file paths from shell commands (`cat`, `head`, `tail`, `sed`, `grep`, etc.), scans them for secrets, and returns allow/block.
 
-### Escape hatch
+<!-- WO-687@v2: unguarded operation requires disabling the operator-owned hook, not setting an environment variable. -->
+### How to turn the guard off
 
-Structural guards need a bypass for legitimate cases - editing detection rules, testing patterns, or working with files that contain intentional secret-like strings.
+Disable the hook in the agent's own settings for intentional unguarded work, then
+re-enable it. This stops hook invocation, not enforcement by directly invoked
+guard commands.
 
-`PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately - every hook that calls pastewatch-cli gets the bypass for free, no per-hook logic needed.
-
-```bash
-export PW_GUARD=0    # disable for current shell session
-unset PW_GUARD       # re-enable (or restart shell)
-```
-
-This is agent-proof by design: the guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` to bypass it - only the human can, before starting the agent session. The bypass requires human action outside the agent's control.
+`PW_GUARD` was removed in 0.43.0. No value changes guard or scan decisions.
+Commands that report findings print one migration notice on stderr if the variable
+is still set; clean commands print none. There is no replacement in-tool switch.
+See [Exemptions](exemptions.md#removed-in-0430) for supported narrow alternatives.
 
 ### Enforcement matrix
 

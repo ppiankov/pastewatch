@@ -21,12 +21,12 @@ struct Guard: ParsableCommand {
     @Flag(name: .long, help: "Exit code only, no output")
     var quiet = false
 
+    // WO-687@v2: guard decisions are independent of inherited environment switches.
     // WO-673@v2: grants admit only individual transfer reads, never other readers of the same path.
     // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
     // WO-658@v2: unresolved redacted-tool paths do not bypass guarded file access.
     func run() throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: every invocation reaches validated policy and source checks.
         // WO-574@v4: command guards cannot fall back from a corrupt active config.
         let config = try requireValidatedConfig()
         // WO-644@v2: diagnostics and read targets share the same parse result.
@@ -124,6 +124,8 @@ struct Guard: ParsableCommand {
         }
 
         if shouldBlock {
+            // WO-687@v2: one stderr notice accompanies findings in text, JSON and quiet modes.
+            FileGuard.printGuardEnvironmentNotice(hasFindings: true)
             if json {
                 let result = GuardResult(
                     blocked: true,

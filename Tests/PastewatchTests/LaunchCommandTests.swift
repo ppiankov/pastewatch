@@ -511,7 +511,7 @@ final class LaunchCommandTests: XCTestCase {
         try TestConfigHelper.ensureProjectConfig(in: cwd)
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
-        environment.removeValue(forKey: "PW_GUARD")
+        // WO-687@v2: launch fixtures no longer manipulate retired guard controls.
         // WO-418: launch env tests must not inherit an operator gateway from the parent shell.
         environment.removeValue(forKey: "ANTHROPIC_BASE_URL")
         environment.removeValue(forKey: fixtureContextProbeEnvironmentKey)

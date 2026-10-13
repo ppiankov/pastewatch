@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Removed
+<!-- WO-687@v2: retire the environment bypass without introducing another off switch. -->
+- Remove the `PW_GUARD` environment bypass; inherited values no longer change guard or scan decisions, and finding-bearing CLI output prints one migration notice. Disable the agent hook in its own settings for intentional unguarded work. (WO-687)
 - Remove the inline `pastewatch:allow` marker and its VS Code quick fix (extension 0.2.0); marked lines retain findings, with one counted CLI-only migration notice per output. Legitimate uses belong in operator-tier exact exemptions, advisory `.pastewatch-allow` entries, fixture-directory `.pastewatchignore` exclusions or canonical documentation placeholders. (WO-676)
 
 ### Security
+<!-- WO-687@v2: enforcement does not depend on environment settings controlled by guarded processes. -->
+- Keep guard and check-mode scan enforcement independent of process environment settings. (WO-687)
 - Limit `--allowlist` to exact advisory-class values so it cannot suppress custom rules, exact-known secrets, opted-in mutations or non-ambiguous findings. (WO-676)
 - Offer VS Code project allow-file actions only for findings explicitly marked as exemptible by the CLI's shared policy; absent eligibility metadata disables the action. Fold the extension change into unreleased 0.2.0. (WO-682)
 - Keep project and tighten-only user exemptions from undoing operator-configured obfuscation, while retaining exact advisory and global operator-tier exemptions. (WO-685)

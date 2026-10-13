@@ -4,6 +4,10 @@ import PastewatchCore
 
 // WO-561@v3: shared guard logic for read/write — eliminates 95% copy-paste.
 enum FileGuard {
+    // WO-687@v2: the retired environment switch is migration text, never authorization.
+    static let guardEnvironmentMigrationMessage =
+        "PW_GUARD is not supported (removed in 0.43.0); to turn the guard off, disable the agent hook. See docs/exemptions.md"
+
     // WO-676@v4: the removed marker is diagnostic text, never a policy input.
     static let inlineMarkerMigrationMessage =
         "finding(s) are on lines with an inline pastewatch:allow marker, which is not supported (removed in 0.43.0); see docs/exemptions.md"
@@ -20,6 +24,7 @@ enum FileGuard {
         }
     }
 
+    // WO-687@v2: native reads and writes cannot bypass policy through an environment setting.
     // WO-671@v2: refusals prefer span edits rather than whole-file reconstruction.
     // WO-672@v1: write ownership checks precede all target I/O and clean-file shortcuts.
     // WO-665@v1: blocked large reads name the bounded MCP continuation arguments.
@@ -27,8 +32,7 @@ enum FileGuard {
     /// Throws `ExitCode(2)` on block or shared-pattern error.
     /// Returns normally when the file is clean (no actionable secrets).
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: ownership and policy checks run on every invocation.
         // WO-672@v1: policy ownership is independent of file existence and content.
         if operation == .write, GuardDecision.isOperatorOwnedPath(filePath) {
             FileHandle.standardError.write(Data((GuardDecision.operatorOwnedFileMessage + "\n").utf8))
@@ -128,6 +132,8 @@ enum FileGuard {
             let message = "ADVISORY: \(match.displayName) line \(match.line) count=1\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
+        // WO-687@v2: reported advisories and blocked findings share one CLI-only environment notice.
+        printGuardEnvironmentNotice(hasFindings: !advisories.isEmpty || !filtered.isEmpty)
         // WO-676@v4: all reported findings in a file contribute to one counted notice.
         let inlineMarkerNotices = inlineMarkerNoticeCount(matches: advisories + filtered, content: content)
         guard !filtered.isEmpty else {
@@ -150,6 +156,12 @@ enum FileGuard {
         printReadWindowHint(filePath: filePath, operation: operation, byteCount: data.count)
 
         throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-687@v2: only reported findings trigger advice, and no environment value can change a decision.
+    static func printGuardEnvironmentNotice(hasFindings: Bool) {
+        guard hasFindings, ProcessInfo.processInfo.environment["PW_GUARD"] != nil else { return }
+        FileHandle.standardError.write(Data((guardEnvironmentMigrationMessage + "\n").utf8))
     }
 
     // WO-676@v4: count markers only on the lines of findings already selected by policy.

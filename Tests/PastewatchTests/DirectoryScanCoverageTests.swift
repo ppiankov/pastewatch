@@ -205,7 +205,8 @@ final class DirectoryScanCoverageTests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = root
         // WO-672@v1: coverage probes must not consume operator global policy.
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: coverage probes no longer set an environment guard control.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         process.standardOutput = output
         process.standardError = errors
         try process.run()

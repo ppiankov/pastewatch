@@ -420,8 +420,8 @@ final class StdinFilenameTests: XCTestCase {
         process.executableURL = pastewatchCLIURL()
         process.arguments = arguments
         process.currentDirectoryURL = currentDirectory
-        var environment = ProcessInfo.processInfo.environment
-        environment.removeValue(forKey: "PW_GUARD")
+        // WO-687@v2: stdin fixtures retain the environment without guard switches.
+        let environment = ProcessInfo.processInfo.environment
         process.environment = environment.merging(environmentOverrides) { _, new in new }
 
         let stdin = Pipe()

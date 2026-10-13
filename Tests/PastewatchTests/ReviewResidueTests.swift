@@ -254,7 +254,8 @@ final class ReviewResidueTests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = root
         process.environment = TestConfigHelper.subprocessEnvironment([
-            "PATH": "/usr/bin:/bin", "PW_GUARD": "1",
+            // WO-687@v2: preserve fixture Git identity without setting a guard toggle.
+            "PATH": "/usr/bin:/bin",
             "GIT_AUTHOR_NAME": "ppiankov", "GIT_AUTHOR_EMAIL": "103106369+ppiankov@users.noreply.github.com",
             "GIT_COMMITTER_NAME": "ppiankov", "GIT_COMMITTER_EMAIL": "103106369+ppiankov@users.noreply.github.com"
         ])
