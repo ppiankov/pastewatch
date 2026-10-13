@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Directory command-guard blocks now suggest a directory scan or an operator-run command; the binary-grant hint is reserved for regular non-UTF-8 files. (WO-677)
+- Keep Phone values and ranges free of surrounding whitespace and punctuation so exact advisory exemptions work in prose; retain exact comparison and existing recognition controls. (WO-683)
 
 ### Documentation
 - New `docs/exemptions.md`: every path that lets a finding through, who may author it, whether it reaches intrinsic secrets, and its scope and lifetime.

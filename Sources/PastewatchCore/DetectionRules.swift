@@ -744,6 +744,7 @@ public struct DetectionRules {
     // WO-639: preserve whole-DSN detection identity and attach password-only mutation targeting.
     // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
     // WO-652@v2: retain following declaration syntax for raw colon-keyword validation.
+    // WO-683@v1: Phone values and metadata exclude separators outside the last digit.
     /// Scan content with regex rules.
     private static func scanWithRegexRules(
         _ content: String,
@@ -762,10 +763,12 @@ public struct DetectionRules {
             for match in regexMatches {
                 // WO-651@v2: only keyword Credentials use literal-aware value extraction.
                 guard let rawRange = Range(match.range, in: content) else { continue }
+                // WO-683@v1: range normalization precedes validation, overlap tracking and value extraction.
+                let phoneRange = type == .phone ? phoneMatchRange(rawRange, in: content) : rawRange
                 let range = type == .credential
                     ? credentialMatchRange(rawRange, in: content,
                                            literalQuote: vaultContext.quote(at: rawRange.lowerBound, in: content))
-                    : rawRange
+                    : phoneRange
                 guard !matchedRanges.overlaps(range, in: content) else { continue }
 
                 let value = String(content[range])
@@ -2218,6 +2221,15 @@ public struct DetectionRules {
         }
 
         return true
+    }
+
+    // WO-683@v1: optional trailing separators do not belong to a Phone's exact value or source span.
+    private static func phoneMatchRange(_ rawRange: Range<String.Index>, in content: String) -> Range<String.Index> {
+        let scalars = content[rawRange].unicodeScalars
+        guard let first = scalars.firstIndex(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }),
+              let last = scalars.lastIndex(where: { CharacterSet.decimalDigits.contains($0) }),
+              first <= last else { return rawRange }
+        return first..<scalars.index(after: last)
     }
 
     // WO-667@v1: contextual numeric rejection retains the existing UUID and phone digit cutsets.

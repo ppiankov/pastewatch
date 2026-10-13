@@ -192,15 +192,19 @@ final class InlineAllowlistTests: XCTestCase {
     }
 
     // WO-676@v4: actual remedy files retain custom, XML and opted-in Email while suppressing advisory Phone.
+    // WO-683@v1: the positive Phone control includes surrounding prose, not just a bare value.
     func testAllowlistFileCannotMuteProtectedEvidenceButCanMuteAdvisoryPhone() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             for fixture in removalFixtures().filter({ ["custom", "xml", "opted", "advisory"].contains($0.name) }) {
                 try JSONEncoder().encode(fixture.config).write(to: PastewatchConfig.configPath)
-                let matches = DetectionRules.scan(fixture.content, config: fixture.config,
+                // WO-683@v1: a real mid-sentence finding must survive exact allow-file parsing.
+                let content = fixture.name == "advisory" ? "call me at " + fixture.content + " today" : fixture.content
+                let matches = DetectionRules.scan(content, config: fixture.config,
                     customRules: try CustomRule.compile(fixture.config.customRules))
                 let value = try XCTUnwrap(matches.first).value
                 let target = root.appendingPathComponent("fixture.txt")
-                try Data(fixture.content.utf8).write(to: target)
+                // WO-683@v1: scan the same prose used to obtain the detector's value.
+                try Data(content.utf8).write(to: target)
                 let list = root.appendingPathComponent("remedy.txt")
                 try Data((value + "\n").utf8).write(to: list)
                 XCTAssertEqual(try command(["scan", "--check", "--file", target.path, "--allowlist", list.path], root: root).status,
