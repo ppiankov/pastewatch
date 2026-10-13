@@ -723,6 +723,7 @@ struct Scan: ParsableCommand {
         print("\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits, \(result.filesScanned) files)")
     }
 
+    // WO-682@v2: historical JSON exposes the same exemption decision as ordinary scan findings.
     private func outputGitLogJSON(findings: [CommitFinding], result: GitLogScanResult) {
         let output = GitLogOutput(
             commitsScanned: result.commitsScanned,
@@ -733,12 +734,8 @@ struct Scan: ParsableCommand {
                     author: cf.author,
                     date: cf.date,
                     file: cf.filePath,
-                    matches: cf.matches.map {
-                        GitLogMatchOutput(
-                            type: $0.displayName, line: $0.line,
-                            severity: $0.effectiveSeverity.rawValue, value: $0.value
-                        )
-                    }
+                    // WO-682@v2: preserve existing historical fields while adding shared eligibility metadata.
+                    matches: cf.matches.map { GitLogMatchOutput($0) }
                 )
             }
         )
@@ -830,11 +827,13 @@ struct Scan: ParsableCommand {
     }
 
     // WO-662@v3: encode the legacy per-file array once for both directory JSON modes.
+    // WO-682@v2: directory findings use the shared CLI eligibility serializer.
     private func outputDirectoryJSON(results: [FileScanResult], statistics: DirectoryScanStatistics?) {
         let findings = results.map { result in
             DirScanFileOutput(
                 file: result.filePath,
-                findings: result.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: retain display names and the per-file array contract.
+                findings: result.matches.map { Finding($0, type: $0.displayName) },
                 count: result.matches.count,
                 gitignored: result.gitignored
             )
@@ -850,6 +849,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Single file/stdin output helpers
 
+    // WO-682@v2: check-mode JSON carries the project-file suppression decision.
     private func outputCheckMode(matches: [DetectedMatch], filePath: String?) {
         switch format {
         case .text:
@@ -860,7 +860,8 @@ struct Scan: ParsableCommand {
             FileHandle.standardError.write(Data("findings: \(summary)\n".utf8))
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: eligibility comes from the Core predicate, not a CLI class list.
+                findings: matches.map { Finding($0) },
                 count: matches.count,
                 obfuscated: nil
             )
@@ -879,13 +880,15 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // WO-682@v2: ordinary JSON carries identical per-finding eligibility metadata.
     private func outputFindings(matches: [DetectedMatch], filePath: String?, obfuscated: String) {
         switch format {
         case .text:
             print(obfuscated, terminator: "")
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: both single-input modes share the same metadata computation.
+                findings: matches.map { Finding($0) },
                 count: matches.count,
                 obfuscated: obfuscated
             )
@@ -918,6 +921,16 @@ struct Finding: Codable {
     let type: String
     let value: String
     let severity: String?
+    // WO-682@v2: additive metadata controls whether editors may offer a project exemption.
+    let projectExemptible: Bool
+
+    // WO-682@v2: compute project-file eligibility once from the shared authorization predicate.
+    init(_ match: DetectedMatch, type: String? = nil) {
+        self.type = type ?? match.type.rawValue
+        value = match.value
+        severity = match.effectiveSeverity.rawValue
+        projectExemptible = permitsAllowlistSuppression(of: match, source: .projectFile, exactValue: true)
+    }
 }
 
 struct ScanOutput: Codable {
@@ -952,4 +965,16 @@ struct GitLogMatchOutput: Codable {
     let line: Int
     let severity: String
     let value: String
+    // WO-682@v2: history findings retain the same additive editor eligibility field.
+    let projectExemptible: Bool
+
+    // WO-682@v2: historical formatting reuses the single shared CLI decision.
+    init(_ match: DetectedMatch) {
+        let finding = Finding(match, type: match.displayName)
+        type = finding.type
+        line = match.line
+        severity = match.effectiveSeverity.rawValue
+        value = finding.value
+        projectExemptible = finding.projectExemptible
+    }
 }

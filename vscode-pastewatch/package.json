@@ -65,6 +65,7 @@
     "build": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "lint": "tsc -p ./ --noEmit",
+    "test": "npm run build && node --test dist/projectExemption.test.js",
     "package:vsix": "npm run build && npx @vscode/vsce package",
     "publish:marketplace": "npm run build && npx @vscode/vsce publish"
   },

@@ -7,7 +7,8 @@ Real-time secret detection in the editor. Catches secrets as you type — before
 - **Inline diagnostics** — red/yellow/blue squiggles on detected secrets
 - **Hover tooltips** — detection type and severity on hover
 <!-- WO-676@v4: retain only the operator-owned advisory exemption action. -->
-- **Quick-fix actions** — append an exact advisory-class value to `.pastewatch-allow`
+<!-- WO-682@v2: editor actions follow the CLI's shared exemption predicate. -->
+- **Quick-fix actions** — append an exact value to `.pastewatch-allow` only when the CLI marks the finding as project-exemptible
 - **Status bar** — finding count for the active file
 - **Auto-refresh** — re-scans on file save (debounced, configurable)
 
@@ -45,6 +46,9 @@ code --install-extension pastewatch-*.vsix
 ## How It Works
 
 The extension shells out to `pastewatch-cli scan --format json --file <path>` for each file. No detection logic is bundled — the CLI is the single source of truth.
+
+<!-- WO-682@v2: absent eligibility metadata fails closed for older CLI versions. -->
+The allow-file action requires `projectExemptible: true` in the finding. Intrinsic secrets and custom-rule hits have no allow-file action; older CLI versions without this field also have no action.
 
 ### Severity Mapping
 

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 
 import { isDiagnosticWithData } from "./diagnostics";
+import { canOfferProjectExemption } from "./projectExemption";
 
 const DIAGNOSTIC_SOURCE = "pastewatch";
 
@@ -9,6 +10,7 @@ export class PastewatchCodeActionProvider implements vscode.CodeActionProvider {
   static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
 
   // WO-676@v4: editor exemptions use the operator-owned project allow file only.
+  // WO-682@v2: project-file actions require an explicit eligibility decision from the CLI.
   provideCodeActions(
     document: vscode.TextDocument,
     range: vscode.Range | vscode.Selection,
@@ -19,7 +21,8 @@ export class PastewatchCodeActionProvider implements vscode.CodeActionProvider {
     for (const diag of context.diagnostics) {
       if (diag.source !== DIAGNOSTIC_SOURCE) continue;
 
-      if (isDiagnosticWithData(diag)) {
+      // WO-682@v2: absent or false metadata never produces an allow-file action.
+      if (isDiagnosticWithData(diag) && canOfferProjectExemption(diag.data.finding.projectExemptible)) {
         actions.push(this.createAllowlistAction(document, diag));
       }
     }

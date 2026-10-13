@@ -72,6 +72,13 @@ pastewatch-cli explain email
 pastewatch-cli config check
 ```
 
+<!-- WO-682@v2: consumers reuse authorization metadata instead of maintaining detector class lists. -->
+Each `scan --format json` finding includes the additive Boolean `projectExemptible`,
+computed by the same predicate that decides exact-value exemptions from
+`.pastewatch-allow`. Existing finding fields and output containers are unchanged.
+Editors may offer an allow-file action only when this field is explicitly `true`;
+an absent or `false` field means no action.
+
 File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
 lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
 overlong files, name their paths on stderr and count them as `skippedOverLimit`;
