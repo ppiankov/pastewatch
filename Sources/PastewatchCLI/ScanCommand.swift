@@ -298,6 +298,7 @@ struct Scan: ParsableCommand {
         return input
     }
 
+    // WO-686@v1: single-file mapping failures have value-free diagnostics and retain a nonzero exit.
     // WO-595@v2: detector-limit failures use the same stable operational exit.
     private func scanValidatedInput(
         _ input: String,
@@ -312,6 +313,20 @@ struct Scan: ParsableCommand {
                 allowlist: allowlist,
                 customRules: customRules
             )
+        } catch let error as StructuredMatchRangeError {
+            // WO-686@v1: JSON mode reports the unsafe finding's location without printing its value.
+            let failure = DirectoryScanFailure(error: error)
+            FileHandle.standardError.write(Data(("UNSCANNABLE: " + failure.reason + "\n").utf8))
+            if format == .json {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(failure)
+                guard let output = String(data: data, encoding: .utf8) else {
+                    throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+                }
+                print(output)
+            }
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         } catch let error as ScanInputLimitError {
             FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
             throw ExitCode(rawValue: ScanExitContract.operationalFailure)
@@ -363,6 +378,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Directory scanning
 
+    // WO-686@v1: incomplete directory coverage is listed separately and always fails check mode.
     // WO-687@v2: directory findings share a single CLI environment notice.
     // WO-662@v3: directory scans emit coverage even when no file contributes a finding.
     // WO-670@v1: file decisions retain the explicitly scanned directory context.
@@ -437,9 +453,18 @@ struct Scan: ParsableCommand {
         }
 
         // WO-662@v3: coverage goes to stderr in every format; empty stdout retains the original contract.
-        let summary = report.statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count })
+        // WO-686@v1: per-file mapping failures are visible in every output format without their values.
+        for failure in report.unscannableFiles {
+            FileHandle.standardError.write(Data(("UNSCANNABLE: " + failure.filePath + ": " + failure.reason + "\n").utf8))
+        }
+        let summary = report.statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count },
+                                                 unscannableFiles: report.unscannableFiles.count)
         FileHandle.standardError.write(Data((summary + "\n").utf8))
-        guard !filteredResults.isEmpty else { return }
+        // WO-686@v1: zero mapped findings cannot conceal a failed member.
+        guard !filteredResults.isEmpty else {
+            if !report.unscannableFiles.isEmpty { throw ExitCode(rawValue: ScanExitContract.operationalFailure) }
+            return
+        }
         try redirectStdoutIfNeeded()
 
         // WO-687@v2: collection output emits advice once, not once per member file.
@@ -457,6 +482,8 @@ struct Scan: ParsableCommand {
             ? filteredResults
             : filteredResults.filter { !$0.gitignored }
         let allMatches = exitResults.flatMap { $0.matches }
+        // WO-686@v1: retain rendered healthy results but distinguish incomplete coverage from findings alone.
+        if !report.unscannableFiles.isEmpty { throw ExitCode(rawValue: ScanExitContract.operationalFailure) }
         if shouldFail(matches: allMatches) {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)

@@ -6,14 +6,71 @@ import Glibc
 import Darwin
 #endif
 
+// WO-686@v1: diagnostic metadata never carries a matched value or grants mutation authority.
+public struct StructuredFindingDiagnostic: Encodable {
+    public let type: String // WO-686@v1: detector identity, never a matched value.
+    public let severity: String // WO-686@v1: preserve the detector's effective severity.
+    public let line: Int // WO-686@v1: retain the parser's line alongside the source byte location.
+    // WO-686@v1: zero-based UTF-8 offset of the containing JSON string token, not a replacement span.
+    public let byteOffset: Int?
+
+    // WO-686@v1: serialized locations use the existing byte-offset naming convention.
+    private enum CodingKeys: String, CodingKey {
+        case type, severity, line
+        case byteOffset = "byte_offset"
+    }
+
+    // WO-686@v1: failure text exposes only detector identity, severity and source location.
+    public var summary: String {
+        let location = byteOffset.map { " byte_offset=\($0) (JSON value token)" } ?? ""
+        return "\(type) severity=\(severity) line=\(line)\(location)"
+    }
+}
+
+// WO-686@v1: mapping failures retain a value-free finding location without permitting unsafe reads.
 /// WO-549@v2: callers must fail closed when a parsed secret cannot be mapped back
 /// to the original bytes without risking mutation of a different occurrence.
 public struct StructuredMatchRangeError: LocalizedError {
     public let filePath: String
     public let line: Int
+    // WO-686@v1: diagnostic-only information is separate from mutation-capable match ranges.
+    public let finding: StructuredFindingDiagnostic?
 
+    // WO-686@v1: existing callers keep their file-and-line initializer.
+    public init(filePath: String, line: Int, finding: StructuredFindingDiagnostic? = nil) {
+        self.filePath = filePath
+        self.line = line
+        self.finding = finding
+    }
+
+    // WO-686@v1: enrich refusals without including the decoded value.
     public var errorDescription: String? {
-        "Cannot safely map a structured finding in \(filePath) at line \(line)."
+        let message = "Cannot safely map a structured finding in \(filePath) at line \(line)."
+        return finding.map { message + " " + $0.summary } ?? message
+    }
+}
+
+// WO-686@v1: partial directory reports carry failed members separately from successfully mapped findings.
+public struct DirectoryScanFailure: Encodable {
+    public let filePath: String // WO-686@v1: name the member whose coverage is incomplete.
+    public let reason: String // WO-686@v1: preserve only value-free refusal text.
+    public let findings: [StructuredFindingDiagnostic] // WO-686@v1: diagnostic locations never authorize mutation.
+    public let unscannable = true // WO-686@v1: encoded failure status cannot be mistaken for clean.
+    // WO-686@v1: legacy findings-only consumers retain their fail-closed error contract.
+    fileprivate let originalError: StructuredMatchRangeError
+
+    // WO-686@v1: public diagnostics encode metadata only, never the internal error or source contents.
+    private enum CodingKeys: String, CodingKey {
+        case filePath = "file"
+        case reason, findings, unscannable
+    }
+
+    // WO-686@v1: capture only the mapping refusal's value-free metadata.
+    public init(error: StructuredMatchRangeError) {
+        filePath = error.filePath
+        reason = error.localizedDescription
+        findings = error.finding.map { [$0] } ?? []
+        originalError = error
     }
 }
 
@@ -52,14 +109,17 @@ public struct DirectoryScanStatistics: Codable {
         skippedOverLimit += 1
     }
 
+    // WO-686@v1: incomplete coverage is explicit even when no mapped finding remains.
     // WO-662@v3: a zero scan cannot be presented as evidence of a clean directory.
-    public func summary(findings: Int) -> String {
+    public func summary(findings: Int, unscannableFiles: Int = 0) -> String {
         let skipped = "Skipped: unsupported=\(skippedUnsupported), ignored=\(skippedIgnored), "
             + "binary=\(skippedBinary), empty=\(skippedEmpty), unreadable=\(skippedUnreadable), "
             + "pruned-directories=\(skippedDirectories), skippedOverLimit=\(skippedOverLimit)."
         let warning = filesScanned == 0
             ? " No text files were scanned; results do not establish a clean directory." : ""
-        return "Scanned \(filesScanned) files. Found \(findings) findings. \(skipped)\(warning)"
+        // WO-686@v1: normal summaries remain unchanged; failures cannot be mistaken for clean scans.
+        let incomplete = unscannableFiles > 0 ? " Scan incomplete: \(unscannableFiles) unscannable file(s)." : ""
+        return "Scanned \(filesScanned) files. Found \(findings) findings. \(skipped)\(warning)\(incomplete)"
     }
 }
 
@@ -67,6 +127,15 @@ public struct DirectoryScanStatistics: Codable {
 public struct DirectoryScanReport {
     public let files: [FileScanResult]
     public let statistics: DirectoryScanStatistics
+    // WO-686@v1: failed members never enter the successfully scanned findings list.
+    public let unscannableFiles: [DirectoryScanFailure]
+
+    // WO-686@v1: the empty default preserves existing Git scan report construction.
+    public init(files: [FileScanResult], statistics: DirectoryScanStatistics, unscannableFiles: [DirectoryScanFailure] = []) {
+        self.files = files
+        self.statistics = statistics
+        self.unscannableFiles = unscannableFiles
+    }
 }
 
 /// Recursive directory scanner for sensitive data detection.
@@ -82,6 +151,8 @@ public struct DirectoryScanner {
     /// for each structured value.
     private struct SourceRangeState {
         let content: String
+        // WO-686@v1: JSON-only source locations do not guess at other formats' syntax.
+        var isJSON = false
         var parsedContent = ""
         var parsedValueRanges: [ParsedMatchKey: Range<String.Index>] = [:]
         var claimedSourceRanges: [String: [Range<String.Index>]] = [:]
@@ -185,6 +256,7 @@ public struct DirectoryScanner {
         ".swiftpm", "__pycache__", "dist", "build", ".tox"
     ]
 
+    // WO-686@v1: findings-only consumers cannot silently interpret partial coverage as clean.
     // WO-662@v3: preserve the findings-only return contract for existing callers.
     /// Scan all files in a directory recursively.
     public static func scan(
@@ -195,12 +267,16 @@ public struct DirectoryScanner {
         bail: Bool = false,
         limits: ScanInputLimits = .current()
     ) throws -> [FileScanResult] {
-        try scanWithStatistics(
+        // WO-686@v1: finish traversal before preserving the legacy refusal for callers without failure metadata.
+        let report = try scanWithStatistics(
             directory: directory, config: config, ignoreFile: ignoreFile,
             extraIgnorePatterns: extraIgnorePatterns, bail: bail, limits: limits
-        ).files
+        )
+        if let failure = report.unscannableFiles.first { throw failure.originalError }
+        return report.files
     }
 
+    // WO-686@v1: mapping failures are per-file outcomes, never a traversal-wide abort.
     // WO-675@v2: scan callers own skip diagnostics and distinguish unsupported text from binary assets.
     // WO-662@v3: traversal measures actual scans even when a file has no findings.
     public static func scanWithStatistics(
@@ -215,6 +291,8 @@ public struct DirectoryScanner {
         let dirPath = dirURL.path
         var results: [FileScanResult] = []
         var statistics = DirectoryScanStatistics()
+        // WO-686@v1: retain value-free failures separately from successfully inspected files.
+        var unscannableFiles: [DirectoryScanFailure] = []
 
         let mergedIgnore = mergedIgnoreFile(
             ignoreFile,
@@ -226,7 +304,8 @@ public struct DirectoryScanner {
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
             options: []
         ) else {
-            return DirectoryScanReport(files: results, statistics: statistics)
+            // WO-686@v1: all report exits retain accumulated coverage failures.
+            return DirectoryScanReport(files: results, statistics: statistics, unscannableFiles: unscannableFiles)
         }
 
         while let fileURL = enumerator.nextObject() as? URL {
@@ -286,6 +365,10 @@ public struct DirectoryScanner {
                 guard let decoded = try readScanContent(at: fileURL, limits: limits, statistics: &statistics) else { continue }
                 input = decoded
                 fileMatches = try input.scan(ext: parsedExt, path: relativePath, config: config)
+            } catch let error as StructuredMatchRangeError {
+                // WO-686@v1: keep scanning other members without converting this file into a clean result.
+                unscannableFiles.append(DirectoryScanFailure(error: error))
+                continue
             } catch let error as ScanInputLimitError {
                 guard case .lineBytes = error else { throw error }
                 statistics.recordOverLimit(path: relativePath, error: error)
@@ -307,7 +390,8 @@ public struct DirectoryScanner {
                     content: content
                 ))
                 // WO-662@v3: bail reports only work actually performed before the first finding.
-                if bail { return DirectoryScanReport(files: results, statistics: statistics) }
+                // WO-686@v1: bail retains failures encountered before the first mapped finding.
+                if bail { return DirectoryScanReport(files: results, statistics: statistics, unscannableFiles: unscannableFiles) }
             }
         }
 
@@ -321,7 +405,8 @@ public struct DirectoryScanner {
         )
         if ignoredSet.isEmpty {
             // WO-662@v3: coverage accompanies the unchanged findings list.
-            return DirectoryScanReport(files: sorted, statistics: statistics)
+            // WO-686@v1: deterministic failure order accompanies the existing findings order.
+            return DirectoryScanReport(files: sorted, statistics: statistics, unscannableFiles: unscannableFiles.sorted { $0.filePath < $1.filePath })
         }
         // WO-662@v3: gitignored tagging does not change whether a file was inspected.
         let tagged = sorted.map { result in
@@ -336,7 +421,8 @@ public struct DirectoryScanner {
             return result
         }
         // WO-662@v3: retain traversal evidence after findings metadata is tagged.
-        return DirectoryScanReport(files: tagged, statistics: statistics)
+        // WO-686@v1: Git tagging cannot discard mapping failures.
+        return DirectoryScanReport(files: tagged, statistics: statistics, unscannableFiles: unscannableFiles.sorted { $0.filePath < $1.filePath })
     }
 
     // WO-662@v3: count binary, empty and unreadable skips while preserving fail-closed text validation.
@@ -547,6 +633,7 @@ public struct DirectoryScanner {
         )) ?? []
     }
 
+    // WO-686@v1: mapping failures preserve refusal and add diagnostic-only source locations.
     // WO-639: pass index-owning strings to source metadata rebasing without changing parsing or range lookup.
     /// WO-128: scan file content without hiding configured shared-pattern load failures.
     public static func scanFileContentOrThrow(
@@ -593,7 +680,8 @@ public struct DirectoryScanner {
         }
 
         var matches: [DetectedMatch] = []
-        var sourceRangeState = SourceRangeState(content: content)
+        // WO-686@v1: location metadata distinguishes JSON escapes without changing source-range authorization.
+        var sourceRangeState = SourceRangeState(content: content, isJSON: ext.lowercased() == "json")
         for pv in parsedValues {
             sourceRangeState.beginParsedValue(pv.value)
             for vm in try DetectionRules.scanFileIOOrThrow(
@@ -608,7 +696,8 @@ public struct DirectoryScanner {
                     parsedRange: vm.range,
                     state: &sourceRangeState
                 ) else {
-                    throw StructuredMatchRangeError(filePath: relativePath, line: pv.line)
+                    // WO-686@v1: a location is reportable even when the replacement range remains unsafe.
+                    throw structuredRangeError(vm, line: pv.line, filePath: relativePath, state: sourceRangeState)
                 }
                 matches.append(sourceMatch(
                     vm,
@@ -631,7 +720,9 @@ public struct DirectoryScanner {
                    parsedRange: pv.value.startIndex..<pv.value.endIndex,
                    state: &sourceRangeState
                 ) else {
-                    throw StructuredMatchRangeError(filePath: relativePath, line: pv.line)
+                    // WO-686@v1: key-aware findings receive the same value-free failure metadata.
+                    let finding = DetectedMatch(type: .credential, value: pv.value, range: pv.value.startIndex..<pv.value.endIndex)
+                    throw structuredRangeError(finding, line: pv.line, filePath: relativePath, state: sourceRangeState)
                 }
                 guard !matches.contains(where: {
                    $0.type == .credential && $0.range == sourceRange
@@ -679,6 +770,29 @@ public struct DirectoryScanner {
         }
 
         return matches
+    }
+
+    // WO-686@v1: failure metadata cannot be used as a mutation range or carry the decoded value.
+    private static func structuredRangeError(
+        _ match: DetectedMatch, line: Int, filePath: String, state: SourceRangeState
+    ) -> StructuredMatchRangeError {
+        let offset = state.isJSON ? jsonValueByteOffset(state.parsedContent, in: state.content) : nil
+        let finding = StructuredFindingDiagnostic(type: match.displayName, severity: match.effectiveSeverity.rawValue,
+                                                  line: line, byteOffset: offset)
+        return StructuredMatchRangeError(filePath: filePath, line: line, finding: finding)
+    }
+
+    // WO-686@v1: Foundation validates decoded literals; token offsets are diagnostic-only and never authorize rewriting.
+    private static func jsonValueByteOffset(_ value: String, in content: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: #"\"(?:[^\"\\]|\\[\s\S])*\""#) else { return nil }
+        for token in regex.matches(in: content, range: NSRange(content.startIndex..., in: content)) {
+            guard let range = Range(token.range, in: content),
+                  content[range.upperBound...].drop(while: { $0.isWhitespace }).first != ":",
+                  let literal = try? JSONSerialization.jsonObject(with: Data(content[range].utf8), options: [.fragmentsAllowed]) as? String,
+                  literal == value else { continue }
+            return content.utf8.distance(from: content.startIndex, to: range.lowerBound)
+        }
+        return nil
     }
 
     // WO-639: internal visibility lets tests force a verification mismatch through the production copy path.

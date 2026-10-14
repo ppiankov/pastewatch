@@ -596,6 +596,7 @@ final class MCPServer {
         return successResult(id: id, matches: matches)
     }
 
+    // WO-686@v1: unmappable file findings remain errors but carry value-free location metadata.
     // WO-595@v2: file scans surface bounded-input failures instead of skipping evidence.
     private func handleScanFile(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
         guard case .string(let path) = arguments["path"] else {
@@ -636,6 +637,11 @@ final class MCPServer {
                 relativePath: path,
                 config: config
             )
+        } catch let error as StructuredMatchRangeError {
+            // WO-686@v1: reporting a location does not authorize an unsafe read or replacement.
+            auditLogger?.log("SCAN  \(path)  unscannable")
+            return errorResult(id: id, text: error.localizedDescription,
+                               diagnostics: scanFailureValue(DirectoryScanFailure(error: error)))
         } catch let error as ScanInputLimitError {
             auditLogger?.log("SCAN  \(path)  input-limit")
             return errorResult(id: id, text: "Scan limit exceeded: \(error.localizedDescription)")
@@ -657,9 +663,11 @@ final class MCPServer {
             filePath: path
         ).reportableMatches
         auditLogger?.log("SCAN  \(path)  findings=\(reportable.count)")
-        return successResult(id: id, matches: reportable, filePath: path)
+        // WO-686@v1: mapped single-line JSON findings get source byte locations too.
+        return successResult(id: id, matches: reportable, filePath: path, sourceContent: content)
     }
 
+    // WO-686@v1: partial directory results list unmappable members separately and cannot claim success.
     // WO-662@v3: directory diagnostics report scan coverage independently of findings.
     // WO-670@v1: each directory finding uses its target path and explicit scan root.
     private func handleScanDir(id: JSONRPCId?, arguments: [String: JSONValue], config: PastewatchConfig) -> JSONRPCResponse {
@@ -703,20 +711,27 @@ final class MCPServer {
             var findingsArray: [JSONValue] = []
             for fr in reportableResults {
                 for match in fr.matches {
-                    findingsArray.append(.object([
+                    // WO-686@v1: JSON locations use source bytes, not line-one approximations.
+                    var entry: [String: JSONValue] = [
                         "type": .string(match.displayName),
                         "severity": .string(match.effectiveSeverity.rawValue),
                         "file": .string(fr.filePath),
                         "line": .number(Double(match.line))
-                    ]))
+                    ]
+                    if (fr.filePath as NSString).pathExtension.lowercased() == "json", match.line == 1 {
+                        entry["byte_offset"] = .number(Double(fr.content.utf8.distance(from: fr.content.startIndex, to: match.range.lowerBound)))
+                    }
+                    findingsArray.append(.object(entry))
                 }
             }
 
             auditLogger?.log("SCAN  \(path)  files=\(filesScanned) findings=\(totalFindings)")
             // WO-662@v3: disclose skipped files and explicitly qualify a zero-scan result.
-            let resultText = report.statistics.summary(findings: totalFindings)
+            // WO-686@v1: even a finding-free partial scan explicitly reports incomplete coverage.
+            let resultText = report.statistics.summary(findings: totalFindings, unscannableFiles: report.unscannableFiles.count)
 
-            let content: JSONValue = .array([
+            // WO-686@v1: successful-result blocks stay unchanged when no member failed.
+            var content: [JSONValue] = [
                 .object([
                     "type": .string("text"),
                     "text": .string(resultText)
@@ -725,11 +740,25 @@ final class MCPServer {
                     "type": .string("text"),
                     "text": .string(encodeJSON(.array(findingsArray)))
                 ])
-            ])
+            ]
+
+            // WO-686@v1: failures are a separate metadata block, never a replacement for healthy findings.
+            var result: [String: JSONValue] = [:]
+            if !report.unscannableFiles.isEmpty {
+                content.append(.object([
+                    "type": .string("text"),
+                    "text": .string(encodeJSON(.object([
+                        "unscannable_files": .array(report.unscannableFiles.map(scanFailureValue))
+                    ])))
+                ]))
+                result["isError"] = .bool(true)
+            }
+            result["content"] = .array(content)
 
             return JSONRPCResponse(
                 jsonrpc: "2.0", id: id,
-                result: .object(["content": content]),
+                // WO-686@v1: incomplete scans keep partial data and a non-success tool status.
+                result: .object(result),
                 error: nil
             )
         } catch let error as ScanInputLimitError {
@@ -1163,7 +1192,8 @@ final class MCPServer {
 
     // MARK: - Result helpers
 
-    private func successResult(id: JSONRPCId?, matches: [DetectedMatch], filePath: String? = nil) -> JSONRPCResponse {
+    // WO-686@v1: optional source context adds JSON locations without changing other scan surfaces.
+    private func successResult(id: JSONRPCId?, matches: [DetectedMatch], filePath: String? = nil, sourceContent: String? = nil) -> JSONRPCResponse {
         var findingsArray: [JSONValue] = []
         for match in matches {
             var entry: [String: JSONValue] = [
@@ -1174,6 +1204,11 @@ final class MCPServer {
             ]
             if let fp = filePath ?? match.filePath {
                 entry["file"] = .string(fp)
+            }
+            // WO-686@v1: rebased match indices provide a zero-based UTF-8 location without disclosing values.
+            if let sourceContent, let filePath,
+               (filePath as NSString).pathExtension.lowercased() == "json", match.line == 1 {
+                entry["byte_offset"] = .number(Double(sourceContent.utf8.distance(from: sourceContent.startIndex, to: match.range.lowerBound)))
             }
             findingsArray.append(.object(entry))
         }
@@ -1200,13 +1235,16 @@ final class MCPServer {
         )
     }
 
-    private func errorResult(id: JSONRPCId?, text: String) -> JSONRPCResponse {
-        let content: JSONValue = .array([
+    // WO-686@v1: optional safe scan diagnostics do not alter other MCP error responses.
+    private func errorResult(id: JSONRPCId?, text: String, diagnostics: JSONValue? = nil) -> JSONRPCResponse {
+        var blocks: [JSONValue] = [
             .object([
                 "type": .string("text"),
                 "text": .string(text)
             ])
-        ])
+        ]
+        if let diagnostics { blocks.append(.object(["type": .string("text"), "text": .string(encodeJSON(diagnostics))])) }
+        let content: JSONValue = .array(blocks)
         return JSONRPCResponse(
             jsonrpc: "2.0", id: id,
             result: .object([
@@ -1215,6 +1253,16 @@ final class MCPServer {
             ]),
             error: nil
         )
+    }
+
+    // WO-686@v1: Core's shared diagnostic schema is reused without introducing value-bearing fields.
+    private func scanFailureValue(_ failure: DirectoryScanFailure) -> JSONValue {
+        guard let data = try? JSONEncoder().encode(failure),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return .object(["file": .string(failure.filePath), "unscannable": .bool(true),
+                            "reason": .string("Mapping diagnostics could not be encoded.")])
+        }
+        return value
     }
 
     private func encodeJSON(_ value: JSONValue) -> String {
