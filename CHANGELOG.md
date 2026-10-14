@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep project and tighten-only user exemptions from undoing operator-configured obfuscation, while retaining exact advisory and global operator-tier exemptions. (WO-685)
 
 ### Fixed
+<!-- WO-684@v1: source receiver assignments retain precision without weakening legacy token detection. -->
+- Stop treating unquoted Go receiver-field assignments as Vault tokens; retain receiver-call exclusions, selector boundaries and genuine legacy-format token detection. (WO-684)
 - Directory command-guard blocks now suggest a directory scan or an operator-run command; the binary-grant hint is reserved for regular non-UTF-8 files. (WO-677)
 - Keep Phone values and ranges free of surrounding whitespace and punctuation so exact advisory exemptions work in prose; retain exact comparison and existing recognition controls. (WO-683)
 

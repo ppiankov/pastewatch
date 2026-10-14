@@ -869,6 +869,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-684@v1: unquoted receiver-field assignments are code without changing the legacy token grammar.
     // WO-626: local call/nil-comparison syntax distinguishes receivers without changing token grammar.
     private static func isLegacyVaultCodeReference(
         _ value: String, after end: String.Index, in content: String
@@ -878,6 +879,8 @@ public struct DetectionRules {
               parts[1].first?.isLetter == true else { return false }
         let tail = content[end...].drop { $0.isWhitespace && !$0.isNewline }
         if tail.hasPrefix("(") { return true }
+        // WO-684@v1: a single assignment operator identifies a receiver field; comparisons keep their existing checks.
+        if tail.hasPrefix("="), !tail.hasPrefix("==") { return true }
         guard tail.hasPrefix("==") || tail.hasPrefix("!=") else { return false }
         let rhs = tail.dropFirst(2).drop { $0.isWhitespace && !$0.isNewline }
         guard rhs.hasPrefix("nil") else { return false }
