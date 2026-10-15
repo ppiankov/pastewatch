@@ -8,26 +8,19 @@ import XCTest
 final class GuardReadWriteTests: XCTestCase {
 
     private var testDir: String!
-    private var originalGuardValue: String?
     private let config = PastewatchConfig.defaultConfig
 
+    // WO-687@v2: native file guards need no process-global enable switch.
     override func setUp() {
         super.setUp()
-        // WO-588@v2: exercise production guard behavior even under PW_GUARD=0 test shells.
-        originalGuardValue = ProcessInfo.processInfo.environment["PW_GUARD"]
-        setenv("PW_GUARD", "1", 1)
+        // WO-687@v2: fixture lifecycle changes no retired guard environment state.
         testDir = NSTemporaryDirectory() + "pastewatch-guard-rw-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 
-    // WO-588@v2: restore the guard environment after unreadable-input checks.
+    // WO-687@v2: teardown cleans only the fixture directory, not guard environment state.
     override func tearDown() {
         try? FileManager.default.removeItem(atPath: testDir)
-        if let originalGuardValue {
-            setenv("PW_GUARD", originalGuardValue, 1)
-        } else {
-            unsetenv("PW_GUARD")
-        }
         super.tearDown()
     }
 
@@ -57,7 +50,7 @@ final class GuardReadWriteTests: XCTestCase {
             matches: matches,
             content: content,
             config: config,
-            contentTrust: .trustedFile,
+            // WO-676@v4: native file guards use the marker-free evaluator.
             minimumSeverity: failOnSeverity
         ).actionableMatches
     }
@@ -198,13 +191,19 @@ final class GuardReadWriteTests: XCTestCase {
         }
     }
 
+    // WO-676@v4: a marker cannot suppress a real key; avoid the separate documented-test-key exemption.
     func testInlineAllowSuppressesFinding() throws {
         let path = testDir + "/config.env"
-        let key = ["AKIA", "IOSFODNN7EXAMPLE"].joined()
+        let key = ["AKIA", "QWERTYUIOPASDFGH"].joined()
         try "AWS_KEY=\(key) # pastewatch:allow".write(
             toFile: path, atomically: true, encoding: .utf8)
         let findings = try scanFile(at: path)
-        XCTAssertTrue(findings.isEmpty, "Inline allow should suppress the finding")
+        // WO-676@v4: the former positive suppression test now pins retention and both file guards.
+        XCTAssertEqual(findings.count, 1)
+        XCTAssertTrue(findings.first?.mutationAuthorizationSources.contains(.intrinsicFormat) == true)
+        for operation in [FileGuard.Operation.read, .write] {
+            assertFileGuardBlocks(path: path, operation: operation)
+        }
     }
 
     // WO-672@v1: an operator-owned exact value retains its intrinsic exemption.

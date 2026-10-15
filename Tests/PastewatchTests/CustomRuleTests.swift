@@ -79,16 +79,32 @@ final class CustomRuleTests: XCTestCase {
         XCTAssertEqual(rules[0].name, "Test")
     }
 
+    // WO-676@v4: operator-tier exact exemptions remain valid for non-intrinsic custom rules.
     func testCustomRuleWithAllowlist() throws {
         let rules = try CustomRule.compile([
             CustomRuleConfig(name: "Ticket", pattern: "MYCO-[0-9]{6}")
         ])
-        let allowlist = Allowlist(values: ["MYCO-123456"])
+        // WO-676@v4: preserve the fixture's operator authority rather than remedy-file authority.
+        let allowlist = Allowlist(values: ["MYCO-123456"], source: .user)
         let content = "See MYCO-123456 and MYCO-654321"
         let matches = DetectionRules.scan(content, config: config, allowlist: allowlist, customRules: rules)
         let customMatches = matches.filter { $0.customRuleName != nil }
         XCTAssertEqual(customMatches.count, 1)
         XCTAssertEqual(customMatches[0].value, "MYCO-654321")
+    }
+
+    // WO-676@v4: remedy-tier exact values cannot suppress either custom-rule finding.
+    func testCustomRuleWithRemedyAllowlistRetainsBothMatches() throws {
+        let prefix = ["MY", "CO", "-"].joined()
+        let first = prefix + ["123", "456"].joined()
+        let second = prefix + ["654", "321"].joined()
+        let rules = try CustomRule.compile([
+            CustomRuleConfig(name: "Ticket", pattern: prefix + "[0-9]{6}")
+        ])
+        let allowlist = Allowlist(values: [first])
+        let matches = DetectionRules.scan("See " + first + " and " + second,
+            config: config, allowlist: allowlist, customRules: rules)
+        XCTAssertEqual(matches.filter { $0.customRuleName != nil }.count, 2)
     }
 
     func testEmptyCustomRules() {

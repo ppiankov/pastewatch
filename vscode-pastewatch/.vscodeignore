@@ -4,3 +4,5 @@ src/**
 **/*.map
 tsconfig.json
 package-lock.json
+# WO-682@v2: compiled unit tests are not extension runtime artifacts.
+dist/**/*.test.js

@@ -10,7 +10,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: matches,
             content: content,
             config: .defaultConfig,
-            contentTrust: .trustedFile,
+            // WO-676@v4: test-credential policy is independent of removed inline exemptions.
             minimumSeverity: .low
         )
 
@@ -33,7 +33,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config),
             content: content,
             config: config,
-            contentTrust: .trustedFile,
+            // WO-676@v4: only the user-tier exact entry suppresses the fixture.
             minimumSeverity: .critical
         )
 
@@ -52,7 +52,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config),
             content: content,
             config: config,
-            contentTrust: .trustedFile,
+            // WO-676@v4: severity policy is independent of removed inline exemptions.
             minimumSeverity: .critical
         )
 
@@ -67,7 +67,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: .defaultConfig),
             content: content,
             config: .defaultConfig,
-            contentTrust: .trustedFile,
+            // WO-676@v4: every reportable finding remains eligible for threshold evaluation.
             minimumSeverity: nil
         )
 
@@ -82,7 +82,7 @@ final class GuardDecisionTests: XCTestCase {
             matches: DetectionRules.scan(content, config: .defaultConfig),
             content: content,
             config: .defaultConfig,
-            contentTrust: .agentControlled,
+            // WO-676@v4: the removed marker cannot grant an exemption.
             minimumSeverity: .high
         )
 

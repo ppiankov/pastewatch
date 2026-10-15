@@ -155,7 +155,8 @@ final class RedactedCLITests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = root
         // WO-672@v1: mutation probes cannot consume operator policy through the global tier.
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PW_GUARD": "1"])
+        // WO-687@v2: guarded commands cannot require an environment enable switch.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
         let stdout = Pipe()
         let stderr = Pipe()
         let stdin = Pipe()

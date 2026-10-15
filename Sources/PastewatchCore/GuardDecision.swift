@@ -1,11 +1,6 @@
 import Foundation
 
-/// WO-502: inline comments are authoritative only in operator-controlled files.
-public enum GuardContentTrust {
-    case agentControlled
-    case trustedFile
-}
-
+// WO-676@v4: file content cannot select a separate exemption policy.
 /// WO-502: one post-scan policy keeps guard surfaces from drifting.
 public struct GuardDecision {
     public let reportableMatches: [DetectedMatch]
@@ -30,13 +25,13 @@ public struct GuardDecision {
     // WO-635: classify by the supplied path only, never by content or directory names.
     private static let documentationExtensions: Set<String> = ["md", "mdx", "markdown", "rst", "adoc"]
 
+    // WO-676@v4: all callers share the same explicit exemption policy without inline filtering.
     // WO-670@v1: every file decision shares target-root allow-file loading; rootless decisions load none.
     // WO-635: one decision owns documentation classification and protects independently authorized secrets.
     public static func evaluate(
         matches: [DetectedMatch],
         content: String,
         config: PastewatchConfig,
-        contentTrust: GuardContentTrust,
         minimumSeverity: Severity?,
         // WO-670@v1: non-git multi-file scans supply their explicit root, not an inferred ancestor.
         filePath: String? = nil,
@@ -45,16 +40,7 @@ public struct GuardDecision {
         let nonTestMatches = matches.filter {
             !DetectionRules.isTestCredential($0.value)
         }
-        let inlineFiltered: [DetectedMatch]
-        switch contentTrust {
-        case .agentControlled:
-            inlineFiltered = nonTestMatches
-        case .trustedFile:
-            inlineFiltered = Allowlist.filterInlineAllow(
-                matches: nonTestMatches,
-                content: content
-            )
-        }
+        // WO-676@v4: markers in source text never suppress an otherwise reportable finding.
         // WO-635: no path is non-documentation; authorized intrinsic/exact/custom evidence never downgrades.
         let isDocumentation = filePath.map {
             documentationExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased())
@@ -62,7 +48,8 @@ public struct GuardDecision {
         // WO-672@v1: allow-file accounting sees the same effective custom rules as the guard.
         let allowlist = Allowlist.fromConfig(config).merged(with:
             Allowlist.projectFile(for: filePath, scanRoot: scanRoot, config: config).allowlist)
-        let reportable = allowlist.filter(inlineFiltered).map { match in
+        // WO-676@v4: remove only the inline exemption, preserving explicit configuration tiers.
+        let reportable = allowlist.filter(nonTestMatches).map { match in
             guard config.documentationPolicy == .advisory, isDocumentation,
                   match.type.isAmbiguousClass,
                   match.mutationAuthorizationSources.isDisjoint(with: [.intrinsicFormat, .exactKnownSecret, .customRule]),

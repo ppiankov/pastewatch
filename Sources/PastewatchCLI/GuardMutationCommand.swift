@@ -69,11 +69,11 @@ struct GuardMutation: ParsableCommand {
     @Option(name: .long, help: "Minimum severity to block: critical, high, medium, low")
     var failOnSeverity: Severity = .defaultGuardThreshold
 
+    // WO-687@v2: structured mutations always reach ownership and policy evaluation.
     // WO-672@v1: operator-owned targets are refused before target I/O or evaluation.
     // WO-526@v3: stdin content is evaluated without copying secrets into argv.
     func run() throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: inherited settings cannot admit structured mutations.
         let limits = ScanInputLimits.current()
         let input: GuardMutationInput
         do {
@@ -138,6 +138,15 @@ struct GuardMutation: ParsableCommand {
             break
         }
 
+        // WO-676@v4: observe existing policy scans; migration advice must never initiate another scan.
+        var inlineMarkerNotices = 0
+        // WO-687@v2: remember only whether existing policy scans selected findings.
+        var hasFindings = false
+        let onFindings: (String, [DetectedMatch]) -> Void = { content, matches in
+            // WO-687@v2: observers collect diagnostic metadata without altering the evaluator.
+            hasFindings = hasFindings || !matches.isEmpty
+            inlineMarkerNotices = max(inlineMarkerNotices, FileGuard.inlineMarkerNoticeCount(matches: matches, content: content))
+        }
         let decision: GuardMutationDecision
         do {
             switch input.operation {
@@ -149,7 +158,8 @@ struct GuardMutation: ParsableCommand {
                     replaceAll: replaceAll,
                     filePath: input.filePath,
                     config: config,
-                    minimumSeverity: failOnSeverity
+                    // WO-676@v4: the evaluator supplies only findings already selected for its decision.
+                    minimumSeverity: failOnSeverity, onFindings: onFindings
                 )
             case let .write(content):
                 decision = try GuardMutationEvaluator.evaluateWrite(
@@ -157,7 +167,8 @@ struct GuardMutation: ParsableCommand {
                     proposedContent: content,
                     filePath: input.filePath,
                     config: config,
-                    minimumSeverity: failOnSeverity
+                    // WO-676@v4: proposed and existing snapshots share the same diagnostic observer.
+                    minimumSeverity: failOnSeverity, onFindings: onFindings
                 )
             }
         } catch {
@@ -166,9 +177,12 @@ struct GuardMutation: ParsableCommand {
         }
 
         guard case .block(let reason) = decision else { return }
+        // WO-687@v2: only a finding-backed denial emits retirement advice, once per command.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: hasFindings)
+        // WO-676@v4: notices accompany a denial only, never a clean or admitted mutation.
         try deny(reason == .touchesExistingFinding
             ? "proposed edit overlaps protected content"
-            : "proposed mutation changes protected content")
+            : "proposed mutation changes protected content", inlineMarkerNotices: inlineMarkerNotices)
     }
 
     // WO-672@v1: ownership refusal occurs before resolving policy or opening the mutation target.
@@ -204,10 +218,13 @@ struct GuardMutation: ParsableCommand {
         return customRegex.firstMatch(in: content, range: fullRange) != nil
     }
 
+    // WO-676@v4: human-facing denials may attach the finding-bound migration notice.
     // WO-671@v2: protected edits use the same narrow-first remedy as file guards.
     // WO-526@v3: denial messages disclose policy class, never matched values.
-    private func deny(_ reason: String) throws {
+    private func deny(_ reason: String, inlineMarkerNotices: Int = 0) throws {
         FileHandle.standardError.write(Data("BLOCKED: \(reason)\n".utf8))
+        // WO-676@v4: policy evaluators never print migration messages themselves.
+        FileGuard.printInlineMarkerNotices(count: inlineMarkerNotices)
         // WO-671@v2: operator-owned policy files never receive an agent-edit remedy.
         if reason != GuardDecision.operatorOwnedFileMessage { FileGuard.printEditRemedies() }
         throw ExitCode(rawValue: GuardExitContract.blocked)

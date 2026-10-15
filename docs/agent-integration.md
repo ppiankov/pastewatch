@@ -231,21 +231,17 @@ literal is outside the selected span.
 
 ---
 
-## 6. PW_GUARD Escape Hatch
+<!-- WO-687@v2: disabling enforcement belongs to the operator's hook settings, not the guarded environment. -->
+## 6. How to turn the guard off
 
-`PW_GUARD=0` disables all guard subcommands. When set, `guard`, `guard-read`, `guard-write`, and `scan --check` exit 0 immediately.
+Disable the hook in the agent's own settings when you intentionally need unguarded
+access, then re-enable it when finished. This changes hook invocation only; running
+a guard command directly still enforces its policy.
 
-```bash
-export PW_GUARD=0    # disable for current shell session
-unset PW_GUARD       # re-enable (or restart shell)
-```
-
-**Agent-proof by design:** The guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` - only the human can, before starting the agent session.
-
-**When to use:**
-- Editing detection rule source files (DetectionRules.swift)
-- Working with test fixtures that contain intentional secret-like patterns
-- Debugging hook behavior
+`PW_GUARD` was removed in 0.43.0. It no longer changes any guard or scan decision.
+If it is still set, commands that report findings print one migration notice on
+stderr; clean commands stay quiet. There is no replacement in-tool off switch.
+See [Exemptions](exemptions.md#removed-in-0430) for the supported narrow exemptions.
 
 ---
 
@@ -339,7 +335,8 @@ After configuring MCP and hooks for an agent:
 - **JSON validation errors in Cline**: upgrade to pastewatch >= 0.7.1
 - **No tools visible**: restart the agent after config change; verify config file JSON syntax
 - **Audit log empty**: check the `--audit-log` path is writable
-- **Hook not blocking**: verify hook is registered for the correct tool matcher; check `PW_GUARD` is not set to `0`
+<!-- WO-687@v2: hook invocation, not a retired environment switch, controls integration enforcement. -->
+- **Hook not blocking**: verify hooks are enabled in the agent's settings and registered for the correct tool matcher
 
 ---
 

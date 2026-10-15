@@ -194,7 +194,8 @@ public enum RedactedEdit {
             )
         } catch { throw RedactedEditError.inspectionFailed }
         let decision = GuardDecision.evaluate(matches: matches, content: content, config: config,
-                                              contentTrust: .agentControlled, minimumSeverity: nil, filePath: filePath)
+                                              // WO-676@v4: edits use the same marker-free decision policy.
+                                              minimumSeverity: nil, filePath: filePath)
         let partition = partitionMutationMatches(decision.reportableMatches, site: .mcpWrite, minAdvisorySeverity: .low)
         if !partition.authorized.isEmpty {
             throw RedactedEditError.plaintextSecrets(partition.authorized.map { "\($0.displayName) at line \($0.line)" }.sorted())

@@ -93,6 +93,7 @@ Core and CLI functionality complete:
 
 ## What Works
 
+<!-- WO-687@v2: status records removal rather than advertising an environment bypass. -->
 | Feature | Status |
 |---------|--------|
 | Email detection | ✓ Stable |
@@ -182,7 +183,7 @@ Core and CLI functionality complete:
 | safeHosts / sensitiveHosts config | ✓ Stable |
 | sensitiveIPPrefixes config | ✓ Stable |
 | allowedPatterns config | ✓ Stable |
-| PW_GUARD=0 bypass | ✓ Stable |
+| PW_GUARD bypass | Removed in 0.43.0; disable the agent hook instead |
 | Homebrew distribution | ✓ Stable |
 
 ---

@@ -55,7 +55,8 @@ final class DetectionRulesTests: XCTestCase {
             XCTAssertEqual(matches.count, 1)
             XCTAssertEqual(matches.first?.type, .obstalabsKey)
             let guardDecision = GuardDecision.evaluate(
-                matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                // WO-676@v4: precision controls use the marker-free decision policy.
+                matches: matches, content: content, config: config,
                 minimumSeverity: .high, filePath: path
             )
             XCTAssertEqual(guardDecision.actionableMatches.count, 1)
@@ -343,7 +344,8 @@ final class DetectionRulesTests: XCTestCase {
                 XCTAssertTrue(match.value == value)
                 XCTAssertTrue(match.mutationAuthorizationSources.contains(.intrinsicFormat))
                 let decision = GuardDecision.evaluate(
-                    matches: matches, content: value, config: .defaultConfig, contentTrust: .trustedFile,
+                    // WO-676@v4: format evidence is unchanged by inline exemption removal.
+                    matches: matches, content: value, config: .defaultConfig,
                     minimumSeverity: .high, filePath: "fixture.md"
                 )
                 XCTAssertEqual(decision.actionableMatches.count, 1)
@@ -462,7 +464,8 @@ final class DetectionRulesTests: XCTestCase {
         let content = ["post", "gres", "://", "app:", value, "@db/prod"].joined()
         let decision = GuardDecision.evaluate(
             matches: DetectionRules.scan(content, config: config), content: content, config: config,
-            contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+            // WO-676@v4: documentation fixtures retain the same path-based policy.
+            minimumSeverity: .high, filePath: "guide.md"
         )
         XCTAssertTrue(decision.actionableMatches.isEmpty)
         XCTAssertTrue(partitionMutationMatches(decision.reportableMatches, site: .mcpRead, minAdvisorySeverity: .high).authorized.isEmpty)
@@ -565,7 +568,7 @@ final class DetectionRulesTests: XCTestCase {
                 matches: defaultMatches,
                 content: input,
                 config: .defaultConfig,
-                contentTrust: .trustedFile,
+                // WO-676@v4: true-positive controls share the marker-free evaluator.
                 minimumSeverity: .high
             )
             XCTAssertFalse(

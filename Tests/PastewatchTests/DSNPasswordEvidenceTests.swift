@@ -26,7 +26,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
                 try Data(content.utf8).write(to: path)
                 let matches = DetectionRules.scan(content, config: config)
                 let decision = GuardDecision.evaluate(
-                    matches: matches, content: content, config: config, contentTrust: .trustedFile,
+                    // WO-676@v4: DSN evidence does not depend on inline exemptions.
+                    matches: matches, content: content, config: config,
                     minimumSeverity: .high, filePath: path.path
                 )
                 XCTAssertEqual(decision.actionableMatches.count, 1)
@@ -156,7 +157,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             let match = try XCTUnwrap(matches.first)
             XCTAssertTrue(match.mutationAuthorizationSources.contains(.intrinsicFormat))
             let decision = GuardDecision.evaluate(
-                matches: matches, content: content, config: fixtureConfig(), contentTrust: .trustedFile,
+                // WO-676@v4: DSN password policy shares the marker-free evaluator.
+                matches: matches, content: content, config: fixtureConfig(),
                 minimumSeverity: .high, filePath: "guide.md"
             )
             XCTAssertEqual(decision.actionableMatches.count, 1)
@@ -198,7 +200,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
                 content: content, ext: "md", relativePath: path.path, config: fixtureConfig()
             )
             let decision = GuardDecision.evaluate(
-                matches: matches, content: content, config: fixtureConfig(), contentTrust: .trustedFile,
+                // WO-676@v4: placeholder cases share the marker-free evaluator.
+                matches: matches, content: content, config: fixtureConfig(),
                 minimumSeverity: .high, filePath: path.path
             )
             XCTAssertTrue(decision.actionableMatches.isEmpty, decision.actionableMatches.map {
@@ -209,7 +212,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             process.arguments = ["guard-read", path.path]
             process.currentDirectoryURL = root
             // WO-672@v1: isolate the child global policy independently of project policy.
-            process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+            // WO-687@v2: password-evidence probes need isolated policy, not environment enablement.
+            process.environment = TestConfigHelper.subprocessEnvironment()
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
@@ -230,13 +234,14 @@ final class DSNPasswordEvidenceTests: XCTestCase {
             config.allowedValueSources[allowed] = [.user]
             let decision = GuardDecision.evaluate(
                 matches: DetectionRules.scan(connection, config: config), content: connection, config: config,
-                contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+                // WO-676@v4: user-tier exact exemptions remain independent of file content.
+                minimumSeverity: .high, filePath: "guide.md"
             )
             XCTAssertEqual(decision.actionableMatches.count, expected)
         }
     }
 
-    // WO-672@v1: patterns and inline directives suppress advisory DSNs, never intrinsic passwords.
+    // WO-676@v4: patterns retain their existing policy while inline markers never suppress DSNs.
     // WO-639: anchored patterns retain their whole-DSN comparison semantics.
     func testAllowlistPatternsAndInlineAllowKeepWholeMatchSemantics() {
         let password = fixturePassword()
@@ -256,13 +261,14 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         let config = fixtureConfig()
         let decision = GuardDecision.evaluate(
             matches: DetectionRules.scan(content, config: config), content: content, config: config,
-            contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+            // WO-676@v4: neither intrinsic nor advisory DSNs honor the removed marker.
+            minimumSeverity: .high, filePath: "guide.md"
         )
-        // WO-672@v1: the same directive still suppresses the advisory-only placeholder form.
+        // WO-676@v4: the advisory-only placeholder form stays reportable too.
         XCTAssertEqual(decision.reportableMatches.count, 1)
         let advisoryContent = fixtureConnection("pass" + "word") + " # pastewatch:allow\n"
-        XCTAssertTrue(Allowlist.filterInlineAllow(matches: DetectionRules.scan(advisoryContent, config: config),
-                                                 content: advisoryContent).isEmpty)
+        XCTAssertEqual(GuardDecision.evaluate(matches: DetectionRules.scan(advisoryContent, config: config),
+            content: advisoryContent, config: config, minimumSeverity: nil).reportableMatches.count, 1)
     }
 
     // WO-672@v1: project exact entries do not gain the user-tier DSN exemption.
@@ -272,7 +278,8 @@ final class DSNPasswordEvidenceTests: XCTestCase {
         config.allowedValues = [connection]
         config.allowedValueSources[connection] = [.project]
         XCTAssertEqual(GuardDecision.evaluate(matches: DetectionRules.scan(connection, config: config),
-                                             content: connection, config: config, contentTrust: .trustedFile,
+                                             // WO-676@v4: project provenance remains independent of file content.
+                                             content: connection, config: config,
                                              minimumSeverity: .high, filePath: "guide.md").actionableMatches.count, 1)
     }
 

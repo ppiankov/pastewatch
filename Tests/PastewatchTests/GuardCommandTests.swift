@@ -201,7 +201,7 @@ final class GuardCommandTests: XCTestCase {
             matches: DetectionRules.scan(content, config: config),
             content: content,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: referenced content never supplies an inline exemption.
             minimumSeverity: .high
         )
 
@@ -548,11 +548,9 @@ final class GuardCommandTests: XCTestCase {
             .appendingPathComponent(".build/debug/PastewatchCLI")
     }
 
+    // WO-687@v2: fixture subprocesses inherit only isolated config, not session-specific migration settings.
     private func testEnvironment() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        // WO-634: project fixtures isolate policy; HOME/XDG overrides never did.
-        environment["PW_GUARD"] = "1"
-        return environment
+        return TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
     }
 
     private func guardJSON(from stdout: String) throws -> [String: Any] {

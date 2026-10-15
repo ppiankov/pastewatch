@@ -2,7 +2,7 @@
   "name": "pastewatch",
   "displayName": "pastewatch",
   "description": "Real-time secret detection in the editor.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "ppiankov",
   "license": "MIT",
   "icon": "icon.png",
@@ -65,6 +65,7 @@
     "build": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "lint": "tsc -p ./ --noEmit",
+    "test": "npm run build && node --test dist/projectExemption.test.js",
     "package:vsix": "npm run build && npx @vscode/vsce package",
     "publish:marketplace": "npm run build && npx @vscode/vsce publish"
   },

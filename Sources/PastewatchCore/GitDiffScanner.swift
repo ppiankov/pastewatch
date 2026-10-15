@@ -84,7 +84,7 @@ public enum GitScanHelpers {
             content: content, ext: ext,
             relativePath: relativePath, config: config
         )
-        matches = Allowlist.filterInlineAllow(matches: matches, content: content)
+        // WO-676@v4: the compatibility scanner honors only explicit source-authorized exemptions.
         matches = Allowlist.fromConfig(config).filter(matches)
         return matches
     }
@@ -209,7 +209,7 @@ public struct GitDiffScanner {
             }
             let content = input.content
             statistics.recordScanned()
-            fileMatches = Allowlist.filterInlineAllow(matches: fileMatches, content: content)
+            // WO-676@v4: staged content cannot supply an inline exemption.
             fileMatches = Allowlist.fromConfig(config).filter(fileMatches)
 
             // Filter to only added lines

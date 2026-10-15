@@ -2,12 +2,15 @@ import * as vscode from "vscode";
 import * as path from "path";
 
 import { isDiagnosticWithData } from "./diagnostics";
+import { canOfferProjectExemption } from "./projectExemption";
 
 const DIAGNOSTIC_SOURCE = "pastewatch";
 
 export class PastewatchCodeActionProvider implements vscode.CodeActionProvider {
   static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
 
+  // WO-676@v4: editor exemptions use the operator-owned project allow file only.
+  // WO-682@v2: project-file actions require an explicit eligibility decision from the CLI.
   provideCodeActions(
     document: vscode.TextDocument,
     range: vscode.Range | vscode.Selection,
@@ -18,33 +21,13 @@ export class PastewatchCodeActionProvider implements vscode.CodeActionProvider {
     for (const diag of context.diagnostics) {
       if (diag.source !== DIAGNOSTIC_SOURCE) continue;
 
-      actions.push(this.createInlineAllowAction(document, diag));
-
-      if (isDiagnosticWithData(diag)) {
+      // WO-682@v2: absent or false metadata never produces an allow-file action.
+      if (isDiagnosticWithData(diag) && canOfferProjectExemption(diag.data.finding.projectExemptible)) {
         actions.push(this.createAllowlistAction(document, diag));
       }
     }
 
     return actions;
-  }
-
-  private createInlineAllowAction(
-    document: vscode.TextDocument,
-    diag: vscode.Diagnostic,
-  ): vscode.CodeAction {
-    const action = new vscode.CodeAction(
-      "Add inline pastewatch:allow",
-      vscode.CodeActionKind.QuickFix,
-    );
-    action.diagnostics = [diag];
-
-    const line = document.lineAt(diag.range.start.line);
-    const edit = new vscode.WorkspaceEdit();
-    const insertPos = line.range.end;
-    edit.insert(document.uri, insertPos, " // pastewatch:allow");
-
-    action.edit = edit;
-    return action;
   }
 
   private createAllowlistAction(

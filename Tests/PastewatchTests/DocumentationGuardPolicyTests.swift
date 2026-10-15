@@ -179,7 +179,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
                 process.arguments = ["guard-read", path]
                 process.currentDirectoryURL = root
                 // WO-672@v1: the subprocess guard shares only the DEBUG fixture path.
-                process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+                // WO-687@v2: document policy remains active without an environment guard switch.
+                process.environment = TestConfigHelper.subprocessEnvironment()
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = stderr
                 try process.run()
@@ -245,7 +246,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
             for threshold in [nil] + Severity.allCases.map(Optional.some) {
                 let result = GuardDecision.evaluate(
                     matches: matches, content: content, config: config,
-                    contentTrust: .trustedFile, minimumSeverity: threshold, filePath: name
+                    // WO-676@v4: documentation decisions share the marker-free policy.
+                    minimumSeverity: threshold, filePath: name
                 )
                 XCTAssertEqual(result.reportableMatches.count, 1)
                 XCTAssertEqual(result.reportableMatches.first?.advisory, .documentationPolicy)
@@ -255,7 +257,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         for path in [nil, "", "docs/guide", "docs/guide.swift", "guide.md.txt"] {
             let result = GuardDecision.evaluate(
                 matches: matches, content: content, config: config,
-                contentTrust: .trustedFile, minimumSeverity: .high, filePath: path
+                // WO-676@v4: paths still select documentation policy, not an inline exemption.
+                minimumSeverity: .high, filePath: path
             )
             XCTAssertEqual(result.actionableMatches.count, 1)
             XCTAssertEqual(result.reportableMatches.first?.effectiveSeverity, .critical)
@@ -268,7 +271,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         let match = DetectedMatch(type: .credential, value: text, range: text.startIndex..<text.endIndex, filePath: "guide.md")
         let result = GuardDecision.evaluate(
             matches: [match], content: text, config: fixtureConfig(),
-            contentTrust: .agentControlled, minimumSeverity: .high
+            // WO-676@v4: pathless text cannot select an inline exemption.
+            minimumSeverity: .high
         )
         XCTAssertEqual(result.actionableMatches.count, 1)
     }
@@ -283,7 +287,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
             )
             let result = GuardDecision.evaluate(
                 matches: [match], content: text, config: fixtureConfig(),
-                contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+                // WO-676@v4: known evidence retains its documentation protection.
+                minimumSeverity: .high, filePath: "guide.md"
             )
             XCTAssertEqual(result.actionableMatches.count, 1)
             XCTAssertEqual(result.reportableMatches.first?.effectiveSeverity, .critical)
@@ -301,7 +306,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         XCTAssertTrue(matches.first?.mutationAuthorizationSources.contains(.intrinsicFormat) == true)
         let result = GuardDecision.evaluate(
             matches: matches, content: text, config: config,
-            contentTrust: .trustedFile, minimumSeverity: .high, filePath: "guide.md"
+            // WO-676@v4: invalid configuration still fails closed.
+            minimumSeverity: .high, filePath: "guide.md"
         )
         XCTAssertEqual(result.actionableMatches.count, 1)
     }
@@ -331,7 +337,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         )
         let decision = GuardDecision.evaluate(
             matches: [match], content: text, config: fixtureConfig(),
-            contentTrust: .trustedFile, minimumSeverity: .low, filePath: "guide.md"
+            // WO-676@v4: advisory thresholds do not depend on removed inline exemptions.
+            minimumSeverity: .low, filePath: "guide.md"
         )
         XCTAssertTrue(decision.actionableMatches.isEmpty)
         let result = applyAuthorizedMutations(to: text, matches: decision.reportableMatches, site: .cliScan, minAdvisorySeverity: .low)
@@ -395,7 +402,8 @@ final class DocumentationGuardPolicyTests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = root
         // WO-672@v1: global configuration remains isolated after tier merging.
-        process.environment = TestConfigHelper.subprocessEnvironment(["PW_GUARD": "1"])
+        // WO-687@v2: document subprocesses need only isolated configuration.
+        process.environment = TestConfigHelper.subprocessEnvironment()
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice

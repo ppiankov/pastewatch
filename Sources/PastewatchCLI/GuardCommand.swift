@@ -21,12 +21,12 @@ struct Guard: ParsableCommand {
     @Flag(name: .long, help: "Exit code only, no output")
     var quiet = false
 
+    // WO-687@v2: guard decisions are independent of inherited environment switches.
     // WO-673@v2: grants admit only individual transfer reads, never other readers of the same path.
     // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
     // WO-658@v2: unresolved redacted-tool paths do not bypass guarded file access.
     func run() throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: every invocation reaches validated policy and source checks.
         // WO-574@v4: command guards cannot fall back from a corrupt active config.
         let config = try requireValidatedConfig()
         // WO-644@v2: diagnostics and read targets share the same parse result.
@@ -59,7 +59,7 @@ struct Guard: ParsableCommand {
             matches: commandMatches,
             content: command,
             config: config,
-            contentTrust: .agentControlled,
+            // WO-676@v4: command content cannot select an inline exemption policy.
             minimumSeverity: failOnSeverity,
             // WO-635: shell command text is not a documentation file.
             filePath: nil
@@ -69,9 +69,13 @@ struct Guard: ParsableCommand {
         let commandFiltered = commandDecision.actionableMatches
         // WO-138: JSON output must preserve command context without echoing inline credential values.
         let redactedCommand = Obfuscator.redactForDisplay(command, matches: commandDisplayMatches)
+        // WO-676@v4: notices reuse the policy-selected command and file findings.
+        var inlineMarkerNotices = 0
 
         if !commandFiltered.isEmpty {
             shouldBlock = true
+            // WO-676@v4: no finding means no migration notice.
+            inlineMarkerNotices += FileGuard.inlineMarkerNoticeCount(matches: commandFiltered, content: command)
             let bySeverity = Dictionary(grouping: commandFiltered, by: { $0.effectiveSeverity })
             let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
                 .sorted()
@@ -93,16 +97,11 @@ struct Guard: ParsableCommand {
             let scan = try scanReferencedFile(path: path, config: config, role: read.role)
             let content = scan.content
             let matches = scan.matches
-            // WO-502: files REFERENCED by an agent-controlled command are themselves
-            // agent-controllable — the agent can write `# pastewatch:allow` into a file it
-            // then `cat`s. Treat the referenced content as .agentControlled so inline allow
-            // comments cannot self-authorize a secret one layer over. Operator-named files
-            // (guard-read/guard-write, FileWatcher) remain .trustedFile.
+            // WO-676@v4: referenced files use the same explicit exemptions as all other surfaces.
             let filtered = GuardDecision.evaluate(
                 matches: matches,
                 content: content,
                 config: config,
-                contentTrust: .agentControlled,
                 minimumSeverity: failOnSeverity,
                 // WO-635: referenced file content has a real path, unlike the command string.
                 filePath: path
@@ -110,6 +109,8 @@ struct Guard: ParsableCommand {
 
             if !filtered.isEmpty {
                 shouldBlock = true
+                // WO-676@v4: inspect each finding's own file line for migration diagnostics only.
+                inlineMarkerNotices += FileGuard.inlineMarkerNoticeCount(matches: filtered, content: content)
                 let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
                 let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }
                     .sorted()
@@ -123,6 +124,8 @@ struct Guard: ParsableCommand {
         }
 
         if shouldBlock {
+            // WO-687@v2: one stderr notice accompanies findings in text, JSON and quiet modes.
+            FileGuard.printGuardEnvironmentNotice(hasFindings: true)
             if json {
                 let result = GuardResult(
                     blocked: true,
@@ -144,6 +147,8 @@ struct Guard: ParsableCommand {
                     let msg = "BLOCKED: command contains inline secret(s) (\(ir.severityCounts): \(ir.types.joined(separator: ", ")))\n"
                     FileHandle.standardError.write(Data(msg.utf8))
                 }
+                // WO-676@v4: migration text is confined to human-facing block output.
+                FileGuard.printInlineMarkerNotices(count: inlineMarkerNotices)
                 // WO-658@v2: offer both sanctioned surfaces when referenced or inline findings block a command.
                 FileHandle.standardError.write(Data(("Use pastewatch_read_file / pastewatch_edit_file, or pastewatch-cli read <file> " +
                     "then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... .\n").utf8))
@@ -190,7 +195,8 @@ struct Guard: ParsableCommand {
                 if role == .transferSource, BinaryTransferGrants.permitsTransfer(path: path, bytes: data) {
                     return ReferencedFileScan(content: "", matches: [])
                 }
-                try blockUnscannableFile(path)
+                // WO-677@v1: only a proven non-UTF-8 regular file can use the binary-transfer remedy.
+                try blockUnscannableFile(path, isNonUTF8: true)
             }
             let refExt = (path as NSString).pathExtension.lowercased()
             let matches = try DirectoryScanner.scanFileContentOrThrow(
@@ -220,15 +226,27 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-677@v1: directory and I/O failures must not suggest a regular-file-only grant.
     // WO-673@v2: the binary block names an operator-only remedy without offering a guard bypass.
     // WO-601@v2: diagnostics identify the evidence boundary without file bytes.
-    private func blockUnscannableFile(_ path: String) throws -> Never {
+    private func blockUnscannableFile(_ path: String, isNonUTF8: Bool = false) throws -> Never {
         if !quiet {
-            FileHandle.standardError.write(
-                Data("BLOCKED: \(path) cannot be scanned safely\n".utf8)
-            )
-            // WO-673@v2: admission remains the operator's explicit decision, never an agent action.
-            FileHandle.standardError.write(Data("Operator: run pastewatch-cli allow-binary \(path) yourself; agents cannot grant this.\n".utf8))
+            // WO-677@v1: classify the real target, including symlinks, without opening its contents again.
+            let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            let type = (try? FileManager.default.attributesOfItem(atPath: resolvedPath))?[.type] as? FileAttributeType
+            if type == .typeDirectory {
+                FileHandle.standardError.write(Data("BLOCKED: \(path) is a directory and cannot be scanned safely as a file.\n".utf8))
+                FileHandle.standardError.write(Data("Scan it with pastewatch-cli scan --dir \(path), or run the command yourself.\n".utf8))
+            } else {
+                FileHandle.standardError.write(Data("BLOCKED: \(path) cannot be scanned safely\n".utf8))
+                // WO-677@v1: other non-regular or unreadable paths have no binary-grant remedy.
+                if isNonUTF8 && type == .typeRegular {
+                    // WO-673@v2: admission remains the operator's explicit decision, never an agent action.
+                    FileHandle.standardError.write(Data("Operator: run pastewatch-cli allow-binary \(path) yourself; agents cannot grant this.\n".utf8))
+                } else {
+                    FileHandle.standardError.write(Data("This target cannot be inspected as a regular text file; run the command yourself.\n".utf8))
+                }
+            }
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }

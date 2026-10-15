@@ -113,11 +113,11 @@ public struct ValueVerdict: Encodable {
     private static func decisions(
         content: String, filePath: String?, config: PastewatchConfig, matches: [DetectedMatch]
     ) throws -> Decisions {
-        let trust: GuardContentTrust = filePath == nil ? .agentControlled : .trustedFile
+        // WO-676@v4: diagnostics use the same policy regardless of who supplied the text.
         let guardHook = GuardDecision.evaluate(matches: matches, content: content, config: config,
-                                              contentTrust: trust, minimumSeverity: .defaultGuardThreshold, filePath: filePath)
+                                              minimumSeverity: .defaultGuardThreshold, filePath: filePath)
         let scan = GuardDecision.evaluate(matches: matches, content: content, config: config,
-                                         contentTrust: trust, minimumSeverity: nil, filePath: filePath)
+                                         minimumSeverity: nil, filePath: filePath)
         let mcp = MCPReadDecision.evaluate(matches: matches, content: content, config: config,
                                           minimumSeverity: Severity(rawValue: config.mcpMinSeverity) ?? .defaultGuardThreshold,
                                           filePath: filePath)
@@ -176,17 +176,21 @@ public struct ValueVerdict: Encodable {
         return "ambiguous opt-in"
     }
 
+    // WO-676@v4: a removed inline exemption cannot appear as an effective suppression.
     // WO-637: use the actual allowlist filters and identify lists, never their entries.
     private static func suppressions(
         _ match: DetectedMatch, content: String, config: PastewatchConfig, filePath: String?
     ) -> [String] {
-        let allowlist = Allowlist.fromConfig(config)
+        // WO-676@v4: diagnostic projections must preserve operator provenance instead of becoming remedy lists.
+        var exactConfig = config
+        exactConfig.allowedPatterns = []
+        var patternConfig = config
+        patternConfig.allowedValues = []
         var result: [String] = []
-        if Allowlist(values: allowlist.values).filter([match]).isEmpty { result.append("allowedValues") }
-        if Allowlist(patterns: allowlist.patterns).filter([match]).isEmpty { result.append("allowedPatterns") }
-        if filePath != nil && Allowlist.filterInlineAllow(matches: [match], content: content).isEmpty {
-            result.append("inline allow")
-        }
+        // WO-676@v4: operator exact and pattern exemptions retain their existing diagnostic labels.
+        if Allowlist.fromConfig(exactConfig).filter([match]).isEmpty { result.append("allowedValues") }
+        if Allowlist.fromConfig(patternConfig).filter([match]).isEmpty { result.append("allowedPatterns") }
+        // WO-676@v4: suppression diagnostics are limited to explicit configuration lists.
         return result
     }
 

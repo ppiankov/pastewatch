@@ -744,6 +744,7 @@ public struct DetectionRules {
     // WO-639: preserve whole-DSN detection identity and attach password-only mutation targeting.
     // WO-626: apply legacy receiver discrimination before claiming an intrinsic token range.
     // WO-652@v2: retain following declaration syntax for raw colon-keyword validation.
+    // WO-683@v1: Phone values and metadata exclude separators outside the last digit.
     /// Scan content with regex rules.
     private static func scanWithRegexRules(
         _ content: String,
@@ -762,10 +763,12 @@ public struct DetectionRules {
             for match in regexMatches {
                 // WO-651@v2: only keyword Credentials use literal-aware value extraction.
                 guard let rawRange = Range(match.range, in: content) else { continue }
+                // WO-683@v1: range normalization precedes validation, overlap tracking and value extraction.
+                let phoneRange = type == .phone ? phoneMatchRange(rawRange, in: content) : rawRange
                 let range = type == .credential
                     ? credentialMatchRange(rawRange, in: content,
                                            literalQuote: vaultContext.quote(at: rawRange.lowerBound, in: content))
-                    : rawRange
+                    : phoneRange
                 guard !matchedRanges.overlaps(range, in: content) else { continue }
 
                 let value = String(content[range])
@@ -866,6 +869,7 @@ public struct DetectionRules {
         }
     }
 
+    // WO-684@v1: unquoted receiver-field assignments are code without changing the legacy token grammar.
     // WO-626: local call/nil-comparison syntax distinguishes receivers without changing token grammar.
     private static func isLegacyVaultCodeReference(
         _ value: String, after end: String.Index, in content: String
@@ -875,6 +879,8 @@ public struct DetectionRules {
               parts[1].first?.isLetter == true else { return false }
         let tail = content[end...].drop { $0.isWhitespace && !$0.isNewline }
         if tail.hasPrefix("(") { return true }
+        // WO-684@v1: a single assignment operator identifies a receiver field; comparisons keep their existing checks.
+        if tail.hasPrefix("="), !tail.hasPrefix("==") { return true }
         guard tail.hasPrefix("==") || tail.hasPrefix("!=") else { return false }
         let rhs = tail.dropFirst(2).drop { $0.isWhitespace && !$0.isNewline }
         guard rhs.hasPrefix("nil") else { return false }
@@ -1815,20 +1821,52 @@ public struct DetectionRules {
         return isValidCredentialValue(value)
     }
 
-    // WO-668@v1: only assignment syntax and an identifier path/call justify the source-expression exclusion.
+    // WO-688@v1: colon expressions require same-line source delimiters; assignment discrimination stays unchanged.
     private static func isCredentialCodeExpression(
         _ value: String, separator: String, following: Substring?
     ) -> Bool {
-        guard ["=", ":="].contains(separator.trimmingCharacters(in: .whitespaces)),
+        let separatorText = separator.trimmingCharacters(in: .whitespaces)
+        guard ["=", ":=", ":"].contains(separatorText),
               let identifier = value.range(
                 of: #"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"#,
                 options: .regularExpression
               ) else { return false }
         let suffix = value[identifier.upperBound...]
+        // WO-688@v1: following text retains delimiters and balanced call arguments outside the regex capture.
+        if separatorText == ":" {
+            return isDelimitedKeyedCredentialExpression(
+                String(suffix) + String(following ?? ""), isSelector: value[identifier].contains(".")
+            )
+        }
         let tail = suffix.isEmpty ? following ?? "" : suffix
         if tail.drop(while: { $0.isWhitespace && !$0.isNewline }).first == "(" { return true }
         // Namespace paths without a call are references; punctuation is restricted to statement boundaries.
         return value[identifier].contains("::") && suffix.allSatisfy { ",;)]}".contains($0) }
+    }
+
+    // WO-688@v1: only a balanced same-line call or selector followed by source punctuation justifies exclusion.
+    private static func isDelimitedKeyedCredentialExpression(_ tail: String, isSelector: Bool) -> Bool {
+        let line = tail.prefix { !$0.isNewline }.drop { $0.isWhitespace }
+        guard line.first == "(" else {
+            // WO-688@v1: a closing parenthesis also delimits a Swift named-selector argument.
+            return isSelector && line.first.map { ",})".contains($0) } == true
+        }
+        var depth = 0
+        for index in line.indices {
+            let character = line[index]
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    let after = line[line.index(after: index)...].drop { $0.isWhitespace }
+                    return after.first.map { ",})".contains($0) } == true
+                }
+            } else if "\"'#".contains(character) || line[index...].hasPrefix("//") || line[index...].hasPrefix("/*") {
+                return false
+            }
+        }
+        return false
     }
 
     // WO-668@v1: retain the first quoted argument's value and original source boundary.
@@ -2218,6 +2256,15 @@ public struct DetectionRules {
         }
 
         return true
+    }
+
+    // WO-683@v1: optional trailing separators do not belong to a Phone's exact value or source span.
+    private static func phoneMatchRange(_ rawRange: Range<String.Index>, in content: String) -> Range<String.Index> {
+        let scalars = content[rawRange].unicodeScalars
+        guard let first = scalars.firstIndex(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }),
+              let last = scalars.lastIndex(where: { CharacterSet.decimalDigits.contains($0) }),
+              first <= last else { return rawRange }
+        return first..<scalars.index(after: last)
     }
 
     // WO-667@v1: contextual numeric rejection retains the existing UUID and phone digit cutsets.

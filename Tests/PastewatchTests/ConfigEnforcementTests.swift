@@ -75,8 +75,8 @@ final class ConfigEnforcementTests: XCTestCase {
         process.arguments = arguments
         process.currentDirectoryURL = currentDirectory
 
-        var environment = ProcessInfo.processInfo.environment
-        environment.removeValue(forKey: "PW_GUARD")
+        // WO-687@v2: config validation is independent of inherited guard switches.
+        let environment = ProcessInfo.processInfo.environment
         // WO-672@v1: child environment replacement retains DEBUG-only global isolation.
         process.environment = TestConfigHelper.subprocessEnvironment(environment)
 

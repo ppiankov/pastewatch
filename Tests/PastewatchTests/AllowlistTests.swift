@@ -19,13 +19,18 @@ final class AllowlistTests: XCTestCase {
         return config
     }()
 
+    // WO-676@v4: remedy exact values suppress naturally emitted advisory Phone matches only.
     func testFiltersSuppressedValues() {
-        let content = "Contact admin@corp.com and test@example.com"
-        let matches = DetectionRules.scan(content, config: config)
-        let allowlist = Allowlist(values: ["test@example.com"])
+        let first = ["+", "65", " ", "6123", " ", "4567"].joined()
+        let second = ["+", "1", " ", "415", " ", "555", " ", "0132"].joined()
+        let content = first + "; " + second
+        let matches = DetectionRules.scan(content, config: TestConfigHelper.configWithAmbiguousAdvisories([.phone]))
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertTrue(matches.allSatisfy { $0.type == .phone && $0.mutationAuthorizationSources.isEmpty })
+        let allowlist = Allowlist(values: Set(matches.dropFirst().map(\.value)))
         let filtered = allowlist.filter(matches)
         XCTAssertEqual(filtered.count, 1)
-        XCTAssertEqual(filtered[0].value, "admin@corp.com")
+        XCTAssertTrue(filtered.first?.value == matches.first?.value)
     }
 
     func testEmptyAllowlistPassesAll() {
@@ -62,24 +67,31 @@ final class AllowlistTests: XCTestCase {
         XCTAssertTrue(allowlist.contains("other@test.com"))
     }
 
+    // WO-676@v4: the scan control uses actual Phone matches, not synthetic advisory Email.
     func testScanWithAllowlist() {
-        let content = "Contact admin@corp.com and test@example.com"
-        let allowlist = Allowlist(values: ["test@example.com"])
-        let matches = DetectionRules.scan(content, config: config, allowlist: allowlist)
+        let first = ["+", "65", " ", "6123", " ", "4567"].joined()
+        let second = ["+", "1", " ", "415", " ", "555", " ", "0132"].joined()
+        let content = first + "; " + second
+        let advisoryConfig = TestConfigHelper.configWithAmbiguousAdvisories([.phone])
+        let detected = DetectionRules.scan(content, config: advisoryConfig)
+        XCTAssertEqual(detected.count, 2)
+        let allowlist = Allowlist(values: Set(detected.dropFirst().map(\.value)))
+        let matches = DetectionRules.scan(content, config: advisoryConfig, allowlist: allowlist)
         XCTAssertEqual(matches.count, 1)
-        XCTAssertEqual(matches[0].value, "admin@corp.com")
+        XCTAssertTrue(matches.first?.value == detected.first?.value)
     }
 
     // MARK: - Allowed Patterns (regex)
 
+    // WO-676@v4: remedy patterns cannot substitute for exact advisory entries.
     func testPatternSuppressesMatchingValue() throws {
-        let content = "key=sk_test_abc123def456ghi789"
-        let pattern = try NSRegularExpression(pattern: "^(sk_test_.*)$")
+        let content = ["admin", "@corp.com"].joined()
+        let pattern = try NSRegularExpression(pattern: ".*")
         let allowlist = Allowlist(values: [], patterns: [pattern])
         let matches = DetectionRules.scan(content, config: config)
         let filtered = allowlist.filter(matches)
-        let apiKeyMatches = filtered.filter { $0.type == .genericApiKey }
-        XCTAssertEqual(apiKeyMatches.count, 0, "sk_test_ pattern should suppress test API keys")
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(filtered.count, matches.count)
     }
 
     func testPatternDoesNotSuppressNonMatching() throws {
@@ -91,16 +103,16 @@ final class AllowlistTests: XCTestCase {
         XCTAssertEqual(filtered.count, matches.count, "pattern should not suppress non-matching values")
     }
 
+    // WO-676@v4: multiple remedy patterns cannot suppress findings either.
     func testMultiplePatternsWorkTogether() throws {
-        let content = "key1=sk_test_abc123 email=test@example.com"
-        let p1 = try NSRegularExpression(pattern: "^(sk_test_.*)$")
+        let content = ["test", "@example.com"].joined()
+        let p1 = try NSRegularExpression(pattern: ".*")
         let p2 = try NSRegularExpression(pattern: "^(test@.*)$")
         let allowlist = Allowlist(values: [], patterns: [p1, p2])
         let matches = DetectionRules.scan(content, config: config)
         let filtered = allowlist.filter(matches)
-        // WO-529@v3: email is now opt-in, so only the API key match is present
-        // and it gets filtered by the pattern
-        XCTAssertEqual(filtered.count, 0, "both patterns should suppress their matches")
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(filtered.count, matches.count)
     }
 
     func testAllowedPatternsFromConfig() {

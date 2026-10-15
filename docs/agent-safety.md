@@ -265,18 +265,17 @@ Integrate with agent Bash hooks to block commands automatically. See [agent-setu
 
 The command guard treats recognized sources of `cp`, `mv`, `install`, `rsync`, and `ditto`, plus files fed through `cat` or `<` into `tee`, `>`, or `>>`, as read targets. Each source is checked under its own path's policy, so a Markdown destination cannot relax a protected non-document source. Destination-only operands are not newly read targets. This remains conservative command parsing, not a shell sandbox: renaming through scripts, unsupported options, obfuscated commands, and recursive directory copies can escape this file-level check. Use MCP redacted reads/writes for protected source files and retain the other enforcement layers. See [copy-source troubleshooting](troubleshooting.md#why-was-my-cpmv-blocked).
 
-### `PW_GUARD=0` - escape hatch
+<!-- WO-687@v2: operators control hook invocation without an environment-based guard bypass. -->
+### How to turn the guard off
 
-`PW_GUARD=0` is a native feature of pastewatch-cli. When set, `guard` and `scan --check` exit 0 immediately - every hook that calls pastewatch-cli gets the bypass for free.
+Disable the hook in the agent's own settings for intentional unguarded work, then
+re-enable it. Direct guard commands still enforce policy. Pastewatch is a guardrail
+for cooperative agents, not a sandbox against a process running as your user.
 
-```bash
-export PW_GUARD=0    # disable for current shell session
-unset PW_GUARD       # re-enable
-```
-
-This is **agent-proof by design**: the guard runs in the hook's process, not the agent's shell. The agent cannot set `PW_GUARD=0` to bypass it - only the human can, before starting the agent session. The bypass requires human action outside the agent's control.
-
-Use it when editing detection rules, working with test fixtures, or handling files with intentional secret-like patterns.
+`PW_GUARD` was removed in 0.43.0 and no longer changes guard or scan decisions.
+If it is set, finding-bearing CLI output includes one migration notice on stderr;
+clean commands stay quiet. See [Exemptions](exemptions.md#removed-in-0430) for narrow
+operator-authored alternatives. There is no replacement in-tool off switch.
 
 ---
 

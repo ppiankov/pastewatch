@@ -2,6 +2,7 @@
 
 Full command reference for `pastewatch-cli`. For an overview and quick start, see the [README](../README.md).
 
+<!-- WO-676@v4: link the removed feature's migration note alongside the command reference. -->
 <!-- WO-640: Make diagnostic and policy documentation discoverable. -->
 **Contents**
 
@@ -14,7 +15,7 @@ Full command reference for `pastewatch-cli`. For an overview and quick start, se
 | [Watch](#watch-mode) | [Dashboard](#dashboard) | [VS Code](#vs-code-extension) |
 | [Environment Variables](#environment-variables) | [Pre-commit Hook](#pre-commit-hook) | [Baseline Diff](#baseline-diff) |
 | [Config Init](#config-init) | [Exit Codes](#exit-codes) | [Stdin Filename](#stdin-filename-hint) |
-| [Inline Allowlist](#inline-allowlist) | [Pre-commit Framework](#pre-commit-framework-pre-commitcom) | [Manual Hook](#pre-commit-hook-manual) |
+| [No Inline Exemptions](#no-inline-exemptions) | [Pre-commit Framework](#pre-commit-framework-pre-commitcom) | [Manual Hook](#pre-commit-hook-manual) |
 | [Format-Aware Scanning](#format-aware-scanning) | [Allowlist](#allowlist) | [Custom Rules](#custom-rules) |
 | [Check](#check) | [Doctor --explain](#doctor---explain) | [Documentation Policy](#documentation-policy) |
 
@@ -70,6 +71,13 @@ pastewatch-cli explain email
 # Validate config
 pastewatch-cli config check
 ```
+
+<!-- WO-682@v2: consumers reuse authorization metadata instead of maintaining detector class lists. -->
+Each `scan --format json` finding includes the additive Boolean `projectExemptible`,
+computed by the same predicate that decides exact-value exemptions from
+`.pastewatch-allow`. Existing finding fields and output containers are unchanged.
+Editors may offer an allow-file action only when this field is explicitly `true`;
+an absent or `false` field means no action.
 
 File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
 lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
@@ -505,6 +513,13 @@ pastewatch-cli guard --json "cat config.yml"
 
 Handles pipe chains (`|`), command chaining (`&&`, `||`, `;`), redirect operators, subshell extraction (`$(...)`, backticks), scripting interpreters, file transfer tools, infrastructure tools (terraform, docker, kubectl), and database CLIs (psql, mysql, redis-cli) with inline value scanning.
 
+<!-- WO-677@v1: directory-reader blocks need a remedy that accepts directories, not a binary-file grant. -->
+The guard refuses directory operands in recursive readers such as `grep -r`, and
+`cat` on a directory: a directory cannot be inspected as one bounded text file.
+Scan it explicitly with `pastewatch-cli scan --dir <dir>`, or run the command
+yourself. `allow-binary` grants cover regular binary/non-UTF-8 files only, never
+directories or other non-regular targets.
+
 Integrates with agent hooks (Claude Code, Cline) to intercept Bash tool calls before execution. See [agent-setup.md](agent-setup.md) for hook configuration.
 
 Every way a guarded finding can be let through, and who may author each one: [exemptions.md](exemptions.md).
@@ -702,7 +717,8 @@ All safe summaries use only `lengthBytes` and `characterClasses`, as in `check`.
 <!-- WO-672@v1: intrinsic exemptions require exact whole values from operator-owned policy. -->
 Intrinsic secrets can be exempted only by exact whole `allowedValues` in the administrator config, or the user config when no system policy exists, never by patterns, project entries, inline comments or a remedy allowlist.
 <!-- WO-672@v1: tighten-only tiers exempt advisory classes without independent authorization evidence. -->
-Project and tighten-only user entries exempt advisory classes only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Inline directives and remedy allowlists retain their existing non-intrinsic behavior. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
+<!-- WO-676@v4: removed markers confer no trust, and remedy files cover only exact advisory values. -->
+Project and tighten-only user entries exempt advisory classes only, never non-ambiguous types, custom rules or intrinsic/exact-known-secret evidence. Inline markers have no effect. Remedy `--allowlist` files cover exact advisory values only, never custom rules, intrinsic/exact-known-secret evidence or `obfuscate` opt-ins. Guard-write and guard-mutation refuse agent edits to `.pastewatch.json` and `.pastewatch-allow`, including case-equivalent names, with `operator-owned file: edit it yourself`.
 <!-- WO-672@v1: a project rule does not authorize its own exemption. -->
 A project config cannot exempt hits of its own custom rules; those exemptions require operator-tier policy.
 
@@ -736,9 +752,10 @@ Real-time secret detection in the editor with inline diagnostics, hover tooltips
 
 ## Environment Variables
 
+<!-- WO-687@v2: obsolete settings can request migration advice but never alter enforcement. -->
 | Variable | Effect |
 |----------|--------|
-| `PW_GUARD=0` | Disable `guard` and `scan --check` - all commands allowed, no scanning. Set before starting the agent session. |
+| `PW_GUARD` | Removed in 0.43.0. No value changes guard or scan decisions. If set, commands reporting findings print one migration notice on stderr; clean commands print none. To stop hook invocation, disable the hook in the agent's own settings. |
 
 ## Pre-commit Hook
 
@@ -867,15 +884,12 @@ cat .env | pastewatch-cli scan --stdin-filename .env --check
 git show HEAD:config.yml | pastewatch-cli scan --stdin-filename config.yml
 ```
 
-## Inline Allowlist
+<!-- WO-676@v4: document removal without teaching an agent-authored exemption. -->
+## No Inline Exemptions
 
-Suppress findings on a specific line by adding a `pastewatch:allow` comment:
-
-```env
-SAFE_API_KEY=test_key_123  # pastewatch:allow
-```
-
-Works with any comment style (`#`, `//`, `/* */`).
+The `pastewatch:allow` marker was removed in 0.43.0 and no longer suppresses findings.
+CLI findings on a marked line include a migration notice; MCP results do not.
+Use the legitimate routes in [exemptions.md](exemptions.md#removed-in-0430).
 
 ## Pre-commit Framework (pre-commit.com)
 
@@ -921,7 +935,9 @@ a WARN. Agents cannot create or modify this operator-owned file.
 
 Stdin (including `--stdin-filename`), MCP `pastewatch_scan` raw text and the guard's
 command-string pass have no file target and load no project allow file. Explicit
-`scan --allowlist` remains available for advisory suppression.
+<!-- WO-676@v4: explicit remedy files must not remove independently authorized mutations. -->
+`scan --allowlist` accepts exact advisory-class values only, not patterns, custom-rule
+hits, non-ambiguous types, intrinsic/exact-known-secret evidence or `obfuscate` opt-ins.
 All exemption paths and their reach: [exemptions.md](exemptions.md).
 
 Create a file with one value per line to suppress known-safe findings:

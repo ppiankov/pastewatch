@@ -333,9 +333,10 @@ rm /tmp/pastewatch-test.env /tmp/pastewatch-test-copy.env
 
 ### Troubleshooting
 
+<!-- WO-687@v2: troubleshooting checks hook settings, not the removed environment bypass. -->
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Hook doesn't block | PW_GUARD=0 is set | `unset PW_GUARD` |
+| Hook doesn't block | Hook disabled or not registered | Enable the hook in the agent's settings and verify its tool matcher |
 | Hook doesn't block | MCP not running | Restart agent, check MCP tools panel |
 | MCP reads but doesn't redact | Severity too high for finding type | Lower `--min-severity` to match |
 | IPs/hostnames leak through MCP | Severity misalignment | Set both hook and MCP to same level |

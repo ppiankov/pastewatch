@@ -97,9 +97,9 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // WO-687@v2: check-mode scans have no environment-controlled bypass.
     func run() throws {
-        if check && ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: every scan loads and applies the same validated configuration.
         // WO-574@v4: a present invalid active config must block scanning.
         let config = try requireValidatedConfig()
         let mergedAllowlist: Allowlist
@@ -154,13 +154,12 @@ struct Scan: ParsableCommand {
             allowlist: mergedAllowlist,
             customRules: customRulesList
         )
-        // WO-577@v3: diagnostics share test/config/inline policy with file guards.
+        // WO-676@v4: diagnostics share marker-free test and configuration policy with file guards.
         matches = GuardDecision.evaluate(
             matches: matches,
             content: input,
             config: config,
-            // WO-577@v3: a filename selects parsing metadata, not caller trust.
-            contentTrust: file != nil ? .trustedFile : .agentControlled,
+            // WO-676@v4: a filename never enables a separate inline exemption policy.
             minimumSeverity: nil,
             // WO-635: stdin-filename is parser metadata, not a real file path.
             filePath: file
@@ -178,6 +177,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: a reported finding emits one stderr notice regardless of output format.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputCheckMode(matches: matches, filePath: file)
         } else {
@@ -189,6 +190,8 @@ struct Scan: ParsableCommand {
             ).text
             outputFindings(matches: matches, filePath: file, obfuscated: obfuscated)
         }
+        // WO-676@v4: CLI text diagnostics attach migration advice only to reported findings.
+        if format == .text { FileGuard.printInlineMarkerNotices(matches: matches, content: input) }
         if shouldFail(matches: matches) {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)
@@ -295,6 +298,7 @@ struct Scan: ParsableCommand {
         return input
     }
 
+    // WO-686@v1: single-file mapping failures have value-free diagnostics and retain a nonzero exit.
     // WO-595@v2: detector-limit failures use the same stable operational exit.
     private func scanValidatedInput(
         _ input: String,
@@ -309,6 +313,20 @@ struct Scan: ParsableCommand {
                 allowlist: allowlist,
                 customRules: customRules
             )
+        } catch let error as StructuredMatchRangeError {
+            // WO-686@v1: JSON mode reports the unsafe finding's location without printing its value.
+            let failure = DirectoryScanFailure(error: error)
+            FileHandle.standardError.write(Data(("UNSCANNABLE: " + failure.reason + "\n").utf8))
+            if format == .json {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(failure)
+                guard let output = String(data: data, encoding: .utf8) else {
+                    throw ExitCode(rawValue: ScanExitContract.operationalFailure)
+                }
+                print(output)
+            }
+            throw ExitCode(rawValue: ScanExitContract.operationalFailure)
         } catch let error as ScanInputLimitError {
             FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
             throw ExitCode(rawValue: ScanExitContract.operationalFailure)
@@ -360,6 +378,8 @@ struct Scan: ParsableCommand {
 
     // MARK: - Directory scanning
 
+    // WO-686@v1: incomplete directory coverage is listed separately and always fails check mode.
+    // WO-687@v2: directory findings share a single CLI environment notice.
     // WO-662@v3: directory scans emit coverage even when no file contributes a finding.
     // WO-670@v1: file decisions retain the explicitly scanned directory context.
     private func runDirectoryScan(
@@ -410,7 +430,7 @@ struct Scan: ParsableCommand {
                 matches: allMatches,
                 content: fr.content,
                 config: config,
-                contentTrust: .trustedFile,
+                // WO-676@v4: directory members share explicit configuration exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: relative report paths are bound to the scan root, never the process CWD.
                 filePath: URL(fileURLWithPath: dirPath).appendingPathComponent(fr.filePath).path,
@@ -433,11 +453,22 @@ struct Scan: ParsableCommand {
         }
 
         // WO-662@v3: coverage goes to stderr in every format; empty stdout retains the original contract.
-        let summary = report.statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count })
+        // WO-686@v1: per-file mapping failures are visible in every output format without their values.
+        for failure in report.unscannableFiles {
+            FileHandle.standardError.write(Data(("UNSCANNABLE: " + failure.filePath + ": " + failure.reason + "\n").utf8))
+        }
+        let summary = report.statistics.summary(findings: filteredResults.reduce(0) { $0 + $1.matches.count },
+                                                 unscannableFiles: report.unscannableFiles.count)
         FileHandle.standardError.write(Data((summary + "\n").utf8))
-        guard !filteredResults.isEmpty else { return }
+        // WO-686@v1: zero mapped findings cannot conceal a failed member.
+        guard !filteredResults.isEmpty else {
+            if !report.unscannableFiles.isEmpty { throw ExitCode(rawValue: ScanExitContract.operationalFailure) }
+            return
+        }
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: collection output emits advice once, not once per member file.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             // WO-662@v3: preserve check-mode findings diagnostics alongside scan coverage.
             outputDirCheckMode(results: filteredResults)
@@ -451,6 +482,8 @@ struct Scan: ParsableCommand {
             ? filteredResults
             : filteredResults.filter { !$0.gitignored }
         let allMatches = exitResults.flatMap { $0.matches }
+        // WO-686@v1: retain rendered healthy results but distinguish incomplete coverage from findings alone.
+        if !report.unscannableFiles.isEmpty { throw ExitCode(rawValue: ScanExitContract.operationalFailure) }
         if shouldFail(matches: allMatches) {
             // WO-580@v3: preserve the externally consumed findings exit contract.
             throw ExitCode(rawValue: ScanExitContract.findingsDetected)
@@ -459,6 +492,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git diff scanning
 
+    // WO-687@v2: staged findings retain policy enforcement and one CLI-only notice.
     // WO-675@v2: report Git diff coverage in every format, including findings-free staged scans.
     // WO-662@v3: Git diff coverage includes named line-limit skips without changing finding output.
     // WO-670@v1: Git-relative result paths retain their actual repository root for policy loading.
@@ -512,7 +546,7 @@ struct Scan: ParsableCommand {
                 matches: allMatches,
                 content: fr.content,
                 config: config,
-                contentTrust: .trustedFile,
+                // WO-676@v4: Git diff findings do not honor inline exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: deleted targets retain the explicitly scanned Git root.
                 filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(fr.filePath).path,
@@ -541,6 +575,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: Git-diff results trigger advice once after all policy filters.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputDirCheckMode(results: filteredResults)
         } else {
@@ -555,6 +591,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Git log scanning
 
+    // WO-687@v2: historical findings use the same diagnostic-only environment handling.
     // WO-662@v3: history line-limit skips are visible without replacing the legacy result schema.
     // WO-670@v1: historical file findings share target-root exact exemptions with staged findings.
     private func runGitLogScan(
@@ -600,13 +637,12 @@ struct Scan: ParsableCommand {
             if !allowlist.values.isEmpty || !allowlist.patterns.isEmpty || !customRules.isEmpty {
                 allMatches = allowlist.filter(allMatches)
             }
-            // WO-577@v3: history scanners already apply trusted inline allow; this
-            // decision adds test-credential parity without reclassifying content.
+            // WO-676@v4: history diagnostics share the same marker-free finding policy.
             allMatches = GuardDecision.evaluate(
                 matches: allMatches,
                 content: "",
                 config: config,
-                contentTrust: .agentControlled,
+                // WO-676@v4: history findings do not honor inline exemptions.
                 minimumSeverity: nil,
                 // WO-670@v1: deleted historical directories retain the explicitly scanned Git root.
                 filePath: URL(fileURLWithPath: targetRoot).appendingPathComponent(cf.filePath).path,
@@ -615,7 +651,8 @@ struct Scan: ParsableCommand {
             if !allMatches.isEmpty {
                 filteredFindings.append(CommitFinding(
                     commitHash: cf.commitHash, author: cf.author,
-                    date: cf.date, filePath: cf.filePath, matches: allMatches
+                    // WO-676@v4: preserve the historical lines attached to selected findings.
+                    date: cf.date, filePath: cf.filePath, matches: allMatches, findingLines: cf.findingLines
                 ))
             }
         }
@@ -627,7 +664,8 @@ struct Scan: ParsableCommand {
                 guard !filtered.isEmpty else { return nil }
                 return CommitFinding(
                     commitHash: cf.commitHash, author: cf.author,
-                    date: cf.date, filePath: cf.filePath, matches: filtered
+                    // WO-676@v4: baseline filtering retains source-line context without rereading blobs.
+                    date: cf.date, filePath: cf.filePath, matches: filtered, findingLines: cf.findingLines
                 )
             }
         }
@@ -636,6 +674,8 @@ struct Scan: ParsableCommand {
 
         try redirectStdoutIfNeeded()
 
+        // WO-687@v2: historical findings never emit duplicate migration advice.
+        FileGuard.printGuardEnvironmentNotice(hasFindings: true)
         if check {
             outputGitLogCheckMode(findings: filteredFindings, result: result)
         } else {
@@ -659,6 +699,10 @@ struct Scan: ParsableCommand {
         switch format {
         case .text:
             outputGitLogText(findings: findings, result: result)
+            // WO-676@v4: migration text uses finding lines from the same historical scan.
+            FileGuard.printInlineMarkerNotices(count: findings.reduce(0) {
+                $0 + FileGuard.inlineMarkerNoticeCount(matches: $1.matches, lines: $1.findingLines)
+            })
         case .json:
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
@@ -677,6 +721,10 @@ struct Scan: ParsableCommand {
             let commitCount = Set(findings.map { $0.commitHash }).count
             let msg = "\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits)\n"
             FileHandle.standardError.write(Data(msg.utf8))
+            // WO-676@v4: check-mode history output carries the same finding-bound notice.
+            FileGuard.printInlineMarkerNotices(count: findings.reduce(0) {
+                $0 + FileGuard.inlineMarkerNoticeCount(matches: $1.matches, lines: $1.findingLines)
+            })
         case .json:
             outputGitLogJSON(findings: findings, result: result)
         case .sarif:
@@ -713,6 +761,7 @@ struct Scan: ParsableCommand {
         print("\(totalFindings) finding(s) in \(commitCount) commit(s) (scanned \(result.commitsScanned) commits, \(result.filesScanned) files)")
     }
 
+    // WO-682@v2: historical JSON exposes the same exemption decision as ordinary scan findings.
     private func outputGitLogJSON(findings: [CommitFinding], result: GitLogScanResult) {
         let output = GitLogOutput(
             commitsScanned: result.commitsScanned,
@@ -723,12 +772,8 @@ struct Scan: ParsableCommand {
                     author: cf.author,
                     date: cf.date,
                     file: cf.filePath,
-                    matches: cf.matches.map {
-                        GitLogMatchOutput(
-                            type: $0.displayName, line: $0.line,
-                            severity: $0.effectiveSeverity.rawValue, value: $0.value
-                        )
-                    }
+                    // WO-682@v2: preserve existing historical fields while adding shared eligibility metadata.
+                    matches: cf.matches.map { GitLogMatchOutput($0) }
                 )
             }
         )
@@ -772,6 +817,8 @@ struct Scan: ParsableCommand {
                     .map { "\($0.key.rawValue): \($0.value.count)" }
                     .joined(separator: ", ")
                 FileHandle.standardError.write(Data("\(prefix)\(fr.filePath): \(summary)\n".utf8))
+                // WO-676@v4: directory and Git-diff findings retain their own source text.
+                FileGuard.printInlineMarkerNotices(matches: fr.matches, content: fr.content)
             }
             // WO-662@v3: zero findings is not a substitute for scan evidence.
             if let statistics {
@@ -800,6 +847,8 @@ struct Scan: ParsableCommand {
                 for match in fr.matches {
                     print("  line \(match.line): \(match.displayName): \(match.value)")
                 }
+                // WO-676@v4: only reported text findings receive migration advice.
+                FileGuard.printInlineMarkerNotices(matches: fr.matches, content: fr.content)
             }
             // WO-662@v3: unsupported-only directories never appear as an empty clean result.
             if let statistics { print(statistics.summary(findings: results.reduce(0) { $0 + $1.matches.count })) }
@@ -816,11 +865,13 @@ struct Scan: ParsableCommand {
     }
 
     // WO-662@v3: encode the legacy per-file array once for both directory JSON modes.
+    // WO-682@v2: directory findings use the shared CLI eligibility serializer.
     private func outputDirectoryJSON(results: [FileScanResult], statistics: DirectoryScanStatistics?) {
         let findings = results.map { result in
             DirScanFileOutput(
                 file: result.filePath,
-                findings: result.matches.map { Finding(type: $0.displayName, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: retain display names and the per-file array contract.
+                findings: result.matches.map { Finding($0, type: $0.displayName) },
                 count: result.matches.count,
                 gitignored: result.gitignored
             )
@@ -836,6 +887,7 @@ struct Scan: ParsableCommand {
 
     // MARK: - Single file/stdin output helpers
 
+    // WO-682@v2: check-mode JSON carries the project-file suppression decision.
     private func outputCheckMode(matches: [DetectedMatch], filePath: String?) {
         switch format {
         case .text:
@@ -846,7 +898,8 @@ struct Scan: ParsableCommand {
             FileHandle.standardError.write(Data("findings: \(summary)\n".utf8))
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: eligibility comes from the Core predicate, not a CLI class list.
+                findings: matches.map { Finding($0) },
                 count: matches.count,
                 obfuscated: nil
             )
@@ -865,13 +918,15 @@ struct Scan: ParsableCommand {
         }
     }
 
+    // WO-682@v2: ordinary JSON carries identical per-finding eligibility metadata.
     private func outputFindings(matches: [DetectedMatch], filePath: String?, obfuscated: String) {
         switch format {
         case .text:
             print(obfuscated, terminator: "")
         case .json:
             let output = ScanOutput(
-                findings: matches.map { Finding(type: $0.type.rawValue, value: $0.value, severity: $0.effectiveSeverity.rawValue) },
+                // WO-682@v2: both single-input modes share the same metadata computation.
+                findings: matches.map { Finding($0) },
                 count: matches.count,
                 obfuscated: obfuscated
             )
@@ -904,6 +959,16 @@ struct Finding: Codable {
     let type: String
     let value: String
     let severity: String?
+    // WO-682@v2: additive metadata controls whether editors may offer a project exemption.
+    let projectExemptible: Bool
+
+    // WO-682@v2: compute project-file eligibility once from the shared authorization predicate.
+    init(_ match: DetectedMatch, type: String? = nil) {
+        self.type = type ?? match.type.rawValue
+        value = match.value
+        severity = match.effectiveSeverity.rawValue
+        projectExemptible = permitsAllowlistSuppression(of: match, source: .projectFile, exactValue: true)
+    }
 }
 
 struct ScanOutput: Codable {
@@ -938,4 +1003,16 @@ struct GitLogMatchOutput: Codable {
     let line: Int
     let severity: String
     let value: String
+    // WO-682@v2: history findings retain the same additive editor eligibility field.
+    let projectExemptible: Bool
+
+    // WO-682@v2: historical formatting reuses the single shared CLI decision.
+    init(_ match: DetectedMatch) {
+        let finding = Finding(match, type: match.displayName)
+        type = finding.type
+        line = match.line
+        severity = match.effectiveSeverity.rawValue
+        value = finding.value
+        projectExemptible = finding.projectExemptible
+    }
 }

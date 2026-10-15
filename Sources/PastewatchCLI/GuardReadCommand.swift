@@ -4,6 +4,14 @@ import PastewatchCore
 
 // WO-561@v3: shared guard logic for read/write — eliminates 95% copy-paste.
 enum FileGuard {
+    // WO-687@v2: the retired environment switch is migration text, never authorization.
+    static let guardEnvironmentMigrationMessage =
+        "PW_GUARD is not supported (removed in 0.43.0); to turn the guard off, disable the agent hook. See docs/exemptions.md"
+
+    // WO-676@v4: the removed marker is diagnostic text, never a policy input.
+    static let inlineMarkerMigrationMessage =
+        "finding(s) are on lines with an inline pastewatch:allow marker, which is not supported (removed in 0.43.0); see docs/exemptions.md"
+
     enum Operation {
         case read
         case write
@@ -16,6 +24,7 @@ enum FileGuard {
         }
     }
 
+    // WO-687@v2: native reads and writes cannot bypass policy through an environment setting.
     // WO-671@v2: refusals prefer span edits rather than whole-file reconstruction.
     // WO-672@v1: write ownership checks precede all target I/O and clean-file shortcuts.
     // WO-665@v1: blocked large reads name the bounded MCP continuation arguments.
@@ -23,8 +32,7 @@ enum FileGuard {
     /// Throws `ExitCode(2)` on block or shared-pattern error.
     /// Returns normally when the file is clean (no actionable secrets).
     static func check(filePath: String, failOnSeverity: Severity, operation: Operation) throws {
-        if ProcessInfo.processInfo.environment["PW_GUARD"] == "0" { return }
-
+        // WO-687@v2: ownership and policy checks run on every invocation.
         // WO-672@v1: policy ownership is independent of file existence and content.
         if operation == .write, GuardDecision.isOperatorOwnedPath(filePath) {
             FileHandle.standardError.write(Data((GuardDecision.operatorOwnedFileMessage + "\n").utf8))
@@ -112,7 +120,8 @@ enum FileGuard {
             // WO-635: path-based documentation policy is shared by read and write guards.
             let decision = GuardDecision.evaluate(
                 matches: matches, content: content, config: config,
-                contentTrust: .trustedFile, minimumSeverity: failOnSeverity, filePath: filePath
+                // WO-676@v4: reads and writes share the marker-free policy.
+                minimumSeverity: failOnSeverity, filePath: filePath
             )
             filtered = decision.actionableMatches
             advisories = decision.reportableMatches.filter { $0.advisory == .documentationPolicy }
@@ -123,7 +132,14 @@ enum FileGuard {
             let message = "ADVISORY: \(match.displayName) line \(match.line) count=1\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
-        guard !filtered.isEmpty else { return }
+        // WO-687@v2: reported advisories and blocked findings share one CLI-only environment notice.
+        printGuardEnvironmentNotice(hasFindings: !advisories.isEmpty || !filtered.isEmpty)
+        // WO-676@v4: all reported findings in a file contribute to one counted notice.
+        let inlineMarkerNotices = inlineMarkerNoticeCount(matches: advisories + filtered, content: content)
+        guard !filtered.isEmpty else {
+            printInlineMarkerNotices(count: inlineMarkerNotices)
+            return
+        }
 
         let bySeverity = Dictionary(grouping: filtered, by: { $0.effectiveSeverity })
         let counts = bySeverity.map { "\($0.value.count) \($0.key.rawValue)" }.sorted()
@@ -131,12 +147,49 @@ enum FileGuard {
         let msg = "BLOCKED: \(filePath) contains \(filtered.count) secret(s) (\(counts.joined(separator: ", ")))\n"
         FileHandle.standardError.write(Data(msg.utf8))
 
+        // WO-676@v4: reuse the blocked findings rather than scanning again for migration advice.
+        printInlineMarkerNotices(count: inlineMarkerNotices)
+
         // WO-671@v2: small edits do not require retyping opaque or unrelated content.
         printFileRemedies(operation: operation, location: "containing secrets")
         // WO-665@v1: the already-read byte count avoids extra I/O on the ordinary block path.
         printReadWindowHint(filePath: filePath, operation: operation, byteCount: data.count)
 
         throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-687@v2: only reported findings trigger advice, and no environment value can change a decision.
+    static func printGuardEnvironmentNotice(hasFindings: Bool) {
+        guard hasFindings, ProcessInfo.processInfo.environment["PW_GUARD"] != nil else { return }
+        FileHandle.standardError.write(Data((guardEnvironmentMigrationMessage + "\n").utf8))
+    }
+
+    // WO-676@v4: count markers only on the lines of findings already selected by policy.
+    static func inlineMarkerNoticeCount(matches: [DetectedMatch], content: String) -> Int {
+        guard !matches.isEmpty else { return 0 }
+        let lines = content.components(separatedBy: "\n")
+        let findingLines = Dictionary(uniqueKeysWithValues: Set(matches.map(\.line)).compactMap { line -> (Int, String)? in
+            guard line > 0, line <= lines.count else { return nil }
+            return (line, lines[line - 1])
+        })
+        return inlineMarkerNoticeCount(matches: matches, lines: findingLines)
+    }
+
+    // WO-676@v4: historical findings retain only the source lines needed by CLI diagnostics.
+    static func inlineMarkerNoticeCount(matches: [DetectedMatch], lines: [Int: String]) -> Int {
+        let marker = ["pastewatch", ":allow"].joined()
+        return matches.filter { lines[$0.line]?.contains(marker) == true }.count
+    }
+
+    // WO-676@v4: all CLI file surfaces use the same finding-bound notice.
+    static func printInlineMarkerNotices(matches: [DetectedMatch], content: String) {
+        printInlineMarkerNotices(count: inlineMarkerNoticeCount(matches: matches, content: content))
+    }
+
+    // WO-676@v4: one counted message per output avoids repeating advice for every finding.
+    static func printInlineMarkerNotices(count: Int) {
+        guard count > 0 else { return }
+        FileHandle.standardError.write(Data(("\(count) " + inlineMarkerMigrationMessage + "\n").utf8))
     }
 
     // WO-671@v2: keep operation-specific read advice outside the shared scan/decision function.

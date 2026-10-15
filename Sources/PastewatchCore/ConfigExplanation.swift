@@ -279,7 +279,8 @@ public struct ConfigExplanation: Encodable {
             let match = DetectedMatch(type: .credential, value: value, range: value.startIndex..<value.endIndex,
                                       line: 1, customRuleName: rule.name, customSeverity: severity)
             let guardDecision = GuardDecision.evaluate(matches: [match], content: value, config: .defaultConfig,
-                                                       contentTrust: .agentControlled, minimumSeverity: .defaultGuardThreshold,
+                                                       // WO-676@v4: rule explanations share the marker-free guard policy.
+                                                       minimumSeverity: .defaultGuardThreshold,
                                                        filePath: nil)
             let mcp = partitionMutationMatches([match], site: .mcpRead,
                                                minAdvisorySeverity: Severity(rawValue: config.mcpMinSeverity) ?? .defaultGuardThreshold)

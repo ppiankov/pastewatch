@@ -188,7 +188,8 @@ public final class FileWatcher {
 
     // WO-670@v1: the production watch decision is directly testable without polling or hidden root state.
     func fileDecision(matches: [DetectedMatch], content: String, filePath: String) -> GuardDecision {
-        GuardDecision.evaluate(matches: matches, content: content, config: config, contentTrust: .trustedFile,
+        // WO-676@v4: watched file content cannot grant an inline exemption.
+        GuardDecision.evaluate(matches: matches, content: content, config: config,
                                minimumSeverity: severity, filePath: filePath, scanRoot: directory)
     }
 

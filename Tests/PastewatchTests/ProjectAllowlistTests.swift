@@ -12,6 +12,7 @@ final class ProjectAllowlistTests: XCTestCase {
     }
 
     // WO-670@v1: every file guard and MCP read/edit uses the target repo, not the hook CWD.
+    // WO-685@v1: project entries cannot undo the operator's configured protection on any file surface.
     func testFileSurfaceParityFromOutsideRepository() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             let repo = try directory("repo", in: root)
@@ -28,25 +29,33 @@ final class ProjectAllowlistTests: XCTestCase {
                 try Data((email + "\n").utf8).write(to: file)
                 try Data((allowed ? email + "\n" : "# no entries\n").utf8)
                     .write(to: repo.appendingPathComponent(".pastewatch-allow"))
-                XCTAssertEqual(try command(["scan", "--file", file.path, "--check"], root: outside).status, allowed ? 0 : 6)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual(try command(["scan", "--file", file.path, "--check"], root: outside).status, 6)
                 for guardName in ["guard-read", "guard-write"] {
-                    XCTAssertEqual(try command([guardName, file.path], root: outside).status, allowed ? 0 : 2)
+                    // WO-685@v1: configured protection remains effective with or without the project entry.
+                    XCTAssertEqual(try command([guardName, file.path], root: outside).status, 2)
                 }
-                XCTAssertEqual(try command(["guard", "cat " + file.path], root: outside).status, allowed ? 0 : 2)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual(try command(["guard", "cat " + file.path], root: outside).status, 2)
                 let mutation: [String: Any] = ["tool_name": "Edit", "tool_input": [
                     "file_path": file.path, "old_string": email, "new_string": "contact"]]
                 XCTAssertEqual(try command(["guard-mutation"], root: outside,
-                               input: JSONSerialization.data(withJSONObject: mutation)).status, allowed ? 0 : 2)
+                               // WO-685@v1: configured protection remains effective with or without the project entry.
+                               input: JSONSerialization.data(withJSONObject: mutation)).status, 2)
                 let responses = try mcp([
                     tool("pastewatch_read_file", ["path": file.path]),
                     tool("pastewatch_edit_file", ["path": file.path, "old_string": email, "new_string": "contact"]),
                     tool("pastewatch_write_file", ["path": file.path, "content": email])
                 ], root: outside)
                 let read = try payload(responses[0])
-                XCTAssertEqual((read["redactions"] as? [[String: Any]])?.count, allowed ? 0 : 1)
-                XCTAssertEqual((read["content"] as? String)?.contains(email), allowed)
-                XCTAssertEqual((responses[1]["result"] as? [String: Any])?["isError"] as? Bool ?? false, !allowed)
-                XCTAssertEqual((responses[2]["result"] as? [String: Any])?["isError"] as? Bool ?? false, !allowed)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual((read["redactions"] as? [[String: Any]])?.count, 1)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual((read["content"] as? String)?.contains(email), false)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual((responses[1]["result"] as? [String: Any])?["isError"] as? Bool ?? false, true)
+                // WO-685@v1: configured protection remains effective with or without the project entry.
+                XCTAssertEqual((responses[2]["result"] as? [String: Any])?["isError"] as? Bool ?? false, true)
             }
         }
     }
@@ -199,7 +208,8 @@ final class ProjectAllowlistTests: XCTestCase {
             try Data((value + "\n").utf8).write(to: root.appendingPathComponent(".pastewatch-allow"))
             let matches = DetectionRules.scanFileIO(value, config: config)
             let decision = GuardDecision.evaluate(matches: matches, content: value, config: config,
-                               contentTrust: .trustedFile, minimumSeverity: nil, filePath: path)
+                               // WO-676@v4: project allow-file behavior is independent of inline content.
+                               minimumSeverity: nil, filePath: path)
             XCTAssertEqual(decision.actionableMatches.filter { $0.customRuleName == "fixture-rule" }.count, 1)
             let report = Allowlist.projectFile(for: path)
             XCTAssertTrue(report.loaded)
@@ -303,7 +313,8 @@ final class ProjectAllowlistTests: XCTestCase {
         process.executableURL = executable ?? repo.appendingPathComponent(".build/debug/PastewatchCLI")
         process.arguments = arguments
         process.currentDirectoryURL = root
-        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin", "PW_GUARD": "1"])
+        // WO-687@v2: exact exemption probes preserve enforcement without environment toggles.
+        process.environment = TestConfigHelper.subprocessEnvironment(["PATH": "/usr/bin:/bin"])
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()

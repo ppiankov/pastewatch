@@ -168,26 +168,5 @@ public struct Allowlist {
         values.contains(value)
     }
 
-    /// WO-554@v3: only documented line or trailing comment forms can authorize a value.
-    /// Requiring whitespace before the delimiter prevents URL fragments and operators
-    /// from becoming accidental authorization markers.
-    private static let inlineAllowPattern = try? NSRegularExpression(
-        pattern: #"(?:^|\s)(?:#|//)\s*pastewatch:allow(?=\s|$)"#
-    )
-
-    // WO-672@v1: inline directives cannot hide intrinsic evidence from guards or mutation.
-    /// Filter advisory matches on lines containing a pastewatch:allow directive.
-    public static func filterInlineAllow(matches: [DetectedMatch], content: String) -> [DetectedMatch] {
-        guard !matches.isEmpty, let inlineAllowPattern else { return matches }
-        let lines = content.components(separatedBy: "\n")
-        return matches.filter { match in
-            // WO-672@v1: the directive's source is always unprivileged, even in trusted files.
-            guard permitsAllowlistSuppression(of: match, source: .inlineDirective, exactValue: false) else { return true }
-            let lineIndex = match.line - 1
-            guard lineIndex >= 0, lineIndex < lines.count else { return true }
-            let line = lines[lineIndex]
-            let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            return inlineAllowPattern.firstMatch(in: line, range: range) == nil
-        }
-    }
+    // WO-676@v4: inline exemptions are removed; only explicit source-authorized lists filter findings.
 }
