@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-15
+
 ### Removed
 <!-- WO-687@v2: retire the environment bypass without introducing another off switch. -->
 - Remove the `PW_GUARD` environment bypass; inherited values no longer change guard or scan decisions, and finding-bearing CLI output prints one migration notice. Disable the agent hook in its own settings for intentional unguarded work. (WO-687)
