@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep project and tighten-only user exemptions from undoing operator-configured obfuscation, while retaining exact advisory and global operator-tier exemptions. (WO-685)
 
 ### Fixed
+<!-- WO-688@v1: keyed expressions require same-line source delimiters without changing argument-shape validation. -->
+- Exclude source-delimited colon-keyed calls and selectors, with balanced same-line calls and closing-parenthesis support for Swift selectors. Preserve existing reference exclusions, assignment and quoted-argument handling. (WO-688)
 <!-- WO-686@v1: scan diagnostics retain partial coverage and never expose decoded finding values. -->
 - Continue directory scans after structured mapping failures, list unscannable files separately and fail check mode on incomplete coverage; report single-line JSON finding locations as UTF-8 byte offsets without exposing their values. (WO-686)
 <!-- WO-684@v1: source receiver assignments retain precision without weakening legacy token detection. -->

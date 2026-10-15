@@ -1821,20 +1821,52 @@ public struct DetectionRules {
         return isValidCredentialValue(value)
     }
 
-    // WO-668@v1: only assignment syntax and an identifier path/call justify the source-expression exclusion.
+    // WO-688@v1: colon expressions require same-line source delimiters; assignment discrimination stays unchanged.
     private static func isCredentialCodeExpression(
         _ value: String, separator: String, following: Substring?
     ) -> Bool {
-        guard ["=", ":="].contains(separator.trimmingCharacters(in: .whitespaces)),
+        let separatorText = separator.trimmingCharacters(in: .whitespaces)
+        guard ["=", ":=", ":"].contains(separatorText),
               let identifier = value.range(
                 of: #"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"#,
                 options: .regularExpression
               ) else { return false }
         let suffix = value[identifier.upperBound...]
+        // WO-688@v1: following text retains delimiters and balanced call arguments outside the regex capture.
+        if separatorText == ":" {
+            return isDelimitedKeyedCredentialExpression(
+                String(suffix) + String(following ?? ""), isSelector: value[identifier].contains(".")
+            )
+        }
         let tail = suffix.isEmpty ? following ?? "" : suffix
         if tail.drop(while: { $0.isWhitespace && !$0.isNewline }).first == "(" { return true }
         // Namespace paths without a call are references; punctuation is restricted to statement boundaries.
         return value[identifier].contains("::") && suffix.allSatisfy { ",;)]}".contains($0) }
+    }
+
+    // WO-688@v1: only a balanced same-line call or selector followed by source punctuation justifies exclusion.
+    private static func isDelimitedKeyedCredentialExpression(_ tail: String, isSelector: Bool) -> Bool {
+        let line = tail.prefix { !$0.isNewline }.drop { $0.isWhitespace }
+        guard line.first == "(" else {
+            // WO-688@v1: a closing parenthesis also delimits a Swift named-selector argument.
+            return isSelector && line.first.map { ",})".contains($0) } == true
+        }
+        var depth = 0
+        for index in line.indices {
+            let character = line[index]
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    let after = line[line.index(after: index)...].drop { $0.isWhitespace }
+                    return after.first.map { ",})".contains($0) } == true
+                }
+            } else if "\"'#".contains(character) || line[index...].hasPrefix("//") || line[index...].hasPrefix("/*") {
+                return false
+            }
+        }
+        return false
     }
 
     // WO-668@v1: retain the first quoted argument's value and original source boundary.
