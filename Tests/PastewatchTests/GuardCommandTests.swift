@@ -14,6 +14,45 @@ final class GuardCommandTests: XCTestCase {
         let type: SensitiveDataType?
     }
 
+    // WO-691@v3: output-capable filters and preprocessors retain the strict command-read decision.
+    func testWritingFiltersAndRipgrepPreprocessorsKeepStrictVerdicts() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let content = ["pass", "word=", "Z9aB8cD7", "eF6gH5iJ"].joined()
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            try writeConfig(config)
+            try JSONEncoder().encode(config).write(to: root.appendingPathComponent(".pastewatch.json"))
+            try Data(content.utf8).write(to: URL(fileURLWithPath: testDir + "/filter-input.txt"))
+            let commands = [
+                "cat filter-input.txt | sort -o out",
+                "cat filter-input.txt | uniq - out",
+                "cat filter-input.txt | less -o out",
+                "cat filter-input.txt | rg --pre cat x"
+            ]
+            for (index, command) in commands.enumerated() {
+                let result = try runGuardCLI(arguments: ["guard", "--quiet", command], executableURL: executableURL)
+                XCTAssertEqual(result.status, 2, "Strict pipeline case \(index)")
+                XCTAssertFalse(result.stdout.contains(content), "Strict pipeline stdout case \(index)")
+                XCTAssertFalse(result.stderr.contains(content), "Strict pipeline stderr case \(index)")
+            }
+        }
+    }
+
+    // WO-691@v3: classification excludes pagers and every ripgrep preprocessing-prefix token.
+    func testPagersWritingFiltersAndRipgrepPreTokensAreNotDisplay() {
+        let commands = [
+            "cat f | sort -o out", "cat f | uniq - out", "cat f | less -o out", "cat f | more",
+            "less f", "more f", "cat f | rg --pre cat x", "cat f | rg --pre-glob '*.txt' x",
+            "rg --pre cat x f", "rg --pre-glob '*.txt' x f", "/usr/bin/rg --pre=cat x f",
+            "rg --pretty x f", "rg -- --pre x f"
+        ]
+        for (index, command) in commands.enumerated() {
+            let access = CommandParser.fileAccess(from: command, workingDirectory: testDir)
+            XCTAssertFalse(access.reads.isEmpty, "Strict parser case \(index) has read operands")
+            XCTAssertTrue(access.reads.allSatisfy { !$0.displaysToModel }, "Strict parser case \(index)")
+        }
+    }
+
     // WO-691@v3: a closed display pipeline adopts native Read without changing transfers or inline text.
     func testRawReaderParityKeepsTransferAndInlineVerdicts() throws {
         let executableURL = pastewatchCLIURL()
@@ -51,6 +90,8 @@ final class GuardCommandTests: XCTestCase {
                     ("cat", "cat " + file), ("grep", "grep x " + file),
                     ("redirect", "cat " + file + " > destination.txt"), ("ssh", "cat " + file + " | ssh h"),
                     ("cp", "cp " + file + " destination.txt"), ("mv", "mv " + file + " destination.txt"),
+                    // WO-691@v3: a file-writing filter is a strict read for every parity fixture class.
+                    ("sort-output", "cat " + file + " | sort -o destination.txt"),
                     ("inline", "printf '%s\\n' '" + fixture.content + "'")
                 ]
                 let results = try commands.map {

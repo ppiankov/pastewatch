@@ -49,14 +49,14 @@ public struct CommandParser {
         "grep", "egrep", "fgrep", "rg", "ag",
     ]
 
-    // WO-691@v3: only these closed reader basenames can expose positional file operands to the model.
+    // WO-691@v3: only closed non-pager readers can expose positional file operands to the model.
     private static let displayReaders: Set<String> = [
-        "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "nl", "less", "more",
+        "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "nl",
     ]
 
-    // WO-691@v3: every downstream pipeline stage must be a display filter rather than a sink or encoder.
+    // WO-691@v3: downstream filters exclude pagers and commands with file-output modes or operands.
     private static let displayFilters: Set<String> = [
-        "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "sort", "uniq", "cut", "nl", "less", "more",
+        "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "cut", "nl",
     ]
 
     /// Commands that source/execute a file.
@@ -221,6 +221,9 @@ public struct CommandParser {
               let tokens = tokenizeArguments(segment, requiringLiteralArguments: true),
               let executable = tokens.first,
               allowed.contains((executable.value as NSString).lastPathComponent) else { return false }
+        // WO-691@v3: ripgrep preprocessing can execute commands rather than merely display file content.
+        if (executable.value as NSString).lastPathComponent == "rg",
+           tokens.contains(where: { $0.value.hasPrefix("--pre") }) { return false }
         return tokens.allSatisfy { $0.isLiteral && !$0.hasWordExpansion }
     }
 

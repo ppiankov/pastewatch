@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- WO-691@v3: closed display pipelines share native Read's verdict independently of binary-grant roles. -->
-- Align closed display-only command reads with native Read and MCP authorization; retain strict checks for transfers, redirects, other pipelines and inline command text. (WO-691)
+- Align closed display-only command reads with native Read and MCP authorization; retain strict checks for transfers, redirects, other pipelines and inline command text. Exclude file-writing filters, pagers and ripgrep preprocessing from display-only classification. (WO-691)
 
 ## [0.43.0] - 2026-10-15
 
