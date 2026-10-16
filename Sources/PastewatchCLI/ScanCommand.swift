@@ -961,6 +961,8 @@ struct Finding: Codable {
     let severity: String?
     // WO-682@v2: additive metadata controls whether editors may offer a project exemption.
     let projectExemptible: Bool
+    // WO-692@v1: consumers can locate findings without inspecting their values.
+    let line: Int
 
     // WO-682@v2: compute project-file eligibility once from the shared authorization predicate.
     init(_ match: DetectedMatch, type: String? = nil) {
@@ -968,6 +970,8 @@ struct Finding: Codable {
         value = match.value
         severity = match.effectiveSeverity.rawValue
         projectExemptible = permitsAllowlistSuppression(of: match, source: .projectFile, exactValue: true)
+        // WO-692@v1: reuse the detector's 1-based source location for both JSON containers.
+        line = match.line
     }
 }
 

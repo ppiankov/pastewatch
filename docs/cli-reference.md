@@ -79,6 +79,11 @@ computed by the same predicate that decides exact-value exemptions from
 Editors may offer an allow-file action only when this field is explicitly `true`;
 an absent or `false` field means no action.
 
+<!-- WO-692@v1: consumers can use source locations without reading finding values. -->
+Each `scan --format json` finding also includes the additive integer `line`, the
+1-based source line reported by the detector. Single-file and directory scan JSON
+keep their existing fields and output containers.
+
 File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
 lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
 overlong files, name their paths on stderr and count them as `skippedOverLimit`;
