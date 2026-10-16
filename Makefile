@@ -12,6 +12,11 @@ bump: ## Bump version: make bump VERSION=X.Y.Z
 	@test -n "$(VERSION)" || (echo "Usage: make bump VERSION=X.Y.Z" >&2; exit 1)
 	scripts/bump-version.sh $(VERSION)
 
+# WO-693@v1: published-release verification is a read-only observer outside the release workflow.
+.PHONY: verify-release
+verify-release: ## Verify release artifacts: make verify-release VERSION=X.Y.Z
+	bash scripts/verify-release.sh "$(VERSION)"
+
 .PHONY: build
 build: ## Build debug binary
 	swift build

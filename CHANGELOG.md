@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- WO-692@v1: expose additive source locations in scan JSON. -->
 - Include a 1-based `line` in file and directory scan JSON findings without changing existing fields or containers. (WO-692)
+<!-- WO-693@v1: independently verify release runs, assets and formula checksums. -->
+- Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
 <!-- WO-691@v3: closed display pipelines share native Read's verdict independently of binary-grant roles. -->
