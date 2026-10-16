@@ -97,15 +97,24 @@ struct Guard: ParsableCommand {
             let scan = try scanReferencedFile(path: path, config: config, role: read.role)
             let content = scan.content
             let matches = scan.matches
-            // WO-676@v4: referenced files use the same explicit exemptions as all other surfaces.
-            let filtered = GuardDecision.evaluate(
-                matches: matches,
-                content: content,
-                config: config,
-                minimumSeverity: failOnSeverity,
-                // WO-635: referenced file content has a real path, unlike the command string.
-                filePath: path
-            ).actionableMatches
+            // WO-691@v3: display exposure, not binary-grant eligibility, selects the native read predicate.
+            let filtered: [DetectedMatch]
+            if read.displaysToModel {
+                filtered = MCPReadDecision.evaluate(
+                    matches: matches, content: content, config: config,
+                    minimumSeverity: failOnSeverity, filePath: path
+                ).authorized
+            } else {
+                // WO-691@v3: every non-display operand retains the original strict policy.
+                filtered = GuardDecision.evaluate(
+                    matches: matches,
+                    content: content,
+                    config: config,
+                    minimumSeverity: failOnSeverity,
+                    // WO-635: referenced file content has a real path, unlike the command string.
+                    filePath: path
+                ).actionableMatches
+            }
 
             if !filtered.isEmpty {
                 shouldBlock = true

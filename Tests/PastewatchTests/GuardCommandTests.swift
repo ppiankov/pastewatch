@@ -1,7 +1,126 @@
+// WO-691@v3: display-read parity exercises the same native read entrypoint as guard-read.
+import ArgumentParser
 import XCTest
 @testable import PastewatchCore
+@testable import PastewatchCLI
 
 final class GuardCommandTests: XCTestCase {
+    // WO-691@v3: fixture labels and expected types keep parity diagnostics free of matched values.
+    private struct ReadVerdictFixture {
+        let name: String
+        let filename: String
+        let content: String
+        let config: PastewatchConfig
+        let type: SensitiveDataType?
+    }
+
+    // WO-691@v3: a closed display pipeline adopts native Read without changing transfers or inline text.
+    func testRawReaderParityKeepsTransferAndInlineVerdicts() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let advisory = ["pass", "word=", "Z9aB8cD7eF6gH5iJ"].joined()
+            let intrinsic = ["AWS_KEY=", "AKIA", "QWERTYUIOPASDFGH"].joined()
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            var documentationConfig = config
+            documentationConfig.documentationPolicy = .enforce
+            let fixtures = [
+                ReadVerdictFixture(name: "clean", filename: "clean.txt", content: "ordinary prose", config: config, type: nil),
+                ReadVerdictFixture(name: "advisory-only", filename: "advisory.txt", content: advisory,
+                                   config: config, type: .credential),
+                ReadVerdictFixture(name: "intrinsic", filename: "intrinsic.txt", content: intrinsic,
+                                   config: config, type: .awsKey),
+                ReadVerdictFixture(name: "documentation-policy", filename: "guide.md", content: advisory,
+                                   config: documentationConfig, type: .credential)
+            ]
+            for fixture in fixtures {
+                try writeConfig(fixture.config)
+                try JSONEncoder().encode(fixture.config).write(to: root.appendingPathComponent(".pastewatch.json"))
+                let path = testDir + "/" + fixture.filename
+                try Data(fixture.content.utf8).write(to: URL(fileURLWithPath: path))
+                let matches = try DirectoryScanner.scanFileContentOrThrow(
+                    content: fixture.content, ext: (path as NSString).pathExtension,
+                    relativePath: path, config: fixture.config
+                )
+                if let type = fixture.type {
+                    XCTAssertEqual(matches.filter { $0.type == type }.count, 1, fixture.name + ": fixture type count")
+                } else {
+                    XCTAssertTrue(matches.isEmpty, fixture.name + ": fixture must be clean")
+                }
+                let file = fixture.filename
+                let commands: [(name: String, text: String)] = [
+                    ("cat", "cat " + file), ("grep", "grep x " + file),
+                    ("redirect", "cat " + file + " > destination.txt"), ("ssh", "cat " + file + " | ssh h"),
+                    ("cp", "cp " + file + " destination.txt"), ("mv", "mv " + file + " destination.txt"),
+                    ("inline", "printf '%s\\n' '" + fixture.content + "'")
+                ]
+                let results = try commands.map {
+                    try runGuardCLI(arguments: ["guard", "--quiet", $0.text], executableURL: executableURL)
+                }
+                let expectedRead: Int32 = fixture.type == .awsKey ? GuardExitContract.blocked : 0
+                let expectedOther: Int32 = fixture.type == nil ? 0 : GuardExitContract.blocked
+                var nativeRead: Int32 = 0
+                do {
+                    try FileGuard.check(filePath: path, failOnSeverity: .high, operation: .read)
+                } catch let code as ExitCode {
+                    nativeRead = code.rawValue
+                }
+                let cells = zip(commands, results).map { "\($0.0.name)=\($0.1.status)" }.joined(separator: " ")
+                print("WO691_MATRIX \(fixture.name) \(cells)")
+                for (command, result) in zip(commands, results) {
+                    let display = ["cat", "grep"].contains(command.name)
+                    XCTAssertEqual(result.status, display ? expectedRead : expectedOther,
+                                   fixture.name + ": " + command.name + " exit")
+                    if display {
+                        XCTAssertEqual(result.status, nativeRead, fixture.name + ": display/native parity")
+                    }
+                    XCTAssertFalse(result.stdout.contains(fixture.content), fixture.name + ": stdout value absent")
+                    XCTAssertFalse(result.stderr.contains(fixture.content), fixture.name + ": stderr value absent")
+                }
+                for command in ["head " + file, "cat " + file + " | grep x | head"] {
+                    XCTAssertEqual(try runGuardCLI(arguments: ["guard", "--quiet", command],
+                                                  executableURL: executableURL).status, expectedRead,
+                                   fixture.name + ": display pipeline exit")
+                }
+                for command in ["cat " + file + " | tee destination.txt", "cat " + file + " | base64",
+                                "sed -n 1p " + file, "tr a b < " + file] {
+                    XCTAssertEqual(try runGuardCLI(arguments: ["guard", "--quiet", command],
+                                                  executableURL: executableURL).status, expectedOther,
+                                   fixture.name + ": non-display exit")
+                }
+            }
+        }
+    }
+
+    // WO-691@v3: only closed display pipelines qualify, independently for each command-chain segment.
+    func testDisplayReadClassificationKeepsGrantRolesIndependent() {
+        let cases: [(command: String, expected: [Bool])] = [
+            ("cat f", [true]), ("grep x f", [true]), ("head f", [true]),
+            ("cat f | grep x | head", [true]), ("cat f > out", [false]),
+            ("cat f >> out", [false]), ("cat f | tee out", [false]),
+            ("cat f | ssh h", [false]), ("cat f | base64", [false]),
+            ("sed -n 1p f", [false]), ("tr a b < f", [false]),
+            ("mv f d/", [false]), ("cp f d/", [false]),
+            ("cat f && cat g > out", [true, false]),
+            ("cat f || cat g > out", [true, false]),
+            ("cat f; cat g > out", [true, false]),
+            ("cat f | grep x | head > out", [false]),
+            ("echo $(cat f)", [false]), ("echo `cat f`", [false]),
+            ("cat 'f", [false]), ("cat f |", [false]),
+            ("env cat f", [])
+        ]
+        for (index, fixture) in cases.enumerated() {
+            let access = CommandParser.fileAccess(from: fixture.command, workingDirectory: testDir)
+            XCTAssertEqual(access.reads.map(\.displaysToModel), fixture.expected, "Display parser case \(index)")
+        }
+        let transfer = CommandParser.fileAccess(from: "cp f d/", workingDirectory: testDir)
+        XCTAssertEqual(transfer.reads.count, 1)
+        XCTAssertTrue(transfer.reads.first?.role == .transferSource)
+        let move = CommandParser.fileAccess(from: "mv f d/", workingDirectory: testDir)
+        XCTAssertEqual(move.reads.count, 1)
+        XCTAssertTrue(move.reads.first?.role == .rawReader)
+        XCTAssertFalse(CommandParser.FileRead(path: "f", role: .rawReader).displaysToModel)
+    }
+
     // WO-658@v2: redefining a sanctioned executable name cannot bypass a protected-file read.
     func testRedactedRemedyFunctionAndAliasShadowingBlock() throws {
         let secret = ["AKIA", String(repeating: "Q", count: 16)].joined()
@@ -504,15 +623,18 @@ final class GuardCommandTests: XCTestCase {
         let stderr: String
     }
 
+    // WO-691@v3: an explicit binary path remains valid when config isolation changes the process CWD.
     // WO-601@v2: invoke the real guard process for referenced-file failure coverage.
     private func runGuardCLI(
         arguments: [String],
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        executableURL: URL? = nil
     ) throws -> CLIResult {
         // WO-634: preserve explicit test configs and isolate every default subprocess case.
         try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
         let process = Process()
-        process.executableURL = pastewatchCLIURL()
+        // WO-691@v3: existing callers retain their original binary lookup when no path is supplied.
+        process.executableURL = executableURL ?? pastewatchCLIURL()
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: testDir)
         process.environment = testEnvironment().merging(environmentOverrides) { _, new in new }
