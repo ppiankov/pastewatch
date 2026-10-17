@@ -4,6 +4,21 @@ import XCTest
 
 // WO-697@v1: reported tiers must reflect registrations and existing routing rather than agent capabilities alone.
 final class DoctorCoverageTierTests: XCTestCase {
+    // WO-702@v1: equals-form ports retain wire coverage rather than falling back to the default listener port.
+    func testEqualsFormPortReportsWireCoverage() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let doctor = Doctor()
+            let agents = doctor.observedWireAgents(
+                environment: ["ANTHROPIC_BASE_URL": "http://127.0.0.1:9000"],
+                proxyCommands: { ["pastewatch-cli proxy --port=9000"] }
+            )
+            XCTAssertEqual(agents, ["claude-code"])
+            let evidence = AgentCoverageEvidence(agent: "claude-code", hooks: true, mcp: true,
+                                                 wire: agents.contains("claude-code"))
+            XCTAssertEqual(doctor.agentCoverageTier(evidence), "hooks+wire")
+        }
+    }
+
     // WO-697@v1: one fixture per tier pins the public vocabulary and the existing launch restriction.
     func testCoverageTiersFollowExistingMatrixAndRouting() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

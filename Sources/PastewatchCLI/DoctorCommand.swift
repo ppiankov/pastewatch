@@ -343,13 +343,17 @@ struct Doctor: ParsableCommand {
         return fields.contains { ["command", "cmd"].contains($0.key ?? "") && $0.value == "pastewatch-cli" }
     }
 
-    // WO-697@v1: wire coverage requires a live local pastewatch listener and an explicitly routed session.
-    private func observedWireAgents() -> Set<String> {
-        guard let raw = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"],
+    // WO-702@v1: injected process and environment snapshots pin flag parsing without host-session dependencies.
+    func observedWireAgents(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        proxyCommands: () -> [String] = Doctor.runningProxyCommands
+    ) -> Set<String> {
+        guard let raw = environment["ANTHROPIC_BASE_URL"],
               let url = URL(string: raw), let host = url.host,
               ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host.lowercased()) else { return [] }
         let port = url.port ?? (url.scheme == "https" ? 443 : 80)
-        let matching = Self.runningProxyCommands().contains { command in
+        // WO-702@v1: process injection preserves the existing default-port fallback.
+        let matching = proxyCommands().contains { command in
             Int(extractFlag(command, flag: "--port") ?? "8443") == port
         }
         return matching ? ["claude-code"] : []
@@ -492,10 +496,18 @@ struct Doctor: ParsableCommand {
                                   auditLog: extractFlag(command, flag: "--audit-log") ?? "none")
     }
 
-    private func extractFlag(_ cmdLine: String, flag: String) -> String? {
-        guard let flagRange = cmdLine.range(of: flag) else { return nil }
-        let afterFlag = cmdLine[flagRange.upperBound...].trimmingCharacters(in: .whitespaces)
-        return afterFlag.split(separator: " ").first.map(String.init)
+    // WO-702@v1: process diagnostics accept both flag forms without matching longer flag names.
+    func extractFlag(_ cmdLine: String, flag: String) -> String? {
+        let words = cmdLine.split(whereSeparator: \.isWhitespace)
+        for (index, word) in words.enumerated() {
+            if word == flag {
+                return index + 1 < words.count ? String(words[index + 1]) : nil
+            }
+            if word.hasPrefix(flag + "=") {
+                return String(word.dropFirst(flag.count + 1))
+            }
+        }
+        return nil
     }
 
     private func checkHomebrew(currentVersion: String) -> (status: String, detail: String) {

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-702@v1: process flags preserve their complete argument boundaries. -->
+- Recognize both spaced and equals-form process flags in doctor without matching longer flag names. (WO-702)
 <!-- WO-681@v1: stale servers refuse before tool work, and guard messages identify the deciding build. -->
 - Refuse MCP tool calls when the serving executable identity becomes stale or cannot be verified at startup, distinguish those reasons with reconnect guidance and version metadata, and identify the deciding version in guard block messages. (WO-681)
 <!-- WO-696@v3: loopback-only Via preserves discovery, inbound checks and request-body bytes. -->
