@@ -11,6 +11,22 @@ Sensitive data scanner. Deterministic regex-based detection and obfuscation for 
 
 **For AI agent setup with secret redaction**, see [agent-integration.md](agent-integration.md).
 
+<!-- WO-681@v1: stale tool output cannot overrule the current file guard. -->
+## When MCP and the guard disagree
+
+The current guard is authoritative. Compare the block's `decided by
+pastewatch-cli <version>` line with the MCP result's `_meta.server_version`.
+A mismatch means the MCP server is stale, not that the guard is wrong. Reconnect
+the pastewatch MCP server (for example `/mcp reconnect pastewatch`) and repeat the
+operation. Do not file a detection bug from a disagreement until the versions
+match. A replaced executable can be stale even if its version string is unchanged.
+
+Servers with the executable-identity check refuse tool calls after their installed
+binary changes: `_meta.stale` is `true`, with the running `server_version`, and no
+scan verdict, file content or write. This is a fail-closed fallback, not automatic
+restart. Older servers may lack that check; use `pastewatch-cli doctor` and
+reconnect them before trusting a clean result.
+
 ## Install
 
 ```bash

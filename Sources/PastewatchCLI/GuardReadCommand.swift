@@ -36,6 +36,8 @@ enum FileGuard {
         // WO-672@v1: policy ownership is independent of file existence and content.
         if operation == .write, GuardDecision.isOperatorOwnedPath(filePath) {
             FileHandle.standardError.write(Data((GuardDecision.operatorOwnedFileMessage + "\n").utf8))
+            // WO-681@v1: even ownership refusals identify the build that decided.
+            printDecisionVersion()
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
@@ -48,6 +50,8 @@ enum FileGuard {
             printFileRemedies(operation: operation, location: "in protected directories")
             // WO-665@v1: inspect only size metadata when protected paths refuse content access.
             printReadWindowHint(filePath: filePath, operation: operation)
+            // WO-681@v1: append provenance without changing the protected-path decision.
+            printDecisionVersion()
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
 
@@ -94,6 +98,8 @@ enum FileGuard {
             let msg = "BLOCKED: shared pattern load failed: \(error.localizedDescription)\n"
             FileHandle.standardError.write(Data(msg.utf8))
             print("Fix shared pattern configuration before using \(operation.toolName).")
+            // WO-681@v1: failed shared policy cannot be confused with a stale MCP verdict.
+            printDecisionVersion()
             throw ExitCode(rawValue: GuardExitContract.blocked)
         } catch let error as ScanInputLimitError {
             // WO-598@v2: overlong decoded input is a guard block, not a generic parse exit.
@@ -155,7 +161,17 @@ enum FileGuard {
         // WO-665@v1: the already-read byte count avoids extra I/O on the ordinary block path.
         printReadWindowHint(filePath: filePath, operation: operation, byteCount: data.count)
 
+        // WO-681@v1: version context is appended after the existing remedies, not used as policy.
+        printDecisionVersion()
         throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-681@v1: all guard messages share fixed version guidance without any matched values.
+    static func printDecisionVersion() {
+        let message = "decided by pastewatch-cli \(AppVersion.current)\n" +
+            "If a pastewatch MCP tool disagrees, compare its server_version with this version; " +
+            "a mismatch means the MCP server is stale, not that this decision is wrong.\n"
+        FileHandle.standardError.write(Data(message.utf8))
     }
 
     // WO-687@v2: only reported findings trigger advice, and no environment value can change a decision.
@@ -230,6 +246,8 @@ enum FileGuard {
         printEditRemedies()
         // WO-665@v1: metadata-only size lookup does not inspect an unscannable file's bytes.
         printReadWindowHint(filePath: filePath, operation: operation)
+        // WO-681@v1: unreadable-target refusals carry the same deciding-version context.
+        printDecisionVersion()
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }

@@ -50,6 +50,8 @@ struct Guard: ParsableCommand {
                 FileHandle.standardError.write(
                     Data("BLOCKED: configured shared patterns could not be loaded.\n".utf8)
                 )
+                // WO-681@v1: append version context to the existing non-quiet block output only.
+                FileGuard.printDecisionVersion()
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
@@ -161,6 +163,8 @@ struct Guard: ParsableCommand {
                 // WO-658@v2: offer both sanctioned surfaces when referenced or inline findings block a command.
                 FileHandle.standardError.write(Data(("Use pastewatch_read_file / pastewatch_edit_file, or pastewatch-cli read <file> " +
                     "then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... .\n").utf8))
+                // WO-681@v1: diagnostics do not change classification, policy, JSON or quiet behavior.
+                FileGuard.printDecisionVersion()
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
@@ -179,12 +183,16 @@ struct Guard: ParsableCommand {
             if !quiet {
                 FileHandle.standardError.write(Data(("Operator-only binary transfer grant; agents cannot grant this. " +
                     "Use literal arguments for other Pastewatch commands.\n").utf8))
+                // WO-681@v1: operator-only refusals name the deciding build without command operands.
+                FileGuard.printDecisionVersion()
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
         guard access.hasUnsafeRedactedCommand else { return }
         if !quiet {
             FileHandle.standardError.write(Data("Redacted file access requires a literal path and no command substitution.\n".utf8))
+            // WO-681@v1: append the same guidance to the existing literal-access refusal.
+            FileGuard.printDecisionVersion()
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
@@ -220,12 +228,16 @@ struct Guard: ParsableCommand {
                 let message = "BLOCKED: configured shared patterns could not be loaded " +
                     "for \(path): \(error.localizedDescription)\n"
                 FileHandle.standardError.write(Data(message.utf8))
+                // WO-681@v1: shared-policy refusal gains only the deciding-version lines.
+                FileGuard.printDecisionVersion()
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         } catch let error as ScanInputLimitError {
             if !quiet {
                 let message = "BLOCKED: \(path) \(error.localizedDescription)\n"
                 FileHandle.standardError.write(Data(message.utf8))
+                // WO-681@v1: input-limit blocks keep their policy and gain only version text.
+                FileGuard.printDecisionVersion()
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         } catch let exitCode as ExitCode {
@@ -256,6 +268,8 @@ struct Guard: ParsableCommand {
                     FileHandle.standardError.write(Data("This target cannot be inspected as a regular text file; run the command yourself.\n".utf8))
                 }
             }
+            // WO-681@v1: append context inside the existing non-quiet block-message branch.
+            FileGuard.printDecisionVersion()
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }

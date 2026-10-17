@@ -16,6 +16,24 @@ or use [`pastewatch-cli edit`](cli-reference.md#redacted-cli-readedit). If
 `pastewatch_write_file` only as a last resort for a full-file replacement; do not
 retype large data URIs or unrelated content to apply a small edit.
 
+<!-- WO-681@v1: a stale clean result is not evidence that the current guard is incorrect. -->
+## When MCP and the guard disagree
+
+Treat the current guard as authoritative. Its block identifies the deciding CLI
+version; compare that with `_meta.server_version` on the MCP tool result. A
+mismatch means the MCP server is stale, not that the guard's decision is wrong.
+Reconnect the pastewatch MCP server (for example `/mcp reconnect pastewatch`) and
+repeat the operation. Never file a detection bug from a disagreement without
+matching versions first.
+
+The server checks its executable identity on every tool call. A replaced target,
+changed inode or modification time, missing original, or repointed invocation path
+causes a refusal with `_meta.stale: true` and the running version. No verdict, file
+content or write is produced. A rebuild can trigger this even without a version
+number change. This is the fail-closed fallback, not a self-restarting supervisor.
+Older servers cannot acquire the check retroactively; `doctor` and a reconnect
+remain the remedy.
+
 <!-- WO-640: Diagnose inactive rules through the production diagnostic commands. -->
 ## My rules are not applied
 
