@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-704@v1: destination identity and wildcard listening have separate shared owners. -->
+- Share loopback and wildcard address classification across launch, proxy discovery, outbound Via and doctor, including abbreviated and IPv4-mapped forms while retaining distinct empty-host and wildcard-listener roles. (WO-704)
 <!-- WO-702@v1: process flags preserve their complete argument boundaries. -->
 - Recognize both spaced and equals-form process flags in doctor without matching longer flag names. (WO-702)
 <!-- WO-681@v1: stale servers refuse before tool work, and guard messages identify the deciding build. -->

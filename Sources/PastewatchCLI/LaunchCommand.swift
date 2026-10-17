@@ -130,7 +130,8 @@ struct Launch: ParsableCommand {
         }
         // WO-423: URLComponents requires brackets around IPv6 hosts; recognize only
         // unambiguous bare local literals and preserve ambiguous host:port text.
-        if value == "::1" || value == "[::1]" || value == "::" || value == "[::]" {
+        // WO-704@v1: classify bare literals through the same owner as URL host values.
+        if isLoopbackDestination(value) || isWildcardListenAddress(value) {
             return true
         }
         let candidates = value.contains("://") ? [value] : [value, "http://\(value)"]
@@ -142,63 +143,10 @@ struct Launch: ParsableCommand {
 
     // WO-423: stale local proxy URLs can be written in non-canonical forms; preserve
     // remote gateways, but clear loopback/any-address spellings for non-routed agents.
-    static func isLocalAnthropicBaseURLHost(_ host: String) -> Bool {
-        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if normalized == "localhost" || normalized == "::1" || normalized == "::" || normalized == "0.0.0.0" {
-            return true
-        }
-        if normalized.hasPrefix("::ffff:") {
-            return isLocalIPv4AnthropicBaseURLHost(String(normalized.dropFirst("::ffff:".count)))
-        }
-        return isLocalIPv4AnthropicBaseURLHost(normalized)
-    }
-
-    static func isLocalIPv4AnthropicBaseURLHost(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard (1...4).contains(parts.count) else {
-            return false
-        }
-        let numbers = parts.compactMap { parseIPv4Component(String($0)) }
-        guard numbers.count == parts.count else { return false }
-
-        let address: UInt32
-        switch numbers.count {
-        case 1:
-            address = numbers[0]
-        case 2:
-            guard numbers[0] <= 0xff, numbers[1] <= 0x00ff_ffff else { return false }
-            address = (numbers[0] << 24) | numbers[1]
-        case 3:
-            guard numbers[0] <= 0xff, numbers[1] <= 0xff, numbers[2] <= 0xffff else { return false }
-            address = (numbers[0] << 24) | (numbers[1] << 16) | numbers[2]
-        case 4:
-            guard numbers.allSatisfy({ $0 <= 0xff }) else { return false }
-            address = (numbers[0] << 24) | (numbers[1] << 16) | (numbers[2] << 8) | numbers[3]
-        default:
-            return false
-        }
-
-        return (address >> 24) == 127 || address == 0
-    }
-
     // WO-423: stale local proxy URLs may use inet_aton-style abbreviated or octal IPv4.
-    private static func parseIPv4Component(_ raw: String) -> UInt32? {
-        guard !raw.isEmpty else { return nil }
-        let lower = raw.lowercased()
-        let radix: Int
-        let digits: String
-        if lower.hasPrefix("0x") {
-            radix = 16
-            digits = String(lower.dropFirst(2))
-        } else if lower.count > 1 && lower.hasPrefix("0") {
-            radix = 8
-            digits = lower
-        } else {
-            radix = 10
-            digits = lower
-        }
-        guard !digits.isEmpty else { return nil }
-        return UInt32(digits, radix: radix)
+    // WO-704@v1: stale local settings include loopback destinations and wildcard listeners, not private gateways.
+    static func isLocalAnthropicBaseURLHost(_ host: String) -> Bool {
+        !host.isEmpty && (isLoopbackDestination(host) || isWildcardListenAddress(host))
     }
 
     static func nonRoutedWarning(agentBinary: String, baseURLState: String) -> String {

@@ -2233,28 +2233,10 @@ public final class ProxyServer {
     static func isLoopbackUpstream(_ url: URL, resolve: ((String) -> [String])? = nil) -> Bool {
         guard let host = url.host else { return false }
         let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if normalized == "localhost" || isLoopbackWireAddress(normalized) { return true }
+        // WO-704@v1: literal and resolved destinations share loopback classification; resolution stays startup-only.
+        if isLoopbackDestination(normalized) { return true }
         let addresses = resolve?(normalized) ?? []
-        return !addresses.isEmpty && addresses.allSatisfy(isLoopbackWireAddress)
-    }
-
-    // WO-696@v3: only IPv4 loopback, IPv6 loopback and IPv4-mapped loopback identify a same-host hop.
-    private static func isLoopbackWireAddress(_ host: String) -> Bool {
-        var ipv4 = in_addr()
-        if inet_pton(AF_INET, host, &ipv4) == 1 {
-            let address = UInt32(bigEndian: ipv4.s_addr)
-            return address >> 24 == 127
-        }
-        var ipv6 = in6_addr()
-        guard let literal = host.split(separator: "%", maxSplits: 1).first else { return false }
-        let address = String(literal)
-        guard inet_pton(AF_INET6, address, &ipv6) == 1 else { return false }
-        let bytes = withUnsafeBytes(of: ipv6) { Array($0) }
-        if bytes.prefix(15).allSatisfy({ $0 == 0 }), bytes[15] == 1 { return true }
-        if bytes.prefix(10).allSatisfy({ $0 == 0 }), bytes[10] == 0xff, bytes[11] == 0xff {
-            return isLoopbackWireAddress(bytes.suffix(4).map(String.init).joined(separator: "."))
-        }
-        return false
+        return !addresses.isEmpty && addresses.allSatisfy(isLoopbackDestination)
     }
 
     // WO-696@v3: numeric results avoid reverse lookups and keep DNS out of individual request handling.

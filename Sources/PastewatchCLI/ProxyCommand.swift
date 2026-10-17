@@ -89,20 +89,14 @@ enum WireProxyDiscovery {
         let upstreamHost = literalHost(host)
         let listenHost = emptyListenHost ? "" : literalHost(recordHost)
         if listenHost == upstreamHost { return true }
-        return isLoopbackHost(upstreamHost) &&
-            (isLoopbackHost(listenHost) || ["", "0.0.0.0", "::"].contains(listenHost))
+        // WO-704@v1: listener wildcards are equivalent only to a shared loopback destination.
+        return isLoopbackDestination(upstreamHost) &&
+            (isLoopbackDestination(listenHost) || isWildcardListenAddress(listenHost))
     }
 
     // WO-696@v3: Foundation may retain IPv6 brackets, so normalize only literal presentation.
     private static func literalHost(_ host: String) -> String {
         host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-    }
-
-    // WO-696@v3: only explicit localhost and IPv4/IPv6 loopback literals share the local endpoint identity.
-    private static func isLoopbackHost(_ host: String) -> Bool {
-        if host == "localhost" || host == "::1" { return true }
-        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
-        return octets.count == 4 && octets.first == "127" && octets.allSatisfy { UInt8($0) != nil }
     }
 
     // WO-696@v3: one wire owner is a supported-configuration requirement, not an input authorization marker.

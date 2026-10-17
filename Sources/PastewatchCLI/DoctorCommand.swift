@@ -350,7 +350,8 @@ struct Doctor: ParsableCommand {
     ) -> Set<String> {
         guard let raw = environment["ANTHROPIC_BASE_URL"],
               let url = URL(string: raw), let host = url.host,
-              ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host.lowercased()) else { return [] }
+              // WO-704@v1: coverage uses the same literal loopback identity as launch and wire routing.
+              isLoopbackDestination(host) else { return [] }
         let port = url.port ?? (url.scheme == "https" ? 443 : 80)
         // WO-702@v1: process injection preserves the existing default-port fallback.
         let matching = proxyCommands().contains { command in
