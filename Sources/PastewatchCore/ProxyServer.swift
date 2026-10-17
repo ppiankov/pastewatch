@@ -70,6 +70,8 @@ public final class ProxyServer {
 
     private let port: UInt16
     private let upstream: URL
+    // WO-696@v2: DNS is resolved once at listener startup, never in the request-body path.
+    private var resolvedLocalUpstream = false
     private let forwardProxy: URL?
     private let config: PastewatchConfig
     private let customRules: [CustomRule] // WO-573@v4: one config-plus-shared set for every proxy scan path.
@@ -480,6 +482,8 @@ public final class ProxyServer {
     /// WO-514: debug capture mode is validated before the listening socket is created.
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
+        // WO-696@v2: only wholly local resolved destinations receive the wire-hop identity.
+        resolvedLocalUpstream = Self.isLocalUpstream(upstream, resolve: Self.numericUpstreamAddresses)
         if let customRuleStartupError {
             throw ProxyError.invalidCustomRules(customRuleStartupError.localizedDescription)
         }
@@ -764,22 +768,8 @@ public final class ProxyServer {
             return
         }
 
-        // WO-270: send appropriate HTTP error when readHTTPRequest fails.
-        // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
-        let readResult = readHTTPRequest(from: clientSocket)
-        let parsed: HTTPRequest
-        switch readResult {
-        case .success(let request):
-            parsed = request
-        case .timeout:
-            sendError(to: clientSocket, status: 408, message: "Request Timeout")
-            return
-        case .transportError:
-            return  // peer already gone; HTTP response wasted and cannot be delivered
-        case .encodingError, .malformedRequest:
-            sendError(to: clientSocket, status: 400, message: "Bad Request")
-            return
-        }
+        // WO-696@v2: transport errors retain their status and chained requests stop before scanning.
+        guard let parsed = readUnchainedHTTPRequest(from: clientSocket) else { return }
 
         // WO-408/WO-432: fail closed on unsupported upstream body shapes. The scan path
         // below only redacts supported Anthropic-shaped POSTs; any other POST body - notably
@@ -2192,11 +2182,94 @@ public final class ProxyServer {
             }
             forwardHeaders.append((key, value))
         }
+        // WO-696@v2: append rather than replace existing Via hops, and never announce to public providers.
+        if resolvedLocalUpstream || Self.isLocalUpstream(upstream) {
+            forwardHeaders.append(("Via", "1.1 pastewatch"))
+        }
         // WO-303: force identity encoding so SSE redaction sees plaintext bytes.
         forwardHeaders.append(("Accept-Encoding", "identity"))
         forwardHeaders.append(("Host", upstreamHost))
         forwardHeaders.append(("Content-Length", String(bodyLength)))
         return forwardHeaders
+    }
+
+    // WO-696@v2: the header gate preserves transport statuses and refuses chains before body processing.
+    func readUnchainedHTTPRequest(from socket: Int32) -> HTTPRequest? {
+        // WO-270: send appropriate HTTP error when readHTTPRequest fails.
+        // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
+        switch readHTTPRequest(from: socket) {
+        case .success(let request):
+            guard let refusal = Self.wireChainRefusal(headers: request.headers) else { return request }
+            recordRefusedRequest()
+            sendError(to: socket, status: 508, message: refusal)
+        case .timeout:
+            sendError(to: socket, status: 408, message: "Request Timeout")
+        case .transportError:
+            break
+        case .encodingError, .malformedRequest:
+            sendError(to: socket, status: 400, message: "Bad Request")
+        }
+        return nil
+    }
+
+    // WO-696@v2: only the received-by token identifies a wire owner; substrings and comments do not.
+    static func wireChainRefusal(headers: [(String, String)]) -> String? {
+        let owners: Set<String> = ["pastewatch", "neurorouter"]
+        let chained = headers.filter { $0.0.lowercased() == "via" }.contains { header in
+            header.1.split(separator: ",").contains { hop in
+                let fields = hop.split(whereSeparator: { $0.isWhitespace })
+                return fields.count >= 2 && owners.contains(fields[1].lowercased())
+            }
+        }
+        return chained ? "Loop Detected: use one wire proxy per session; connect directly to the provider or remove the other proxy hop." : nil
+    }
+
+    // WO-696@v2: resolution is injectable so address-family coverage never requires DNS in tests.
+    static func isLocalUpstream(_ url: URL, resolve: ((String) -> [String])? = nil) -> Bool {
+        guard let host = url.host else { return false }
+        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if normalized == "localhost" || isLocalWireAddress(normalized) { return true }
+        let addresses = resolve?(normalized) ?? []
+        return !addresses.isEmpty && addresses.allSatisfy(isLocalWireAddress)
+    }
+
+    // WO-696@v2: the permitted hop networks are loopback, private, link-local and unique-local only.
+    private static func isLocalWireAddress(_ host: String) -> Bool {
+        var ipv4 = in_addr()
+        if inet_pton(AF_INET, host, &ipv4) == 1 {
+            let address = UInt32(bigEndian: ipv4.s_addr)
+            return address >> 24 == 127 || address >> 24 == 10 || address >> 20 == 0xac1 ||
+                address >> 16 == 0xc0a8 || address >> 16 == 0xa9fe
+        }
+        var ipv6 = in6_addr()
+        guard let literal = host.split(separator: "%", maxSplits: 1).first else { return false }
+        let address = String(literal)
+        guard inet_pton(AF_INET6, address, &ipv6) == 1 else { return false }
+        let bytes = withUnsafeBytes(of: ipv6) { Array($0) }
+        if bytes.prefix(15).allSatisfy({ $0 == 0 }), bytes[15] == 1 { return true }
+        if bytes[0] & 0xfe == 0xfc || bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 { return true }
+        if bytes.prefix(10).allSatisfy({ $0 == 0 }), bytes[10] == 0xff, bytes[11] == 0xff {
+            return isLocalWireAddress(bytes.suffix(4).map(String.init).joined(separator: "."))
+        }
+        return false
+    }
+
+    // WO-696@v2: numeric results avoid reverse lookups and keep DNS out of individual request handling.
+    private static func numericUpstreamAddresses(_ host: String) -> [String] {
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, nil, &result) == 0, let first = result else { return [] }
+        defer { freeaddrinfo(first) }
+        var addresses: [String] = []
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        while let entry = current {
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(entry.pointee.ai_addr, entry.pointee.ai_addrlen, &buffer,
+                           socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
+                addresses.append(String(cString: buffer))
+            }
+            current = entry.pointee.ai_next
+        }
+        return addresses
     }
 
     // WO-395: serialize swift-corelibs lazy cache initialization and subsequent formatting.
@@ -2547,7 +2620,8 @@ public final class ProxyServer {
         let bodyBytes = Data(body.utf8)
         // WO-219: Content-Length must be byte count, not Swift character count (they diverge for non-ASCII).
         // WO-360: keep diagnostic detail in the body, not the HTTP reason phrase.
-        let reason = CurlHTTPClient.httpReasonPhrase(for: status)
+        // WO-696@v2: the refusal uses the standard reason without changing transport response mappings.
+        let reason = status == 508 ? "Loop Detected" : CurlHTTPClient.httpReasonPhrase(for: status)
         let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)
         responseData.append(bodyBytes)

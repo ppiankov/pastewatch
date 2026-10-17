@@ -15,6 +15,112 @@ private let proxyStartupSignalGraceMilliseconds = 100
 // WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
 let proxyInterruptedExitCode: Int32 = 130
 
+// WO-696@v2: discovery consumes only the public operator-output identity fields.
+struct WireProxyRecord: Decodable {
+    let alive: Bool
+    let listenAddr: String
+    let proxyID: String
+
+    enum CodingKeys: String, CodingKey {
+        case alive
+        case listenAddr = "listen_addr"
+        case proxyID = "proxy_id"
+    }
+}
+
+// WO-696@v2: startup and doctor share one bounded, exit-code-based discovery command.
+enum WireProxyDiscovery {
+    static let timeoutSeconds: TimeInterval = 1
+    private static let maximumOutputBytes = 64 * 1024
+
+    // WO-696@v2: PATH lookup is shared with curl but has no preferred system executable.
+    static func discover(
+        searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        timeout: TimeInterval = timeoutSeconds
+    ) -> [WireProxyRecord] {
+        guard let executable = PathExecutable.resolve(name: "nr", searchPath: searchPath) else { return [] }
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("pastewatch-discovery-" + UUID().uuidString)
+        guard FileManager.default.createFile(atPath: outputURL.path, contents: nil,
+                                              attributes: [.posixPermissions: 0o600]),
+              let output = try? FileHandle(forWritingTo: outputURL) else { return [] }
+        defer {
+            try? output.close()
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["proxies", "--json", "--output-mode", "operator"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        let terminated = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in terminated.signal() }
+        do { try process.run() } catch { return [] }
+        guard terminated.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            if terminated.wait(timeout: .now() + .milliseconds(100)) != .success, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            return []
+        }
+        process.waitUntilExit()
+        // Exit 1 and 3 are capability/availability outcomes, regardless of any printed text.
+        guard process.terminationReason == .exit, process.terminationStatus == 0,
+              let size = try? output.seekToEnd(), size <= maximumOutputBytes,
+              let data = try? Data(contentsOf: outputURL) else { return [] }
+        return decode(data)
+    }
+
+    // WO-696@v2: unknown or malformed discovery output never creates a guessed proxy identity.
+    private static func decode(_ data: Data) -> [WireProxyRecord] {
+        if let records = try? JSONDecoder().decode([WireProxyRecord].self, from: data) { return records.filter(\.alive) }
+        struct Envelope: Decodable { let proxies: [WireProxyRecord] }
+        return (try? JSONDecoder().decode(Envelope.self, from: data))?.proxies.filter(\.alive) ?? []
+    }
+
+    // WO-696@v2: local aliases and wildcard listeners share an endpoint only at the same port, without DNS.
+    static func matches(_ record: WireProxyRecord, upstream: URL) -> Bool {
+        let emptyListenHost = record.listenAddr.hasPrefix(":")
+        let listenAddress = emptyListenHost ? "localhost" + record.listenAddr : record.listenAddr
+        let port = upstream.port ?? (upstream.scheme?.lowercased() == "https" ? 443 : 80)
+        guard record.alive, let address = URL(string: "http://" + listenAddress), address.port == port,
+              let host = upstream.host, let recordHost = address.host else { return false }
+        let upstreamHost = literalHost(host)
+        let listenHost = emptyListenHost ? "" : literalHost(recordHost)
+        if listenHost == upstreamHost { return true }
+        return isLoopbackHost(upstreamHost) &&
+            (isLoopbackHost(listenHost) || ["", "0.0.0.0", "::"].contains(listenHost))
+    }
+
+    // WO-696@v2: Foundation may retain IPv6 brackets, so normalize only literal presentation.
+    private static func literalHost(_ host: String) -> String {
+        host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+    }
+
+    // WO-696@v2: only explicit localhost and IPv4/IPv6 loopback literals share the local endpoint identity.
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        if host == "localhost" || host == "::1" { return true }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        return octets.count == 4 && octets.first == "127" && octets.allSatisfy { UInt8($0) != nil }
+    }
+
+    // WO-696@v2: one wire owner is a supported-configuration requirement, not an input authorization marker.
+    static func refusal(upstream: URL, records: [WireProxyRecord]) -> String? {
+        guard let record = records.first(where: { matches($0, upstream: upstream) }) else { return nil }
+        return "error: upstream is wire proxy \(record.proxyID); use one wire proxy per session and connect directly to the provider."
+    }
+}
+
+// WO-696@v2: proxy and routed launch refuse known upstream proxy identities before starting a listener.
+func requireSingleWireOwner(upstream: URL?, discover: () -> [WireProxyRecord] = { WireProxyDiscovery.discover() }) throws {
+    guard let upstream else { return }
+    if let refusal = WireProxyDiscovery.refusal(upstream: upstream, records: discover()) {
+        FileHandle.standardError.write(Data((refusal + "\n").utf8))
+        throw ExitCode(rawValue: 2)
+    }
+}
+
 // WO-573@v4: proxy and launch share one strict startup gate for config and shared rules.
 func compileProxyCustomRules(_ config: PastewatchConfig) throws -> [CustomRule] {
     try SharedSecretPatternSource.proxyRuleSet(for: config)
@@ -127,6 +233,8 @@ struct Proxy: ParsableCommand {
         // WO-574@v4: refuse to listen when the active config cannot be trusted.
         let config = try requireValidatedConfig()
         let compiledCustomRules = try requireValidProxyCustomRules(config)
+        // WO-696@v2: discovery cannot affect the scanner or rewrite the request body.
+        try requireSingleWireOwner(upstream: upstreamURL)
         let streamDebugSink = try debugStreamDump.map { try StreamDebugSink(path: $0) }
         let server = ProxyServer(
             port: port,

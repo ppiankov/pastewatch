@@ -91,6 +91,8 @@ struct Doctor: ParsableCommand {
 
         // 8. MCP server processes
         checks.append(contentsOf: checkMCPProcesses())
+        // WO-696@v2: wire-owner diagnostics share the bounded startup discovery contract.
+        checks.append(contentsOf: checkWireOwners())
         // WO-673@v2: grant diagnostics share the user-store validation used by admission.
         checks.append(contentsOf: checkBinaryGrants())
 
@@ -230,6 +232,56 @@ struct Doctor: ParsableCommand {
             return CheckResult(check: label, status: "ok", detail: path)
         }
         return CheckResult(check: label, status: "info", detail: "not found")
+    }
+
+    // WO-696@v2: injected process/config snapshots keep diagnostics tests independent of the host session.
+    func checkWireOwners(
+        discover: () -> [WireProxyRecord] = { WireProxyDiscovery.discover() },
+        proxyCommands: () -> [String] = Doctor.runningProxyCommands,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [CheckResult] {
+        let records = discover()
+        guard !records.isEmpty else { return [] }
+        let commands = proxyCommands()
+        var upstreams: [String: URL] = [:]
+        for (index, command) in commands.enumerated() {
+            if let raw = extractFlag(command, flag: "--upstream"), let url = URL(string: raw) {
+                upstreams["pastewatch upstream \(index + 1)"] = url
+            }
+        }
+        if !commands.isEmpty, let raw = environment["ANTHROPIC_BASE_URL"], let url = URL(string: raw) {
+            upstreams["configured agent upstream"] = url
+        }
+        return records.map { record in
+            let conflicts = upstreams.keys.sorted().filter { key in
+                upstreams[key].map { WireProxyDiscovery.matches(record, upstream: $0) } ?? false
+            }
+            let detail = "wire proxy \(record.proxyID) at \(record.listenAddr)"
+            guard !conflicts.isEmpty else { return CheckResult(check: "wire-owner", status: "info", detail: detail) }
+            return CheckResult(check: "wire-owner", status: "warn", detail: detail + "; " +
+                conflicts.joined(separator: ", ") + "; use one wire proxy per session, not a chain")
+        }
+    }
+
+    // WO-696@v2: only real proxy process argv is inspected, never shell mentions or arbitrary process arguments.
+    private static func runningProxyCommands() -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "command="]
+        process.standardError = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do { try process.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else { return [] }
+        return output.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count >= 2, fields[1] == "proxy",
+                  ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(fields[0])).lastPathComponent.lowercased())
+            else { return nil }
+            return String(line)
+        }
     }
 
     // WO-671@v2: injected process and clock snapshots exercise the production stale-session diagnosis.

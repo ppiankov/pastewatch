@@ -5,6 +5,29 @@ import Darwin
 import Glibc
 #endif
 
+// WO-696@v2: executable consumers share the absolute-only PATH walk without curl's system preference.
+public enum PathExecutable {
+    // WO-696@v2: ignoring cwd-derived entries prevents executable lookup from trusting the working directory.
+    public static func resolve(
+        name: String, searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        isExecutable: (String) -> Bool = { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) &&
+                !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: path)
+        }
+    ) -> String? {
+        guard let searchPath else { return nil }
+        for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
+            // WO-649@v1: empty or relative PATH entries can select a cwd-controlled executable.
+            guard directory.hasPrefix("/") else { continue }
+            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
+                .appendingPathComponent(name).standardizedFileURL.path
+            if isExecutable(candidate) { return candidate }
+        }
+        return nil
+    }
+}
+
 // WO-649@v1: Linux startup, diagnostics and transport share the same executable selection.
 public enum CurlExecutable {
     // WO-649@v1: dependency errors name a remedy without exposing request data.
@@ -22,15 +45,8 @@ public enum CurlExecutable {
     ) -> String? {
         let systemPath = "/usr/bin/curl"
         if isExecutable(systemPath) { return systemPath }
-        guard let searchPath else { return nil }
-        for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
-            // WO-649@v1: empty or relative PATH entries can select a cwd-controlled curl.
-            guard directory.hasPrefix("/") else { continue }
-            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
-                .appendingPathComponent("curl").standardizedFileURL.path
-            if isExecutable(candidate) { return candidate }
-        }
-        return nil
+        // WO-696@v2: delegation preserves curl's preferred system binary and PATH order.
+        return PathExecutable.resolve(name: "curl", searchPath: searchPath, isExecutable: isExecutable)
     }
 }
 
