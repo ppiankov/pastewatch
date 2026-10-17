@@ -3,6 +3,26 @@ import XCTest
 
 // WO-668@v1: focused checks and the golden corpus share the same language and literal controls.
 enum CredentialCodeExpressionFixtures {
+    // WO-695@v1: punctuation cutsets are tokenizer arguments, not stored credential literals.
+    static var trimAssignments: [String] {
+        let identifier = "to" + "ken"
+        let punctuation = "\\\"'()[]{}:;,\u{2013}\u{2014}-"
+        return [
+            identifier + " = strings.Trim(" + identifier + ", \"" + punctuation + "\")",
+            identifier + " := strings.Trim(" + identifier + ", \"" + punctuation + "\")",
+            identifier + " = arbitrary(" + identifier + ", \"" + punctuation + "\")"
+        ]
+    }
+
+    // WO-695@v1: a synthetic placeholder-shaped literal still exercises the existing credential validator.
+    static var trimLiteralControls: [String] {
+        let identifier = "to" + "ken"
+        let literal = "[fixture-" + "695-only]"
+        let punctuation = ["!@#", "[]{}", ":;,-"].joined()
+        return [identifier + " = \"" + literal + "\"", identifier + " = Wrapper(\"" + literal + "\")",
+                identifier + " = Wrapper(\"" + punctuation + "\")"]
+    }
+
     // WO-668@v1: fixture names identify controls without exposing their values.
     struct LiteralControl {
         let name: String
@@ -118,6 +138,22 @@ enum CredentialCodeExpressionFixtures {
 
 // WO-668@v1: recognition precision cannot weaken literal coverage or mutation authorization.
 final class CredentialCodeExpressionTests: XCTestCase {
+    // WO-695@v1: callee-independent cutset precision must retain literal assignments and constructors.
+    func testTokenizerCutsetsAreNotCredentialsAndLiteralControlsStayCritical() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            for (index, row) in CredentialCodeExpressionFixtures.trimAssignments.enumerated() {
+                let matches = DetectionRules.scan(row, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 0, "cutset line \(index + 1): Credential count=\(matches.count)")
+            }
+            for (index, row) in CredentialCodeExpressionFixtures.trimLiteralControls.enumerated() {
+                let matches = DetectionRules.scan(row, config: config).filter { $0.type == .credential }
+                XCTAssertEqual(matches.count, 1, "literal line \(index + 1): Credential count=\(matches.count)")
+                XCTAssertEqual(matches.first?.effectiveSeverity, .critical)
+            }
+        }
+    }
+
     // WO-668@v1: the operator accepts these misses instead of adding callee-specific exceptions.
     func testDocumentedFalseNegativesForReferenceShapedLiteralsAndGetenvDefault() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

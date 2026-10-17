@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-695@v2: punctuation cutsets after an earlier argument are excluded; a punctuation-only first argument still counts, with per-type regression counts pinned. -->
+- Exclude punctuation-only cutset arguments that follow an earlier call argument from credential-assignment findings, while quoted credential-shaped values and constructor literals (including punctuation-only first arguments) stay findings. (WO-695)
 <!-- WO-691@v3: closed display pipelines share native Read's verdict independently of binary-grant roles. -->
 - Align closed display-only command reads with native Read and MCP authorization; retain strict checks for transfers, redirects, other pipelines and inline command text. Exclude file-writing filters, pagers and ripgrep preprocessing from display-only classification. (WO-691)
 

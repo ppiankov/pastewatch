@@ -1797,7 +1797,9 @@ public struct DetectionRules {
         let isQuoted = value.first == "\"" || value.first == "'" || value.first == "`"
         // WO-668@v1: first-literal shape, not the callee name, distinguishes reference calls from stored values.
         if !isQuoted, let literal = credentialCallLiteral(in: (value + String(following ?? ""))[...]) {
-            return !isCredentialArgumentReference(literal.value) && isValidCredentialValue(literal.value)
+            // WO-695@v1: later punctuation cutsets are not values; first-literal constructor coverage stays intact.
+            let isCutset = literal.hasEarlierArgument && !literal.value.contains(where: { $0.isLetter || $0.isNumber })
+            return !isCutset && !isCredentialArgumentReference(literal.value) && isValidCredentialValue(literal.value)
         }
         // WO-668@v1: calls need only their opening delimiter; capture may stop before arguments close.
         if !isQuoted && isCredentialCodeExpression(value, separator: separator, following: following) {
@@ -1873,6 +1875,8 @@ public struct DetectionRules {
     private struct CredentialCallLiteral {
         let value: String
         let upperBound: String.Index
+        // WO-695@v1: retain argument position so a literal constructor is never mistaken for a cutset.
+        var hasEarlierArgument = false
     }
 
     // WO-668@v1: recognize calls structurally and inspect their first literal without a callee vocabulary.
@@ -1884,7 +1888,10 @@ public struct DetectionRules {
         while index < expression.endIndex {
             let character = expression[index]
             if character == "\"" || character == "'" {
-                return credentialArgumentLiteral(in: expression, quoteAt: index)
+                // WO-695@v1: only a preceding argument separator permits the punctuation-cutset exclusion.
+                var literal = credentialArgumentLiteral(in: expression, quoteAt: index)
+                literal?.hasEarlierArgument = expression[call.upperBound..<index].contains(",")
+                return literal
             }
             if character == "(" { depth += 1 }
             if character == ")" { depth -= 1 }
