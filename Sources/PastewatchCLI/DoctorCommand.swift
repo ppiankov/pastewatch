@@ -288,23 +288,15 @@ struct Doctor: ParsableCommand {
     }
 
     // WO-697@v1: registration locations mirror setup; script existence alone never proves a registered hook.
-    private func agentCoverageFiles(_ descriptor: MCPSetupDescriptor, home: URL, project: URL) -> [URL] {
+    // WO-705@v1: diagnostic hook paths come from setup's descriptor rather than a parallel table.
+    func agentCoverageFiles(_ descriptor: MCPSetupDescriptor, home: URL, project: URL) -> [URL] {
         var files = descriptor.configPath.components(separatedBy: " or ").compactMap { path -> URL? in
             if path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
             if path.hasPrefix(".") { return project.appendingPathComponent(path) }
             return nil
         }
-        let hooks = [
-            "claude-code": ".claude/settings.json", "cursor": ".cursor/hooks.json",
-            "windsurf": ".codeium/windsurf/hooks.json", "continue": ".continue/settings.json",
-            "codex": ".codex/hooks.json", "qwen-code": ".qwen/settings.json"
-        ]
-        if let path = hooks[descriptor.agent] { files.append(home.appendingPathComponent(path)) }
-        if descriptor.agent == "claude-code" { files.append(project.appendingPathComponent(".claude/settings.json")) }
-        if descriptor.agent == "copilot" { files.append(project.appendingPathComponent(".github/hooks/pastewatch.json")) }
-        if descriptor.agent == "roo-code" {
-            files.append(home.appendingPathComponent("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"))
-        }
+        // WO-705@v1: preserve registration order and every existing home/project location.
+        files.append(contentsOf: descriptor.hookConfigURLs(home: home, project: project))
         return files
     }
 

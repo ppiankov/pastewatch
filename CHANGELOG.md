@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-705@v1: setup owns hook-registration paths consumed by diagnostics. -->
+- Keep setup and doctor hook-registration paths in one shared descriptor while preserving every existing file location. (WO-705)
 <!-- WO-704@v1: destination identity and wildcard listening have separate shared owners. -->
 - Share loopback and wildcard address classification across launch, proxy discovery, outbound Via and doctor, including abbreviated and IPv4-mapped forms while retaining distinct empty-host and wildcard-listener roles. (WO-704)
 <!-- WO-702@v1: process flags preserve their complete argument boundaries. -->

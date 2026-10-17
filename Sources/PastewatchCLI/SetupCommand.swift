@@ -85,7 +85,8 @@ struct Setup: ParsableCommand {
         }
         let hooksDir = configDir + "/hooks"
         let hookPath = hooksDir + "/pastewatch-guard.sh"
-        let settingsPath = configDir + "/settings.json"
+        // WO-705@v1: hook registrations share the descriptor inventory used by doctor.
+        let settingsPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         // WO-500: Claude Code stores MCP separately from its settings file.
         let mcpPath = project ? fm.currentDirectoryPath + "/.mcp.json" : home + "/.claude.json"
 
@@ -201,9 +202,8 @@ struct Setup: ParsableCommand {
         print("setup: roo-code\n")
 
         // 1. Merge MCP config
-        let mcpPath = home
-            + "/Library/Application Support/Code/User/globalStorage"
-            + "/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
+        // WO-705@v1: this existing combined registration file keeps its exact location.
+        let mcpPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
 
         var json = try AgentSetup.readJSONForMerge(
             at: mcpPath,
@@ -275,7 +275,8 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 3. Merge hooks.json
-        let hooksJsonPath = home + "/.cursor/hooks.json"
+        // WO-705@v1: the writer and diagnostic reader share the hook-registration path.
+        let hooksJsonPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
@@ -329,7 +330,8 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 3. Merge hooks.json
-        let hooksJsonPath = home + "/.codeium/windsurf/hooks.json"
+        // WO-705@v1: the writer and diagnostic reader share the hook-registration path.
+        let hooksJsonPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
@@ -451,7 +453,8 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 3. Merge hooks into settings.json
-        let settingsPath = home + "/.continue/settings.json"
+        // WO-705@v1: the writer and diagnostic reader share the hook-registration path.
+        let settingsPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         var json = try AgentSetup.readJSONForMerge(
             at: settingsPath,
             requiringObjectPaths: [["hooks"]],
@@ -574,7 +577,11 @@ struct Setup: ParsableCommand {
         // 3. Print hook registration instructions
         print("  severity \(severity) (hook and MCP aligned)")
         print("")
-        print("  next: add hook config to .github/hooks/pastewatch.json in your repo:")
+        // WO-705@v1: manual registration guidance uses the same project path doctor inspects.
+        guard let hooksConfigPath = AgentSetup.mcpSetupMatrix.first(where: { $0.agent == agent })?.hookConfigPaths.first else {
+            throw ValidationError("No hook registration path for '\(agent)'")
+        }
+        print("  next: add hook config to \(hooksConfigPath) in your repo:")
         print("    {")
         print("      \"version\": 1,")
         print("      \"hooks\": {")
@@ -643,7 +650,8 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 2. Merge hooks.json (Codex lifecycle events are nested under "hooks")
-        let hooksJsonPath = home + "/.codex/hooks.json"
+        // WO-705@v1: the writer and diagnostic reader share the hook-registration path.
+        let hooksJsonPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         var hooksJson = try AgentSetup.readJSONForMerge(
             at: hooksJsonPath,
             requiringObjectPaths: [["hooks"]],
@@ -695,7 +703,8 @@ struct Setup: ParsableCommand {
         print("  hook     \(hookPath) (created)")
 
         // 2. Merge settings.json (MCP server + PreToolUse hooks)
-        let settingsPath = home + "/.qwen/settings.json"
+        // WO-705@v1: the writer and diagnostic reader share the hook-registration path.
+        let settingsPath = try hooksConfigPath(home: home, projectDirectory: fm.currentDirectoryPath)
         var json = try AgentSetup.readJSONForMerge(
             at: settingsPath,
             requiringObjectPaths: [["mcpServers"], ["hooks"]],
@@ -716,6 +725,17 @@ struct Setup: ParsableCommand {
     }
 
     // MARK: - Post-setup checks
+
+    // WO-705@v1: each hook writer resolves the descriptor rather than maintaining a second path table.
+    func hooksConfigPath(home: String, projectDirectory: String, descriptor: MCPSetupDescriptor? = nil) throws -> String {
+        let descriptor = descriptor ?? AgentSetup.mcpSetupMatrix.first { $0.agent == agent }
+        let paths = descriptor?.hookConfigURLs(home: URL(fileURLWithPath: home),
+                                              project: URL(fileURLWithPath: projectDirectory)) ?? []
+        guard let path = project ? paths.last : paths.first else {
+            throw ValidationError("No hook registration path for '\(agent)'")
+        }
+        return path.path
+    }
 
     /// Run `pastewatch-cli doctor` as a health check after setup.
     private func runDoctor() {
