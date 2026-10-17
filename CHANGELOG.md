@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-706@v1: complete executable basenames have one shared case rule. -->
+- Recognize the same case-insensitive CLI executable names in doctor and command parsing without matching basename prefixes. (WO-706)
 <!-- WO-705@v1: setup owns hook-registration paths consumed by diagnostics. -->
 - Keep setup and doctor hook-registration paths in one shared descriptor while preserving every existing file location. (WO-705)
 <!-- WO-704@v1: destination identity and wildcard listening have separate shared owners. -->

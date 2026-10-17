@@ -318,7 +318,8 @@ struct Doctor: ParsableCommand {
         guard let server = servers["pastewatch"] as? [String: Any], server["disabled"] as? Bool != true,
               server["enabled"] as? Bool != false else { return false }
         let command = server["command"] as? String ?? (server["command"] as? [String])?.first
-        return command.map { ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: $0).lastPathComponent.lowercased()) } ?? false
+        // WO-706@v1: registered executables use the same complete-basename identity as command parsing.
+        return command.map(ExecutableIdentityNames.isOwnBinary) ?? false
     }
 
     // WO-697@v1: manual formats use their existing value parser or a bounded named TOML section.
@@ -396,7 +397,8 @@ struct Doctor: ParsableCommand {
         return output.split(separator: "\n").compactMap { line in
             let fields = line.split(whereSeparator: { $0.isWhitespace })
             guard fields.count >= 2, fields[1] == "proxy",
-                  ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(fields[0])).lastPathComponent.lowercased())
+                  // WO-706@v1: process discovery shares the canonical executable-name rule.
+                  ExecutableIdentityNames.isOwnBinary(String(fields[0]))
             else { return nil }
             return String(line)
         }
@@ -480,7 +482,8 @@ struct Doctor: ParsableCommand {
         let command = String(fields[6])
         let words = command.split(whereSeparator: { $0.isWhitespace })
         guard words.count >= 2, words[1] == "mcp",
-              ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(words[0])).lastPathComponent.lowercased()) else {
+              // WO-706@v1: MCP snapshots share the canonical executable-name rule.
+              ExecutableIdentityNames.isOwnBinary(String(words[0])) else {
             return nil
         }
         let startedAt = dateFormatter.date(from: fields[1...5].joined(separator: " "))
