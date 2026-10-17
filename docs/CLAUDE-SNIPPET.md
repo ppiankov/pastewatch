@@ -56,7 +56,8 @@ pastewatch-cli init --profile banking     # JDBC, medium severity, internal host
 
 ### Running through the proxy (recommended)
 
-The API proxy is the default way to run Claude Code with pastewatch. It catches **all** outbound secrets — including from subagents and tools that bypass hooks and MCP:
+<!-- WO-697@v1: wire interception is limited to supported traffic actually routed through the proxy. -->
+The API proxy scans supported secrets in Anthropic-shaped requests routed through it, including subprocess results included in those requests. It cannot inspect other egress, encoded/binary content, or requests that bypass it. Keep hooks and MCP as file-context defense in depth:
 
 ```bash
 pastewatch-cli launch claude

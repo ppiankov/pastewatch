@@ -28,6 +28,11 @@ If your contribution moves Pastewatch toward the second list, it will be decline
 4. **Minimal** — If a feature isn't essential, it doesn't exist.
 5. **Tested** — All detection rules must have tests.
 
+<!-- WO-697@v1: enumerating more shell readers does not create a security boundary. -->
+The Bash reader list is frozen. New reader patterns are not accepted as security
+fixes. The command guard is a best-effort nudge, not a sandbox; use the direct
+Read/Write/Edit, MCP and routed-wire boundaries for their documented coverage.
+
 ## Project Structure
 
 ```

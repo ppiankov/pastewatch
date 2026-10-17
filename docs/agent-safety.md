@@ -20,6 +20,28 @@ This is not hypothetical. Config files, .env files, and hardcoded credentials ar
 
 ---
 
+<!-- WO-697@v1: distinguish model-egress interception from file context and enumerative command checks. -->
+## What Each Layer Covers
+
+| Layer | Covers | Misses |
+|-------|--------|--------|
+| Wire mask | Supported Anthropic-shaped model-egress traffic that actually traverses the proxy | Exfiltration that never reaches the model, ambiguous values without file-path context, encoded/binary content, and requests bypassing the proxy |
+| Read/Write/Edit hooks and MCP | Registered native-tool events and explicitly requested MCP operations, with file context | Unregistered tools, direct shell/interpreter access, and other routes outside those events; MCP alone is voluntary |
+| Command guard | Best-effort checks on named readers and recognized transfer sources | Other readers, obfuscated or unparseable shell, and indirect execution; it is not a security boundary |
+
+Use the file-context layers as defense in depth. The wire layer is the primary
+enforcement point for model egress **only on traffic that traverses it**. One
+session uses one wire proxy; chaining wire masks is not supported. The proxy is
+feature- and protocol-frozen, but still receives detector and security fixes.
+
+`pastewatch-cli doctor` reports detected registrations per setup agent:
+`hooks+wire`, `hooks+MCP`, `MCP advisory`, or `none`. A tier is configuration
+evidence, not proof of hook trust or a traffic attestation. Wire coverage requires
+a routed session and a live local pastewatch proxy. Today `launch` routes only
+Claude Code; other agents are not automatically proxy-wired. Missing or disabled
+registrations do not count. The Bash reader list is frozen; new reader patterns
+are not accepted as security fixes.
+
 ## Layer 0: API Proxy (Network Boundary)
 
 The strongest layer for Claude Code. Anthropic-shaped API calls routed through `ANTHROPIC_BASE_URL` pass through a local proxy that scans and redacts supported secrets before they leave your machine.
@@ -236,7 +258,8 @@ The log records every tool call with timestamps - what files were read, how many
 
 ## Layer 2b: Enforce MCP Usage via Hooks
 
-MCP tools are opt-in - agents can still use native Read/Write and `cat .env` via Bash, bypassing redaction entirely. Hooks make enforcement structural.
+<!-- WO-697@v1: hook enforcement is specific to configured tool events, not a general file sandbox. -->
+MCP tools are opt-in - agents can still use native Read/Write and shell readers outside MCP. Registered hooks can block their named native-tool events; arbitrary same-user commands remain outside that guarantee.
 
 ### Bash command guard
 
@@ -251,7 +274,8 @@ pastewatch-cli guard "echo hello"
 # exit 0 (safe)
 ```
 
-It parses shell commands (`cat`, `head`, `tail`, `sed`, `awk`, `grep`, `source`), extracts file arguments, and scans those files for secrets. Unknown commands pass through (exit 0).
+<!-- WO-697@v1: command recognition remains a frozen best-effort nudge rather than an expanding security claim. -->
+It recognizes a fixed set of command forms, extracts known file arguments, and scans those files. Unrecognized readers may pass through (exit 0); an allowed command is not proof that every reachable file was inspected. The reader list is frozen. Use native-tool hooks, MCP and routed wire traffic for their respective boundaries.
 
 Integrate with agent Bash hooks to block commands automatically. See [agent-setup.md](agent-setup.md) for hook configuration per agent.
 

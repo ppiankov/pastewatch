@@ -22,7 +22,8 @@ Intrinsic provider tokens and validated secret formats remain enabled without th
 | [Roo Code](#roo-code) | Structural (PreToolUse) | [mcp-config.json](roo-code/mcp-config.json) + [pastewatch-hook.sh](roo-code/pastewatch-hook.sh) |
 | [Cursor](#cursor) | Structural (preToolUse) | [mcp.json](cursor/mcp.json) + [pastewatch-guard.sh](cursor/pastewatch-guard.sh) |
 
-**Structural** = hooks block native file access and redirect to MCP tools. The agent cannot bypass the check.
+<!-- WO-697@v1: examples cover registered native events, not all ways a process can read a file. -->
+**Structural** = registered hooks can block named native file tools and redirect to MCP. Other commands and unregistered tools remain outside those events; see [layer coverage](../agent-safety.md#what-each-layer-covers).
 **MCP only** = agent can use MCP tools but is not forced to. Add instructions to `.cursorrules` to request MCP usage.
 
 ---

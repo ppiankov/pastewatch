@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<!-- WO-697@v1: coverage tiers state detected boundaries and their limits. -->
+- Report per-agent coverage tiers in doctor, document what each protection layer misses, describe the proxy as a filter for routed model egress, and freeze the best-effort Bash reader list. (WO-697)
 <!-- WO-692@v1: expose additive source locations in scan JSON. -->
 - Include a 1-based `line` in file and directory scan JSON findings without changing existing fields or containers. (WO-692)
 <!-- WO-693@v1: independently verify release runs, assets and formula checksums. -->

@@ -51,7 +51,8 @@ The proxy catches supported Claude Code traffic that hooks and MCP may miss. Use
 | Codex CLI | Structural after hook trust | Structural after hook trust | PreToolUse hooks + manual MCP TOML | Review with `/hooks`; exit 2 blocks action |
 | Qwen Code | Structural | Structural | PreToolUse hooks + automatic MCP | exit 2 blocks action |
 
-**Structural** means the agent cannot bypass the check - hooks run outside the agent's control. **Advisory** means the agent is told to use pastewatch tools but is not forced.
+<!-- WO-697@v1: native event hooks and best-effort command checks have different coverage. -->
+**Structural** refers to blocking a registered native-tool event before it runs, not arbitrary shell execution. The Bash column describes hook invocation, not complete reader coverage: the command guard is best effort with a frozen reader list. **Advisory** means the agent is told to use pastewatch tools but is not forced. See [What each layer covers](agent-safety.md#what-each-layer-covers) and use `doctor` for detected per-agent tiers.
 
 ---
 
