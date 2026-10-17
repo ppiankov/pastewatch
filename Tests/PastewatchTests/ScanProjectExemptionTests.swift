@@ -2,6 +2,27 @@ import XCTest
 @testable import PastewatchCore
 
 final class ScanProjectExemptionTests: XCTestCase {
+    // WO-692@v1: file and directory JSON locate the same existing fixture without inspecting its value.
+    func testFileAndDirectoryJSONFindingsCarryOneBasedLine() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let fixture = fixtures()[0]
+            try JSONEncoder().encode(fixture.config).write(to: PastewatchConfig.configPath)
+            let directory = root.appendingPathComponent("files")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let target = directory.appendingPathComponent("fixture.txt")
+            try Data(("first line\nsecond line\n" + fixture.content + "\n").utf8).write(to: target)
+            for arguments in [["--file", target.path], ["--dir", directory.path]] {
+                let result = try run(["scan", "--format", "json"] + arguments, root: root)
+                XCTAssertEqual(result.status, 6)
+                let decoded = try JSONSerialization.jsonObject(with: result.output)
+                let output = try XCTUnwrap(decoded as? [String: Any] ?? (decoded as? [[String: Any]])?.first)
+                let findings = try XCTUnwrap(output["findings"] as? [[String: Any]])
+                XCTAssertEqual(findings.count, 1)
+                XCTAssertEqual(findings.first?["line"] as? Int, 3)
+            }
+        }
+    }
+
     // WO-682@v2: file and stdin JSON derive eligibility from real detector evidence.
     func testFileAndStdinJSONExposeProjectExemptionEligibility() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
@@ -53,7 +74,8 @@ final class ScanProjectExemptionTests: XCTestCase {
     ) {
         XCTAssertEqual(findings.count, 1, fixture.name, file: file, line: line)
         for finding in findings {
-            XCTAssertEqual(Set(finding.keys), ["type", "value", "severity", "projectExemptible"], file: file, line: line)
+            // WO-692@v1: the source line is additive; all existing finding fields remain present.
+            XCTAssertEqual(Set(finding.keys), ["type", "value", "severity", "projectExemptible", "line"], file: file, line: line)
             XCTAssertEqual(finding["projectExemptible"] as? Bool, fixture.exemptible, fixture.name, file: file, line: line)
             XCTAssertTrue(finding["value"] as? String == fixture.content, file: file, line: line)
         }

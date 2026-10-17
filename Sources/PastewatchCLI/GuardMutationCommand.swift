@@ -227,6 +227,8 @@ struct GuardMutation: ParsableCommand {
         FileGuard.printInlineMarkerNotices(count: inlineMarkerNotices)
         // WO-671@v2: operator-owned policy files never receive an agent-edit remedy.
         if reason != GuardDecision.operatorOwnedFileMessage { FileGuard.printEditRemedies() }
+        // WO-681@v1: append deciding-version guidance without changing mutation authorization.
+        FileGuard.printDecisionVersion()
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 }

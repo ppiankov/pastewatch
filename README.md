@@ -51,7 +51,8 @@ operator-authorized secrets are replaced before supported traffic reaches the cl
 - **Before-paste boundary** — authorized secret matches are rewritten before supported traffic leaves. Nightfall, Prisma, Check Point all intercept downstream. Pastewatch prevents upstream
 - **MCP server for AI agents** — no other tool provides redacted read/write at the tool level. Authorized matches become reversible placeholders while the secret map stays local
 - **Bash guard with deep parsing** — pipes, subshells, redirects, database CLIs, infra tools. Every shell command the agent runs is scanned before execution
-- **API proxy** — catches Anthropic-shaped traffic that bypasses hooks, including from subagents. Last line of defense before the network boundary (refuses unrecognized upstream shapes rather than forward them unscanned)
+  <!-- WO-697@v1: proxy coverage is limited to supported model traffic routed through it. -->
+- **API proxy** — filters model egress for supported traffic routed through it, including from subagents (refuses unrecognized upstream shapes rather than forward them unscanned)
 - **Canary honeypots** — "prove it works" not "trust it works." Plant format-valid fake secrets and verify they're caught
 - **Local-only, deterministic, no ML** — no cloud dependency, no probabilistic scoring, no telemetry. Runs offline, gives the same answer every time
 - **One command** — `pastewatch-cli launch claude` and every layer is active. No manual setup, no env vars, no second terminal
@@ -445,8 +446,12 @@ The API proxy (Layer 0) redacts supported **Anthropic-shaped** traffic (`/v1/mes
 | Aider | No automatic local layer | [No MCP yet](https://github.com/aider-ai/aider/issues/4506) | Unavailable | `pastewatch-cli setup aider` explains the limitation |
 | Jules | Cloud only | No local config | Cloud UI | N/A (use proxy on local side) |
 
-**Structural** = hooks block native file access before secrets can be read. The agent cannot bypass the check.
+<!-- WO-697@v1: native-tool hooks cover their registered events, not arbitrary same-user execution. -->
+**Structural** = registered hooks can block the named native tool before it runs. Other readers and routes can bypass those events; this is not a sandbox.
 **MCP only** = redaction applies only when the agent uses the configured Pastewatch MCP tools. Native file or network access is not intercepted.
+
+<!-- WO-697@v1: explain coverage limits without implying universal wire or shell interception. -->
+See [What each layer covers](docs/agent-safety.md#what-each-layer-covers). `pastewatch-cli doctor` reports each setup agent's detected coverage tier: `hooks+wire`, `hooks+MCP`, `MCP advisory`, or `none`. Wire coverage requires traffic routed through the proxy; the Bash reader list is frozen.
 
 ### Install
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+<!-- WO-697@v1: coverage tiers state detected boundaries and their limits. -->
+- Report per-agent coverage tiers in doctor, document what each protection layer misses, describe the proxy as a filter for routed model egress, and freeze the best-effort Bash reader list. (WO-697)
+<!-- WO-692@v1: expose additive source locations in scan JSON. -->
+- Include a 1-based `line` in file and directory scan JSON findings without changing existing fields or containers. (WO-692)
+<!-- WO-693@v1: independently verify release runs, assets and formula checksums. -->
+- Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
+
+### Fixed
+<!-- WO-681@v1: stale servers refuse before tool work, and guard messages identify the deciding build. -->
+- Refuse MCP tool calls when the serving executable identity becomes stale or cannot be verified at startup, distinguish those reasons with reconnect guidance and version metadata, and identify the deciding version in guard block messages. (WO-681)
+<!-- WO-696@v3: loopback-only Via preserves discovery, inbound checks and request-body bytes. -->
+- Refuse proxy chains at startup and on inbound proxy hops, recognize loopback aliases and wildcard listeners at the same port without DNS, mark only loopback upstream hops with Via, and report live wire-owner conflicts in doctor. (WO-696)
+<!-- WO-695@v2: punctuation cutsets after an earlier argument are excluded; a punctuation-only first argument still counts, with per-type regression counts pinned. -->
+- Exclude punctuation-only cutset arguments that follow an earlier call argument from credential-assignment findings, while quoted credential-shaped values and constructor literals (including punctuation-only first arguments) stay findings. (WO-695)
+<!-- WO-691@v3: closed display pipelines share native Read's verdict independently of binary-grant roles. -->
+- Align closed display-only command reads with native Read and MCP authorization; retain strict checks for transfers, redirects, other pipelines and inline command text. Exclude file-writing filters, pagers and ripgrep preprocessing from display-only classification. (WO-691)
+
 ## [0.43.0] - 2026-10-15
 
 ### Removed

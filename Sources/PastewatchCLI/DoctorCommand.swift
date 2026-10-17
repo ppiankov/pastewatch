@@ -18,6 +18,14 @@ struct MCPProcessSnapshot {
     var auditLog = "none"
 }
 
+// WO-697@v1: coverage reports observed configuration, not a security boundary.
+struct AgentCoverageEvidence {
+    let agent: String
+    let hooks: Bool
+    let mcp: Bool
+    let wire: Bool
+}
+
 // WO-649@v1: doctor reports the same dependency selection used by startup and execution.
 func doctorCurlStatus(lookup: () -> String? = { CurlExecutable.resolve() }) -> (status: String, detail: String) {
     guard let path = lookup() else {
@@ -91,6 +99,10 @@ struct Doctor: ParsableCommand {
 
         // 8. MCP server processes
         checks.append(contentsOf: checkMCPProcesses())
+        // WO-696@v3: wire-owner diagnostics share the bounded startup discovery contract.
+        checks.append(contentsOf: checkWireOwners())
+        // WO-697@v1: each setup-matrix agent gets an explicit observed coverage tier.
+        checks.append(contentsOf: checkAgentCoverage())
         // WO-673@v2: grant diagnostics share the user-store validation used by admission.
         checks.append(contentsOf: checkBinaryGrants())
 
@@ -230,6 +242,167 @@ struct Doctor: ParsableCommand {
             return CheckResult(check: label, status: "ok", detail: path)
         }
         return CheckResult(check: label, status: "info", detail: "not found")
+    }
+
+    // WO-697@v1: the existing matrix and launch routing bound coverage without expanding command recognition.
+    func agentCoverageTier(_ evidence: AgentCoverageEvidence) -> String {
+        guard AgentSetup.mcpSetupMatrix.contains(where: { $0.agent == evidence.agent }) else { return "none" }
+        let executable = evidence.agent == "claude-code" ? "claude" : evidence.agent
+        if evidence.hooks && evidence.wire && Launch.isProxyRoutedAgent(executable) { return "hooks+wire" }
+        if evidence.hooks && evidence.mcp { return "hooks+MCP" }
+        return evidence.mcp ? "MCP advisory" : "none"
+    }
+
+    // WO-697@v1: injected roots and file reads let tests inspect only fixture-owned agent registrations.
+    func checkAgentCoverage(
+        home: URL = Doctor.coverageHome,
+        project: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+        wireAgents: Set<String>? = nil,
+        read: (URL) -> Data? = { FileManager.default.contents(atPath: $0.path) }
+    ) -> [CheckResult] {
+        let routed = wireAgents ?? observedWireAgents()
+        return AgentSetup.mcpSetupMatrix.map { descriptor in
+            let files = agentCoverageFiles(descriptor, home: home, project: project)
+            let documents = files.compactMap { url -> (URL, Data)? in read(url).map { (url, $0) } }
+            let objects = documents.compactMap { try? JSONSerialization.jsonObject(with: $0.1) as? [String: Any] }
+            let hooks = objects.contains { containsPastewatchHook($0["hooks"]) }
+            let mcp = descriptor.mode != .unavailable && (objects.contains { containsPastewatchMCP($0) } ||
+                documents.contains { containsTextMCP($0.1, extension: $0.0.pathExtension) })
+            let evidence = AgentCoverageEvidence(agent: descriptor.agent, hooks: hooks, mcp: mcp,
+                                                 wire: routed.contains(descriptor.agent))
+            return CheckResult(check: "coverage", status: "info",
+                               detail: "\(descriptor.agent): \(agentCoverageTier(evidence)); " +
+                                "detected registrations, not a sandbox or a traffic attestation")
+        }
+    }
+
+    // WO-697@v1: existing DEBUG config isolation also confines diagnostic metadata reads to the fixture root.
+    private static var coverageHome: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        #if DEBUG
+        if PastewatchConfig.configPath != home.appendingPathComponent(".config/pastewatch/config.json") {
+            return PastewatchConfig.configPath.deletingLastPathComponent()
+        }
+        #endif
+        return home
+    }
+
+    // WO-697@v1: registration locations mirror setup; script existence alone never proves a registered hook.
+    private func agentCoverageFiles(_ descriptor: MCPSetupDescriptor, home: URL, project: URL) -> [URL] {
+        var files = descriptor.configPath.components(separatedBy: " or ").compactMap { path -> URL? in
+            if path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
+            if path.hasPrefix(".") { return project.appendingPathComponent(path) }
+            return nil
+        }
+        let hooks = [
+            "claude-code": ".claude/settings.json", "cursor": ".cursor/hooks.json",
+            "windsurf": ".codeium/windsurf/hooks.json", "continue": ".continue/settings.json",
+            "codex": ".codex/hooks.json", "qwen-code": ".qwen/settings.json"
+        ]
+        if let path = hooks[descriptor.agent] { files.append(home.appendingPathComponent(path)) }
+        if descriptor.agent == "claude-code" { files.append(project.appendingPathComponent(".claude/settings.json")) }
+        if descriptor.agent == "copilot" { files.append(project.appendingPathComponent(".github/hooks/pastewatch.json")) }
+        if descriptor.agent == "roo-code" {
+            files.append(home.appendingPathComponent("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"))
+        }
+        return files
+    }
+
+    // WO-697@v1: only registered command fields count, not arbitrary prose mentioning a guard script.
+    private func containsPastewatchHook(_ value: Any?) -> Bool {
+        if let object = value as? [String: Any] {
+            if let command = object["command"] as? String ?? object["bash"] as? String,
+               command.contains("pastewatch-guard") || command.contains("cline-hook") || command.contains("roo-code-hook") {
+                return true
+            }
+            return object.values.contains { containsPastewatchHook($0) }
+        }
+        return (value as? [Any])?.contains { containsPastewatchHook($0) } ?? false
+    }
+
+    // WO-697@v1: disabled registrations cannot produce a claimed MCP coverage tier.
+    private func containsPastewatchMCP(_ object: [String: Any]) -> Bool {
+        let servers = object["mcpServers"] as? [String: Any] ?? object["mcp"] as? [String: Any] ?? [:]
+        guard let server = servers["pastewatch"] as? [String: Any], server["disabled"] as? Bool != true,
+              server["enabled"] as? Bool != false else { return false }
+        let command = server["command"] as? String ?? (server["command"] as? [String])?.first
+        return command.map { ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: $0).lastPathComponent.lowercased()) } ?? false
+    }
+
+    // WO-697@v1: manual formats use their existing value parser or a bounded named TOML section.
+    private func containsTextMCP(_ data: Data, extension ext: String) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        if ext == "toml" {
+            let section = #"(?m)^\[mcp_servers\.pastewatch\][^\[]*"#
+            guard let range = text.range(of: section, options: .regularExpression) else { return false }
+            return text[range].range(of: #"(?m)^command\s*=\s*["']pastewatch-cli["']\s*$"#,
+                                     options: .regularExpression) != nil
+        }
+        guard ext == "yaml" || ext == "yml" else { return false }
+        let fields = YAMLValueParser().parseValues(from: text)
+        return fields.contains { ["command", "cmd"].contains($0.key ?? "") && $0.value == "pastewatch-cli" }
+    }
+
+    // WO-697@v1: wire coverage requires a live local pastewatch listener and an explicitly routed session.
+    private func observedWireAgents() -> Set<String> {
+        guard let raw = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"],
+              let url = URL(string: raw), let host = url.host,
+              ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host.lowercased()) else { return [] }
+        let port = url.port ?? (url.scheme == "https" ? 443 : 80)
+        let matching = Self.runningProxyCommands().contains { command in
+            Int(extractFlag(command, flag: "--port") ?? "8443") == port
+        }
+        return matching ? ["claude-code"] : []
+    }
+
+    // WO-696@v3: injected process/config snapshots keep diagnostics tests independent of the host session.
+    func checkWireOwners(
+        discover: () -> [WireProxyRecord] = { WireProxyDiscovery.discover() },
+        proxyCommands: () -> [String] = Doctor.runningProxyCommands,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [CheckResult] {
+        let records = discover()
+        guard !records.isEmpty else { return [] }
+        let commands = proxyCommands()
+        var upstreams: [String: URL] = [:]
+        for (index, command) in commands.enumerated() {
+            if let raw = extractFlag(command, flag: "--upstream"), let url = URL(string: raw) {
+                upstreams["pastewatch upstream \(index + 1)"] = url
+            }
+        }
+        if !commands.isEmpty, let raw = environment["ANTHROPIC_BASE_URL"], let url = URL(string: raw) {
+            upstreams["configured agent upstream"] = url
+        }
+        return records.map { record in
+            let conflicts = upstreams.keys.sorted().filter { key in
+                upstreams[key].map { WireProxyDiscovery.matches(record, upstream: $0) } ?? false
+            }
+            let detail = "wire proxy \(record.proxyID) at \(record.listenAddr)"
+            guard !conflicts.isEmpty else { return CheckResult(check: "wire-owner", status: "info", detail: detail) }
+            return CheckResult(check: "wire-owner", status: "warn", detail: detail + "; " +
+                conflicts.joined(separator: ", ") + "; use one wire proxy per session, not a chain")
+        }
+    }
+
+    // WO-696@v3: only real proxy process argv is inspected, never shell mentions or arbitrary process arguments.
+    private static func runningProxyCommands() -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "command="]
+        process.standardError = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do { try process.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else { return [] }
+        return output.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count >= 2, fields[1] == "proxy",
+                  ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(fields[0])).lastPathComponent.lowercased())
+            else { return nil }
+            return String(line)
+        }
     }
 
     // WO-671@v2: injected process and clock snapshots exercise the production stale-session diagnosis.

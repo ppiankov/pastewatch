@@ -4,6 +4,28 @@ import XCTest
 
 // WO-671@v2: exercise version and span-edit remedies through the actual guarded transport.
 final class MCPVersionAndRemedyTests: XCTestCase {
+    // WO-681@v1: a refusal identifies its deciding build without exposing the guarded input.
+    func testEveryGuardBlockIdentifiesItsVersionAndDisagreementRemedy() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            try TestConfigHelper.ensureProjectConfig(in: root)
+            let file = root.appendingPathComponent("fixture.env")
+            let value = ["AK", "IA", String(repeating: "Q", count: 16)].joined()
+            try Data(("key=" + value + "\n").utf8).write(to: file)
+            let mutation = try JSONSerialization.data(withJSONObject: [
+                "tool_name": "Edit", "tool_input": ["file_path": file.path, "old_string": value, "new_string": "changed"]
+            ])
+            let commands = [["guard-read", file.path], ["guard-write", file.path],
+                            ["guard", "cat " + file.path], ["guard-mutation"]]
+            for arguments in commands {
+                let result = try runGuard(arguments, directory: root, input: arguments[0] == "guard-mutation" ? mutation : Data())
+                XCTAssertEqual(result.status, 2, arguments[0])
+                XCTAssertTrue(result.stderr.contains("decided by pastewatch-cli " + AppVersion.current), arguments[0])
+                XCTAssertTrue(result.stderr.contains("compare its server_version with this version"), arguments[0])
+                XCTAssertFalse((result.stdout + result.stderr).contains(value), arguments[0])
+            }
+        }
+    }
+
     // WO-671@v2: initialization and both successful and refused tool results identify the serving binary.
     func testInitializationAndEveryToolResultReportServerVersion() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

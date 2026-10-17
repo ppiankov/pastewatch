@@ -161,7 +161,11 @@ final class InlineAllowlistTests: XCTestCase {
                     XCTAssertEqual(try command(["scan", "--file", target.path, "--check"], root: root).status, 6, fixture.name)
                     XCTAssertEqual(try command(["guard-read", target.path, "--fail-on-severity", "low"], root: root).status,
                         fixture.mutates ? 2 : 0, fixture.name)
-                    XCTAssertEqual(try command(["guard", "--fail-on-severity", "low", "cat " + target.path], root: root).status, 2, fixture.name)
+                    // WO-691@v3: display reads agree with native Read while redirected copies keep strict marker coverage.
+                    XCTAssertEqual(try command(["guard", "--fail-on-severity", "low", "cat " + target.path], root: root).status,
+                        fixture.mutates ? 2 : 0, fixture.name)
+                    XCTAssertEqual(try command(["guard", "--fail-on-severity", "low",
+                        "cat " + target.path + " > " + root.appendingPathComponent("out.txt").path], root: root).status, 2, fixture.name)
                     let mutation = try writeInput(content, target: root.appendingPathComponent("new.txt"))
                     XCTAssertEqual(try command(["guard-mutation", "--fail-on-severity", "low"], root: root, input: mutation).status, 2, fixture.name)
                     let payload = try mcpRead(target, root: root)

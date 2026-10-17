@@ -9,6 +9,51 @@ import Glibc
 import Darwin
 #endif
 
+// WO-681@v1: executable freshness compares filesystem identity, never scanned content or a live-binary swap.
+struct MCPExecutableIdentity: Equatable {
+    let realPath: String
+    let inode: UInt64
+    let device: UInt64
+    let modifiedAt: Date
+
+    // WO-681@v1: resolving first tracks both a replaced target and a repointed invocation symlink.
+    static func read(_ path: String) -> MCPExecutableIdentity? {
+        let realPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: realPath),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let inode = attributes[.systemFileNumber] as? NSNumber,
+              let device = attributes[.systemNumber] as? NSNumber,
+              let modifiedAt = attributes[.modificationDate] as? Date else { return nil }
+        return MCPExecutableIdentity(realPath: realPath, inode: inode.uint64Value,
+                                     device: device.uint64Value, modifiedAt: modifiedAt)
+    }
+}
+
+// WO-681@v1: one injected stat boundary protects every advertised tool before parameters or target I/O.
+struct MCPExecutableFreshness {
+    let invokedPath: String
+    private let original: MCPExecutableIdentity?
+    private let lookup: (String) -> MCPExecutableIdentity?
+
+    // WO-681@v1: preserve the invocation path separately from its resolved startup target.
+    init(invokedPath: String = ProcessInfo.processInfo.arguments.first ?? "",
+         lookup: @escaping (String) -> MCPExecutableIdentity? = MCPExecutableIdentity.read) {
+        let path = invokedPath.contains("/") ? invokedPath : PathExecutable.resolve(name: invokedPath) ?? invokedPath
+        self.invokedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        self.lookup = lookup
+        self.original = lookup(self.invokedPath)
+    }
+
+    // WO-681@v1: a missing startup baseline cannot substantiate a later installed-binary change.
+    var hasStartupIdentity: Bool { original != nil }
+
+    // WO-681@v1: unavailable identity, a changed invocation or a removed original all refuse closed.
+    var isStale: Bool {
+        guard let original else { return true }
+        return lookup(invokedPath) != original || lookup(original.realPath) != original
+    }
+}
+
 struct MCP: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run as MCP server (stdio transport)"
@@ -246,16 +291,22 @@ final class MCPServer {
     private let defaultMinSeverity: String?
     private let modelRedactionNotice: String // WO-522@v3: fixed to the session placeholder format.
     private let config: PastewatchConfig // WO-574@v4: validated once, immutable for the session.
+    // WO-681@v1: the startup identity is immutable even when the installed executable changes.
+    private let executableFreshness: MCPExecutableFreshness
 
     init(
         auditLogger: MCPAuditLogger? = nil,
         defaultMinSeverity: String? = nil,
-        config: PastewatchConfig = .defaultConfig
+        // WO-681@v1: tests inject identity without changing the installed executable or transport.
+        config: PastewatchConfig = .defaultConfig,
+        executableFreshness: MCPExecutableFreshness = MCPExecutableFreshness()
     ) {
         self.store = RedactionStore(placeholderPrefix: config.placeholderPrefix)
         self.auditLogger = auditLogger
         self.defaultMinSeverity = defaultMinSeverity
         self.config = config
+        // WO-681@v1: identity is captured once and checked at every tool dispatch.
+        self.executableFreshness = executableFreshness
         let placeholderExample = config.placeholderPrefix.map {
             Obfuscator.makeCustomPlaceholder(prefix: $0, number: 1)
         } ?? "__PW_TYPE_n__"
@@ -320,8 +371,9 @@ final class MCPServer {
 
     // MARK: - Request dispatch
 
+    // WO-681@v1: injectable in-process dispatch exercises the same freshness gate as stdio.
     // WO-671@v2: tool metadata identifies the running server without changing individual tool payloads.
-    private func handleRequest(_ request: JSONRPCRequest) -> JSONRPCResponse? {
+    func handleRequest(_ request: JSONRPCRequest) -> JSONRPCResponse? {
         switch request.method {
         case "initialize":
             return initializeResponse(id: request.id)
@@ -330,6 +382,8 @@ final class MCPServer {
         case "tools/list":
             return toolsListResponse(id: request.id)
         case "tools/call":
+            // WO-681@v1: refuse before tool validation, scanning, content access or any write side effect.
+            if executableFreshness.isStale { return withServerVersion(staleServerResponse(id: request.id)) }
             // WO-671@v2: success and tool-error results share the same version attachment point.
             return withServerVersion(toolsCallResponse(id: request.id, params: request.params))
         default:
@@ -345,6 +399,19 @@ final class MCPServer {
     }
 
     // MARK: - Handlers
+
+    // WO-681@v1: refusal contains only the running version and remedy, never caller or file content.
+    private func staleServerResponse(id: JSONRPCId?) -> JSONRPCResponse {
+        let status = executableFreshness.hasStartupIdentity
+            ? "is stale (running \(AppVersion.current), installed binary changed)"
+            : "cannot verify its executable (running \(AppVersion.current))"
+        let message = "pastewatch MCP server \(status): " +
+            "reconnect the pastewatch MCP server (for example /mcp reconnect pastewatch) before trusting any verdict."
+        return JSONRPCResponse(jsonrpc: "2.0", id: id, result: .object([
+            "content": .array([.object(["type": .string("text"), "text": .string(message)])]),
+            "isError": .bool(true), "_meta": .object(["stale": .bool(true)])
+        ]), error: nil)
+    }
 
     // WO-671@v2: preserve content, errors and existing metadata while exposing the serving build.
     private func withServerVersion(_ response: JSONRPCResponse) -> JSONRPCResponse {

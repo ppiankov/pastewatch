@@ -23,6 +23,8 @@ final class FalsePositiveCorpusTests: XCTestCase {
 
     /// Benign lines grouped by false-positive class. Every line is NON-secret.
     private static let benignCorpus: [String: [String]] = [
+        // WO-695@v1: the founding cutset and callee-independent controls belong in the precision corpus.
+        "tokenizer-punctuation-cutsets": CredentialCodeExpressionFixtures.trimAssignments,
         "crypto-algorithm-names": [
             "auth: Ed25519", "alg: RS256", "signature: ES256", "hash: SHA256",
             "cipher: AES256-GCM", "kex: X25519", "curve: secp256k1", "kdf: argon2id",
@@ -101,6 +103,25 @@ final class FalsePositiveCorpusTests: XCTestCase {
         },
     // WO-668@v1: the golden corpus includes the focused language fixtures without duplicating them.
     ].merging(CredentialCodeExpressionFixtures.rowsByLanguage) { existing, _ in existing }
+
+    // WO-695@v1: pin per-type precision counts without exposing any fixture value on failure.
+    func testRecognitionCountsByType() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            var enabled = config
+            enabled.enabledTypes = SensitiveDataType.allCases.map(\.rawValue)
+            let benign = Self.benignCorpus.values.flatMap { $0 }.flatMap { DetectionRules.scan($0, config: enabled) }
+            let controls = CredentialCodeExpressionFixtures.literalControls.flatMap {
+                DetectionRules.scan($0.content, config: enabled)
+            } + CredentialCodeExpressionFixtures.trimLiteralControls.flatMap { DetectionRules.scan($0, config: enabled) }
+            // WO-695@v1: the full literal control count must survive the cutset precision change.
+            let credentialControls = controls.filter { $0.type == .credential }.count
+            XCTAssertEqual(credentialControls, 19, "type=Credential count=\(credentialControls)")
+            for type in SensitiveDataType.allCases {
+                let count = benign.filter { $0.type == type }.count
+                XCTAssertEqual(count, type == .uuid ? 3 : 0, "type=\(type.rawValue) count=\(count)")
+            }
+        }
+    }
 
     // WO-668@v1: enabling Credential makes code-expression false positives measurable, not hidden by defaults.
     func testCodeExpressionCorpusAndCredentialControls() throws {

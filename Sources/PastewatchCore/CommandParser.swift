@@ -11,6 +11,15 @@ public struct CommandParser {
     public struct FileRead {
         public let path: String // WO-673@v2: this occurrence keeps its own resolved file identity.
         public let role: ReadRole // WO-673@v2: only transfer sources may use an operator grant.
+        // WO-691@v3: display exposure is independent of binary-grant eligibility and defaults to strict policy.
+        public let displaysToModel: Bool
+
+        // WO-691@v3: existing operand constructors retain their original path and grant role.
+        init(path: String, role: ReadRole, displaysToModel: Bool = false) {
+            self.path = path
+            self.role = role
+            self.displaysToModel = displaysToModel
+        }
     }
 
     // WO-644@v2: paths and unsupported command names come from the same source-role parse.
@@ -38,6 +47,16 @@ public struct CommandParser {
     /// Commands that search file contents (output includes matching lines).
     private static let fileSearchers: Set<String> = [
         "grep", "egrep", "fgrep", "rg", "ag",
+    ]
+
+    // WO-691@v3: only closed non-pager readers can expose positional file operands to the model.
+    private static let displayReaders: Set<String> = [
+        "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "nl",
+    ]
+
+    // WO-691@v3: downstream filters exclude pagers and commands with file-output modes or operands.
+    private static let displayFilters: Set<String> = [
+        "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "cut", "nl",
     ]
 
     /// Commands that source/execute a file.
@@ -124,8 +143,10 @@ public struct CommandParser {
         var hasUnsafeRedactedCommand = false
         let commands = [command] + extractSubshellCommands(command)
         for part in commands {
+            // WO-691@v3: extracted command substitutions cannot acquire display-only read policy.
             reads += fileReads(from: part, workingDirectory: workingDirectory,
-                               unsupported: &unsupportedCommands, unsafeRemedy: &hasUnsafeRedactedCommand)
+                               unsupported: &unsupportedCommands, unsafeRemedy: &hasUnsafeRedactedCommand,
+                               allowDisplay: commands.count == 1)
         }
         // WO-673@v2: aliases declared in the command cannot conceal a later grant subcommand.
         let segments = commands.flatMap { splitCommandChain($0) }
@@ -159,9 +180,11 @@ public struct CommandParser {
         }
     }
 
+    // WO-691@v3: exposure metadata never changes existing paths or binary-grant role assignments.
     // WO-673@v2: classify each segment while keeping redirect and raw-reader fallbacks unchanged.
     private static func fileReads(
-        from command: String, workingDirectory: String, unsupported: inout Set<String>, unsafeRemedy: inout Bool
+        from command: String, workingDirectory: String, unsupported: inout Set<String>, unsafeRemedy: inout Bool,
+        allowDisplay: Bool
     ) -> [FileRead] {
         let segments = splitCommandChain(command)
         var reads: [FileRead] = []
@@ -180,10 +203,44 @@ public struct CommandParser {
                 unsafeRemedy = unsafeRemedy || !safe
                 continue
             }
-            reads += segmentReads(cleaned, workingDirectory: workingDirectory, transferCat: transferCat,
-                                  unsupported: &unsupported)
+            // WO-691@v3: only positional segment reads receive exposure metadata; redirected inputs stay strict.
+            let operands = segmentReads(cleaned, workingDirectory: workingDirectory, transferCat: transferCat,
+                                       unsupported: &unsupported)
+            let display = allowDisplay && !transferCat && displayPipeline(
+                segment, laterSegments: segments.dropFirst(index + 1), command: command, after: range?.upperBound
+            )
+            reads += operands.map { FileRead(path: $0.path, role: $0.role, displaysToModel: display) }
         }
         return reads
+    }
+
+    // WO-691@v3: quote-aware redirect stripping and literal tokens bound the closed display-command set.
+    private static func displaySegment(_ segment: String, allowed: Set<String>) -> Bool {
+        let normalized = segment.replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        guard stripRedirects(segment).command == normalized,
+              let tokens = tokenizeArguments(segment, requiringLiteralArguments: true),
+              let executable = tokens.first,
+              allowed.contains((executable.value as NSString).lastPathComponent) else { return false }
+        // WO-691@v3: ripgrep preprocessing can execute commands rather than merely display file content.
+        if (executable.value as NSString).lastPathComponent == "rg",
+           tokens.contains(where: { $0.value.hasPrefix("--pre") }) { return false }
+        return tokens.allSatisfy { $0.isLiteral && !$0.hasWordExpansion }
+    }
+
+    // WO-691@v3: pipeline filters must remain display-only until a real shell chain boundary.
+    private static func displayPipeline(
+        _ segment: String, laterSegments: ArraySlice<String>, command: String, after: String.Index?
+    ) -> Bool {
+        guard let after, displaySegment(segment, allowed: displayReaders) else { return false }
+        var position = after
+        for next in laterSegments {
+            guard let range = command.range(of: next, range: position..<command.endIndex) else { return false }
+            let separator = command[position..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+            if ["&&", "||", ";"].contains(separator) { return true }
+            guard separator == "|", displaySegment(next, allowed: displayFilters) else { return false }
+            position = range.upperBound
+        }
+        return command[position...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // WO-673@v2: only an actual pipe to ssh makes cat a transfer, not a chained or fallback command.

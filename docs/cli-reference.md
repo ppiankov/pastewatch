@@ -6,9 +6,10 @@ Full command reference for `pastewatch-cli`. For an overview and quick start, se
 <!-- WO-640: Make diagnostic and policy documentation discoverable. -->
 **Contents**
 
+<!-- WO-697@v1: keep the proxy index linked to its factual coverage heading. -->
 | | | |
 |-|-|-|
-| [API Proxy](#api-proxy--last-line-of-defense) | [MCP Server](#mcp-server---redacted-readwrite) | [Agent Auto-Setup](#agent-auto-setup) |
+| [API Proxy](#api-proxy--model-egress-filter) | [MCP Server](#mcp-server---redacted-readwrite) | [Agent Auto-Setup](#agent-auto-setup) |
 | [Agent Compatibility](#agent-compatibility) | [Session Report](#session-report) | [Canary Secrets](#canary-secrets) |
 | [Bash Guard](#bash-command-guard) | [Secret Externalization](#secret-externalization-fix) | [Secret Inventory](#secret-inventory) |
 | [Git History](#git-history-scanning) | [Git Diff](#git-diff-scanning) | [Doctor](#doctor) |
@@ -79,6 +80,11 @@ computed by the same predicate that decides exact-value exemptions from
 Editors may offer an allow-file action only when this field is explicitly `true`;
 an absent or `false` field means no action.
 
+<!-- WO-692@v1: consumers can use source locations without reading finding values. -->
+Each `scan --format json` finding also includes the additive integer `line`, the
+1-based source line reported by the detector. Single-file and directory scan JSON
+keep their existing fields and output containers.
+
 File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
 lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
 overlong files, name their paths on stderr and count them as `skippedOverLimit`;
@@ -93,9 +99,11 @@ PASTEWATCH_MAX_LINE_BYTES=2000000 \
 pastewatch-cli scan --file large.jsonl --check
 ```
 
-## API Proxy — Last Line of Defense
+<!-- WO-697@v1: the proxy filters supported model traffic routed through it. -->
+## API Proxy — Model Egress Filter
 
-Every tool call an AI agent makes — including internal subprocesses you don't control — ends up as an HTTP request to the API. The proxy scans and redacts secrets from outbound requests before they leave your machine — including from subagents and tools that bypass the hooks.
+<!-- WO-697@v1: model egress and other tool/network traffic do not share a universal interception point. -->
+Tool results included in supported model requests are scanned when those requests traverse the proxy. Other exfiltration, ambiguous values without file-path context, encoded/binary content and requests bypassing the proxy are not covered. Keep file hooks and MCP as defense in depth; see [What each layer covers](agent-safety.md#what-each-layer-covers).
 
 > **Anthropic-shaped traffic.** The proxy redacts the Anthropic Messages API (`/v1/messages`, what Claude Code sends) and Message Batch create requests (`/v1/messages/batches`). It does **not** parse the OpenAI Chat Completions wire format, so it cannot redact OpenAI/Codex request bodies — rather than forward one unscanned and let you believe it was protected, the proxy **refuses** an unrecognized upstream body shape (HTTP 415). Model names are advisory telemetry only because gateways and Anthropic-compatible providers may rewrite them; path and structural body checks form the admission boundary. Protect Codex and other agents with configured pastewatch hooks and MCP tools where available.
 
@@ -663,6 +671,14 @@ the tool's content payload. If process inspection fails, doctor reports that it
 could not inspect servers rather than claiming that none is running.
 
 <!-- WO-640: Explain all configuration diagnostic blocks and JSON fields. -->
+<!-- WO-697@v1: coverage tiers are observed registration metadata, not a security attestation. -->
+Plain `doctor` also reports a `coverage` row for every agent in the setup matrix:
+`hooks+wire`, `hooks+MCP`, `MCP advisory`, or `none`. Disabled or missing MCP
+registrations do not count, and a hook script alone is not a registration.
+`hooks+wire` requires a supported routed session and a live local pastewatch proxy.
+The report does not prove hook trust or inspect all traffic. New Bash reader
+patterns are not accepted as security fixes; the reader list remains frozen.
+
 ### Doctor --explain
 
 Use this when rules seem inactive:
