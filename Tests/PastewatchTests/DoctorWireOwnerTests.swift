@@ -1,9 +1,9 @@
 import XCTest
 @testable import PastewatchCLI
 
-// WO-696@v2: doctor and startup consume the same stubbed discovery contract.
+// WO-696@v3: doctor and startup consume the same stubbed discovery contract.
 final class DoctorWireOwnerTests: XCTestCase {
-    // WO-696@v2: conflicts are reported only when a running pastewatch proxy supplies wire context.
+    // WO-696@v3: conflicts are reported only when a running pastewatch proxy supplies wire context.
     func testDoctorListsDiscoveryAndFlagsConfiguredUpstream() throws {
         try ProxyChainGuardTests.withDiscoveryStub { path in
             let discover = { WireProxyDiscovery.discover(searchPath: path, timeout: 10) }

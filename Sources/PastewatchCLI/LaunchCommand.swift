@@ -247,7 +247,7 @@ struct Launch: ParsableCommand {
 
         // WO-491: only routed launches start a proxy that consumes custom rules.
         _ = try requireValidProxyCustomRules(config)
-        // WO-696@v2: routed launches share the direct proxy's start-time wire-owner gate.
+        // WO-696@v3: routed launches share the direct proxy's start-time wire-owner gate.
         try requireSingleWireOwner(upstream: URL(string: upstream))
 
         // Resolve our own binary to spawn the proxy subprocess

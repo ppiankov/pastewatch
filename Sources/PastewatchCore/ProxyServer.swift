@@ -70,8 +70,8 @@ public final class ProxyServer {
 
     private let port: UInt16
     private let upstream: URL
-    // WO-696@v2: DNS is resolved once at listener startup, never in the request-body path.
-    private var resolvedLocalUpstream = false
+    // WO-696@v3: only an exclusively loopback destination may receive the cached wire-hop identity.
+    private var resolvedLoopbackUpstream = false
     private let forwardProxy: URL?
     private let config: PastewatchConfig
     private let customRules: [CustomRule] // WO-573@v4: one config-plus-shared set for every proxy scan path.
@@ -482,8 +482,8 @@ public final class ProxyServer {
     /// WO-514: debug capture mode is validated before the listening socket is created.
     /// Start the proxy server. Blocks until stop() is called.
     public func start(onListening: (() -> Void)? = nil) throws {
-        // WO-696@v2: only wholly local resolved destinations receive the wire-hop identity.
-        resolvedLocalUpstream = Self.isLocalUpstream(upstream, resolve: Self.numericUpstreamAddresses)
+        // WO-696@v3: resolve once before listening; private gateways must not receive a product fingerprint.
+        resolveLoopbackUpstream(resolve: Self.numericUpstreamAddresses)
         if let customRuleStartupError {
             throw ProxyError.invalidCustomRules(customRuleStartupError.localizedDescription)
         }
@@ -768,7 +768,7 @@ public final class ProxyServer {
             return
         }
 
-        // WO-696@v2: transport errors retain their status and chained requests stop before scanning.
+        // WO-696@v3: transport errors retain their status and chained requests stop before scanning.
         guard let parsed = readUnchainedHTTPRequest(from: clientSocket) else { return }
 
         // WO-408/WO-432: fail closed on unsupported upstream body shapes. The scan path
@@ -2182,8 +2182,8 @@ public final class ProxyServer {
             }
             forwardHeaders.append((key, value))
         }
-        // WO-696@v2: append rather than replace existing Via hops, and never announce to public providers.
-        if resolvedLocalUpstream || Self.isLocalUpstream(upstream) {
+        // WO-696@v3: append only toward loopback; private and public gateways remain unmarked.
+        if resolvedLoopbackUpstream || Self.isLoopbackUpstream(upstream) {
             forwardHeaders.append(("Via", "1.1 pastewatch"))
         }
         // WO-303: force identity encoding so SSE redaction sees plaintext bytes.
@@ -2193,7 +2193,7 @@ public final class ProxyServer {
         return forwardHeaders
     }
 
-    // WO-696@v2: the header gate preserves transport statuses and refuses chains before body processing.
+    // WO-696@v3: the header gate preserves transport statuses and refuses chains before body processing.
     func readUnchainedHTTPRequest(from socket: Int32) -> HTTPRequest? {
         // WO-270: send appropriate HTTP error when readHTTPRequest fails.
         // WO-273: ReadResult distinguishes timeout vs transport vs encoding failure.
@@ -2212,7 +2212,7 @@ public final class ProxyServer {
         return nil
     }
 
-    // WO-696@v2: only the received-by token identifies a wire owner; substrings and comments do not.
+    // WO-696@v3: only the received-by token identifies a wire owner; substrings and comments do not.
     static func wireChainRefusal(headers: [(String, String)]) -> String? {
         let owners: Set<String> = ["pastewatch", "neurorouter"]
         let chained = headers.filter { $0.0.lowercased() == "via" }.contains { header in
@@ -2224,22 +2224,26 @@ public final class ProxyServer {
         return chained ? "Loop Detected: use one wire proxy per session; connect directly to the provider or remove the other proxy hop." : nil
     }
 
-    // WO-696@v2: resolution is injectable so address-family coverage never requires DNS in tests.
-    static func isLocalUpstream(_ url: URL, resolve: ((String) -> [String])? = nil) -> Bool {
-        guard let host = url.host else { return false }
-        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if normalized == "localhost" || isLocalWireAddress(normalized) { return true }
-        let addresses = resolve?(normalized) ?? []
-        return !addresses.isEmpty && addresses.allSatisfy(isLocalWireAddress)
+    // WO-696@v3: startup caches the injectable resolution result before any request can be handled.
+    func resolveLoopbackUpstream(resolve: @escaping (String) -> [String]) {
+        resolvedLoopbackUpstream = Self.isLoopbackUpstream(upstream, resolve: resolve)
     }
 
-    // WO-696@v2: the permitted hop networks are loopback, private, link-local and unique-local only.
-    private static func isLocalWireAddress(_ host: String) -> Bool {
+    // WO-696@v3: every resolved address must be loopback before the upstream receives an identity header.
+    static func isLoopbackUpstream(_ url: URL, resolve: ((String) -> [String])? = nil) -> Bool {
+        guard let host = url.host else { return false }
+        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if normalized == "localhost" || isLoopbackWireAddress(normalized) { return true }
+        let addresses = resolve?(normalized) ?? []
+        return !addresses.isEmpty && addresses.allSatisfy(isLoopbackWireAddress)
+    }
+
+    // WO-696@v3: only IPv4 loopback, IPv6 loopback and IPv4-mapped loopback identify a same-host hop.
+    private static func isLoopbackWireAddress(_ host: String) -> Bool {
         var ipv4 = in_addr()
         if inet_pton(AF_INET, host, &ipv4) == 1 {
             let address = UInt32(bigEndian: ipv4.s_addr)
-            return address >> 24 == 127 || address >> 24 == 10 || address >> 20 == 0xac1 ||
-                address >> 16 == 0xc0a8 || address >> 16 == 0xa9fe
+            return address >> 24 == 127
         }
         var ipv6 = in6_addr()
         guard let literal = host.split(separator: "%", maxSplits: 1).first else { return false }
@@ -2247,14 +2251,13 @@ public final class ProxyServer {
         guard inet_pton(AF_INET6, address, &ipv6) == 1 else { return false }
         let bytes = withUnsafeBytes(of: ipv6) { Array($0) }
         if bytes.prefix(15).allSatisfy({ $0 == 0 }), bytes[15] == 1 { return true }
-        if bytes[0] & 0xfe == 0xfc || bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 { return true }
         if bytes.prefix(10).allSatisfy({ $0 == 0 }), bytes[10] == 0xff, bytes[11] == 0xff {
-            return isLocalWireAddress(bytes.suffix(4).map(String.init).joined(separator: "."))
+            return isLoopbackWireAddress(bytes.suffix(4).map(String.init).joined(separator: "."))
         }
         return false
     }
 
-    // WO-696@v2: numeric results avoid reverse lookups and keep DNS out of individual request handling.
+    // WO-696@v3: numeric results avoid reverse lookups and keep DNS out of individual request handling.
     private static func numericUpstreamAddresses(_ host: String) -> [String] {
         var result: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, nil, nil, &result) == 0, let first = result else { return [] }
@@ -2620,7 +2623,7 @@ public final class ProxyServer {
         let bodyBytes = Data(body.utf8)
         // WO-219: Content-Length must be byte count, not Swift character count (they diverge for non-ASCII).
         // WO-360: keep diagnostic detail in the body, not the HTTP reason phrase.
-        // WO-696@v2: the refusal uses the standard reason without changing transport response mappings.
+        // WO-696@v3: the refusal uses the standard reason without changing transport response mappings.
         let reason = status == 508 ? "Loop Detected" : CurlHTTPClient.httpReasonPhrase(for: status)
         let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(bodyBytes.count)\r\nConnection: close\r\n\r\n"
         var responseData = Data(response.utf8)

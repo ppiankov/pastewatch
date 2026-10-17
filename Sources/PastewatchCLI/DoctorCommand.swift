@@ -99,7 +99,7 @@ struct Doctor: ParsableCommand {
 
         // 8. MCP server processes
         checks.append(contentsOf: checkMCPProcesses())
-        // WO-696@v2: wire-owner diagnostics share the bounded startup discovery contract.
+        // WO-696@v3: wire-owner diagnostics share the bounded startup discovery contract.
         checks.append(contentsOf: checkWireOwners())
         // WO-697@v1: each setup-matrix agent gets an explicit observed coverage tier.
         checks.append(contentsOf: checkAgentCoverage())
@@ -355,7 +355,7 @@ struct Doctor: ParsableCommand {
         return matching ? ["claude-code"] : []
     }
 
-    // WO-696@v2: injected process/config snapshots keep diagnostics tests independent of the host session.
+    // WO-696@v3: injected process/config snapshots keep diagnostics tests independent of the host session.
     func checkWireOwners(
         discover: () -> [WireProxyRecord] = { WireProxyDiscovery.discover() },
         proxyCommands: () -> [String] = Doctor.runningProxyCommands,
@@ -384,7 +384,7 @@ struct Doctor: ParsableCommand {
         }
     }
 
-    // WO-696@v2: only real proxy process argv is inspected, never shell mentions or arbitrary process arguments.
+    // WO-696@v3: only real proxy process argv is inspected, never shell mentions or arbitrary process arguments.
     private static func runningProxyCommands() -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")

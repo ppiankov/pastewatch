@@ -15,7 +15,7 @@ private let proxyStartupSignalGraceMilliseconds = 100
 // WO-366: SIGINT exits should be distinguishable from successful proxy shutdown.
 let proxyInterruptedExitCode: Int32 = 130
 
-// WO-696@v2: discovery consumes only the public operator-output identity fields.
+// WO-696@v3: discovery consumes only the public operator-output identity fields.
 struct WireProxyRecord: Decodable {
     let alive: Bool
     let listenAddr: String
@@ -28,12 +28,12 @@ struct WireProxyRecord: Decodable {
     }
 }
 
-// WO-696@v2: startup and doctor share one bounded, exit-code-based discovery command.
+// WO-696@v3: startup and doctor share one bounded, exit-code-based discovery command.
 enum WireProxyDiscovery {
     static let timeoutSeconds: TimeInterval = 1
     private static let maximumOutputBytes = 64 * 1024
 
-    // WO-696@v2: PATH lookup is shared with curl but has no preferred system executable.
+    // WO-696@v3: PATH lookup is shared with curl but has no preferred system executable.
     static func discover(
         searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
         timeout: TimeInterval = timeoutSeconds
@@ -72,14 +72,14 @@ enum WireProxyDiscovery {
         return decode(data)
     }
 
-    // WO-696@v2: unknown or malformed discovery output never creates a guessed proxy identity.
+    // WO-696@v3: unknown or malformed discovery output never creates a guessed proxy identity.
     private static func decode(_ data: Data) -> [WireProxyRecord] {
         if let records = try? JSONDecoder().decode([WireProxyRecord].self, from: data) { return records.filter(\.alive) }
         struct Envelope: Decodable { let proxies: [WireProxyRecord] }
         return (try? JSONDecoder().decode(Envelope.self, from: data))?.proxies.filter(\.alive) ?? []
     }
 
-    // WO-696@v2: local aliases and wildcard listeners share an endpoint only at the same port, without DNS.
+    // WO-696@v3: local aliases and wildcard listeners share an endpoint only at the same port, without DNS.
     static func matches(_ record: WireProxyRecord, upstream: URL) -> Bool {
         let emptyListenHost = record.listenAddr.hasPrefix(":")
         let listenAddress = emptyListenHost ? "localhost" + record.listenAddr : record.listenAddr
@@ -93,26 +93,26 @@ enum WireProxyDiscovery {
             (isLoopbackHost(listenHost) || ["", "0.0.0.0", "::"].contains(listenHost))
     }
 
-    // WO-696@v2: Foundation may retain IPv6 brackets, so normalize only literal presentation.
+    // WO-696@v3: Foundation may retain IPv6 brackets, so normalize only literal presentation.
     private static func literalHost(_ host: String) -> String {
         host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
     }
 
-    // WO-696@v2: only explicit localhost and IPv4/IPv6 loopback literals share the local endpoint identity.
+    // WO-696@v3: only explicit localhost and IPv4/IPv6 loopback literals share the local endpoint identity.
     private static func isLoopbackHost(_ host: String) -> Bool {
         if host == "localhost" || host == "::1" { return true }
         let octets = host.split(separator: ".", omittingEmptySubsequences: false)
         return octets.count == 4 && octets.first == "127" && octets.allSatisfy { UInt8($0) != nil }
     }
 
-    // WO-696@v2: one wire owner is a supported-configuration requirement, not an input authorization marker.
+    // WO-696@v3: one wire owner is a supported-configuration requirement, not an input authorization marker.
     static func refusal(upstream: URL, records: [WireProxyRecord]) -> String? {
         guard let record = records.first(where: { matches($0, upstream: upstream) }) else { return nil }
         return "error: upstream is wire proxy \(record.proxyID); use one wire proxy per session and connect directly to the provider."
     }
 }
 
-// WO-696@v2: proxy and routed launch refuse known upstream proxy identities before starting a listener.
+// WO-696@v3: proxy and routed launch refuse known upstream proxy identities before starting a listener.
 func requireSingleWireOwner(upstream: URL?, discover: () -> [WireProxyRecord] = { WireProxyDiscovery.discover() }) throws {
     guard let upstream else { return }
     if let refusal = WireProxyDiscovery.refusal(upstream: upstream, records: discover()) {
@@ -233,7 +233,7 @@ struct Proxy: ParsableCommand {
         // WO-574@v4: refuse to listen when the active config cannot be trusted.
         let config = try requireValidatedConfig()
         let compiledCustomRules = try requireValidProxyCustomRules(config)
-        // WO-696@v2: discovery cannot affect the scanner or rewrite the request body.
+        // WO-696@v3: discovery cannot affect the scanner or rewrite the request body.
         try requireSingleWireOwner(upstream: upstreamURL)
         let streamDebugSink = try debugStreamDump.map { try StreamDebugSink(path: $0) }
         let server = ProxyServer(

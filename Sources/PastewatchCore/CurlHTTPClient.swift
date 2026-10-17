@@ -5,9 +5,9 @@ import Darwin
 import Glibc
 #endif
 
-// WO-696@v2: executable consumers share the absolute-only PATH walk without curl's system preference.
+// WO-696@v3: executable consumers share the absolute-only PATH walk without curl's system preference.
 public enum PathExecutable {
-    // WO-696@v2: ignoring cwd-derived entries prevents executable lookup from trusting the working directory.
+    // WO-696@v3: ignoring cwd-derived entries prevents executable lookup from trusting the working directory.
     public static func resolve(
         name: String, searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
         isExecutable: (String) -> Bool = { path in
@@ -45,7 +45,7 @@ public enum CurlExecutable {
     ) -> String? {
         let systemPath = "/usr/bin/curl"
         if isExecutable(systemPath) { return systemPath }
-        // WO-696@v2: delegation preserves curl's preferred system binary and PATH order.
+        // WO-696@v3: delegation preserves curl's preferred system binary and PATH order.
         return PathExecutable.resolve(name: "curl", searchPath: searchPath, isExecutable: isExecutable)
     }
 }

@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- WO-681@v1: stale servers refuse before tool work, and guard messages identify the deciding build. -->
 - Refuse MCP tool calls when the serving executable identity becomes stale or cannot be verified at startup, distinguish those reasons with reconnect guidance and version metadata, and identify the deciding version in guard block messages. (WO-681)
-<!-- WO-696@v2: wire-owner checks do not change masking or request-body bytes. -->
-- Refuse proxy chains at startup and on inbound proxy hops, recognize loopback aliases and wildcard listeners at the same port without DNS, mark only local upstream hops with Via, and report live wire-owner conflicts in doctor. (WO-696)
+<!-- WO-696@v3: loopback-only Via preserves discovery, inbound checks and request-body bytes. -->
+- Refuse proxy chains at startup and on inbound proxy hops, recognize loopback aliases and wildcard listeners at the same port without DNS, mark only loopback upstream hops with Via, and report live wire-owner conflicts in doctor. (WO-696)
 <!-- WO-695@v2: punctuation cutsets after an earlier argument are excluded; a punctuation-only first argument still counts, with per-type regression counts pinned. -->
 - Exclude punctuation-only cutset arguments that follow an earlier call argument from credential-assignment findings, while quoted credential-shaped values and constructor literals (including punctuation-only first arguments) stay findings. (WO-695)
 <!-- WO-691@v3: closed display pipelines share native Read's verdict independently of binary-grant roles. -->
