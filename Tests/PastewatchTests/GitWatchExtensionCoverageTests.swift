@@ -134,13 +134,32 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             // the deterministic Kotlin test now carries the regression rather than this live smoke.
             let smokeHangWatchdogSeconds: TimeInterval = 120
             // WO-674@v2: the timeout is a smoke-test watchdog, not a repeated-touch scheduling assumption.
-            wait(for: [ready], timeout: smokeHangWatchdogSeconds)
+            // WO-700@v2: a watchdog expiry reports the watcher's own evidence so a lost event is diagnosable.
+            guard XCTWaiter().wait(for: [ready], timeout: smokeHangWatchdogSeconds) == .completed else {
+                return XCTFail(watchFailure("readiness", process: process, observation: observation))
+            }
             try kotlinContent().write(to: file, atomically: true, encoding: .utf8)
             let fixtureEpoch: TimeInterval = 2_000_000_000
             try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: fixtureEpoch)],
                                                   ofItemAtPath: file.path)
-            wait(for: [reported], timeout: smokeHangWatchdogSeconds)
+            if XCTWaiter().wait(for: [reported], timeout: smokeHangWatchdogSeconds) != .completed {
+                XCTFail(watchFailure("finding report", process: process, observation: observation))
+            }
         }
+    }
+
+    // WO-700@v2: failure text carries process state and stderr metadata, never scanned values.
+    private func watchFailure(_ stage: String, process: Process, observation: WatchObservation) -> String {
+        let state: String
+        if process.isRunning {
+            state = "still running"
+        } else {
+            let reason = process.terminationReason == .uncaughtSignal ? "signal" : "exit"
+            state = "terminated by \(reason) \(process.terminationStatus)"
+        }
+        let transcript = observation.transcript()
+        let lines = transcript.isEmpty ? "(no stderr lines)" : transcript.joined(separator: "\n")
+        return "watch smoke timed out waiting for \(stage); watcher \(state); stderr:\n\(lines)"
     }
 
     // WO-700@v1: Kotlin event coverage must not depend on delivery of a filesystem notification.
@@ -174,11 +193,32 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
         private var pending = Data()
         private var found = false
         private var isReady = false // WO-674@v2: fragmented readiness diagnostics fulfill once.
+        private var lines: [String] = [] // WO-700@v2: failure evidence, finding values elided.
+        // WO-700@v2: bounds failure text if a misbehaving watcher floods stderr.
+        private static let transcriptLineLimit = 50
+        private static let findingSeverities = Set(Severity.allCases.map { $0.rawValue.uppercased() })
 
         // WO-674@v2: the smoke test separates startup synchronization from event delivery.
         init(ready: XCTestExpectation, reported: XCTestExpectation) {
             self.ready = ready
             self.reported = reported
+        }
+
+        // WO-700@v2: complete lines plus any unterminated tail, so a stalled write is visible too.
+        func transcript() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !pending.isEmpty else { return lines }
+            let tail = String(data: pending, encoding: .utf8).map(Self.elideValue) ?? "<non-UTF-8 bytes>"
+            return lines + ["(unterminated) " + tail]
+        }
+
+        // WO-700@v2: finding lines end in the matched value; keep the location and type only.
+        private static func elideValue(_ line: String) -> String {
+            let fields = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: false)
+            guard fields.count == 4, findingSeverities.contains(String(fields[1])),
+                  let colon = fields[3].firstIndex(of: ":") else { return line }
+            return fields[..<3].joined(separator: " ") + " " + fields[3][..<colon] + ": <value elided>"
         }
 
         // WO-674@v2: recognize complete readiness and type-only finding lines without elapsed-time polling.
@@ -190,6 +230,9 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
             while let newline = pending.firstIndex(of: 0x0A) {
                 let line = String(data: pending[..<newline], encoding: .utf8)
                 pending.removeSubrange(...newline)
+                if lines.count < Self.transcriptLineLimit {
+                    lines.append(line.map(Self.elideValue) ?? "<non-UTF-8 bytes>")
+                }
                 // WO-674@v2: the earlier CLI banner is not the snapshot-completion handshake.
                 if !isReady, line?.hasPrefix("watching ") == true, line?.hasSuffix(" ready") == true {
                     isReady = true
