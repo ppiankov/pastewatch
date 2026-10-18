@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-700@v1: deterministic Kotlin coverage complements the readiness-synchronized live watch smoke. -->
+- Make Kotlin watcher regression coverage deterministic while retaining the readiness-synchronized live watch smoke with a hang watchdog. (WO-700)
+<!-- WO-706@v1: complete executable basenames have one shared case rule. -->
+- Recognize the same case-insensitive CLI executable names in doctor and command parsing without matching basename prefixes. (WO-706)
+<!-- WO-705@v1: setup owns hook-registration paths consumed by diagnostics. -->
+- Keep setup and doctor hook-registration paths in one shared descriptor while preserving every existing file location. (WO-705)
+<!-- WO-704@v1: destination identity and wildcard listening have separate shared owners. -->
+- Share loopback and wildcard address classification across launch, proxy discovery, outbound Via and doctor, including abbreviated and IPv4-mapped forms while retaining distinct empty-host and wildcard-listener roles. (WO-704)
+<!-- WO-702@v1: process flags preserve their complete argument boundaries. -->
+- Recognize both spaced and equals-form process flags in doctor without matching longer flag names. (WO-702)
 <!-- WO-681@v1: stale servers refuse before tool work, and guard messages identify the deciding build. -->
 - Refuse MCP tool calls when the serving executable identity becomes stale or cannot be verified at startup, distinguish those reasons with reconnect guidance and version metadata, and identify the deciding version in guard block messages. (WO-681)
 <!-- WO-696@v3: loopback-only Via preserves discovery, inbound checks and request-body bytes. -->

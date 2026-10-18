@@ -288,23 +288,15 @@ struct Doctor: ParsableCommand {
     }
 
     // WO-697@v1: registration locations mirror setup; script existence alone never proves a registered hook.
-    private func agentCoverageFiles(_ descriptor: MCPSetupDescriptor, home: URL, project: URL) -> [URL] {
+    // WO-705@v1: diagnostic hook paths come from setup's descriptor rather than a parallel table.
+    func agentCoverageFiles(_ descriptor: MCPSetupDescriptor, home: URL, project: URL) -> [URL] {
         var files = descriptor.configPath.components(separatedBy: " or ").compactMap { path -> URL? in
             if path.hasPrefix("~/") { return home.appendingPathComponent(String(path.dropFirst(2))) }
             if path.hasPrefix(".") { return project.appendingPathComponent(path) }
             return nil
         }
-        let hooks = [
-            "claude-code": ".claude/settings.json", "cursor": ".cursor/hooks.json",
-            "windsurf": ".codeium/windsurf/hooks.json", "continue": ".continue/settings.json",
-            "codex": ".codex/hooks.json", "qwen-code": ".qwen/settings.json"
-        ]
-        if let path = hooks[descriptor.agent] { files.append(home.appendingPathComponent(path)) }
-        if descriptor.agent == "claude-code" { files.append(project.appendingPathComponent(".claude/settings.json")) }
-        if descriptor.agent == "copilot" { files.append(project.appendingPathComponent(".github/hooks/pastewatch.json")) }
-        if descriptor.agent == "roo-code" {
-            files.append(home.appendingPathComponent("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"))
-        }
+        // WO-705@v1: preserve registration order and every existing home/project location.
+        files.append(contentsOf: descriptor.hookConfigURLs(home: home, project: project))
         return files
     }
 
@@ -326,7 +318,8 @@ struct Doctor: ParsableCommand {
         guard let server = servers["pastewatch"] as? [String: Any], server["disabled"] as? Bool != true,
               server["enabled"] as? Bool != false else { return false }
         let command = server["command"] as? String ?? (server["command"] as? [String])?.first
-        return command.map { ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: $0).lastPathComponent.lowercased()) } ?? false
+        // WO-706@v1: registered executables use the same complete-basename identity as command parsing.
+        return command.map(ExecutableIdentityNames.isOwnBinary) ?? false
     }
 
     // WO-697@v1: manual formats use their existing value parser or a bounded named TOML section.
@@ -343,13 +336,18 @@ struct Doctor: ParsableCommand {
         return fields.contains { ["command", "cmd"].contains($0.key ?? "") && $0.value == "pastewatch-cli" }
     }
 
-    // WO-697@v1: wire coverage requires a live local pastewatch listener and an explicitly routed session.
-    private func observedWireAgents() -> Set<String> {
-        guard let raw = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"],
+    // WO-702@v1: injected process and environment snapshots pin flag parsing without host-session dependencies.
+    func observedWireAgents(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        proxyCommands: () -> [String] = Doctor.runningProxyCommands
+    ) -> Set<String> {
+        guard let raw = environment["ANTHROPIC_BASE_URL"],
               let url = URL(string: raw), let host = url.host,
-              ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host.lowercased()) else { return [] }
+              // WO-704@v1: coverage uses the same literal loopback identity as launch and wire routing.
+              isLoopbackDestination(host) else { return [] }
         let port = url.port ?? (url.scheme == "https" ? 443 : 80)
-        let matching = Self.runningProxyCommands().contains { command in
+        // WO-702@v1: process injection preserves the existing default-port fallback.
+        let matching = proxyCommands().contains { command in
             Int(extractFlag(command, flag: "--port") ?? "8443") == port
         }
         return matching ? ["claude-code"] : []
@@ -399,7 +397,8 @@ struct Doctor: ParsableCommand {
         return output.split(separator: "\n").compactMap { line in
             let fields = line.split(whereSeparator: { $0.isWhitespace })
             guard fields.count >= 2, fields[1] == "proxy",
-                  ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(fields[0])).lastPathComponent.lowercased())
+                  // WO-706@v1: process discovery shares the canonical executable-name rule.
+                  ExecutableIdentityNames.isOwnBinary(String(fields[0]))
             else { return nil }
             return String(line)
         }
@@ -483,7 +482,8 @@ struct Doctor: ParsableCommand {
         let command = String(fields[6])
         let words = command.split(whereSeparator: { $0.isWhitespace })
         guard words.count >= 2, words[1] == "mcp",
-              ["pastewatch-cli", "pastewatchcli"].contains(URL(fileURLWithPath: String(words[0])).lastPathComponent.lowercased()) else {
+              // WO-706@v1: MCP snapshots share the canonical executable-name rule.
+              ExecutableIdentityNames.isOwnBinary(String(words[0])) else {
             return nil
         }
         let startedAt = dateFormatter.date(from: fields[1...5].joined(separator: " "))
@@ -492,10 +492,18 @@ struct Doctor: ParsableCommand {
                                   auditLog: extractFlag(command, flag: "--audit-log") ?? "none")
     }
 
-    private func extractFlag(_ cmdLine: String, flag: String) -> String? {
-        guard let flagRange = cmdLine.range(of: flag) else { return nil }
-        let afterFlag = cmdLine[flagRange.upperBound...].trimmingCharacters(in: .whitespaces)
-        return afterFlag.split(separator: " ").first.map(String.init)
+    // WO-702@v1: process diagnostics accept both flag forms without matching longer flag names.
+    func extractFlag(_ cmdLine: String, flag: String) -> String? {
+        let words = cmdLine.split(whereSeparator: \.isWhitespace)
+        for (index, word) in words.enumerated() {
+            if word == flag {
+                return index + 1 < words.count ? String(words[index + 1]) : nil
+            }
+            if word.hasPrefix(flag + "=") {
+                return String(word.dropFirst(flag.count + 1))
+            }
+        }
+        return nil
     }
 
     private func checkHomebrew(currentVersion: String) -> (status: String, detail: String) {

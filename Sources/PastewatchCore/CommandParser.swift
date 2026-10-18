@@ -313,7 +313,8 @@ public struct CommandParser {
         }
         guard let executable = head.first else { return false }
         let name = (executable as NSString).lastPathComponent
-        if ["pastewatch-cli", "PastewatchCLI"].contains(name) || aliases.contains(name) {
+        // WO-706@v1: executable basenames share one case-insensitive identity rule with diagnostics.
+        if ExecutableIdentityNames.isOwnBinary(name) || aliases.contains(name) {
             return head.dropFirst().first == "allow-binary"
         }
         if ["sh", "bash", "zsh", "dash", "ksh"].contains(name),
@@ -348,7 +349,8 @@ public struct CommandParser {
         guard let executable = head.first else { return false }
         if !executable.isLiteral { return mentionsPastewatch }
         let name = (executable.value as NSString).lastPathComponent
-        guard ["pastewatch-cli", "PastewatchCLI"].contains(name) || aliases.contains(name) else { return false }
+        // WO-706@v1: indirect arguments use the same executable identity as literal invocations.
+        guard ExecutableIdentityNames.isOwnBinary(name) || aliases.contains(name) else { return false }
         let arguments = head.dropFirst()
         return arguments.contains { !$0.isLiteral } || arguments.first?.value == "allow-binary"
     }
@@ -371,7 +373,8 @@ public struct CommandParser {
                 let parts = definition.split(separator: "=", maxSplits: 1)
                 guard parts.count == 2 else { continue }
                 let target = tokenize(String(parts[1]))
-                if target.count == 1, ["pastewatch-cli", "PastewatchCLI"].contains((target[0] as NSString).lastPathComponent) {
+                // WO-706@v1: aliases preserve the shared basename identity without changing shell parsing.
+                if target.count == 1, ExecutableIdentityNames.isOwnBinary(target[0]) {
                     aliases.insert(String(parts[0]))
                 }
             }

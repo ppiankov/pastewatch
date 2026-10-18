@@ -12,11 +12,25 @@ public struct MCPSetupDescriptor: Equatable {
     public let agent: String
     public let mode: MCPSetupMode
     public let configPath: String
+    // WO-705@v1: ordered hook registrations use home-relative or project-relative paths owned by setup.
+    public let hookConfigPaths: [String]
 
-    public init(agent: String, mode: MCPSetupMode, configPath: String) {
+    // WO-705@v1: default-empty hook metadata preserves existing descriptor construction.
+    public init(agent: String, mode: MCPSetupMode, configPath: String, hookConfigPaths: [String] = []) {
         self.agent = agent
         self.mode = mode
         self.configPath = configPath
+        // WO-705@v1: setup and diagnostics consume the same registration inventory.
+        self.hookConfigPaths = hookConfigPaths
+    }
+
+    // WO-705@v1: root injection resolves the same paths for writers and diagnostic readers without operator I/O.
+    public func hookConfigURLs(home: URL, project: URL) -> [URL] {
+        hookConfigPaths.map { path in
+            path.hasPrefix("~/")
+                ? home.appendingPathComponent(String(path.dropFirst(2)))
+                : project.appendingPathComponent(path)
+        }
     }
 }
 
@@ -41,21 +55,30 @@ public enum AgentSetup {
     private static let redactedEditRemedies = "For small edits use MCP pastewatch_read_file / pastewatch_edit_file, or CLI pastewatch-cli read <file> then pastewatch-cli edit <file> --old ... --new ... --expect-view-token ... ."
 
     // WO-500: Keep this in the same order as the setup command's accepted agents.
+    // WO-705@v1: the existing matrix also owns hook-registration locations, not hook contents or MCP paths.
     public static let mcpSetupMatrix = [
-        MCPSetupDescriptor(agent: "claude-code", mode: .automatic, configPath: "~/.claude.json or .mcp.json"),
+        MCPSetupDescriptor(agent: "claude-code", mode: .automatic, configPath: "~/.claude.json or .mcp.json",
+                           hookConfigPaths: ["~/.claude/settings.json", ".claude/settings.json"]),
         MCPSetupDescriptor(agent: "cline", mode: .automatic, configPath: "~/.cline/data/settings/cline_mcp_settings.json"),
-        MCPSetupDescriptor(agent: "roo-code", mode: .automatic, configPath: "VS Code globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"),
-        MCPSetupDescriptor(agent: "cursor", mode: .automatic, configPath: "~/.cursor/mcp.json"),
-        MCPSetupDescriptor(agent: "windsurf", mode: .automatic, configPath: "~/.codeium/windsurf/mcp_config.json"),
+        MCPSetupDescriptor(agent: "roo-code", mode: .automatic, configPath: "VS Code globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json",
+                           hookConfigPaths: ["~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"]),
+        MCPSetupDescriptor(agent: "cursor", mode: .automatic, configPath: "~/.cursor/mcp.json",
+                           hookConfigPaths: ["~/.cursor/hooks.json"]),
+        MCPSetupDescriptor(agent: "windsurf", mode: .automatic, configPath: "~/.codeium/windsurf/mcp_config.json",
+                           hookConfigPaths: ["~/.codeium/windsurf/hooks.json"]),
         MCPSetupDescriptor(agent: "goose", mode: .manual, configPath: "~/.config/goose/config.yaml"),
         MCPSetupDescriptor(agent: "kilo-code", mode: .automatic, configPath: "~/.config/kilo/kilo.json"),
-        MCPSetupDescriptor(agent: "continue", mode: .automatic, configPath: "~/.continue/mcpServers/pastewatch.yaml"),
+        MCPSetupDescriptor(agent: "continue", mode: .automatic, configPath: "~/.continue/mcpServers/pastewatch.yaml",
+                           hookConfigPaths: ["~/.continue/settings.json"]),
         MCPSetupDescriptor(agent: "amazon-q", mode: .automatic, configPath: "~/.aws/amazonq/mcp.json"),
         MCPSetupDescriptor(agent: "aider", mode: .unavailable, configPath: "N/A"),
-        MCPSetupDescriptor(agent: "copilot", mode: .automatic, configPath: "~/.copilot/mcp-config.json"),
+        MCPSetupDescriptor(agent: "copilot", mode: .automatic, configPath: "~/.copilot/mcp-config.json",
+                           hookConfigPaths: [".github/hooks/pastewatch.json"]),
         MCPSetupDescriptor(agent: "gemini", mode: .automatic, configPath: "~/.gemini/settings.json"),
-        MCPSetupDescriptor(agent: "codex", mode: .manual, configPath: "~/.codex/config.toml"),
-        MCPSetupDescriptor(agent: "qwen-code", mode: .automatic, configPath: "~/.qwen/settings.json"),
+        MCPSetupDescriptor(agent: "codex", mode: .manual, configPath: "~/.codex/config.toml",
+                           hookConfigPaths: ["~/.codex/hooks.json"]),
+        MCPSetupDescriptor(agent: "qwen-code", mode: .automatic, configPath: "~/.qwen/settings.json",
+                           hookConfigPaths: ["~/.qwen/settings.json"]),
     ]
 
     // MARK: - JSON Helpers

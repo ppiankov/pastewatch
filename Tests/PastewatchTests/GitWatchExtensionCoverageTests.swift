@@ -100,7 +100,7 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
     }
 
     // WO-674@v2: the sole live watch smoke changes its fixture only after snapshot readiness.
-    func testWatcherReportsKotlinChange() throws {
+    func testLiveWatchSmokeReportsChange() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in
             try TestConfigHelper.ensureProjectConfig(in: root)
             let input = root.appendingPathComponent("input", isDirectory: true)
@@ -130,13 +130,39 @@ final class GitWatchExtensionCoverageTests: XCTestCase {
                 diagnostics.fileHandleForReading.readabilityHandler = nil
                 try? diagnostics.fileHandleForReading.close()
             }
+            // WO-700@v1: this is a hang watchdog, not a scheduling assumption; raising it is acceptable only because
+            // the deterministic Kotlin test now carries the regression rather than this live smoke.
+            let smokeHangWatchdogSeconds: TimeInterval = 120
             // WO-674@v2: the timeout is a smoke-test watchdog, not a repeated-touch scheduling assumption.
-            wait(for: [ready], timeout: 20)
+            wait(for: [ready], timeout: smokeHangWatchdogSeconds)
             try kotlinContent().write(to: file, atomically: true, encoding: .utf8)
             let fixtureEpoch: TimeInterval = 2_000_000_000
             try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: fixtureEpoch)],
                                                   ofItemAtPath: file.path)
-            wait(for: [reported], timeout: 20)
+            wait(for: [reported], timeout: smokeHangWatchdogSeconds)
+        }
+    }
+
+    // WO-700@v1: Kotlin event coverage must not depend on delivery of a filesystem notification.
+    func testWatcherDecisionReportsKotlinFinding() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            // WO-700@v1: fixture scans cannot load the operator's global configuration.
+            try TestConfigHelper.ensureProjectConfig(in: root)
+            let input = root.appendingPathComponent("input", isDirectory: true)
+            try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+            let file = input.appendingPathComponent("Main.kt")
+            try "// clean\n".write(to: file, atomically: true, encoding: .utf8)
+            // WO-700@v1: initialize the same watcher decision used by real change events.
+            let config = PastewatchConfig.defaultConfig
+            let watcher = FileWatcher(directory: input.path, config: config)
+            let content = kotlinContent()
+            try content.write(to: file, atomically: true, encoding: .utf8)
+            // WO-700@v1: the shared extension gate keeps disabled Kotlin coverage observable in this regression.
+            let matches = try DirectoryScanner.scan(directory: input.path, config: config).flatMap(\.matches)
+            let decision = watcher.fileDecision(matches: matches, content: content, filePath: file.path)
+            // WO-700@v1: inspect the event outcome directly rather than waiting for its stderr delivery.
+            XCTAssertEqual(decision.actionableMatches.filter { $0.type == .awsKey && $0.line == 1 }.count, 1,
+                           "Kotlin change produces an intrinsic finding")
         }
     }
 
