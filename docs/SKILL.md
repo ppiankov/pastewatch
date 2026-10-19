@@ -114,6 +114,10 @@ Administrator policy, or user policy when no system config exists, merges with t
 
 Scan text for sensitive data patterns. Reports findings or outputs obfuscated text.
 
+<!-- WO-707@v3: scan JSON reports authority without claiming its original finding values were masked. -->
+JSON findings carry `authority: "mutate" | "advisory"` independently of severity.
+Their `value` is the original match, not a placeholder; scan never labels it masked.
+
 **Flags:**
 - `--format json` — output as JSON (default: text). Also supports `sarif`, `markdown`
 - `--file path` — file to scan (reads from stdin if omitted)
@@ -491,19 +495,36 @@ Input:
 Response: findings in added lines only, with accurate file paths and line numbers.
 
 #### pastewatch_read_file
-Read a file with sensitive values replaced by `__PW_TYPE_N__` placeholders. Secrets stay local — only placeholders reach the AI. Same value always maps to same placeholder across all files in a session.
+<!-- WO-707@v3: read protection requires authorization, not a severity threshold. -->
+Read a file with mutation-authorized values replaced by `__PW_TYPE_N__`
+placeholders: intrinsic formats, exact known values and operator rules
+(`customRules` or explicit `obfuscate` rules). Advisory-only findings remain in
+PLAINTEXT, unprotected. The same protected value maps to the same placeholder
+across all files in a session.
 
 Input:
 ```json
 {
   "path": "string (required) — absolute file path to read",
-  "min_severity": "string (optional, default: high) — minimum severity to redact"
+  "min_severity": "string (optional, default: high) — minimum severity for advisory reporting"
 }
 ```
 
-Response: JSON object with `content` (redacted text), `redactions` (manifest of type/severity/line/placeholder), `clean` (boolean).
+<!-- WO-707@v3: outcome metadata stays outside byte-exact content and never names plaintext values. -->
+Response: one JSON text block with `content`, `redactions`, `advisories` and
+`clean`. Redactions contain type/severity/line/placeholder plus
+`disposition: "masked"`; advisories contain type/severity/line plus
+`disposition: "advisory_unmasked"`. No `blocked` disposition exists. When plaintext
+advisories exist, top-level `notice` says they are not protected, lists type and
+line only, says pastewatch passes when unsure, and names
+`pastewatch-cli suggest-rule --file <path> --line <n>` as the remedy. Otherwise
+`notice` is absent. Nothing is added to the file content or as another text block.
 
-**Severity thresholds:** `high` (default) redacts credentials, API keys, DB connections, emails, phones. IPs, hostnames, and file paths are `medium` — pass through unless `min_severity: "medium"` is set. UUIDs and high entropy are `low`.
+**Severity thresholds:** select advisory reporting, not masking authority.
+Authorized values are masked even below the threshold. A critical Credential can
+still be advisory-only. The Bash guard remains stricter on already model-authored
+inline command literals; a file read is first exposure and passes when unsure.
+Write/edit response schemas are unchanged.
 
 #### pastewatch_write_file
 Write file contents, resolving `__PW_TYPE_N__` placeholders back to original values locally. Pair with pastewatch_read_file for safe round-trip editing.
@@ -549,8 +570,9 @@ Response: inventory report with severity breakdown, hot spots, type groups, and 
 
 **Redacted read/write workflow:**
 
-1. Agent calls `pastewatch_read_file` → gets content with `__PW_EMAIL_1__` style placeholders
-2. Agent processes code with placeholders (secrets never reach the API)
+<!-- WO-707@v3: placeholders protect only the authorized findings; plaintext advisories remain exposed. -->
+1. Agent calls `pastewatch_read_file` → gets authorized values as placeholders plus any plaintext advisory notice
+2. Agent processes the view; advisory-only values remain visible and unprotected
 3. Agent calls `pastewatch_write_file` → MCP server resolves placeholders locally, writes real values to disk
 
 ## Detection types

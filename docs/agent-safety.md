@@ -135,16 +135,18 @@ For per-agent registration instructions (Claude Code, Claude Desktop, Cline, Cur
 
 Once configured, the agent has access to these MCP tools:
 
+<!-- WO-707@v3: the tool identifies unmasked advisories instead of promising every finding is hidden. -->
 | Tool | Purpose |
 |------|---------|
-| `pastewatch_read_file` | Read file with secrets replaced by `__PW_EMAIL_1__` placeholders |
+| `pastewatch_read_file` | Read file with authorized values replaced by placeholders and plaintext advisories identified |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 
+<!-- WO-707@v3: uncertain findings pass in plaintext; only authorized spans become placeholders. -->
 **Round-trip workflow:**
 1. Agent calls `pastewatch_read_file` for sensitive files
 2. Gets back content with `__PW_CREDENTIAL_1__`, `__PW_AWS_KEY_1__` etc.
-3. API processes code - only sees placeholders, never real secrets
+3. API processes the view - authorized values are placeholders; advisory values remain exposed
 4. Agent calls `pastewatch_write_file` - MCP server resolves placeholders on-device
 5. Written file contains real values - code stays functional
 
@@ -168,42 +170,25 @@ database:
 
 ### Severity threshold (`min_severity`)
 
-`pastewatch_read_file` accepts an optional `min_severity` parameter (default: `high`). Only findings at or above the threshold are redacted - everything below passes through unchanged.
+<!-- WO-707@v3: severity and read disposition are independent, including below-threshold authorized values. -->
+`pastewatch_read_file` accepts an optional `min_severity` parameter (default:
+`high`) for advisory reporting. Only mutation-authorized findings are masked:
+intrinsic formats, exact known values and operator rules (`customRules` or an
+explicit `obfuscate` rule). They are masked regardless of the advisory threshold.
+A critical Credential or format-only connection string can remain plaintext.
 
-**What gets redacted at each threshold:**
+Each `redactions` entry carries `disposition: "masked"`; each `advisories` entry
+carries `disposition: "advisory_unmasked"`. A top-level `notice` appears only for
+plaintext advisories, names their types and lines, says they were returned in
+PLAINTEXT and not protected, and gives
+`pastewatch-cli suggest-rule --file <path> --line <n>`. It contains no value or
+fingerprint and does not change the file content. Use the suggested custom rule
+to protect a real advisory on subsequent reads; pastewatch passes when unsure.
 
-| `min_severity` | Redacted | Passes through |
-|---|---|---|
-| `critical` | AWS keys, API keys, DB connections, SSH keys, JWTs, cards, webhooks | Credentials, emails, phones, IPs, hostnames, UUIDs |
-| `high` (default) | All critical + credentials, emails, phones | IPs, hostnames, file paths, UUIDs |
-| `medium` | All high + IPs, hostnames, file paths | UUIDs, high entropy |
-| `low` | Everything | Nothing |
-
-**Example: `.env` file read with default `min_severity: "high"`**
-
-Original file contains AWS keys, a database URL, an API token, an IP address, and an internal hostname. After redaction with the default `high` threshold:
-
-```bash
-# What the agent sees (sent to API)
-AWS_ACCESS_KEY_ID=__PW_AWS_KEY_1__          # critical - redacted
-DATABASE_URL=__PW_DB_CONNECTION_1__         # critical - redacted
-API_TOKEN=__PW_OPENAI_KEY_1__               # critical - redacted
-ANSIBLE_HOST=172.16.161.206                  # medium - passes through
-INTERNAL_SERVER=keeper2.ipa.local            # medium - passes through
-```
-
-The IP and hostname pass through because they are `medium` severity - below the default `high` threshold. To redact them too, pass `min_severity: "medium"`:
-
-```bash
-# With min_severity: "medium" - IPs and hostnames also redacted
-AWS_ACCESS_KEY_ID=__PW_AWS_KEY_1__
-DATABASE_URL=__PW_DB_CONNECTION_1__
-API_TOKEN=__PW_OPENAI_KEY_1__
-ANSIBLE_HOST=__PW_IP_1__                   # medium - now redacted
-INTERNAL_SERVER=__PW_HOSTNAME_1__           # medium - now redacted
-```
-
-The default `high` threshold is intentional - it protects credentials (the highest-damage leak vector) while keeping infrastructure identifiers readable so the agent can reason about architecture.
+The Bash guard is unchanged. An inline command literal is already model-authored,
+while a file read is first exposure. Guard command thresholds can therefore block
+an inline finding that a read returns as an advisory. Native Read follows the MCP
+masking decision. Severity is not a claim that plaintext was protected.
 
 ### Per-agent severity
 

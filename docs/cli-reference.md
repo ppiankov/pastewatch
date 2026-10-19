@@ -85,6 +85,12 @@ Each `scan --format json` finding also includes the additive integer `line`, the
 1-based source line reported by the detector. Single-file and directory scan JSON
 keep their existing fields and output containers.
 
+<!-- WO-707@v3: raw scan findings report authorization, not a substitution that did not occur. -->
+Each finding also carries `authority: "mutate" | "advisory"`, from the shared
+mutation-authorization decision. `value` remains the original matched value, so
+scan findings never claim `disposition: "masked"`. Severity is unchanged and does
+not grant mutation authority.
+
 File-oriented scans reject inputs larger than 64 MiB. Single-file scans also reject
 lines longer than 1,000,000 bytes. Directory, Git diff/history and watch scans skip
 overlong files, name their paths on stderr and count them as `skippedOverLimit`;
@@ -339,7 +345,12 @@ interpreter-obfuscated invocations remain outside command-string recognition.
 
 ## MCP Server - Redacted Read/Write
 
-AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces authorized secret matches with reversible placeholders while keeping the secret map local; advisory-only matches remain unchanged for operator review.
+<!-- WO-707@v3: distinguish authorization from severity before first file exposure. -->
+AI coding agents send file contents to cloud APIs. Pastewatch MCP masks only
+mutation-authorized matches: intrinsic formats, exact known values, and operator
+rules (`customRules` or explicit `obfuscate` rules). Advisory-only findings remain
+in **PLAINTEXT**, unprotected. pastewatch passes when unsure; severity alone does
+not authorize masking.
 
 ```
   Your machine (local only)
@@ -368,15 +379,36 @@ AI coding agents send file contents to cloud APIs. Pastewatch MCP replaces autho
 
 **Tools:**
 
+<!-- WO-707@v3: read coverage is bounded by evidence, not the severity label. -->
 | Tool | Purpose |
 |------|---------|
-| `pastewatch_read_file` | Read file with secrets replaced by `__PW_TYPE_N__` placeholders |
+| `pastewatch_read_file` | Read file with authorized values replaced by `__PW_TYPE_N__` placeholders and plaintext advisories identified |
 | `pastewatch_write_file` | Write file, resolving placeholders back to real values locally |
 | `pastewatch_edit_file` | Replace one unique string in the redacted view, restoring placeholders locally |
 | `pastewatch_check_output` | Verify text contains no raw secrets before returning |
 | `pastewatch_scan` | Scan text for sensitive data |
 | `pastewatch_scan_file` | Scan a file for sensitive data |
 | `pastewatch_scan_dir` | Scan a directory recursively |
+
+<!-- WO-707@v3: notices must not alter file content or imply advisory protection. -->
+The read result remains one JSON text block. Every `redactions` entry has
+`disposition: "masked"`; every `advisories` entry has
+`disposition: "advisory_unmasked"`. There is no `blocked` disposition. An advisory
+fully covered by an authorized replacement is not listed as plaintext too.
+When plaintext advisories exist, a top-level `notice` names their types and lines,
+states they were returned in PLAINTEXT and not protected, and points to
+`pastewatch-cli suggest-rule --file <path> --line <n>`. The notice contains no
+value, length or fingerprint. It is absent otherwise, and never prepended to
+`content`. Write/edit response schemas are unchanged. `min_severity` selects
+advisory reporting; authorized values are masked regardless of that threshold.
+
+<!-- WO-707@v3: the guard's authored-command boundary differs from first file exposure. -->
+The Bash guard is unchanged: an inline command literal is already model-authored
+and can be blocked at the guard's severity threshold. A file read is first
+exposure; uncertain values pass as identified plaintext advisories. Native Read
+blocks only when MCP would mask a value. Use `suggest-rule` to promote a real
+advisory to a custom rule rather than interpreting a critical severity as proof
+that a read was protected.
 
 <!-- WO-630@v2: redacted text windows avoid oversized tool results without bypassing whole-file scanning. -->
 `pastewatch_read_file` accepts optional `start_line` and `line_count` for plain-text

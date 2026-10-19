@@ -17,6 +17,44 @@ public struct MCPReadDecision {
     public let authorized: [DetectedMatch]
     public let reportedAdvisories: [DetectedMatch]
 
+    // WO-707@v3: severity cannot imply masking; manifests describe only verified read outcomes.
+    public func findingMetadata(entries: [RedactionEntry], content: String, filePath: String) -> [String: JSONValue] {
+        // WO-707@v3: a custom rule may protect an overlapping advisory without removing its scanner match.
+        let unmasked = reportedAdvisories.filter { advisory in
+            !authorized.contains { match in
+                let span = authorizedMutationRange(for: match, in: content)
+                return span.lowerBound <= advisory.range.lowerBound && advisory.range.upperBound <= span.upperBound
+            }
+        }
+        let redactions: [JSONValue] = entries.map { entry in
+            .object([
+                "type": .string(entry.type), "severity": .string(entry.severity),
+                "line": .number(Double(entry.line)), "placeholder": .string(entry.placeholder),
+                "disposition": .string("masked")
+            ])
+        }
+        let advisories: [JSONValue] = unmasked.map { match in
+            .object([
+                "type": .string(match.displayName), "severity": .string(match.effectiveSeverity.rawValue),
+                "line": .number(Double(match.line)), "disposition": .string("advisory_unmasked")
+            ])
+        }
+        var metadata: [String: JSONValue] = [
+            "redactions": .array(redactions), "advisories": .array(advisories),
+            "clean": .bool(entries.isEmpty && unmasked.isEmpty)
+        ]
+        if !unmasked.isEmpty {
+            let findings = unmasked.map { "\($0.displayName) at line \($0.line)" }.joined(separator: "; ")
+            let quotedPath = "'" + filePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            let remedies = Set(unmasked.map(\.line)).sorted().map {
+                "pastewatch-cli suggest-rule --file \(quotedPath) --line \($0)"
+            }.joined(separator: "; ")
+            metadata["notice"] = .string("PLAINTEXT, not protected: \(findings). " +
+                "pastewatch passes when unsure. To mask these findings from now on, use: \(remedies)")
+        }
+        return metadata
+    }
+
     // WO-630@v2: keep the read-time placeholder operation coupled to its authorized matches.
     public func redact(content: String, store: RedactionStore, filePath: String) throws -> (String, [RedactionEntry]) {
         do {

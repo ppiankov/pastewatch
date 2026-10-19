@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<!-- WO-707@v3: distinguish masked read findings from plaintext advisories without changing severity or content. -->
+- Report finding disposition on MCP reads, with a plaintext advisory notice naming `suggest-rule`, and expose mutation authority in scan JSON without claiming its original values were masked. (WO-707)
 <!-- WO-711@v2: advisory findings can be promoted to rotation-safe custom rules without pasting the value. -->
 - Add `suggest-rule` to print a key-anchored `customRules` entry for an advisory finding (by file and line, or from stdin), so a value pastewatch was unsure about is masked from then on; `--exact` emits a literal-value rule with a plaintext warning. (WO-711)
 <!-- WO-697@v1: coverage tiers state detected boundaries and their limits. -->
