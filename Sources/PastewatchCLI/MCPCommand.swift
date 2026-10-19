@@ -1097,6 +1097,17 @@ final class MCPServer {
         // Resolve placeholders using all file mappings (agent may move values between files).
         let resolved = store.resolveAll(content: content)
 
+        // WO-710@v1: session mappings can disappear on reconnect; unresolved tokens must never reach disk.
+        if resolved.unresolved > 0 {
+            auditLogger?.log("WRITE-REFUSED \(path) unresolved=\(resolved.unresolved)")
+            return errorResult(
+                id: id,
+                text: "Write refused: \(resolved.unresolved) unresolved placeholder(s). " +
+                    "Re-read the file with pastewatch_read_file; mappings are per server process " +
+                    "and may have been lost after a restart or reconnect."
+            )
+        }
+
         do {
             try resolved.content.write(toFile: path, atomically: true, encoding: .utf8)
         } catch {

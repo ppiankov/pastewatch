@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-710@v1: MCP writes fail closed when placeholders cannot be restored. -->
+- Refuse `pastewatch_write_file` writes that still contain unresolved placeholders, such as content read before an MCP server restart, instead of writing placeholder tokens to disk. (WO-710)
 <!-- WO-700@v2: deterministic Kotlin coverage complements the readiness-synchronized live watch smoke. -->
 - Make Kotlin watcher regression coverage deterministic while retaining the readiness-synchronized live watch smoke with a hang watchdog that reports the watcher's process state and stderr, values elided, when it expires. (WO-700)
 <!-- WO-706@v1: complete executable basenames have one shared case rule. -->
