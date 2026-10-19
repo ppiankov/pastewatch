@@ -963,8 +963,11 @@ struct Finding: Codable {
     let projectExemptible: Bool
     // WO-692@v1: consumers can locate findings without inspecting their values.
     let line: Int
+    // WO-707@v3: scan findings retain raw values, so authority must not claim they were masked.
+    let authority: String
 
     // WO-682@v2: compute project-file eligibility once from the shared authorization predicate.
+    // WO-707@v3: the same mutation partition supplies read and scan authority without class lists.
     init(_ match: DetectedMatch, type: String? = nil) {
         self.type = type ?? match.type.rawValue
         value = match.value
@@ -972,6 +975,9 @@ struct Finding: Codable {
         projectExemptible = permitsAllowlistSuppression(of: match, source: .projectFile, exactValue: true)
         // WO-692@v1: reuse the detector's 1-based source location for both JSON containers.
         line = match.line
+        // WO-707@v3: reporting thresholds cannot promote an advisory to mutation authority.
+        authority = partitionMutationMatches([match], site: .cliScan, minAdvisorySeverity: .low)
+            .authorized.isEmpty ? "advisory" : "mutate"
     }
 }
 
@@ -1009,6 +1015,8 @@ struct GitLogMatchOutput: Codable {
     let value: String
     // WO-682@v2: history findings retain the same additive editor eligibility field.
     let projectExemptible: Bool
+    // WO-707@v3: historical scan output also reports authority without claiming a mutation occurred.
+    let authority: String
 
     // WO-682@v2: historical formatting reuses the single shared CLI decision.
     init(_ match: DetectedMatch) {
@@ -1018,5 +1026,7 @@ struct GitLogMatchOutput: Codable {
         severity = match.effectiveSeverity.rawValue
         value = finding.value
         projectExemptible = finding.projectExemptible
+        // WO-707@v3: historical findings share the same per-match partition verdict as other scan JSON.
+        authority = finding.authority
     }
 }

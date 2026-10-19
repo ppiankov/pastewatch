@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<!-- WO-707@v3: distinguish masked read findings from plaintext advisories without changing severity or content. -->
+- Report finding disposition on MCP reads, with a plaintext advisory notice naming `suggest-rule`, and expose mutation authority in scan JSON without claiming its original values were masked. (WO-707)
+<!-- WO-711@v2: advisory findings can be promoted to rotation-safe custom rules without pasting the value. -->
+- Add `suggest-rule` to print a key-anchored `customRules` entry for an advisory finding (by file and line, or from stdin), so a value pastewatch was unsure about is masked from then on; `--exact` emits a literal-value rule with a plaintext warning. (WO-711)
 <!-- WO-697@v1: coverage tiers state detected boundaries and their limits. -->
 - Report per-agent coverage tiers in doctor, document what each protection layer misses, describe the proxy as a filter for routed model egress, and freeze the best-effort Bash reader list. (WO-697)
 <!-- WO-692@v1: expose additive source locations in scan JSON. -->
@@ -16,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-715@v2: placeholders matched by broad custom rules restore on write and edit. -->
+- MCP writes and edits accept placeholders that pastewatch issued even when an operator custom rule also matches the placeholder text, so files masked by key-anchored rules can be written back; plaintext and unknown placeholders are still refused. (WO-715)
+<!-- WO-713@v1: operator custom rules match against source text in parsed config formats. -->
+- Apply custom rules to the original file text as well as parsed values in structured formats (.properties, .env, YAML, JSON and others), so key-anchored rules mask values on read instead of silently never matching. (WO-713)
+<!-- WO-710@v1: MCP writes fail closed when placeholders cannot be restored. -->
+- Refuse `pastewatch_write_file` writes that still contain unresolved placeholders, such as content read before an MCP server restart, instead of writing placeholder tokens to disk. (WO-710)
 <!-- WO-700@v2: deterministic Kotlin coverage complements the readiness-synchronized live watch smoke. -->
 - Make Kotlin watcher regression coverage deterministic while retaining the readiness-synchronized live watch smoke with a hang watchdog that reports the watcher's process state and stderr, values elided, when it expires. (WO-700)
 <!-- WO-706@v1: complete executable basenames have one shared case rule. -->

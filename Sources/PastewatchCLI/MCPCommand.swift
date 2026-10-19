@@ -487,8 +487,8 @@ final class MCPServer {
                 ]),
                 .object([
                     "name": .string("pastewatch_read_file"),
-                    // WO-665@v1: default large reads are bounded after replacement, never on raw file bytes.
-                    "description": .string("Read a file with sensitive values replaced by placeholders. Secrets stay local — only placeholders reach the AI. Use pastewatch_write_file to write back with originals restored. Unranged output over \(MCPReadDecision.unrangedResponseLimitDescription) returns a plain-text window of whole lines, start_line, end_line, total_lines, has_more and continuation_hint naming the next start_line. A first line over \(MCPReadDecision.unrangedResponseLimitDescription) falls back to a Base64 byte window. Explicit byte ranges always return Base64."),
+                    // WO-707@v3: distinguish proof-authorized masking from plaintext advisories before the first read.
+                    "description": .string("Read a file with mutation-authorized values replaced by reversible placeholders: intrinsic formats, exact known values and operator rules (customRules or explicit obfuscate rules). Advisory-only findings are returned in PLAINTEXT, not protected: advisories carry disposition=advisory_unmasked and a top-level notice names pastewatch-cli suggest-rule as the remedy. Redactions carry disposition=masked; severity does not authorize masking. Use pastewatch_write_file to write back with originals restored. Unranged output over \(MCPReadDecision.unrangedResponseLimitDescription) returns a plain-text window of whole lines, start_line, end_line, total_lines, has_more and continuation_hint naming the next start_line. A first line over \(MCPReadDecision.unrangedResponseLimitDescription) falls back to a Base64 byte window. Explicit byte ranges always return Base64."),
                     "inputSchema": .object([
                         "type": .string("object"),
                         "properties": .object([
@@ -520,8 +520,9 @@ final class MCPServer {
                             "min_severity": .object([
                                 "type": .string("string"),
                                 // WO-584@v2: schema text and enum derive from Severity ownership.
+                                // WO-707@v3: the threshold selects advisory reporting, never mutation authority.
                                 "description": .string(
-                                    "Minimum severity to redact: " +
+                                    "Minimum severity for advisory reporting; authorized matches are always masked: " +
                                         Severity.allCases.map(\.rawValue).joined(separator: ", ") +
                                         " (default: \(Severity.defaultGuardThreshold.rawValue))"
                                 ),
@@ -921,26 +922,11 @@ final class MCPServer {
             filePath: path
         )
         let reportedAdvisories = decision.reportedAdvisories
-        let advisories: [JSONValue] = reportedAdvisories.map { match in
-            .object([
-                "type": .string(match.displayName),
-                "severity": .string(match.effectiveSeverity.rawValue),
-                "line": .number(Double(match.line))
-            ])
-        }
 
         // WO-630@v2: the shared responder cannot forward an unapplied or unencoded read.
         let (response, entries) = decision.response(request: (id: id, filePath: path), content: content, store: store, encode: { redacted, entries in
-            let redactions: [JSONValue] = entries.map { entry in
-                .object([
-                    "type": .string(entry.type), "severity": .string(entry.severity),
-                    "line": .number(Double(entry.line)), "placeholder": .string(entry.placeholder)
-                ])
-            }
-            var metadata: [String: JSONValue] = [
-                "redactions": .array(redactions), "advisories": .array(advisories),
-                "clean": .bool(entries.isEmpty && reportedAdvisories.isEmpty)
-            ]
+            // WO-707@v3: metadata stays outside byte-exact content and is attached only after masking succeeds.
+            var metadata = decision.findingMetadata(entries: entries, content: content, filePath: path)
             if !entries.isEmpty { metadata["pastewatch_note"] = .string(modelRedactionNotice) }
             return try encodeReadPayload(content: redacted, range: readRange, lineRange: lineRange,
                                          metadata: metadata, decision: decision)
@@ -1081,21 +1067,35 @@ final class MCPServer {
             site: .mcpWrite,
             minAdvisorySeverity: .low
         )
-        if !writePartition.authorized.isEmpty {
-            let types = Set(writePartition.authorized.map { $0.displayName }).sorted()
+        // WO-715@v1: only issued, resolvable markers may bypass the custom-rule plaintext rejection.
+        let plaintextMatches = store.plaintextRejectionMatches(writePartition.authorized, in: content)
+        if !plaintextMatches.isEmpty {
+            let types = Set(plaintextMatches.map { $0.displayName }).sorted()
             auditLogger?.log(
-                "WRITE \(path)  blocked-plaintext=\(writePartition.authorized.count) " +
+                "WRITE \(path)  blocked-plaintext=\(plaintextMatches.count) " +
                     "[\(types.joined(separator: ", "))]"
             )
             return errorResult(
                 id: id,
-                text: "Write blocked: content contains \(writePartition.authorized.count) plaintext secret(s). " +
+                // WO-715@v1: refusal counts include only matches that still represent new plaintext.
+                text: "Write blocked: content contains \(plaintextMatches.count) plaintext secret(s). " +
                     "Use placeholders returned by pastewatch_read_file."
             )
         }
 
         // Resolve placeholders using all file mappings (agent may move values between files).
         let resolved = store.resolveAll(content: content)
+
+        // WO-710@v1: session mappings can disappear on reconnect; unresolved tokens must never reach disk.
+        if resolved.unresolved > 0 {
+            auditLogger?.log("WRITE-REFUSED \(path) unresolved=\(resolved.unresolved)")
+            return errorResult(
+                id: id,
+                text: "Write refused: \(resolved.unresolved) unresolved placeholder(s). " +
+                    "Re-read the file with pastewatch_read_file; mappings are per server process " +
+                    "and may have been lost after a restart or reconnect."
+            )
+        }
 
         do {
             try resolved.content.write(toFile: path, atomically: true, encoding: .utf8)

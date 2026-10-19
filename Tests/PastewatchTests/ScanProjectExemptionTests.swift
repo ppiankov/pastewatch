@@ -68,20 +68,24 @@ final class ScanProjectExemptionTests: XCTestCase {
         }
     }
 
-    // WO-682@v2: compatibility checks compare metadata without printing matched values.
+    // WO-682@v3: compatibility checks compare metadata without printing matched values.
+    // WO-707@v3: scan authority is independent of project-exemption eligibility.
     private func assertEligibility(
         _ findings: [[String: Any]], fixture: Fixture, file: StaticString = #filePath, line: UInt = #line
     ) {
         XCTAssertEqual(findings.count, 1, fixture.name, file: file, line: line)
         for finding in findings {
-            // WO-692@v1: the source line is additive; all existing finding fields remain present.
-            XCTAssertEqual(Set(finding.keys), ["type", "value", "severity", "projectExemptible", "line"], file: file, line: line)
+            // WO-692@v2: the source line is additive; all existing finding fields remain present.
+            // WO-707@v3: authority adds a verdict without implying a non-mutating scan masked its value.
+            XCTAssertEqual(Set(finding.keys), ["type", "value", "severity", "projectExemptible", "line", "authority"], file: file, line: line)
+            XCTAssertEqual(finding["authority"] as? String, fixture.authority, fixture.name, file: file, line: line)
             XCTAssertEqual(finding["projectExemptible"] as? Bool, fixture.exemptible, fixture.name, file: file, line: line)
             XCTAssertTrue(finding["value"] as? String == fixture.content, file: file, line: line)
         }
     }
 
-    // WO-682@v2: policy controls assemble values at runtime instead of storing complete fixtures.
+    // WO-682@v3: policy controls assemble values at runtime instead of storing complete fixtures.
+    // WO-707@v3: each fixture pins authority independently of its exemption expectation.
     private func fixtures() -> [Fixture] {
         let intrinsic = ["AKIA", "QWERTYUIOPASDFGH"].joined()
         let custom = ["operator", "-fixture", "-R7m4"].joined()
@@ -92,9 +96,10 @@ final class ScanProjectExemptionTests: XCTestCase {
         rules.customRules = [CustomRuleConfig(name: "operator-fixture",
             pattern: NSRegularExpression.escapedPattern(for: custom), severity: "critical")]
         return [
-            Fixture(name: "Phone", content: phone, config: advisory, exemptible: true),
-            Fixture(name: "intrinsic", content: intrinsic, config: .defaultConfig, exemptible: false),
-            Fixture(name: "custom", content: custom, config: rules, exemptible: false)
+            // WO-707@v3: advisory, intrinsic and custom evidence exercise distinct policy outcomes.
+            Fixture(name: "Phone", content: phone, config: advisory, exemptible: true, authority: "advisory"),
+            Fixture(name: "intrinsic", content: intrinsic, config: .defaultConfig, exemptible: false, authority: "mutate"),
+            Fixture(name: "custom", content: custom, config: rules, exemptible: false, authority: "mutate")
         ]
     }
 
@@ -120,12 +125,14 @@ final class ScanProjectExemptionTests: XCTestCase {
         return CommandResult(status: process.terminationStatus, output: output)
     }
 
-    // WO-682@v2: fixture metadata is distinct from captured secret-bearing output.
+    // WO-682@v3: fixture metadata is distinct from captured secret-bearing output.
     private struct Fixture {
         let name: String
         let content: String
         let config: PastewatchConfig
         let exemptible: Bool
+        // WO-707@v3: expected authority is an explicit fixture contract, not inferred from exemption metadata.
+        let authority: String
     }
 
     // WO-682@v2: tests never emit captured child payloads in assertion messages.
