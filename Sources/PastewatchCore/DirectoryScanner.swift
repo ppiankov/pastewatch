@@ -743,16 +743,16 @@ public struct DirectoryScanner {
             }
         }
 
+        // WO-713@v1: operator rules need the source context removed by structured value extraction.
+        let rawMatches = try DetectionRules.scanFileIOOrThrow(
+            content, config: config, customRules: customRules, limits: limits
+        )
+
         // XML files: also run raw detection for XML-specific tag patterns
         // (e.g., <password>plain</password> where the extracted value alone
         // wouldn't match any pattern rule)
+        // WO-713@v1: the existing XML filter reuses the single source scan without widening built-ins.
         if ext.lowercased() == "xml" {
-            let rawMatches = try DetectionRules.scanFileIOOrThrow(
-                content,
-                config: config,
-                customRules: customRules,
-                limits: limits
-            )
             for rm in rawMatches {
                 // Only add XML-specific types not already found
                 guard rm.type == .xmlCredential || rm.type == .xmlUsername || rm.type == .xmlHostname else {
@@ -767,6 +767,16 @@ public struct DirectoryScanner {
                     ))
                 }
             }
+        }
+
+        // WO-713@v1: only existing custom spans can deduplicate the evidence that authorizes masking.
+        for match in rawMatches where match.customRuleName != nil {
+            let alreadyFound = matches.contains {
+                $0.customRuleName != nil && $0.range.overlaps(match.range)
+            }
+            guard !alreadyFound else { continue }
+            matches.append(sourceMatch(match, range: match.range, line: match.line, filePath: relativePath,
+                                       parsedContent: content, source: content))
         }
 
         return matches
