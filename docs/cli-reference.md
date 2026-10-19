@@ -651,6 +651,48 @@ The Credential rule also ignores whole angle placeholders `<...>`, `${...}`, `{{
 [Documenting credentials](../README.md#documenting-credentials). A placeholder prefix followed by real
 value text is not a whole-placeholder exclusion. These exclusions do not change the DSN password rules.
 
+<!-- WO-711@v1: operator-selected advisories can be promoted without copying their values into arguments. -->
+## Suggest Rule
+
+Print a `customRules` entry for an advisory finding, without editing configuration:
+
+```bash
+pastewatch-cli suggest-rule --file settings.properties --line 2
+pastewatch-cli suggest-rule --file settings.properties --line 2 --format json
+pastewatch-cli suggest-rule --stdin < input.txt
+```
+
+Use `--file` and a 1-based `--line`, or `--stdin` for one source line. Values are
+never accepted as positional arguments or value-taking options: arguments can
+enter shell history and process listings. `--name` overrides the generated rule
+name; `--format text|json` selects the output format (default: `text`).
+
+The default rule anchors on the literal key, separator and opening quote, matches
+only the value, and survives rotation. Properties values run to the end of the
+line without trailing whitespace; unquoted environment-style values stop at
+whitespace or a comment. Quoted forms preserve their surrounding quotes and
+comments. Each suggestion is compiled and checked against the complete source
+line: exactly one match must equal the derived value span. Ambiguous extraction,
+unclosed quotes, or a broader match produce no snippet.
+
+`--exact` opts into a literal-value pattern. **It stores the value in plaintext in
+configuration and stops matching after rotation.** The warning appears in both
+text and JSON. Exact rules also refuse a second matching occurrence on the line.
+Default output contains no value, value length, shape, prefix or hash. Findings
+already protected by an intrinsic format, exact-known value or custom rule need
+no suggestion.
+
+Add the entry to `customRules` in the user configuration, or in `.pastewatch.json`
+at the repository's git toplevel and run from that root. Project rules add
+protection without replacing operator rules; administrator policy, when present,
+remains authoritative. The command never writes a configuration file. JSON has
+three fields: `rule` (`name`, `pattern`, `severity`), `placement`, and `warnings`.
+
+Exit codes: `0` for a verified suggestion; `1` for no advisory, an already masked
+finding or an unverifiable value-only rule; `2` for an input/configuration error;
+`64` for invalid arguments. A failed value-only check names the file and line and
+suggests `--exact`, never the value.
+
 ## Doctor
 
 Installation health check:

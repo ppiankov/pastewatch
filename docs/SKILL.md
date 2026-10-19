@@ -379,6 +379,31 @@ Guard verdicts use the `high` threshold and the `--file` path. MCP models a trus
 
 `scanExitCode` in the report is a separate 0/6 verdict, not the process exit code. Use `guard-read` or `scan --check` as a blocking gate. Use [Troubleshooting](troubleshooting.md) for inactive rules and unexpected document or copy-source decisions.
 
+<!-- WO-711@v1: promote advisories through file/line input without placing values in command arguments. -->
+### pastewatch-cli suggest-rule
+
+For an advisory that should be masked in future, print a key-anchored custom rule:
+
+```bash
+pastewatch-cli suggest-rule --file settings.properties --line 2
+pastewatch-cli suggest-rule --file settings.properties --line 2 --format json
+pastewatch-cli suggest-rule --stdin < input.txt
+```
+
+Prefer file and line input; never pass a secret as an argument. Stdin accepts one
+line. `--name` overrides the rule name. The command prints only and never edits
+configuration. Its default snippet contains the source key anchor, not the value
+or a fingerprint, and survives value rotation. Compilation and a full-line scan
+must prove that the rule matches exactly the derived value span once, preserving
+keys, quotes and comments; otherwise no snippet is emitted.
+
+`--exact` is an explicit exception: its pattern contains the value in plaintext
+and stops matching after rotation, with a warning in text and JSON. It also
+refuses duplicate occurrences on the line. Ask the operator to place a verified
+entry in user `customRules` or the git-root project config; project rules tighten
+rather than replace operator policy. Already masked findings need no promotion.
+See [Suggest Rule](cli-reference.md#suggest-rule) for output fields and exit codes.
+
 ### pastewatch-cli version
 
 Print version information.

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<!-- WO-711@v1: advisory findings can be promoted to rotation-safe custom rules without pasting the value. -->
+- Add `suggest-rule` to print a key-anchored `customRules` entry for an advisory finding (by file and line, or from stdin), so a value pastewatch was unsure about is masked from then on; `--exact` emits a literal-value rule with a plaintext warning. (WO-711)
 <!-- WO-697@v1: coverage tiers state detected boundaries and their limits. -->
 - Report per-agent coverage tiers in doctor, document what each protection layer misses, describe the proxy as a filter for routed model egress, and freeze the best-effort Bash reader list. (WO-697)
 <!-- WO-692@v1: expose additive source locations in scan JSON. -->
