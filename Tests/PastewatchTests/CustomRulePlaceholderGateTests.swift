@@ -39,7 +39,8 @@ final class CustomRulePlaceholderGateTests: XCTestCase {
             _ = try read(editor, fixture: fixture)
             let result = try edit(editor, fixture: fixture, old: "mode=before", new: "mode=after")
             XCTAssertNil(result["isError"])
-            let expected = String(decoding: fixture.original, as: UTF8.self)
+            // WO-715@v1: invalid fixture bytes must fail the test rather than be repaired during decoding.
+            let expected = try XCTUnwrap(String(data: fixture.original, encoding: .utf8))
                 .replacingOccurrences(of: "mode=before", with: "mode=after")
             XCTAssertTrue(try Data(contentsOf: fixture.file).elementsEqual(expected.utf8))
             try assertNoValue(result, fixture: fixture)
@@ -267,6 +268,8 @@ final class CustomRulePlaceholderGateTests: XCTestCase {
     // WO-715@v1: the complete encoded response must not disclose restored originals.
     private func assertNoValue(_ result: [String: JSONValue], fixture: Fixture) throws {
         let encoded = try JSONEncoder().encode(JSONValue.object(result))
-        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains(fixture.value))
+        // WO-715@v1: malformed response encoding must fail instead of substituting replacement characters.
+        let text = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertFalse(text.contains(fixture.value))
     }
 }

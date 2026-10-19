@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
-<!-- WO-715@v1: placeholders matched by broad custom rules restore on write and edit. -->
+<!-- WO-715@v2: placeholders matched by broad custom rules restore on write and edit. -->
 - MCP writes and edits accept placeholders that pastewatch issued even when an operator custom rule also matches the placeholder text, so files masked by key-anchored rules can be written back; plaintext and unknown placeholders are still refused. (WO-715)
 <!-- WO-713@v1: operator custom rules match against source text in parsed config formats. -->
 - Apply custom rules to the original file text as well as parsed values in structured formats (.properties, .env, YAML, JSON and others), so key-anchored rules mask values on read instead of silently never matching. (WO-713)
