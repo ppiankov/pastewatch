@@ -230,6 +230,34 @@ final class SuggestRuleCommandTests: XCTestCase {
         }
     }
 
+    // WO-711@v2: standard help must bypass value-input validation without losing the documented options.
+    func testStandardHelpListsInputAndLiteralOptions() throws {
+        try isolated { root in
+            for flag in ["--help", "-h"] {
+                let result = try run(root: root, arguments: [flag])
+                XCTAssertEqual(result.status, 0, flag)
+                let text = try XCTUnwrap(String(data: result.output, encoding: .utf8))
+                for option in ["--file", "--line", "--stdin", "--exact"] {
+                    XCTAssertTrue(text.contains(option), option)
+                }
+            }
+        }
+    }
+
+    // WO-711@v2: rejected positional values remain private even after removing the passthrough argument.
+    func testPositionalArgumentsNeverEchoValues() throws {
+        try isolated { root in
+            let value = ["synthetic", "phrase", "7"].joined()
+            for arguments in [
+                [value], ["--file", "f", "--line", "1", value], ["--stdin", "--", value]
+            ] {
+                let result = try run(root: root, arguments: arguments)
+                XCTAssertNotEqual(result.status, 0)
+                XCTAssertFalse(try output(result).contains(value))
+            }
+        }
+    }
+
     // WO-711@v1: literal disclosure is explicit, confined to the pattern, and paired with a rotation warning.
     func testExactOutputWarnsAndLimitsDisclosureToPattern() throws {
         try isolated { root in

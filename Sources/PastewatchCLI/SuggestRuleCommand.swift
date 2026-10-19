@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import PastewatchCore
 
-// WO-711@v1: value-bearing input arrives only through a file or stdin, never a command argument.
+// WO-711@v2: value-bearing input arrives only through a file or stdin, never a command argument.
 struct SuggestRule: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "suggest-rule",
         abstract: "Print a custom rule for an advisory finding without editing configuration")
@@ -25,15 +25,12 @@ struct SuggestRule: ParsableCommand {
     @Option(name: .long, help: "Output format: json or text")
     var format = "text"
 
-    @Argument(parsing: .captureForPassthrough, help: .hidden)
-    var rejectedValues: [String] = []
-
     // WO-711@v1: chunking bounds temporary allocations while only the first input line is consumed for derivation.
     private static let inputChunkBytes = 4 * 1_024
 
-    // WO-711@v1: errors never echo parser arguments, source content, patterns or configuration values.
+    // WO-711@v2: parser-owned help and argument rejection must run before value-input validation.
     mutating func run() throws {
-        guard rejectedValues.isEmpty, (file != nil) != stdin,
+        guard (file != nil) != stdin,
               file == nil ? line == nil : (line.map { $0 > 0 } ?? false),
               ["json", "text"].contains(format) else {
             throw ValidationError("Use --file with --line, or --stdin; values are never accepted as arguments.")
