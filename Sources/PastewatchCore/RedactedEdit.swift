@@ -130,7 +130,8 @@ public enum RedactedEdit {
         edited.replaceSubrange(range, with: newString.utf8)
         guard let text = String(data: edited, encoding: .utf8) else { throw RedactedEditError.inspectionFailed }
         // WO-647@v2: inspect both edit boundaries while pre-existing authorized values are still placeholders.
-        try validateEditedView(text, filePath: filePath, config: config)
+        // WO-715@v1: edit validation must use the same file-scoped mappings as restoration.
+        try validateEditedView(text, filePath: filePath, store: store, config: config)
         let restored: ResolveResult
         do {
             restored = try store.resolveChecked(content: text, filePath: filePath,
@@ -186,7 +187,10 @@ public enum RedactedEdit {
     }
 
     // WO-647@v2: the complete edited view follows MCP write's agent-controlled authorization before restoration.
-    private static func validateEditedView(_ content: String, filePath: String, config: PastewatchConfig) throws {
+    // WO-715@v1: issued markers cannot be mistaken for plaintext by broad custom rules.
+    private static func validateEditedView(
+        _ content: String, filePath: String, store: RedactionStore, config: PastewatchConfig
+    ) throws {
         let matches: [DetectedMatch]
         do {
             matches = try DirectoryScanner.scanFileContentOrThrow(
@@ -197,8 +201,10 @@ public enum RedactedEdit {
                                               // WO-676@v4: edits use the same marker-free decision policy.
                                               minimumSeverity: nil, filePath: filePath)
         let partition = partitionMutationMatches(decision.reportableMatches, site: .mcpWrite, minAdvisorySeverity: .low)
-        if !partition.authorized.isEmpty {
-            throw RedactedEditError.plaintextSecrets(partition.authorized.map { "\($0.displayName) at line \($0.line)" }.sorted())
+        // WO-715@v1: the shared check preserves rejection of unknown markers and any adjacent plaintext.
+        let plaintextMatches = store.plaintextRejectionMatches(partition.authorized, in: content, filePath: filePath)
+        if !plaintextMatches.isEmpty {
+            throw RedactedEditError.plaintextSecrets(plaintextMatches.map { "\($0.displayName) at line \($0.line)" }.sorted())
         }
     }
 

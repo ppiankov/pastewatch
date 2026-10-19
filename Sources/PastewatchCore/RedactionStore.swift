@@ -173,6 +173,46 @@ public final class RedactionStore {
         }
     }
 
+    // WO-715@v1: issued markers are not new plaintext, but only complete resolvable coverage exempts custom matches.
+    public func plaintextRejectionMatches(
+        _ matches: [DetectedMatch], in content: String, filePath: String? = nil
+    ) -> [DetectedMatch] {
+        let knownMarkers: Set<String>
+        if let filePath {
+            knownMarkers = Set((mappings[filePath] ?? [:]).keys)
+        } else {
+            knownMarkers = Set(mappings.values.flatMap { $0.keys })
+        }
+        let bytes = Data(content.utf8)
+        let resolvableRanges = placeholderByteRanges(in: content).filter { range in
+            guard let marker = String(data: bytes[range], encoding: .utf8) else { return false }
+            return knownMarkers.contains(marker)
+        }
+        return matches.filter { match in
+            guard match.customRuleName != nil,
+                  !match.mutationAuthorizationSources.contains(.intrinsicFormat),
+                  !match.mutationAuthorizationSources.contains(.exactKnownSecret) else { return true }
+            return !Self.isPlaceholderCovered(match, in: content, ranges: resolvableRanges)
+        }
+    }
+
+    // WO-715@v1: byte coverage rejects gaps, stale source spans and plaintext appended to an issued marker.
+    private static func isPlaceholderCovered(_ match: DetectedMatch, in content: String, ranges: [Range<Int>]) -> Bool {
+        guard match.range.lowerBound >= content.startIndex, match.range.upperBound <= content.endIndex,
+              match.range.lowerBound < match.range.upperBound,
+              let lower = String.Index(match.range.lowerBound, within: content),
+              let upper = String.Index(match.range.upperBound, within: content),
+              content[lower..<upper].utf8.elementsEqual(match.value.utf8) else { return false }
+        var cursor = content.utf8.distance(from: content.utf8.startIndex, to: lower)
+        let end = content.utf8.distance(from: content.utf8.startIndex, to: upper)
+        for range in ranges where range.upperBound > cursor {
+            guard range.lowerBound <= cursor else { return false }
+            cursor = range.upperBound
+            if cursor >= end { return true }
+        }
+        return false
+    }
+
     // WO-647@v2: complete markers are allowed, but recognizable truncated marker syntax cannot be written.
     public func hasPartialPlaceholder(in content: String, filePath: String) -> Bool {
         let regex = customRegex ?? Self.structuredRegex

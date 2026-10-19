@@ -1081,15 +1081,18 @@ final class MCPServer {
             site: .mcpWrite,
             minAdvisorySeverity: .low
         )
-        if !writePartition.authorized.isEmpty {
-            let types = Set(writePartition.authorized.map { $0.displayName }).sorted()
+        // WO-715@v1: only issued, resolvable markers may bypass the custom-rule plaintext rejection.
+        let plaintextMatches = store.plaintextRejectionMatches(writePartition.authorized, in: content)
+        if !plaintextMatches.isEmpty {
+            let types = Set(plaintextMatches.map { $0.displayName }).sorted()
             auditLogger?.log(
-                "WRITE \(path)  blocked-plaintext=\(writePartition.authorized.count) " +
+                "WRITE \(path)  blocked-plaintext=\(plaintextMatches.count) " +
                     "[\(types.joined(separator: ", "))]"
             )
             return errorResult(
                 id: id,
-                text: "Write blocked: content contains \(writePartition.authorized.count) plaintext secret(s). " +
+                // WO-715@v1: refusal counts include only matches that still represent new plaintext.
+                text: "Write blocked: content contains \(plaintextMatches.count) plaintext secret(s). " +
                     "Use placeholders returned by pastewatch_read_file."
             )
         }
