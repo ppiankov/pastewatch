@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-20
+
 ### Added
 <!-- WO-707@v3: distinguish masked read findings from plaintext advisories without changing severity or content. -->
 - Report finding disposition on MCP reads, with a plaintext advisory notice naming `suggest-rule`, and expose mutation authority in scan JSON without claiming its original values were masked. (WO-707)
