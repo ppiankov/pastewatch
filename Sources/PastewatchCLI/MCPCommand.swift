@@ -1086,8 +1086,11 @@ final class MCPServer {
         // Resolve placeholders using all file mappings (agent may move values between files).
         let resolved = store.resolveAll(content: content)
 
-        // WO-710@v1: session mappings can disappear on reconnect; unresolved tokens must never reach disk.
-        if resolved.unresolved > 0 {
+        // WO-710@v1: session mappings can disappear on reconnect; newly unresolved tokens must not reach disk.
+        // WO-719@v2: a failed disk inspection cannot authorize new unresolved occurrences.
+        if !store.permitsUnresolvedPlaceholders(resolved, existingBytes: {
+            try DetectionRules.readBoundedFileData(atPath: path)
+        }) {
             auditLogger?.log("WRITE-REFUSED \(path) unresolved=\(resolved.unresolved)")
             return errorResult(
                 id: id,

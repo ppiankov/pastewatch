@@ -744,9 +744,12 @@ public struct DirectoryScanner {
         }
 
         // WO-713@v1: operator rules need the source context removed by structured value extraction.
-        let rawMatches = try DetectionRules.scanFileIOOrThrow(
+        // WO-718@v2: only XML or a present rule source consumes raw findings; presence fails toward scanning.
+        let needsRawScan = !customRules.isEmpty || !config.customRules.isEmpty
+            || !config.sharedPatternFiles.isEmpty || ext.lowercased() == "xml"
+        let rawMatches = needsRawScan ? try DetectionRules.scanFileIOOrThrow(
             content, config: config, customRules: customRules, limits: limits
-        )
+        ) : []
 
         // XML files: also run raw detection for XML-specific tag patterns
         // (e.g., <password>plain</password> where the extracted value alone

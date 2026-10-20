@@ -137,7 +137,10 @@ public enum RedactedEdit {
             restored = try store.resolveChecked(content: text, filePath: filePath,
                                                  maximumBytes: ScanInputLimits.current().maximumFileBytes)
         } catch { throw RedactedEditError.writeFailed }
-        guard restored.unresolved == 0 else { throw RedactedEditError.unresolved(restored.unresolved) }
+        // WO-719@v2: the edit's original snapshot, not a later read, supplies the literal-token budget.
+        guard store.permitsUnresolvedPlaceholders(restored, existingBytes: { snapshot.bytes }) else {
+            throw RedactedEditError.unresolved(restored.unresolved)
+        }
         try DetectionRules.validateFileInput(restored.content, limits: .current())
         try write(Data(restored.content.utf8), snapshot: snapshot, filePath: filePath, replace: replace)
         return RedactedEditSummary(linesChanged: changedLines(oldString, newString), redactions: snapshot.view.redactions.count)

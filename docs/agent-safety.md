@@ -190,6 +190,13 @@ while a file read is first exposure. Guard command thresholds can therefore bloc
 an inline finding that a read returns as an advisory. Native Read follows the MCP
 masking decision. Severity is not a claim that plaintext was protected.
 
+<!-- WO-719@v2: literal documentation markers cannot become a way to add unresolved write content. -->
+MCP writes and edits preserve unresolved placeholder-shaped text already present
+in the file, but refuse added occurrences or new unresolved tokens. Counts are
+checked per exact token; a missing file has no existing tokens. Issued placeholders
+still restore normally. Unresolved text is refused if the original file cannot be
+inspected. Edits compare against their pre-edit file snapshot.
+
 ### Per-agent severity
 
 Different agents may need different thresholds. Use `--min-severity` on the MCP server command to set each agent's default independently:
