@@ -149,6 +149,26 @@ public final class RedactionStore {
         return resolveWithMappings(content: content, filePaths: Array(mappings.keys))
     }
 
+    // WO-719@v2: literal examples may survive, but each unresolved token keeps its original occurrence budget.
+    public func permitsUnresolvedPlaceholders(
+        _ result: ResolveResult, existingBytes: () throws -> Data
+    ) -> Bool {
+        guard result.unresolved == result.unresolvedPlaceholders.count else { return false }
+        guard result.unresolved > 0 else { return true }
+        guard let data = try? existingBytes(), let original = String(data: data, encoding: .utf8) else { return false }
+        let bytes = Data(original.utf8)
+        var existingCounts: [String: Int] = [:]
+        for range in placeholderByteRanges(in: original) {
+            guard let token = String(data: bytes[range], encoding: .utf8) else { return false }
+            existingCounts[token, default: 0] += 1
+        }
+        let required = Dictionary(grouping: result.unresolvedPlaceholders, by: { $0 })
+        for (token, occurrences) in required {
+            guard occurrences.count <= existingCounts[token, default: 0] else { return false }
+        }
+        return true
+    }
+
     /// Clear all mappings.
     public func clear() {
         mappings.removeAll()
