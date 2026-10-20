@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `make verify-release VERSION=X.Y.Z` to verify release-run completion and all three published CLI checksums against the Homebrew formula. (WO-693)
 
 ### Fixed
+<!-- WO-718@v2: skip raw detection only when neither XML nor an effective rule source consumes its findings. -->
+- Skip unused raw source scans of parsed non-XML files without explicit, configured or shared custom-rule sources, preserving findings for every rule source. (WO-718)
 <!-- WO-719@v2: unresolved literal examples keep only their existing per-token occurrence counts. -->
 - Preserve unresolved placeholder-shaped text already present on disk during MCP writes and edits, but refuse any added occurrences or new unresolved tokens; issued placeholders still restore normally. (WO-719)
 <!-- WO-715@v2: placeholders matched by broad custom rules restore on write and edit. -->
