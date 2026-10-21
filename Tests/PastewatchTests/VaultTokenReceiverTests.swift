@@ -2,6 +2,36 @@ import XCTest
 @testable import PastewatchCore
 
 final class VaultTokenReceiverTests: XCTestCase {
+    // WO-720@v3: method values retain receiver syntax when passed without invoking them.
+    func testReceiverMethodValuesAreNotVaultTokens() {
+        let member = ["heartbeat", "Protocol", "Probe", "At"].joined()
+        XCTAssertEqual(member.count, 24)
+        for receiver in ["s", "b", "r"] {
+            let reference = receiver + "." + member
+            for content in ["mux.Handle(\"GET /x\", " + reference + ")",
+                            "r.Get(\"/x\", " + reference + ")",
+                            "f(" + reference + ", other)",
+                            "f(" + reference + " \t, other)",
+                            "f(" + reference + " \t)"] {
+                XCTAssertEqual(vaultMatches(in: content).count, 0)
+            }
+        }
+    }
+
+    // WO-720@v3: argument delimiters must not erase quoted or standalone intrinsic values.
+    func testQuotedAndEndOfLineLegacyValuesRemainCritical() {
+        let suffix = String(repeating: "A1", count: 12)
+        for receiver in ["s", "b", "r"] {
+            let reference = receiver + "." + suffix
+            for content in ["login(\"" + reference + "\")", "f(\"" + reference + "\", other)",
+                            "VAULT_" + "TOKEN=" + reference] {
+                let matches = vaultMatches(in: content)
+                XCTAssertEqual(matches.count, 1)
+                XCTAssertTrue(matches.allSatisfy { $0.effectiveSeverity == .critical && $0.mutationSafe })
+            }
+        }
+    }
+
     // WO-684@v1: receiver-field assignments are syntax, not legacy token evidence.
     func testReceiverFieldAssignmentsAreNotVaultTokens() {
         let member = ["heartbeat", "Protocol", "Probe", "At"].joined()

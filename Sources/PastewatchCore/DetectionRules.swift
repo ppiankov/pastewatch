@@ -879,6 +879,8 @@ public struct DetectionRules {
               parts[1].first?.isLetter == true else { return false }
         let tail = content[end...].drop { $0.isWhitespace && !$0.isNewline }
         if tail.hasPrefix("(") { return true }
+        // WO-720@v3: argument delimiters distinguish unquoted method values from standalone legacy secrets.
+        if tail.hasPrefix(")") || tail.hasPrefix(",") { return true }
         // WO-684@v1: a single assignment operator identifies a receiver field; comparisons keep their existing checks.
         if tail.hasPrefix("="), !tail.hasPrefix("==") { return true }
         guard tail.hasPrefix("==") || tail.hasPrefix("!=") else { return false }

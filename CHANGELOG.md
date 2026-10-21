@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+<!-- WO-720@v3: method arguments retain code identity without weakening standalone legacy token detection. -->
+- Exclude unquoted Go receiver method values passed as arguments from legacy Vault Token findings; quoted and standalone values keep their protection. (WO-720)
+
 ## [0.44.0] - 2026-10-20
 
 ### Added
