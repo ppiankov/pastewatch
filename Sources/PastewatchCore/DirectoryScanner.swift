@@ -713,7 +713,8 @@ public struct DirectoryScanner {
             // This catches JSON {"API_KEY": "value"} where the value alone has no pattern.
             if let key = pv.key,
                DetectionRules.isCredentialKeyName(key),
-               DetectionRules.isValidCredentialValue(pv.value) {
+               // WO-714@v3: parsed values need their key to distinguish workflow permissions from credentials.
+               DetectionRules.isValidCredentialKeyValue(key: key, value: pv.value) {
                 guard let sourceRange = sourceRange(
                    of: pv.value,
                    line: pv.line,

@@ -1822,7 +1822,8 @@ public struct DetectionRules {
             return false
         }
 
-        return isValidCredentialValue(value)
+        // WO-714@v3: raw and parsed keyword candidates share the same workflow placeholder rules.
+        return isValidCredentialKeyValue(key: key, value: value)
     }
 
     // WO-688@v1: colon expressions require same-line source delimiters; assignment discrimination stays unchanged.
@@ -2179,6 +2180,21 @@ public struct DetectionRules {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .map { $0.lowercased() }
+    }
+
+    // WO-714@v3: permission vocabulary is key-specific, while whole placeholder segments apply to any credential key.
+    static func isValidCredentialKeyValue(key: String, value: String) -> Bool {
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key == "id-token",
+           candidate.range(of: #"^(?:read|write|none)(?:[ \t]+#.*)?$"#, options: .regularExpression) != nil {
+            return false
+        }
+        let unquoted = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if unquoted.split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .contains(where: { $0.lowercased() == "placeholder" }) {
+            return false
+        }
+        return isValidCredentialValue(value)
     }
 
     // WO-651@v2: short keyword values are too weak to justify blocking regardless of surrounding syntax.
