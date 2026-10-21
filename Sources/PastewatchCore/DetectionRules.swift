@@ -1842,10 +1842,30 @@ public struct DetectionRules {
                 String(suffix) + String(following ?? ""), isSelector: value[identifier].contains(".")
             )
         }
+        // WO-709@v2: an indexed reference is code only when its balanced expression ends at a statement boundary.
+        if isCredentialIndexExpression((String(suffix) + String(following ?? ""))[...]) { return true }
         let tail = suffix.isEmpty ? following ?? "" : suffix
         if tail.drop(while: { $0.isWhitespace && !$0.isNewline }).first == "(" { return true }
         // Namespace paths without a call are references; punctuation is restricted to statement boundaries.
         return value[identifier].contains("::") && suffix.allSatisfy { ",;)]}".contains($0) }
+    }
+
+    // WO-709@v2: same-line bracket balancing avoids excluding malformed values or chained trailing expressions.
+    private static func isCredentialIndexExpression(_ tail: Substring) -> Bool {
+        guard tail.first == "[" else { return false }
+        let line = tail.prefix { !$0.isNewline }
+        var depth = 0
+        for index in line.indices {
+            if line[index] == "[" { depth += 1 }
+            if line[index] == "]" {
+                depth -= 1
+                if depth == 0 {
+                    let after = line[line.index(after: index)...].drop { $0.isWhitespace }
+                    return after.first.map { ";),".contains($0) } ?? true
+                }
+            }
+        }
+        return false
     }
 
     // WO-688@v1: only a balanced same-line call or selector followed by source punctuation justifies exclusion.

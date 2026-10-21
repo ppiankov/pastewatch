@@ -138,6 +138,43 @@ enum CredentialCodeExpressionFixtures {
 
 // WO-668@v1: recognition precision cannot weaken literal coverage or mutation authorization.
 final class CredentialCodeExpressionTests: XCTestCase {
+    // WO-709@v2: balanced index and slice assignments are references regardless of the credential keyword.
+    func testIndexAndSliceAssignmentsAreNotCredentials() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            for key in ["to" + "ken", "sec" + "ret", "pass" + "word"] {
+                let rows = [key + " = " + key + "[:eq]", key + " := buf[i:j]",
+                            key + " = parts[1]", key + " := cfg.Keys[name]"]
+                for (index, row) in rows.enumerated() {
+                    for terminator in ["", ";", ")", ",", " \t;", "\nnext()"] {
+                        let matches = DetectionRules.scan(row + terminator, config: config)
+                            .filter { $0.type == .credential }
+                        XCTAssertEqual(matches.count, 0, "index row \(index + 1): Credential count=\(matches.count)")
+                    }
+                }
+            }
+        }
+    }
+
+    // WO-709@v2: quoted values and malformed or continued index expressions retain their existing findings.
+    func testIndexPrecisionKeepsLiteralAndMalformedControls() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let config = TestConfigHelper.configWithAmbiguousAdvisories([.credential])
+            let literal = "vendor_" + ["Q7mN", "4rZ9", "T2xV", "8bD5"].joined()
+            for key in ["to" + "ken", "sec" + "ret", "pass" + "word"] {
+                for (index, expression) in ["\"" + literal + "\"", "parts[1", "parts[1] + other",
+                                           "parts[1]suffix", "cfg.Keys[name", "parts[1][2]"].enumerated() {
+                    let matches = DetectionRules.scan(key + " = " + expression, config: config)
+                        .filter { $0.type == .credential }
+                    // WO-709@v2: the short unclosed candidate was already excluded before index discrimination.
+                    let expectedCount = index == 1 ? 0 : 1
+                    XCTAssertEqual(matches.count, expectedCount, "control row \(index + 1): Credential count=\(matches.count)")
+                    XCTAssertTrue(matches.allSatisfy { $0.effectiveSeverity == .critical }, "control row \(index + 1)")
+                }
+            }
+        }
+    }
+
     // WO-695@v1: callee-independent cutset precision must retain literal assignments and constructors.
     func testTokenizerCutsetsAreNotCredentialsAndLiteralControlsStayCritical() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { _ in

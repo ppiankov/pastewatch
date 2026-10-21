@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-709@v2: balanced source index and slice references are not stored credential values. -->
+- Exclude Go index and slice assignments from Credential findings while retaining quoted values and existing malformed-expression behaviour. (WO-709)
 <!-- WO-720@v3: method arguments retain code identity without weakening standalone legacy token detection. -->
 - Exclude unquoted Go receiver method values passed as arguments from legacy Vault Token findings; quoted and standalone values keep their protection. (WO-720)
 
