@@ -5,6 +5,7 @@ import Foundation
 public struct YAMLValueParser: FormatParser {
     public init() {}
 
+    // WO-716@v2: scalar syntax must not enlarge downstream key-aware finding ranges.
     public func parseValues(from content: String) -> [ParsedValue] {
         var results: [ParsedValue] = []
         let lines = content.components(separatedBy: .newlines)
@@ -22,14 +23,8 @@ public struct YAMLValueParser: FormatParser {
             if let colonRange = processLine.range(of: ": ") {
                 let key = String(processLine[processLine.startIndex..<colonRange.lowerBound])
                     .trimmingCharacters(in: .whitespaces)
-                var value = String(processLine[colonRange.upperBound...])
-                    .trimmingCharacters(in: .whitespaces)
-
-                // Strip surrounding quotes
-                if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
-                   (value.hasPrefix("'") && value.hasSuffix("'")) {
-                    value = String(value.dropFirst().dropLast())
-                }
+                let value = scalarValue(String(processLine[colonRange.upperBound...])
+                    .trimmingCharacters(in: .whitespaces))
 
                 if !value.isEmpty {
                     results.append(ParsedValue(value: value, line: index + 1, key: key))
@@ -41,5 +36,41 @@ public struct YAMLValueParser: FormatParser {
         }
 
         return results
+    }
+
+    // WO-716@v2: preserve encoded scalar bytes so source-range mapping does not need an unescape pass.
+    private func scalarValue(_ text: String) -> String {
+        if let quote = text.first, quote == "\"" || quote == "'" {
+            guard let end = quotedScalarEnd(in: text, quote: quote) else { return text }
+            return String(text[text.index(after: text.startIndex)..<end])
+        }
+        if let comment = text.range(of: #"[ \t]+#"#, options: .regularExpression) {
+            return String(text[..<comment.lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
+        return text
+    }
+
+    // WO-716@v2: escaped delimiters stay inside the value; only a trailing YAML comment may follow its closing quote.
+    private func quotedScalarEnd(in text: String, quote: Character) -> String.Index? {
+        var index = text.index(after: text.startIndex)
+        while index < text.endIndex {
+            let next = text.index(after: index)
+            if quote == "\"", text[index] == "\\" {
+                guard next < text.endIndex else { return nil }
+                index = text.index(after: next)
+            } else if text[index] == quote {
+                if quote == "'", next < text.endIndex, text[next] == quote {
+                    index = text.index(after: next)
+                    continue
+                }
+                let tail = text[next...]
+                let remainder = tail.drop { $0.isWhitespace }
+                guard remainder.isEmpty || (tail.first?.isWhitespace == true && remainder.first == "#") else { return nil }
+                return index
+            } else {
+                index = next
+            }
+        }
+        return nil
     }
 }
