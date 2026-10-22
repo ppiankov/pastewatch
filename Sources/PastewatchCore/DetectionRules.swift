@@ -879,6 +879,8 @@ public struct DetectionRules {
               parts[1].first?.isLetter == true else { return false }
         let tail = content[end...].drop { $0.isWhitespace && !$0.isNewline }
         if tail.hasPrefix("(") { return true }
+        // WO-720@v3: argument delimiters distinguish unquoted method values from standalone legacy secrets.
+        if tail.hasPrefix(")") || tail.hasPrefix(",") { return true }
         // WO-684@v1: a single assignment operator identifies a receiver field; comparisons keep their existing checks.
         if tail.hasPrefix("="), !tail.hasPrefix("==") { return true }
         guard tail.hasPrefix("==") || tail.hasPrefix("!=") else { return false }
@@ -1820,7 +1822,8 @@ public struct DetectionRules {
             return false
         }
 
-        return isValidCredentialValue(value)
+        // WO-714@v3: raw and parsed keyword candidates share the same workflow placeholder rules.
+        return isValidCredentialKeyValue(key: key, value: value)
     }
 
     // WO-688@v1: colon expressions require same-line source delimiters; assignment discrimination stays unchanged.
@@ -1840,10 +1843,30 @@ public struct DetectionRules {
                 String(suffix) + String(following ?? ""), isSelector: value[identifier].contains(".")
             )
         }
+        // WO-709@v2: an indexed reference is code only when its balanced expression ends at a statement boundary.
+        if isCredentialIndexExpression((String(suffix) + String(following ?? ""))[...]) { return true }
         let tail = suffix.isEmpty ? following ?? "" : suffix
         if tail.drop(while: { $0.isWhitespace && !$0.isNewline }).first == "(" { return true }
         // Namespace paths without a call are references; punctuation is restricted to statement boundaries.
         return value[identifier].contains("::") && suffix.allSatisfy { ",;)]}".contains($0) }
+    }
+
+    // WO-709@v2: same-line bracket balancing avoids excluding malformed values or chained trailing expressions.
+    private static func isCredentialIndexExpression(_ tail: Substring) -> Bool {
+        guard tail.first == "[" else { return false }
+        let line = tail.prefix { !$0.isNewline }
+        var depth = 0
+        for index in line.indices {
+            if line[index] == "[" { depth += 1 }
+            if line[index] == "]" {
+                depth -= 1
+                if depth == 0 {
+                    let after = line[line.index(after: index)...].drop { $0.isWhitespace }
+                    return after.first.map { ";),".contains($0) } ?? true
+                }
+            }
+        }
+        return false
     }
 
     // WO-688@v1: only a balanced same-line call or selector followed by source punctuation justifies exclusion.
@@ -2157,6 +2180,21 @@ public struct DetectionRules {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .map { $0.lowercased() }
+    }
+
+    // WO-714@v3: permission vocabulary is key-specific, while whole placeholder segments apply to any credential key.
+    static func isValidCredentialKeyValue(key: String, value: String) -> Bool {
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key == "id-token",
+           candidate.range(of: #"^(?:read|write|none)(?:[ \t]+#.*)?$"#, options: .regularExpression) != nil {
+            return false
+        }
+        let unquoted = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if unquoted.split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .contains(where: { $0.lowercased() == "placeholder" }) {
+            return false
+        }
+        return isValidCredentialValue(value)
     }
 
     // WO-651@v2: short keyword values are too weak to justify blocking regardless of surrounding syntax.

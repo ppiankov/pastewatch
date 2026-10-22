@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+<!-- WO-716@v2: YAML scalar ranges exclude quote delimiters and inline comments. -->
+- Exclude YAML inline comments and surrounding quotes from parsed values, respecting escaped quotes and preserving hashes within scalar text. (WO-716)
+<!-- WO-714@v3: workflow permissions and complete placeholder segments are not credential values. -->
+- Exclude `id-token` permission values and hyphen- or underscore-separated placeholder segments from Credential findings in raw and parsed workflow scans, retaining real values at their existing severity. (WO-714)
+<!-- WO-709@v2: balanced source index and slice references are not stored credential values. -->
+- Exclude Go index and slice assignments from Credential findings while retaining quoted values and existing malformed-expression behaviour. (WO-709)
+<!-- WO-720@v3: method arguments retain code identity without weakening standalone legacy token detection. -->
+- Exclude unquoted Go receiver method values passed as arguments from legacy Vault Token findings; quoted and standalone values keep their protection. (WO-720)
+
 ## [0.44.0] - 2026-10-20
 
 ### Added
