@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-712@v3: command refusals distinguish a blocked decision from partial execution. -->
+- State first in human-facing command guard refusals that the whole command was refused and no part ran, retaining existing decisions, remedies, JSON and quiet output. (WO-712)
 <!-- WO-722@v2: literal subcommands keep expanded operands separate from operator-only grant attempts. -->
 - Allow expanded file operands after literal non-grant subcommands while retaining refusal of indirect grant invocations and all file checks. (WO-722)
 <!-- WO-721@v2: quoted heredoc bodies are data for grant classification without hiding other guarded content. -->

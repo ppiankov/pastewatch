@@ -21,6 +21,7 @@ struct Guard: ParsableCommand {
     @Flag(name: .long, help: "Exit code only, no output")
     var quiet = false
 
+    // WO-712@v3: command refusals state that no segment ran without changing policy or output modes.
     // WO-687@v2: guard decisions are independent of inherited environment switches.
     // WO-673@v2: grants admit only individual transfer reads, never other readers of the same path.
     // WO-644@v2: unsupported source syntax has one value-free allow diagnostic.
@@ -33,9 +34,14 @@ struct Guard: ParsableCommand {
         let access = CommandParser.fileAccess(from: command)
         // WO-658@v2: refuse only the recognized remedy's unresolved syntax, without echoing its operands.
         try requireLiteralRedactedAccess(access)
-        if !access.unsupportedCommands.isEmpty {
-            let names = access.unsupportedCommands.joined(separator: ", ")
-            FileHandle.standardError.write(Data("Unsupported source scanning for: \(names).\n".utf8))
+        // WO-712@v3: a later human-facing refusal must precede nonblocking source diagnostics.
+        if quiet || json {
+            printUnsupportedSources(access.unsupportedCommands)
+        }
+        defer {
+            if !quiet && !json {
+                printUnsupportedSources(access.unsupportedCommands)
+            }
         }
 
         var allFileResults: [FileResult] = []
@@ -46,6 +52,8 @@ struct Guard: ParsableCommand {
         // evaluating a partial detector set.
         let commandScan = DetectionRules.scanFileIOResult(command, config: config)
         guard !commandScan.hasSharedPatternErrors else {
+            // WO-712@v3: policy-loading failures refuse the complete command too.
+            printWholeCommandRefusal()
             if !quiet {
                 FileHandle.standardError.write(
                     Data("BLOCKED: configured shared patterns could not be loaded.\n".utf8)
@@ -135,6 +143,8 @@ struct Guard: ParsableCommand {
         }
 
         if shouldBlock {
+            // WO-712@v3: the command-level outcome precedes finding details and remedies.
+            printWholeCommandRefusal()
             // WO-687@v2: one stderr notice accompanies findings in text, JSON and quiet modes.
             FileGuard.printGuardEnvironmentNotice(hasFindings: true)
             if json {
@@ -174,11 +184,13 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-712@v3: preflight refusals share the same execution notice as finding-based refusals.
     // WO-673@v2: the command preflight rejects self-grant invocations without disclosing operands.
     // WO-658@v2: unresolved remedy paths refuse without disclosing command operands.
     private func requireLiteralRedactedAccess(_ access: CommandParser.FileAccess) throws {
         // WO-673@v2: agents cannot invoke the operator's binary valve through wrappers or shell aliases.
         guard !access.invokesBinaryGrant else {
+            printWholeCommandRefusal()
             // WO-673@v2: retain literal-argument guidance for existing read/edit refusal callers.
             if !quiet {
                 FileHandle.standardError.write(Data(("Operator-only binary transfer grant; agents cannot grant this. " +
@@ -189,6 +201,7 @@ struct Guard: ParsableCommand {
             throw ExitCode(rawValue: GuardExitContract.blocked)
         }
         guard access.hasUnsafeRedactedCommand else { return }
+        printWholeCommandRefusal()
         if !quiet {
             FileHandle.standardError.write(Data("Redacted file access requires a literal path and no command substitution.\n".utf8))
             // WO-681@v1: append the same guidance to the existing literal-access refusal.
@@ -197,6 +210,7 @@ struct Guard: ParsableCommand {
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 
+    // WO-712@v3: file-scan refusals retain their details after the whole-command notice.
     // WO-673@v2: only transfer sources with a live content-bound grant may pass the opaque-file boundary.
     // WO-601@v2: one fail-closed boundary owns referenced-file decoding and scanning.
     private func scanReferencedFile(
@@ -224,6 +238,7 @@ struct Guard: ParsableCommand {
             )
             return ReferencedFileScan(content: content, matches: matches)
         } catch let error as SharedSecretPatternLoadError {
+            printWholeCommandRefusal()
             if !quiet {
                 let message = "BLOCKED: configured shared patterns could not be loaded " +
                     "for \(path): \(error.localizedDescription)\n"
@@ -233,6 +248,7 @@ struct Guard: ParsableCommand {
             }
             throw ExitCode(rawValue: GuardExitContract.blocked)
         } catch let error as ScanInputLimitError {
+            printWholeCommandRefusal()
             if !quiet {
                 let message = "BLOCKED: \(path) \(error.localizedDescription)\n"
                 FileHandle.standardError.write(Data(message.utf8))
@@ -247,10 +263,12 @@ struct Guard: ParsableCommand {
         }
     }
 
+    // WO-712@v3: unscannable operands refuse every segment, not only the named reader.
     // WO-677@v1: directory and I/O failures must not suggest a regular-file-only grant.
     // WO-673@v2: the binary block names an operator-only remedy without offering a guard bypass.
     // WO-601@v2: diagnostics identify the evidence boundary without file bytes.
     private func blockUnscannableFile(_ path: String, isNonUTF8: Bool = false) throws -> Never {
+        printWholeCommandRefusal()
         if !quiet {
             // WO-677@v1: classify the real target, including symlinks, without opening its contents again.
             let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
@@ -272,6 +290,19 @@ struct Guard: ParsableCommand {
             FileGuard.printDecisionVersion()
         }
         throw ExitCode(rawValue: GuardExitContract.blocked)
+    }
+
+    // WO-712@v3: one text-only prefix distinguishes a decision from partial command execution.
+    private func printWholeCommandRefusal() {
+        guard !quiet && !json else { return }
+        FileHandle.standardError.write(Data("BLOCKED: whole command refused; no part of it ran.\n".utf8))
+    }
+
+    // WO-712@v3: retain the existing diagnostic once while allowing a refusal to be the first line.
+    private func printUnsupportedSources(_ commands: [String]) {
+        guard !commands.isEmpty else { return }
+        let names = commands.joined(separator: ", ")
+        FileHandle.standardError.write(Data("Unsupported source scanning for: \(names).\n".utf8))
     }
 
     private func printJSON(_ result: GuardResult) {
