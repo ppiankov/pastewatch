@@ -15,6 +15,57 @@ import Crypto
 
 // WO-673@v2: grant fixtures use only isolated user policy and generated opaque bytes.
 final class BinaryTransferGrantTests: XCTestCase {
+    // WO-722@v2: operand expansions cannot change an already literal non-grant subcommand.
+    func testLiteralSubcommandsAllowExpandedOperands() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let file = root.appendingPathComponent("clean.txt")
+            try Data("ordinary text\n".utf8).write(to: file)
+            let commands = ["pastewatch-cli scan --file $F --format json", "pastewatch-cli guard-read \"$F\"",
+                            "for f in clean.txt; do pastewatch-cli scan --file $f --format json; done",
+                            ".build/debug/PastewatchCLI scan --file $F --format json",
+                            "pastewatch-cli --quiet scan --file $F", "command pastewatch-cli scan --file $F",
+                            "env MODE=test pastewatch-cli scan --file $F"]
+            for command in commands {
+                XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+                let result = try run(["guard", command], in: root, environment: ["F": file.path, "f": file.path])
+                XCTAssertEqual(result.status, 0)
+                XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-722@v2: executable and subcommand uncertainty still crosses the operator-only grant boundary.
+    func testExpandedGrantHeadAndWrappersRemainRefused() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let commands = ["pastewatch-cli $SUB x", "pastewatch-cli allow-binary $F",
+                            "pastewatch-cli --quiet $V allow-binary", "PW=pastewatch-cli; $PW allow-binary x",
+                            "bash -c 'pastewatch-cli allow-binary $F'",
+                            "alias pw='pastewatch-cli'; pw $SUB x",
+                            "env MODE=test pastewatch-cli $SUB x", "command pastewatch-cli $SUB x"]
+            for command in commands {
+                XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-722@v2: safe subcommands do not exempt other readers from the original file policy.
+    func testLiteralSubcommandStillChecksOtherFileOperands() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let value = "AKIA" + String(repeating: "Q", count: 16)
+            let source = root.appendingPathComponent("fixture.txt")
+            try Data(value.utf8).write(to: source)
+            let command = "cp " + source.path + " out.txt; pastewatch-cli scan --file $F"
+            let result = try run(["guard", command], in: root, environment: ["F": source.path])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.output.contains("BLOCKED:"))
+            XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            XCTAssertFalse(result.output.contains(value))
+        }
+    }
+
     // WO-721@v2: quoted heredoc bodies are inert data rather than executable grant invocations.
     func testQuotedHeredocGrantTextIsData() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in

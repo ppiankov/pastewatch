@@ -427,6 +427,7 @@ public struct CommandParser {
         return false
     }
 
+    // WO-722@v2: a literal subcommand fixes command identity before any later operand expansion.
     // WO-673@v2: only executable-position expansions or expanded pastewatch arguments deny grant authority.
     private static func binaryGrantHeadIsUnsafe(
         _ tokens: [CommandToken], aliases: Set<String>, mentionsPastewatch: Bool
@@ -442,8 +443,12 @@ public struct CommandParser {
         let name = (executable.value as NSString).lastPathComponent
         // WO-706@v1: indirect arguments use the same executable identity as literal invocations.
         guard ExecutableIdentityNames.isOwnBinary(name) || aliases.contains(name) else { return false }
-        let arguments = head.dropFirst()
-        return arguments.contains { !$0.isLiteral } || arguments.first?.value == "allow-binary"
+        // WO-722@v2: only uncertainty at or before the first non-option word can choose the subcommand.
+        for argument in head.dropFirst() {
+            if !argument.isLiteral { return true }
+            if !argument.value.hasPrefix("-") { return argument.value == "allow-binary" }
+        }
+        return false
     }
 
     // WO-673@v2: quoted function-like text is not executable; inspect only an anchored shell declaration.

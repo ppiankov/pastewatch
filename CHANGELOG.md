@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-722@v2: literal subcommands keep expanded operands separate from operator-only grant attempts. -->
+- Allow expanded file operands after literal non-grant subcommands while retaining refusal of indirect grant invocations and all file checks. (WO-722)
 <!-- WO-721@v2: quoted heredoc bodies are data for grant classification without hiding other guarded content. -->
 - Ignore quoted-delimiter heredoc bodies when classifying operator-only binary grant invocations, while retaining unquoted substitutions, file checks and inline-secret checks. (WO-721)
 <!-- WO-708@v3: environment-variable names and shell-pattern delimiters do not represent stored credentials. -->
