@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-724@v1: non-regular operands cannot stall the command guard on an unbounded input stream. -->
+- Refuse device, FIFO, socket and other non-regular operands before the command guard opens them, while treating `/dev/null` as empty and retaining the directory-specific remedy. (WO-724)
 <!-- WO-712@v3: command refusals distinguish a blocked decision from partial execution. -->
 - State first in human-facing command guard refusals that the whole command was refused and no part ran, retaining existing decisions, remedies, JSON and quiet output. (WO-712)
 <!-- WO-722@v2: literal subcommands keep expanded operands separate from operator-only grant attempts. -->

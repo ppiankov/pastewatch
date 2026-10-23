@@ -1,10 +1,127 @@
 // WO-691@v3: display-read parity exercises the same native read entrypoint as guard-read.
 import ArgumentParser
 import XCTest
+// WO-724@v1: bounded child waits must kill a blocked read instead of holding up the test runner.
+import Dispatch
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 @testable import PastewatchCore
 @testable import PastewatchCLI
 
 final class GuardCommandTests: XCTestCase {
+    // WO-724@v1: reserve termination headroom within the five-second operand-probe budget.
+    private static let operandWait: TimeInterval = 3
+    private static let terminationWait: TimeInterval = 1
+    private static let operandBudget: TimeInterval = 5
+
+    // WO-724@v1: a guard must never consume its own open stdin or wait for a FIFO writer.
+    func testNonRegularOperandsFinishWithoutReadingStdin() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let fifo = testDir + "/input.pipe"
+            guard mkfifo(fifo, 0o600) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            try FileManager.default.createSymbolicLink(atPath: testDir + "/linked.pipe", withDestinationPath: fifo)
+            let commands = ["source /dev/stdin <<'DOC'\nordinary text\nDOC\n", "cat /dev/stdin",
+                            "cat /dev/fd/0", "cat input.pipe", "cat linked.pipe"]
+            for (index, command) in commands.enumerated() {
+                let probe = try runGuardWithOpenStdin(command, executableURL: executableURL)
+                XCTAssertFalse(probe.timedOut, "Non-regular operand case \(index)")
+                XCTAssertLessThan(probe.elapsed, Self.operandBudget, "Non-regular operand budget \(index)")
+                XCTAssertEqual(probe.result.status, 2, "Non-regular operand exit \(index)")
+                XCTAssertTrue(probe.result.stdout.isEmpty, "Non-regular operand stdout \(index)")
+                XCTAssertTrue(probe.result.stderr.contains("cannot be scanned safely"), "Non-regular operand diagnostic \(index)")
+            }
+        }
+    }
+
+    // WO-724@v1: the null device is an explicit empty input, including through a symlink and transfer role.
+    func testDevNullOperandsStayEmptyAndClean() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            try FileManager.default.createSymbolicLink(atPath: testDir + "/null-input", withDestinationPath: "/dev/null")
+            for command in ["cat /dev/null", "cp /dev/null out.txt", "cat null-input"] {
+                let probe = try runGuardWithOpenStdin(command, executableURL: executableURL)
+                XCTAssertFalse(probe.timedOut)
+                XCTAssertLessThan(probe.elapsed, Self.operandBudget)
+                XCTAssertEqual(probe.result.status, 0)
+                XCTAssertTrue(probe.result.stdout.isEmpty)
+                XCTAssertTrue(probe.result.stderr.isEmpty)
+            }
+        }
+    }
+
+    // WO-724@v1: metadata rejection reuses the existing directory-specific message and remedy unchanged.
+    func testDirectoryOperandKeepsItsMessageWithOpenStdin() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            try FileManager.default.createDirectory(atPath: testDir + "/folder", withIntermediateDirectories: true)
+            // WO-724@v1: the child's CWD uses the filesystem path rather than Foundation's display abbreviation.
+            let resolved = try XCTUnwrap(realpath(testDir + "/folder", nil))
+            defer { free(resolved) }
+            let path = String(cString: resolved)
+            let probe = try runGuardWithOpenStdin("cat folder", executableURL: executableURL)
+            XCTAssertFalse(probe.timedOut)
+            XCTAssertLessThan(probe.elapsed, Self.operandBudget)
+            XCTAssertEqual(probe.result.status, 2)
+            XCTAssertTrue(probe.result.stdout.isEmpty)
+            XCTAssertEqual(Array(probe.result.stderr.split(separator: "\n").prefix(3)).map(String.init), [
+                "BLOCKED: whole command refused; no part of it ran.",
+                "BLOCKED: " + path + " is a directory and cannot be scanned safely as a file.",
+                "Scan it with pastewatch-cli scan --dir " + path + ", or run the command yourself."
+            ])
+            XCTAssertFalse(probe.result.stderr.contains("allow-binary"))
+        }
+    }
+
+    // WO-724@v1: timeout metadata stays separate from captured diagnostics so no operand contents are printed.
+    private struct OperandProbe {
+        let result: CLIResult
+        let elapsed: TimeInterval
+        let timedOut: Bool
+    }
+
+    // WO-724@v1: keep stdin open through termination and bound both the normal wait and forced cleanup.
+    private func runGuardWithOpenStdin(_ command: String, executableURL: URL) throws -> OperandProbe {
+        try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["guard", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: testDir)
+        process.environment = testEnvironment()
+        let input = Pipe()
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+        defer {
+            try? input.fileHandleForWriting.close()
+            try? input.fileHandleForReading.close()
+        }
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        let start = ProcessInfo.processInfo.systemUptime
+        try process.run()
+        let timedOut = finished.wait(timeout: .now() + Self.operandWait) == .timedOut
+        if timedOut {
+            if kill(process.processIdentifier, SIGKILL) != 0 && errno != ESRCH {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard finished.wait(timeout: .now() + Self.terminationWait) == .success else {
+                throw POSIXError(.ETIMEDOUT)
+            }
+        }
+        let stdout = try XCTUnwrap(String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8))
+        let stderr = try XCTUnwrap(String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8))
+        return OperandProbe(result: CLIResult(status: process.terminationStatus, stdout: stdout, stderr: stderr),
+                            elapsed: ProcessInfo.processInfo.systemUptime - start, timedOut: timedOut)
+    }
+
     // WO-712@v3: a refusal of a compound command cannot imply that earlier steps executed.
     func testCompoundRefusalStatesThatNoPartRan() throws {
         let executableURL = pastewatchCLIURL()

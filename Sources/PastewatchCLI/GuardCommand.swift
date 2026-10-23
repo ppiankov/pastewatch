@@ -210,6 +210,7 @@ struct Guard: ParsableCommand {
         throw ExitCode(rawValue: GuardExitContract.blocked)
     }
 
+    // WO-724@v1: devices and FIFOs cannot supply bounded file bytes and must be refused before opening.
     // WO-712@v3: file-scan refusals retain their details after the whole-command notice.
     // WO-673@v2: only transfer sources with a live content-bound grant may pass the opaque-file boundary.
     // WO-601@v2: one fail-closed boundary owns referenced-file decoding and scanning.
@@ -219,6 +220,15 @@ struct Guard: ParsableCommand {
         role: CommandParser.ReadRole
     ) throws -> ReferencedFileScan {
         do {
+            // WO-724@v1: follow symlinks using metadata only; the null device is the sole empty-input exception.
+            let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            if resolvedPath == "/dev/null" {
+                return ReferencedFileScan(content: "", matches: [])
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: resolvedPath)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                try blockUnscannableFile(path)
+            }
             // WO-598@v2: reject bounded referenced files before allocating their contents.
             let data = try DetectionRules.readBoundedFileData(atPath: path)
             guard let content = String(data: data, encoding: .utf8) else {
