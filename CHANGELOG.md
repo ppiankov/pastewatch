@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-708@v3: environment-variable names and shell-pattern delimiters do not represent stored credentials. -->
+- Exclude uppercase environment-variable names from Credential findings and bare database schemes followed by backslash or pipe from DB Connection findings, retaining normal and empty-username connection strings. (WO-708)
 <!-- WO-716@v2: YAML scalar ranges exclude quote delimiters and inline comments. -->
 - Exclude YAML inline comments and surrounding quotes from parsed values, respecting escaped quotes and preserving hashes within scalar text. (WO-716)
 <!-- WO-714@v3: workflow permissions and complete placeholder segments are not credential values. -->
