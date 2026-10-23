@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-721@v2: quoted heredoc bodies are data for grant classification without hiding other guarded content. -->
+- Ignore quoted-delimiter heredoc bodies when classifying operator-only binary grant invocations, while retaining unquoted substitutions, file checks and inline-secret checks. (WO-721)
 <!-- WO-708@v3: environment-variable names and shell-pattern delimiters do not represent stored credentials. -->
 - Exclude uppercase environment-variable names from Credential findings and bare database schemes followed by backslash or pipe from DB Connection findings, retaining normal and empty-username connection strings. (WO-708)
 <!-- WO-716@v2: YAML scalar ranges exclude quote delimiters and inline comments. -->

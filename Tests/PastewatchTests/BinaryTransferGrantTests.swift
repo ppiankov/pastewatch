@@ -15,6 +15,71 @@ import Crypto
 
 // WO-673@v2: grant fixtures use only isolated user policy and generated opaque bytes.
 final class BinaryTransferGrantTests: XCTestCase {
+    // WO-721@v2: quoted heredoc bodies are inert data rather than executable grant invocations.
+    func testQuotedHeredocGrantTextIsData() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let output = root.appendingPathComponent("heredoc.txt")
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            for delimiter in ["'DOC'", "\"DOC\"", "\\DOC", "D'OC'"] {
+                let command = "cat >> " + output.path + " <<" + delimiter + "\n" + grantLine + "\nDOC\n"
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 0)
+                XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-721@v2: actual grants and substitutions in unquoted bodies retain operator-only refusal.
+    func testExecutableAndUnquotedHeredocGrantsStillRefuse() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let output = root.appendingPathComponent("heredoc.txt")
+            let commands = [grantLine, "bash -c '" + grantLine + "'",
+                            "cat >> " + output.path + " <<DOC\n$(" + grantLine + ")\nDOC\n"]
+            for command in commands {
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-721@v2: inert grant text must remain visible to the independent inline-secret scan.
+    func testQuotedHeredocIntrinsicBodyStillBlocks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let value = "AKIA" + String(repeating: "Q", count: 16)
+            let command = "cat >> " + root.appendingPathComponent("heredoc.txt").path + " <<'DOC'\n" + value + "\nDOC\n"
+            let result = try run(["guard", command], in: root)
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.output.contains("command contains inline secret(s)"))
+            XCTAssertFalse(result.output.contains(value))
+        }
+    }
+
+    // WO-721@v2: projection boundaries cannot hide executable text or reclassify unquoted heredoc bodies.
+    func testHeredocProjectionKeepsOtherGrantContexts() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let commands = [
+                "cat <<'DOC'\nordinary\nDOC\n" + grantLine,
+                "printf '%s' \"<<'DOC'\"\n" + grantLine,
+                "cat <<<'DOC'\n" + grantLine,
+                "cat <<'DATA' <<LIVE\n" + grantLine + "\nDATA\n$(" + grantLine + ")\nLIVE\n",
+                "unrelated-tool --message 'described " + grantLine + "'"
+            ]
+            for command in commands {
+                let result = try run(["guard", command], in: root)
+                // WO-721@v2: a quoted argument remains outside this heredoc-only precision change.
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+            let source = root.appendingPathComponent("source.txt")
+            let body = "cp " + source.path + " destination.txt"
+            let access = CommandParser.fileAccess(from: "cat <<'DOC'\n" + body + "\nDOC\n", workingDirectory: root.path)
+            XCTAssertTrue(access.paths.contains(source.path), "original file operands remain visible")
+        }
+    }
+
     // WO-673@v2: admission and doctor use a controllable clock without a production environment bypass.
     func testInjectedClockPinsExpiryAndDoctorRows() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in

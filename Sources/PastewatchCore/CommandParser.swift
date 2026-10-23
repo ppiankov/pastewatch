@@ -148,17 +148,108 @@ public struct CommandParser {
                                unsupported: &unsupportedCommands, unsafeRemedy: &hasUnsafeRedactedCommand,
                                allowDisplay: commands.count == 1)
         }
-        // WO-673@v2: aliases declared in the command cannot conceal a later grant subcommand.
-        let segments = commands.flatMap { splitCommandChain($0) }
+        // WO-721@v2: both grant inputs see inert-body-free text; operand and inline checks retain the original command.
+        let grantCommand = binaryGrantProjection(command)
+        let grantCommands = [grantCommand] + extractSubshellCommands(grantCommand)
+        let segments = grantCommands.flatMap { splitCommandChain($0) }
         let aliases = binaryExecutableAliases(segments)
-        // WO-673@v2: indirect command words retain mentions outside their own chain or nested shell.
-        let mentionsPastewatch = command.localizedCaseInsensitiveContains("pastewatch")
+        // WO-721@v2: inert data cannot give unrelated executable expansions grant identity.
+        let mentionsPastewatch = grantCommand.localizedCaseInsensitiveContains("pastewatch")
         return FileAccess(paths: reads.map(\.path), unsupportedCommands: unsupportedCommands.sorted(),
                           hasUnsafeRedactedCommand: hasUnsafeRedactedCommand, reads: reads,
-                          // WO-673@v2: command-wide grant markers cannot hide behind an unknown argv wrapper.
-                          invokesBinaryGrant: commandMentionsBinaryGrant(command, segments: segments) || segments.contains {
+                          // WO-721@v2: text markers and segment/subshell classification share exactly one projection.
+                          invokesBinaryGrant: commandMentionsBinaryGrant(grantCommand, segments: segments) || segments.contains {
                               invokesBinaryGrant($0, aliases: aliases, mentionsPastewatch: mentionsPastewatch)
                           })
+    }
+
+    // WO-721@v2: delimiter quoting controls expansion, while tab stripping controls only the terminator comparison.
+    private struct GrantHeredoc {
+        let delimiter: String
+        let quoted: Bool
+        let stripTabs: Bool
+    }
+
+    // WO-721@v2: reuse substitution tracking so quoted arguments and arithmetic cannot invent a heredoc header.
+    private struct GrantHeaderState {
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        var expansion = ShellExpansion()
+        var isOpen: Bool { inSingle || inDouble || escaped || expansion.isOpen }
+
+        // WO-721@v2: header punctuation is meaningful only outside the existing shell quote/substitution states.
+        mutating func consume(_ character: Character, next: Character?) -> Bool {
+            if escaped { escaped = false; return true }
+            if expansion.consume(character) { return true }
+            if character == "\\" && !inSingle { escaped = true; return true }
+            if character == "'" && !inDouble { inSingle.toggle(); return true }
+            if character == "\"" && !inSingle { inDouble.toggle(); return true }
+            if !inSingle && expansion.begin(character, next: next) { return true }
+            return inSingle || inDouble
+        }
+    }
+
+    // WO-721@v2: only grant classification drops quoted bodies; malformed headers keep the previous conservative decision.
+    private static func binaryGrantProjection(_ command: String) -> String {
+        var pending: [GrantHeredoc] = []
+        var projected: [String] = []
+        for line in command.components(separatedBy: "\n") {
+            if let heredoc = pending.first {
+                let candidate = heredoc.stripTabs ? String(line.drop { $0 == "\t" }) : line
+                if candidate.utf8.elementsEqual(heredoc.delimiter.utf8) {
+                    pending.removeFirst()
+                    projected.append(line)
+                } else {
+                    projected.append(heredoc.quoted ? "" : line)
+                }
+                continue
+            }
+            guard let headers = grantHeredocHeaders(line) else { return command }
+            pending = headers
+            projected.append(line)
+        }
+        return pending.isEmpty ? projected.joined(separator: "\n") : command
+    }
+
+    // WO-721@v2: recognize redirect headers without treating quoted prose, here-strings or substitutions as delimiters.
+    private static func grantHeredocHeaders(_ line: String) -> [GrantHeredoc]? {
+        let characters = Array(line)
+        var state = GrantHeaderState()
+        var index = 0
+        var headers: [GrantHeredoc] = []
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if state.consume(character, next: next) { index += 1; continue }
+            if character == "#" { break }
+            if character == "(" {
+                state.expansion = ShellExpansion(opening: "(", depth: 1)
+                index += 1
+                continue
+            }
+            guard character == "<", next == "<" else { index += 1; continue }
+            index += 2
+            if index < characters.count && characters[index] == "<" { index += 1; continue }
+            guard let header = grantHeredocDelimiter(characters, index: &index) else { return nil }
+            headers.append(header)
+        }
+        return state.isOpen ? nil : headers
+    }
+
+    // WO-721@v2: existing token normalization removes delimiter quotes without expanding their contents.
+    private static func grantHeredocDelimiter(_ characters: [Character], index: inout Int) -> GrantHeredoc? {
+        let stripTabs = index < characters.count && characters[index] == "-"
+        if stripTabs { index += 1 }
+        while index < characters.count && (characters[index] == " " || characters[index] == "\t") { index += 1 }
+        let remainder = String(characters[index...])
+        let pattern = #"(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[A-Za-z0-9_])+(?=$|[ \t;&|<>])"#
+        guard let range = remainder.range(of: pattern, options: [.regularExpression, .anchored]) else { return nil }
+        let word = String(remainder[range])
+        guard let tokens = tokenizeArguments(word, requiringLiteralArguments: true),
+              tokens.count == 1, let token = tokens.first, token.isLiteral, !token.value.isEmpty else { return nil }
+        index += word.count
+        return GrantHeredoc(delimiter: token.value, quoted: word.contains { "'\"\\".contains($0) }, stripTabs: stripTabs)
     }
 
     // WO-673@v2: only pure printing chains exempt normalized grant markers, independent of wrappers.
