@@ -1,10 +1,272 @@
 // WO-691@v3: display-read parity exercises the same native read entrypoint as guard-read.
 import ArgumentParser
 import XCTest
+// WO-724@v1: bounded child waits must kill a blocked read instead of holding up the test runner.
+import Dispatch
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 @testable import PastewatchCore
 @testable import PastewatchCLI
 
 final class GuardCommandTests: XCTestCase {
+    // WO-724@v1: reserve termination headroom within the five-second operand-probe budget.
+    private static let operandWait: TimeInterval = 3
+    private static let terminationWait: TimeInterval = 1
+    private static let operandBudget: TimeInterval = 5
+
+    // WO-724@v1: a guard must never consume its own open stdin or wait for a FIFO writer.
+    func testNonRegularOperandsFinishWithoutReadingStdin() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let fifo = testDir + "/input.pipe"
+            guard mkfifo(fifo, 0o600) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            try FileManager.default.createSymbolicLink(atPath: testDir + "/linked.pipe", withDestinationPath: fifo)
+            let commands = ["source /dev/stdin <<'DOC'\nordinary text\nDOC\n", "cat /dev/stdin",
+                            "cat /dev/fd/0", "cat input.pipe", "cat linked.pipe"]
+            for (index, command) in commands.enumerated() {
+                let probe = try runGuardWithOpenStdin(command, executableURL: executableURL)
+                XCTAssertFalse(probe.timedOut, "Non-regular operand case \(index)")
+                XCTAssertLessThan(probe.elapsed, Self.operandBudget, "Non-regular operand budget \(index)")
+                XCTAssertEqual(probe.result.status, 2, "Non-regular operand exit \(index)")
+                XCTAssertTrue(probe.result.stdout.isEmpty, "Non-regular operand stdout \(index)")
+                XCTAssertTrue(probe.result.stderr.contains("cannot be scanned safely"), "Non-regular operand diagnostic \(index)")
+            }
+        }
+    }
+
+    // WO-724@v1: the null device is an explicit empty input, including through a symlink and transfer role.
+    func testDevNullOperandsStayEmptyAndClean() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            try FileManager.default.createSymbolicLink(atPath: testDir + "/null-input", withDestinationPath: "/dev/null")
+            for command in ["cat /dev/null", "cp /dev/null out.txt", "cat null-input"] {
+                let probe = try runGuardWithOpenStdin(command, executableURL: executableURL)
+                XCTAssertFalse(probe.timedOut)
+                XCTAssertLessThan(probe.elapsed, Self.operandBudget)
+                XCTAssertEqual(probe.result.status, 0)
+                XCTAssertTrue(probe.result.stdout.isEmpty)
+                XCTAssertTrue(probe.result.stderr.isEmpty)
+            }
+        }
+    }
+
+    // WO-724@v1: metadata rejection reuses the existing directory-specific message and remedy unchanged.
+    func testDirectoryOperandKeepsItsMessageWithOpenStdin() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            try FileManager.default.createDirectory(atPath: testDir + "/folder", withIntermediateDirectories: true)
+            // WO-724@v1: the child's CWD uses the filesystem path rather than Foundation's display abbreviation.
+            let resolved = try XCTUnwrap(realpath(testDir + "/folder", nil))
+            defer { free(resolved) }
+            let path = String(cString: resolved)
+            let probe = try runGuardWithOpenStdin("cat folder", executableURL: executableURL)
+            XCTAssertFalse(probe.timedOut)
+            XCTAssertLessThan(probe.elapsed, Self.operandBudget)
+            XCTAssertEqual(probe.result.status, 2)
+            XCTAssertTrue(probe.result.stdout.isEmpty)
+            XCTAssertEqual(Array(probe.result.stderr.split(separator: "\n").prefix(3)).map(String.init), [
+                "BLOCKED: whole command refused; no part of it ran.",
+                "BLOCKED: " + path + " is a directory and cannot be scanned safely as a file.",
+                "Scan it with pastewatch-cli scan --dir " + path + ", or run the command yourself."
+            ])
+            XCTAssertFalse(probe.result.stderr.contains("allow-binary"))
+        }
+    }
+
+    // WO-724@v1: timeout metadata stays separate from captured diagnostics so no operand contents are printed.
+    private struct OperandProbe {
+        let result: CLIResult
+        let elapsed: TimeInterval
+        let timedOut: Bool
+    }
+
+    // WO-724@v1: keep stdin open through termination and bound both the normal wait and forced cleanup.
+    private func runGuardWithOpenStdin(_ command: String, executableURL: URL) throws -> OperandProbe {
+        try TestConfigHelper.ensureProjectConfig(in: URL(fileURLWithPath: testDir))
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["guard", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: testDir)
+        process.environment = testEnvironment()
+        let input = Pipe()
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+        defer {
+            try? input.fileHandleForWriting.close()
+            try? input.fileHandleForReading.close()
+        }
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        let start = ProcessInfo.processInfo.systemUptime
+        try process.run()
+        let timedOut = finished.wait(timeout: .now() + Self.operandWait) == .timedOut
+        if timedOut {
+            if kill(process.processIdentifier, SIGKILL) != 0 && errno != ESRCH {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard finished.wait(timeout: .now() + Self.terminationWait) == .success else {
+                throw POSIXError(.ETIMEDOUT)
+            }
+        }
+        let stdout = try XCTUnwrap(String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8))
+        let stderr = try XCTUnwrap(String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8))
+        return OperandProbe(result: CLIResult(status: process.terminationStatus, stdout: stdout, stderr: stderr),
+                            elapsed: ProcessInfo.processInfo.systemUptime - start, timedOut: timedOut)
+    }
+
+    // WO-712@v3: a refusal of a compound command cannot imply that earlier steps executed.
+    func testCompoundRefusalStatesThatNoPartRan() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = try writeRefusalFixture(filename: "flagged.go")
+            try Data("package fixture\nconst IDENT = true\n".utf8)
+                .write(to: URL(fileURLWithPath: testDir + "/clean.go"))
+            let result = try runGuardCLI(
+                arguments: ["guard", "cp clean.go copy.go && grep -n IDENT *.go"],
+                executableURL: executableURL
+            )
+            assertWholeCommandRefusal(result, excluding: value)
+            XCTAssertTrue(result.stderr.contains("contains 1 secret(s)"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: testDir + "/copy.go"))
+        }
+    }
+
+    // WO-712@v3: a single reader retains its original finding and exit status after the notice.
+    func testSingleReaderRefusalStatesThatNoPartRan() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = try writeRefusalFixture(filename: "flagged.txt")
+            let result = try runGuardCLI(arguments: ["guard", "cat flagged.txt"], executableURL: executableURL)
+            assertWholeCommandRefusal(result, excluding: value)
+            XCTAssertTrue(result.stderr.contains("contains 1 secret(s)"))
+            XCTAssertTrue(result.stderr.contains("Use pastewatch_read_file / pastewatch_edit_file"))
+        }
+    }
+
+    // WO-712@v3: inline refusals carry execution context without echoing their matched values.
+    func testInlineRefusalStatesThatNoPartRan() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = ["AKIA", String(repeating: "Q", count: 16)].joined()
+            let result = try runGuardCLI(
+                arguments: ["guard", "printf '%s' '" + value + "'"], executableURL: executableURL
+            )
+            assertWholeCommandRefusal(result, excluding: value)
+            XCTAssertTrue(result.stderr.contains("command contains inline secret(s)"))
+        }
+    }
+
+    // WO-712@v3: refusals without findings use the same first line without replacing their remedies.
+    func testOtherGuardRefusalsStateThatNoPartRan() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            try Data([0xFF, 0x61]).write(to: URL(fileURLWithPath: testDir + "/binary.dat"))
+            try FileManager.default.createDirectory(atPath: testDir + "/folder", withIntermediateDirectories: true)
+            let cases = [
+                ("cat binary.dat", "cannot be scanned safely"),
+                ("cat folder", "is a directory"),
+                ("pastewatch-cli allow-binary binary.dat", "Operator-only binary transfer grant"),
+                ("pastewatch-cli read \"$F\"", "requires a literal path")
+            ]
+            for (command, message) in cases {
+                let result = try runGuardCLI(arguments: ["guard", command], executableURL: executableURL)
+                assertWholeCommandRefusal(result)
+                XCTAssertTrue(result.stderr.contains(message))
+            }
+            try Data("ordinary text".utf8).write(to: URL(fileURLWithPath: testDir + "/bounded.txt"))
+            let bounded = try runGuardCLI(
+                arguments: ["guard", "cat bounded.txt"],
+                environmentOverrides: [ScanInputLimits.fileBytesEnvironmentKey: "5"], executableURL: executableURL
+            )
+            assertWholeCommandRefusal(bounded)
+            XCTAssertTrue(bounded.stderr.contains("exceeds scan limit 5 bytes"))
+        }
+    }
+
+    // WO-712@v3: unsupported-source diagnostics cannot precede a later refusal of the command.
+    func testWholeCommandRefusalPrecedesUnsupportedSourceDiagnostic() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = ["AKIA", String(repeating: "Q", count: 16)].joined()
+            let result = try runGuardCLI(
+                arguments: ["guard", "cp -t; printf '%s' '" + value + "'"], executableURL: executableURL
+            )
+            assertWholeCommandRefusal(result, excluding: value)
+            XCTAssertEqual(result.stderr.components(separatedBy: "Unsupported source scanning for: cp.").count - 1, 1)
+        }
+    }
+
+    // WO-712@v3: the extra human-facing line leaves quiet and machine-readable refusal output unchanged.
+    func testWholeCommandRefusalKeepsQuietAndJSONOutput() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let value = try writeRefusalFixture(filename: "flagged.txt")
+            for command in ["cat flagged.txt", "printf '%s' '" + value + "'"] {
+                let quiet = try runGuardCLI(arguments: ["guard", "--quiet", command], executableURL: executableURL)
+                XCTAssertEqual(quiet.status, 2)
+                XCTAssertTrue(quiet.stdout.isEmpty)
+                XCTAssertTrue(quiet.stderr.isEmpty)
+                let json = try runGuardCLI(arguments: ["guard", "--json", command], executableURL: executableURL)
+                XCTAssertEqual(json.status, 2)
+                XCTAssertTrue(json.stderr.isEmpty)
+                XCTAssertFalse(json.stdout.contains(value))
+                let payload = try guardJSON(from: json.stdout)
+                XCTAssertEqual(Set(payload.keys), ["blocked", "command", "files", "inlineFindings"])
+                XCTAssertEqual(payload["blocked"] as? Bool, true)
+            }
+        }
+    }
+
+    // WO-712@v3: the shared validation printer remains outside command-refusal presentation.
+    func testConfigurationValidationKeepsItsExistingOutput() throws {
+        let executableURL = pastewatchCLIURL()
+        try TestConfigHelper.withIsolatedGlobalConfig { _ in
+            let data = try JSONEncoder().encode(PastewatchConfig.defaultConfig)
+            var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            payload["enabled"] = "invalid type"
+            try JSONSerialization.data(withJSONObject: payload)
+                .write(to: URL(fileURLWithPath: testDir + "/.pastewatch.json"))
+            for flags in [[], ["--quiet"], ["--json"]] {
+                let result = try runGuardCLI(
+                    arguments: ["guard"] + flags + ["echo ordinary"], executableURL: executableURL
+                )
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.stdout.isEmpty)
+                XCTAssertTrue(result.stderr.hasPrefix("error: "))
+                XCTAssertFalse(result.stderr.contains("whole command refused"))
+            }
+        }
+    }
+
+    // WO-712@v3: runtime fixtures exercise intrinsic blocking without putting complete values in source.
+    private func writeRefusalFixture(filename: String) throws -> String {
+        let value = ["AKIA", String(repeating: "Q", count: 16)].joined()
+        try Data(("key=" + value + "\n").utf8).write(to: URL(fileURLWithPath: testDir + "/" + filename))
+        return value
+    }
+
+    // WO-712@v3: assertions expose only decision metadata even when captured output is wrong.
+    private func assertWholeCommandRefusal(
+        _ result: CLIResult, excluding value: String? = nil, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(result.status, 2, file: file, line: line)
+        XCTAssertTrue(result.stdout.isEmpty, file: file, line: line)
+        XCTAssertTrue(result.stderr.split(separator: "\n").first ==
+                      "BLOCKED: whole command refused; no part of it ran.", file: file, line: line)
+        if let value {
+            XCTAssertFalse(result.stdout.contains(value), file: file, line: line)
+            XCTAssertFalse(result.stderr.contains(value), file: file, line: line)
+        }
+    }
+
     // WO-691@v3: fixture labels and expected types keep parity diagnostics free of matched values.
     private struct ReadVerdictFixture {
         let name: String

@@ -15,6 +15,194 @@ import Crypto
 
 // WO-673@v2: grant fixtures use only isolated user policy and generated opaque bytes.
 final class BinaryTransferGrantTests: XCTestCase {
+    // WO-721@v3: delimiter quoting prevents expansion but does not stop an interpreter from executing its stdin.
+    func testQuotedHeredocInterpretersKeepGrantChecks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            for consumer in ["bash", "sh", "zsh", "ssh host", "python3 -", "source /dev/stdin", ". /dev/stdin", "xargs"] {
+                let command = consumer + " <<'DOC'\n" + grantLine + "\nDOC\n"
+                XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant, "Interpreter grant classification")
+                // WO-721@v3: the existing helper closes stdin before waiting, so the pre-fix source case cannot hang.
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2, "Interpreter grant exit")
+                XCTAssertTrue(result.output.contains("agents cannot grant this"), "Interpreter grant diagnostic")
+            }
+        }
+    }
+
+    // WO-721@v3: only an unpiped file-writing cat is a proven data consumer for the grant-only projection.
+    func testQuotedHeredocPipesAndOtherConsumersKeepGrantChecks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let output = root.appendingPathComponent("heredoc.txt").path
+            let headers = ["cat", "tee " + output, "cat <<'DOC' | bash", "cat > " + output + " <<'DOC' | bash",
+                           "cat >> " + output + " <<'DOC' | sh", "cat > /dev/stdout", "cat > /dev/fd/1",
+                           "cat > /dev/./stdout", "cat > /dev/./fd/1", "cat > >(bash)", "cat > \"$OUT\"",
+                           "cat 2> " + output, "cat 2>> " + output,
+                           "./unknown=consumer cat > " + output, root.appendingPathComponent("cat").path + " > " + output]
+            for (index, header) in headers.enumerated() {
+                let command = header + (header.contains("<<") ? "" : " <<'DOC'") + "\n" + grantLine + "\nDOC\n"
+                XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant, "Non-file consumer classification \(index)")
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2, "Non-file consumer exit \(index)")
+                XCTAssertTrue(result.output.contains("agents cannot grant this"), "Non-file consumer diagnostic \(index)")
+            }
+        }
+    }
+
+    // WO-721@v3: a cat-to-file header is not exempt when it is nested inside executable shell syntax.
+    func testNestedCatFileHeredocsKeepGrantChecks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let document = "cat > " + root.appendingPathComponent("heredoc.txt").path + " <<'DOC'\n" + grantLine + "\nDOC\n"
+            let commands = ["eval \"$(" + document + ")\"", "echo $(" + document + ")",
+                            "echo `" + document + "`", "(\n" + document + ")",
+                            "bash -c \"" + document + "\"", "sh -c \"" + document + "\"",
+                            "eval \"" + document + "\"", "{\n" + document + "}"]
+            for command in commands {
+                XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant, "Nested heredoc classification")
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2, "Nested heredoc exit")
+                XCTAssertTrue(result.output.contains("agents cannot grant this"), "Nested heredoc diagnostic")
+            }
+        }
+    }
+
+    // WO-721@v3: literal stdout files retain the founding data-only behavior after existing wrapper stripping.
+    func testTopLevelCatFileHeredocFormsRemainAllowed() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let output = root.appendingPathComponent("heredoc output.txt").path
+            let headers = ["cat > '" + output + "' <<\"DOC\"", "cat <<\\DOC >> '" + output + "'",
+                           "env MODE=test command cat 1> '" + output + "' <<'DOC'",
+                           "nohup cat > '" + output + "' <<'DOC'",
+                           "echo ordinary; cat > '" + output + "' <<'DOC'"]
+            for header in headers {
+                let command = header + "\n" + grantLine + "\nDOC\n"
+                XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant, "Cat-to-file classification")
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 0, "Cat-to-file exit")
+                XCTAssertFalse(result.output.contains("agents cannot grant this"), "Cat-to-file diagnostic")
+            }
+        }
+    }
+
+    // WO-722@v2: operand expansions cannot change an already literal non-grant subcommand.
+    func testLiteralSubcommandsAllowExpandedOperands() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let file = root.appendingPathComponent("clean.txt")
+            try Data("ordinary text\n".utf8).write(to: file)
+            let commands = ["pastewatch-cli scan --file $F --format json", "pastewatch-cli guard-read \"$F\"",
+                            "for f in clean.txt; do pastewatch-cli scan --file $f --format json; done",
+                            ".build/debug/PastewatchCLI scan --file $F --format json",
+                            "pastewatch-cli --quiet scan --file $F", "command pastewatch-cli scan --file $F",
+                            "env MODE=test pastewatch-cli scan --file $F"]
+            for command in commands {
+                XCTAssertFalse(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+                let result = try run(["guard", command], in: root, environment: ["F": file.path, "f": file.path])
+                XCTAssertEqual(result.status, 0)
+                XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-722@v2: executable and subcommand uncertainty still crosses the operator-only grant boundary.
+    func testExpandedGrantHeadAndWrappersRemainRefused() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let commands = ["pastewatch-cli $SUB x", "pastewatch-cli allow-binary $F",
+                            "pastewatch-cli --quiet $V allow-binary", "PW=pastewatch-cli; $PW allow-binary x",
+                            "bash -c 'pastewatch-cli allow-binary $F'",
+                            "alias pw='pastewatch-cli'; pw $SUB x",
+                            "env MODE=test pastewatch-cli $SUB x", "command pastewatch-cli $SUB x"]
+            for command in commands {
+                XCTAssertTrue(CommandParser.fileAccess(from: command).invokesBinaryGrant)
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-722@v2: safe subcommands do not exempt other readers from the original file policy.
+    func testLiteralSubcommandStillChecksOtherFileOperands() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let value = "AKIA" + String(repeating: "Q", count: 16)
+            let source = root.appendingPathComponent("fixture.txt")
+            try Data(value.utf8).write(to: source)
+            let command = "cp " + source.path + " out.txt; pastewatch-cli scan --file $F"
+            let result = try run(["guard", command], in: root, environment: ["F": source.path])
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.output.contains("BLOCKED:"))
+            XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            XCTAssertFalse(result.output.contains(value))
+        }
+    }
+
+    // WO-721@v3: quoted heredoc bodies consumed by a top-level cat-to-file command remain data.
+    func testQuotedHeredocGrantTextIsData() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let output = root.appendingPathComponent("heredoc.txt")
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            for delimiter in ["'DOC'", "\"DOC\"", "\\DOC", "D'OC'"] {
+                let command = "cat >> " + output.path + " <<" + delimiter + "\n" + grantLine + "\nDOC\n"
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 0)
+                XCTAssertFalse(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-721@v3: actual grants and substitutions in unquoted bodies retain operator-only refusal.
+    func testExecutableAndUnquotedHeredocGrantsStillRefuse() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let output = root.appendingPathComponent("heredoc.txt")
+            let commands = [grantLine, "bash -c '" + grantLine + "'",
+                            "cat >> " + output.path + " <<DOC\n$(" + grantLine + ")\nDOC\n"]
+            for command in commands {
+                let result = try run(["guard", command], in: root)
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+        }
+    }
+
+    // WO-721@v3: cat-to-file data must remain visible to the independent inline-secret scan.
+    func testQuotedHeredocIntrinsicBodyStillBlocks() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let value = "AKIA" + String(repeating: "Q", count: 16)
+            let command = "cat >> " + root.appendingPathComponent("heredoc.txt").path + " <<'DOC'\n" + value + "\nDOC\n"
+            let result = try run(["guard", command], in: root)
+            XCTAssertEqual(result.status, 2)
+            XCTAssertTrue(result.output.contains("command contains inline secret(s)"))
+            XCTAssertFalse(result.output.contains(value))
+        }
+    }
+
+    // WO-721@v3: projection boundaries cannot hide executable text or reclassify unquoted heredoc bodies.
+    func testHeredocProjectionKeepsOtherGrantContexts() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let grantLine = "pastewatch-cli allow-binary " + root.appendingPathComponent("fixture.dat").path
+            let commands = [
+                "cat <<'DOC'\nordinary\nDOC\n" + grantLine,
+                "printf '%s' \"<<'DOC'\"\n" + grantLine,
+                "cat <<<'DOC'\n" + grantLine,
+                "cat <<'DATA' <<LIVE\n" + grantLine + "\nDATA\n$(" + grantLine + ")\nLIVE\n",
+                "unrelated-tool --message 'described " + grantLine + "'"
+            ]
+            for command in commands {
+                let result = try run(["guard", command], in: root)
+                // WO-721@v3: a quoted argument remains outside this heredoc-only precision change.
+                XCTAssertEqual(result.status, 2)
+                XCTAssertTrue(result.output.contains("agents cannot grant this"))
+            }
+            let source = root.appendingPathComponent("source.txt")
+            let body = "cp " + source.path + " destination.txt"
+            let access = CommandParser.fileAccess(from: "cat <<'DOC'\n" + body + "\nDOC\n", workingDirectory: root.path)
+            XCTAssertTrue(access.paths.contains(source.path), "original file operands remain visible")
+        }
+    }
+
     // WO-673@v2: admission and doctor use a controllable clock without a production environment bypass.
     func testInjectedClockPinsExpiryAndDoctorRows() throws {
         try TestConfigHelper.withIsolatedGlobalConfig { root in

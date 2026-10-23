@@ -239,9 +239,9 @@ public struct DetectionRules {
 
         // Database Connection String - high confidence
         // PostgreSQL, MySQL, MongoDB connection strings
-        // WO-633: require an authority byte, not closing prose punctuation or a path/query/fragment.
+        // WO-708@v3: shell regex escapes and alternation cannot supply authority; retain all other WO-633 bytes.
         if let regex = try? NSRegularExpression(
-            pattern: #"(postgres|postgresql|mysql|mongodb|redis|clickhouse)://[^\s`\"'),/?#][^\s]*"#,
+            pattern: #"(postgres|postgresql|mysql|mongodb|redis|clickhouse)://[^\s`\"'),/?#\\|][^\s]*"#,
             options: [.caseInsensitive]
         ) {
             result.append((.dbConnectionString, regex))
@@ -2214,6 +2214,12 @@ public struct DetectionRules {
             credentialValue = String(value.dropFirst().dropLast())
         } else {
             credentialValue = value
+        }
+
+        // WO-708@v3: bounded ASCII environment-variable names are references rather than stored values.
+        if credentialValue.contains("_"),
+           credentialValue.range(of: #"^[A-Z][A-Z0-9_]{2,127}$"#, options: .regularExpression) != nil {
+            return false
         }
 
         // WO-651@v2: a numeric literal or a value below the fixed floor is never a keyword Credential.

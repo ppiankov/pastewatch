@@ -148,17 +148,199 @@ public struct CommandParser {
                                unsupported: &unsupportedCommands, unsafeRemedy: &hasUnsafeRedactedCommand,
                                allowDisplay: commands.count == 1)
         }
-        // WO-673@v2: aliases declared in the command cannot conceal a later grant subcommand.
-        let segments = commands.flatMap { splitCommandChain($0) }
+        // WO-721@v3: both grant inputs omit only proven cat-to-file data; other checks retain the original command.
+        let grantCommand = binaryGrantProjection(command)
+        let grantCommands = [grantCommand] + extractSubshellCommands(grantCommand)
+        let segments = grantCommands.flatMap { splitCommandChain($0) }
         let aliases = binaryExecutableAliases(segments)
-        // WO-673@v2: indirect command words retain mentions outside their own chain or nested shell.
-        let mentionsPastewatch = command.localizedCaseInsensitiveContains("pastewatch")
+        // WO-721@v3: proven cat-to-file data cannot give unrelated executable expansions grant identity.
+        let mentionsPastewatch = grantCommand.localizedCaseInsensitiveContains("pastewatch")
         return FileAccess(paths: reads.map(\.path), unsupportedCommands: unsupportedCommands.sorted(),
                           hasUnsafeRedactedCommand: hasUnsafeRedactedCommand, reads: reads,
-                          // WO-673@v2: command-wide grant markers cannot hide behind an unknown argv wrapper.
-                          invokesBinaryGrant: commandMentionsBinaryGrant(command, segments: segments) || segments.contains {
+                          // WO-721@v3: text markers and segment/subshell classification share exactly one projection.
+                          invokesBinaryGrant: commandMentionsBinaryGrant(grantCommand, segments: segments) || segments.contains {
                               invokesBinaryGrant($0, aliases: aliases, mentionsPastewatch: mentionsPastewatch)
                           })
+    }
+
+    // WO-721@v3: quoted delimiters need a proven data sink before their bodies can leave grant classification.
+    private struct GrantHeredoc {
+        let delimiter: String
+        let quoted: Bool
+        let stripTabs: Bool
+        var catFileSink = false // WO-721@v3: unknown consumers retain their bodies by default.
+    }
+
+    // WO-721@v3: reuse substitution tracking so quoted arguments and arithmetic cannot invent a heredoc header.
+    private struct GrantHeaderState {
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        var expansion = ShellExpansion()
+        var isOpen: Bool { inSingle || inDouble || escaped || expansion.isOpen }
+
+        // WO-721@v3: header punctuation is meaningful only outside the existing shell quote/substitution states.
+        mutating func consume(_ character: Character, next: Character?) -> Bool {
+            if escaped { escaped = false; return true }
+            if expansion.consume(character) { return true }
+            if character == "\\" && !inSingle { escaped = true; return true }
+            if character == "'" && !inDouble { inSingle.toggle(); return true }
+            if character == "\"" && !inSingle { inDouble.toggle(); return true }
+            if !inSingle && expansion.begin(character, next: next) { return true }
+            return inSingle || inDouble
+        }
+    }
+
+    // WO-721@v3: quoted interpreter stdin remains executable; only proven file-writing cat bodies are omitted.
+    private static func binaryGrantProjection(_ command: String) -> String {
+        var pending: [GrantHeredoc] = []
+        var projected: [String] = []
+        for line in command.components(separatedBy: "\n") {
+            if let heredoc = pending.first {
+                let candidate = heredoc.stripTabs ? String(line.drop { $0 == "\t" }) : line
+                if candidate.utf8.elementsEqual(heredoc.delimiter.utf8) {
+                    pending.removeFirst()
+                    projected.append(line)
+                } else {
+                    projected.append(heredoc.quoted && heredoc.catFileSink ? "" : line)
+                }
+                continue
+            }
+            guard let headers = grantHeredocHeaders(line) else { return command }
+            pending = headers
+            projected.append(line)
+        }
+        return pending.isEmpty ? projected.joined(separator: "\n") : command
+    }
+
+    // WO-721@v3: incomplete or nested shell syntax cannot establish a top-level data-only consumer.
+    private static func grantHeredocHeaders(_ line: String) -> [GrantHeredoc]? {
+        let characters = Array(line)
+        var state = GrantHeaderState()
+        var index = 0
+        var headers: [GrantHeredoc] = []
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if state.consume(character, next: next) { index += 1; continue }
+            if character == "#" { break }
+            // WO-721@v3: open groups across lines keep every body instead of restarting at a nested cat header.
+            if character == "(" || character == "{" {
+                state.expansion = ShellExpansion(opening: character, depth: 1)
+                index += 1
+                continue
+            }
+            guard character == "<", next == "<" else { index += 1; continue }
+            // WO-721@v3: source offsets locate the owning segment without Character/UTF-16 index conversion.
+            let offset = String(characters[..<index]).utf16.count
+            index += 2
+            if index < characters.count && characters[index] == "<" { index += 1; continue }
+            guard var header = grantHeredocDelimiter(characters, index: &index) else { return nil }
+            header.catFileSink = grantHeredocHasCatFileSink(line, offset: offset)
+            headers.append(header)
+        }
+        return state.isOpen ? nil : headers
+    }
+
+    // WO-721@v3: only the actual top-level consumer and its own stdout redirect can prove a body inert.
+    private static func grantHeredocHasCatFileSink(_ line: String, offset: Int) -> Bool {
+        var position = line.startIndex
+        for segment in splitCommandChain(line) {
+            guard let range = line.range(of: segment, range: position..<line.endIndex) else { return false }
+            position = range.upperBound
+            guard NSLocationInRange(offset, NSRange(range, in: line)) else { continue }
+            let suffix = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !suffix.hasPrefix("|") || suffix.hasPrefix("||") else { return false }
+            guard let tokens = tokenizeArguments(stripRedirects(segment).command, requiringLiteralArguments: true) else { return false }
+            // WO-721@v3: only shell assignments, not executable paths containing equals, precede the consumer.
+            let head = tokens.drop { token in
+                let assignment = token.value.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil
+                return assignment || (token.isLiteral && (token.value.hasPrefix("-") ||
+                    ["env", "command", "sudo", "nohup"].contains((token.value as NSString).lastPathComponent)))
+            }
+            guard let executable = head.first, executable.isLiteral, !executable.hasWordExpansion,
+                  executable.value == "cat" else { return false }
+            return grantStdoutIsLiteralFile(segment)
+        }
+        return false
+    }
+
+    // WO-721@v3: stderr-only redirects, descriptor duplication and process substitutions do not prove a file sink.
+    private static func grantStdoutIsLiteralFile(_ segment: String) -> Bool {
+        let characters = Array(segment)
+        var state = GrantHeaderState()
+        var index = 0
+        var hasFile = false
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if state.consume(character, next: next) { index += 1; continue }
+            if character == "#" { break }
+            guard character == ">" else { index += 1; continue }
+            let isStdout = grantRedirectIsStdout(characters, index: index)
+            index += next == ">" ? 2 : 1
+            guard isStdout else { continue }
+            guard grantRedirectHasLiteralFile(characters, index: &index) else { return false }
+            hasFile = true
+        }
+        return hasFile && !state.isOpen
+    }
+
+    // WO-721@v3: a numeric descriptor belongs to the operator only at a shell word boundary.
+    private static func grantRedirectIsStdout(_ characters: [Character], index: Int) -> Bool {
+        var start = index
+        while start > 0 && characters[start - 1].isNumber { start -= 1 }
+        guard start < index, start == 0 || characters[start - 1].isWhitespace else { return true }
+        return String(characters[start..<index]) == "1"
+    }
+
+    // WO-721@v3: quote-normalized literal paths exclude stdout aliases and unresolved output destinations.
+    private static func grantRedirectHasLiteralFile(_ characters: [Character], index: inout Int) -> Bool {
+        while index < characters.count && characters[index].isWhitespace { index += 1 }
+        let remainder = String(characters[index...])
+        guard !remainder.hasPrefix("#") else { return false }
+        let pattern = #"(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s'"\\;&|<>()])+"#
+        guard let range = remainder.range(of: pattern, options: [.regularExpression, .anchored]) else { return false }
+        let word = String(remainder[range])
+        index += word.count
+        guard let tokens = tokenizeArguments(word, requiringLiteralArguments: true), tokens.count == 1,
+              let token = tokens.first, token.isLiteral, !token.hasWordExpansion else { return false }
+        // WO-721@v3: descriptor aliases stay visible before platform-specific filesystem normalization.
+        let path = grantLiteralPath(token.value)
+        return path != "/dev/stdout" && path != "/dev/fd" && !path.hasPrefix("/dev/fd/")
+    }
+
+    // WO-721@v3: lexical normalization cannot turn a descriptor alias into an apparently ordinary Linux path.
+    private static func grantLiteralPath(_ value: String) -> String {
+        let absolute = value.hasPrefix("/")
+        var components: [Substring] = []
+        for component in value.split(separator: "/") {
+            if component == ".." {
+                if let last = components.last, last != ".." {
+                    components.removeLast()
+                } else if !absolute {
+                    components.append(component)
+                }
+            } else if component != "." {
+                components.append(component)
+            }
+        }
+        return (absolute ? "/" : "") + components.joined(separator: "/")
+    }
+
+    // WO-721@v3: existing token normalization removes delimiter quotes without expanding their contents.
+    private static func grantHeredocDelimiter(_ characters: [Character], index: inout Int) -> GrantHeredoc? {
+        let stripTabs = index < characters.count && characters[index] == "-"
+        if stripTabs { index += 1 }
+        while index < characters.count && (characters[index] == " " || characters[index] == "\t") { index += 1 }
+        let remainder = String(characters[index...])
+        let pattern = #"(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[A-Za-z0-9_])+(?=$|[ \t;&|<>])"#
+        guard let range = remainder.range(of: pattern, options: [.regularExpression, .anchored]) else { return nil }
+        let word = String(remainder[range])
+        guard let tokens = tokenizeArguments(word, requiringLiteralArguments: true),
+              tokens.count == 1, let token = tokens.first, token.isLiteral, !token.value.isEmpty else { return nil }
+        index += word.count
+        return GrantHeredoc(delimiter: token.value, quoted: word.contains { "'\"\\".contains($0) }, stripTabs: stripTabs)
     }
 
     // WO-673@v2: only pure printing chains exempt normalized grant markers, independent of wrappers.
@@ -336,6 +518,7 @@ public struct CommandParser {
         return false
     }
 
+    // WO-722@v2: a literal subcommand fixes command identity before any later operand expansion.
     // WO-673@v2: only executable-position expansions or expanded pastewatch arguments deny grant authority.
     private static func binaryGrantHeadIsUnsafe(
         _ tokens: [CommandToken], aliases: Set<String>, mentionsPastewatch: Bool
@@ -351,8 +534,12 @@ public struct CommandParser {
         let name = (executable.value as NSString).lastPathComponent
         // WO-706@v1: indirect arguments use the same executable identity as literal invocations.
         guard ExecutableIdentityNames.isOwnBinary(name) || aliases.contains(name) else { return false }
-        let arguments = head.dropFirst()
-        return arguments.contains { !$0.isLiteral } || arguments.first?.value == "allow-binary"
+        // WO-722@v2: only uncertainty at or before the first non-option word can choose the subcommand.
+        for argument in head.dropFirst() {
+            if !argument.isLiteral { return true }
+            if !argument.value.hasPrefix("-") { return argument.value == "allow-binary" }
+        }
+        return false
     }
 
     // WO-673@v2: quoted function-like text is not executable; inspect only an anchored shell declaration.

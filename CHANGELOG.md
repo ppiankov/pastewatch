@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+<!-- WO-724@v1: non-regular operands cannot stall the command guard on an unbounded input stream. -->
+- Refuse device, FIFO, socket and other non-regular operands before the command guard opens them, while treating `/dev/null` as empty and retaining the directory-specific remedy. (WO-724)
+<!-- WO-712@v3: command refusals distinguish a blocked decision from partial execution. -->
+- State first in human-facing command guard refusals that the whole command was refused and no part ran, retaining existing decisions, remedies, JSON and quiet output. (WO-712)
+<!-- WO-722@v2: literal subcommands keep expanded operands separate from operator-only grant attempts. -->
+- Allow expanded file operands after literal non-grant subcommands while retaining refusal of indirect grant invocations and all file checks. (WO-722)
+<!-- WO-721@v3: only a top-level, unpiped cat-to-file heredoc is a proven data-only grant consumer. -->
+- Ignore quoted-delimiter heredoc bodies in binary grant checks only for top-level, unpiped cat-to-file commands with literal stdout file paths checked consistently across platforms; retain interpreter and other bodies, file checks and inline-secret checks. (WO-721)
+<!-- WO-708@v3: environment-variable names and shell-pattern delimiters do not represent stored credentials. -->
+- Exclude uppercase environment-variable names from Credential findings and bare database schemes followed by backslash or pipe from DB Connection findings, retaining normal and empty-username connection strings. (WO-708)
 <!-- WO-716@v2: YAML scalar ranges exclude quote delimiters and inline comments. -->
 - Exclude YAML inline comments and surrounding quotes from parsed values, respecting escaped quotes and preserving hashes within scalar text. (WO-716)
 <!-- WO-714@v3: workflow permissions and complete placeholder segments are not credential values. -->
