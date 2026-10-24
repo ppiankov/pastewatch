@@ -1,8 +1,203 @@
 import XCTest
+// WO-726@v1: child CPU accounting and bounded teardown must work on both supported platforms.
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 @testable import PastewatchCore
 
 // WO-662@v3: shared extension coverage reaches staged scans, history and the live watcher.
 final class GitWatchExtensionCoverageTests: XCTestCase {
+    // WO-726@v1: allow several unchanged poll periods while bounding a silently stalled watcher.
+    private static let runLoopWatchdog: TimeInterval = 15
+    private static let idleObservationSeconds: TimeInterval = 5
+    private static let idleCPUAllowance: TimeInterval = 0.5
+    private static let microsecondsPerSecond: Double = 1_000_000
+
+    // WO-726@v1: Git completion after readiness exercises the child-process path that needs a live main run loop.
+    func testWatchGitChildScanKeepsMainRunLoopAlive() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let input = try makeRunLoopFixture(root)
+            let home = root.appendingPathComponent("git-home", isDirectory: true)
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+            let trace = root.appendingPathComponent("git-events.trace")
+            try ("[trace2]\n\teventTarget = " + trace.path + "\n").write(
+                to: home.appendingPathComponent(".gitconfig"), atomically: true, encoding: .utf8)
+            let ready = expectation(description: "Git-aware watcher ready")
+            let reported = expectation(description: "Changed Git-backed file reported")
+            let observation = WatchObservation(ready: ready, reported: reported)
+            let session = RunLoopWatchSession(executable: executable(), root: root, input: input,
+                                              observation: observation, environment: ["HOME": home.path])
+            try session.start()
+            defer { try? session.stop() }
+            guard XCTWaiter().wait(for: [ready], timeout: Self.runLoopWatchdog) == .completed else {
+                return XCTFail(watchFailure("readiness", process: session.process, observation: observation))
+            }
+            try Data().write(to: trace)
+            let file = input.appendingPathComponent("Main.kt")
+            try kotlinContent().write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2_000_000_000)],
+                                                  ofItemAtPath: file.path)
+            let completed = XCTWaiter().wait(for: [reported], timeout: Self.runLoopWatchdog) == .completed
+            try session.stop()
+            XCTAssertTrue(completed, watchFailure("finding report", process: session.process, observation: observation))
+            XCTAssertFalse(session.diagnostics.mainThreadExited, "Watcher must retain its main run-loop thread")
+            let events = try String(contentsOf: trace, encoding: .utf8)
+            XCTAssertTrue(events.contains("rev-parse"), "Changed-file scan launched the Git child")
+            XCTAssertTrue(events.contains("\"event\":\"exit\""), "Changed-file Git child completed")
+            XCTAssertEqual(session.process.terminationStatus, 0, "SIGINT handling remains unchanged")
+        }
+    }
+
+    // WO-726@v1: lifetime child CPU is a conservative upper bound on the five-second idle window.
+    func testIdleWatchUsesLessThanHalfASecondOfCPU() throws {
+        try TestConfigHelper.withIsolatedGlobalConfig { root in
+            let input = try makeRunLoopFixture(root)
+            let ready = expectation(description: "Idle watcher ready")
+            let reported = expectation(description: "No changed file during idle observation")
+            reported.isInverted = true
+            let observation = WatchObservation(ready: ready, reported: reported)
+            let session = RunLoopWatchSession(executable: executable(), root: root, input: input, observation: observation)
+            let before = try childCPUSeconds()
+            try session.start()
+            defer { try? session.stop() }
+            guard XCTWaiter().wait(for: [ready], timeout: Self.runLoopWatchdog) == .completed else {
+                return XCTFail(watchFailure("readiness", process: session.process, observation: observation))
+            }
+            XCTAssertEqual(XCTWaiter().wait(for: [reported], timeout: Self.idleObservationSeconds), .completed)
+            XCTAssertTrue(session.process.isRunning, "Idle watch must remain active")
+            try session.stop()
+            let cpu = try childCPUSeconds() - before
+            print(String(format: "WO726_IDLE_CPU_SECONDS=%.6f", cpu))
+            XCTAssertLessThan(cpu, Self.idleCPUAllowance, "Idle main run loop must block, not spin")
+            XCTAssertFalse(session.diagnostics.mainThreadExited)
+            XCTAssertEqual(session.process.terminationStatus, 0, "SIGINT handling remains unchanged")
+        }
+    }
+
+    // WO-726@v1: both live probes use a real repository and a clean initial snapshot.
+    private func makeRunLoopFixture(_ root: URL) throws -> URL {
+        try makeGitFixture(root)
+        let input = root.appendingPathComponent("input", isDirectory: true)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        try "// clean\n".write(to: input.appendingPathComponent("Main.kt"), atomically: true, encoding: .utf8)
+        return input
+    }
+
+    // WO-726@v1: only the watcher runs between samples; reaped descendants make this bound conservative.
+    private func childCPUSeconds() throws -> TimeInterval {
+        var usage = rusage()
+        #if os(Linux)
+        let status = getrusage(Int32(RUSAGE_CHILDREN.rawValue), &usage)
+        #else
+        let status = getrusage(RUSAGE_CHILDREN, &usage)
+        #endif
+        guard status == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) +
+            Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / Self.microsecondsPerSecond
+    }
+
+    // WO-726@v1: inspect every stderr fragment, including output after the first finding, without retaining values.
+    private final class RunLoopDiagnostics {
+        private let lock = NSLock()
+        private var pending = Data()
+        private var exited = false
+
+        // WO-726@v1: the assertion also covers an unterminated final diagnostic.
+        var mainThreadExited: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return exited || String(data: pending, encoding: .utf8)?.contains("main thread has exited") == true
+        }
+
+        // WO-726@v1: complete lines are reduced to one diagnostic flag instead of exposing matched values.
+        func receive(_ data: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            pending.append(data)
+            while let newline = pending.firstIndex(of: 0x0A) {
+                if String(data: pending[..<newline], encoding: .utf8)?.contains("main thread has exited") == true {
+                    exited = true
+                }
+                pending.removeSubrange(...newline)
+            }
+        }
+    }
+
+    // WO-726@v1: live regressions need a bounded lifetime even when the worker hangs after readiness.
+    private final class RunLoopWatchSession {
+        let process = Process()
+        let diagnostics = RunLoopDiagnostics()
+        private let pipe = Pipe()
+        private let finished = DispatchSemaphore(value: 0)
+        private let drained = DispatchGroup()
+        private let observation: WatchObservation
+        private var started = false
+        private var stopped = false
+        private static let stopGrace: TimeInterval = 3
+        private static let killGrace: TimeInterval = 1
+
+        // WO-726@v1: DEBUG config isolation remains independent of the fixture-owned Git home.
+        init(executable: URL, root: URL, input: URL, observation: WatchObservation,
+             environment: [String: String] = [:]) {
+            self.observation = observation
+            process.executableURL = executable
+            process.arguments = ["watch", "--dir", input.path]
+            process.currentDirectoryURL = root
+            process.environment = TestConfigHelper.subprocessEnvironment(
+                ["PATH": "/usr/bin:/bin"].merging(environment) { _, value in value })
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = pipe
+            let finished = self.finished
+            process.terminationHandler = { _ in finished.signal() }
+        }
+
+        // WO-726@v1: record CPU only after fixture setup and before launching this one child.
+        func start() throws {
+            try process.run()
+            started = true
+            let handle = pipe.fileHandleForReading
+            let diagnostics = self.diagnostics
+            let observation = self.observation
+            let drained = self.drained
+            drained.enter()
+            DispatchQueue.global(qos: .utility).async {
+                defer { drained.leave() }
+                while true {
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    diagnostics.receive(data)
+                    observation.receive(data)
+                }
+            }
+        }
+
+        // WO-726@v1: SIGINT must keep its existing exit contract, with forced cleanup only on a failed probe.
+        func stop() throws {
+            guard started, !stopped else { return }
+            defer {
+                stopped = true
+                try? pipe.fileHandleForReading.close()
+            }
+            if process.isRunning { process.interrupt() }
+            if finished.wait(timeout: .now() + Self.stopGrace) == .timedOut {
+                if kill(process.processIdentifier, SIGKILL) != 0 && errno != ESRCH {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard finished.wait(timeout: .now() + Self.killGrace) == .success else {
+                    throw POSIXError(.ETIMEDOUT)
+                }
+                throw POSIXError(.ETIMEDOUT)
+            }
+            process.waitUntilExit()
+            guard drained.wait(timeout: .now() + Self.killGrace) == .success else {
+                throw POSIXError(.ETIMEDOUT)
+            }
+        }
+    }
+
     // WO-662@v3: subprocess status is kept separate from captured diagnostics.
     private struct CommandResult {
         let status: Int32

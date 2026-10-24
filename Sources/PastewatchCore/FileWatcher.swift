@@ -9,6 +9,9 @@ public final class FileWatcher {
     private var timer: DispatchSourceTimer?
     private var knownModDates: [String: Date] = [:]
     private let queue = DispatchQueue(label: "com.pastewatch.watcher")
+    // WO-726@v1: retain a passive run-loop source without rescheduling the existing two-second dispatch poll.
+    private static let runLoopKeepAliveInterval: TimeInterval = 60 * 60
+    private var runLoopKeepAlive: Timer?
     // WO-662@v3: watcher line-limit skips are counted separately from reported findings.
     private var scanStatistics = DirectoryScanStatistics()
 
@@ -19,6 +22,7 @@ public final class FileWatcher {
         self.jsonOutput = jsonOutput
     }
 
+    // WO-726@v1: child-process callbacks need a live main run-loop thread while the polling queue scans.
     // WO-674@v2: readiness follows the initial snapshot so a first change cannot be lost during startup.
     /// Start watching. Blocks until stop() is called or the process is interrupted.
     public func start() {
@@ -36,14 +40,20 @@ public final class FileWatcher {
         self.timer = timer
         timer.resume()
 
-        // Block main thread
-        dispatchMain()
+        // WO-726@v1: an active timer keeps run() blocked while the main thread services later run-loop sources.
+        let keepAlive = Timer(timeInterval: Self.runLoopKeepAliveInterval, repeats: true) { _ in }
+        runLoopKeepAlive = keepAlive
+        RunLoop.main.add(keepAlive, forMode: .default)
+        RunLoop.main.run()
     }
 
+    // WO-726@v1: stopping must release the retained run-loop source as well as the unchanged polling source.
     /// Stop watching.
     public func stop() {
         timer?.cancel()
         timer = nil
+        runLoopKeepAlive?.invalidate()
+        runLoopKeepAlive = nil
     }
 
     // MARK: - Internal
