@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.44.1] - 2026-10-24
 
+### Security
+<!-- WO-725@v1: dev-only extension packaging must not carry a known high advisory. -->
+- Pin the patched `@azure/msal-node` 7.1.1 and `qs` 6.16.1 in the VS Code extension's build tooling (GHSA-xcx6-jx8p-x3h5, GHSA-x5fp-wj9c-mxmx, GHSA-4mjr-xmp4-gh2g); the shipped extension and CLI do not use these packages. (WO-725)
+
 ### Fixed
 <!-- WO-724@v1: non-regular operands cannot stall the command guard on an unbounded input stream. -->
 - Refuse device, FIFO, socket and other non-regular operands before the command guard opens them, while treating `/dev/null` as empty and retaining the directory-specific remedy. (WO-724)
