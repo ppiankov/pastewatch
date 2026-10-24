@@ -987,7 +987,7 @@ Use the legitimate routes in [exemptions.md](exemptions.md#removed-in-0430).
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ppiankov/pastewatch
-    rev: v0.44.0
+    rev: v0.44.1
     hooks:
       - id: pastewatch
 ```
