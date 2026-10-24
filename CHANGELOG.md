@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-10-24
+
 ### Fixed
 <!-- WO-724@v1: non-regular operands cannot stall the command guard on an unbounded input stream. -->
 - Refuse device, FIFO, socket and other non-regular operands before the command guard opens them, while treating `/dev/null` as empty and retaining the directory-specific remedy. (WO-724)
